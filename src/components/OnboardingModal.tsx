@@ -24,7 +24,7 @@ export const OnboardingModal: React.FC = () => {
   const handleFinish = async () => {
     setLoading(true);
     setStep(2); // Short success animation step
-    await completeOnboarding(name || 'Creative Luminary', selectedAvatar);
+    await completeOnboarding(name || 'Creative Artist', selectedAvatar);
     setTimeout(() => {
       setLoading(false);
       setOnboardingOpen(false);
@@ -66,7 +66,7 @@ export const OnboardingModal: React.FC = () => {
                   <Logo size="lg" showText={false} />
                 </motion.div>
                 <h3 className="text-2xl font-bold font-display text-white tracking-tight">
-                  Welcome to Lumina
+                  Welcome to AI Prime STUDIO
                 </h3>
                 <p className="text-sm text-stone-400 mt-1 max-w-xs">
                   Create your profile to unlock 100 free AI generation credits.

@@ -38,8 +38,8 @@ export const CreationsView: React.FC = () => {
   const handleShare = async (e: React.MouseEvent, gen: Generation) => {
     e.stopPropagation();
     const shareData = {
-      title: `${gen.templateTitle} · Lumina Studio`,
-      text: `Created with ${gen.templateTitle} on Lumina AI Studio`,
+      title: `${gen.templateTitle} · AI Prime STUDIO`,
+      text: `Created with ${gen.templateTitle} on AI Prime STUDIO`,
       url: window.location.href
     };
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -59,7 +59,7 @@ export const CreationsView: React.FC = () => {
     const url = gen.resultMediaUrl || gen.inputMediaUrl;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lumina_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+    a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

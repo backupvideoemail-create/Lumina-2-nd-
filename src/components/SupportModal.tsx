@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import {
   X,
-  MessageCircle,
   Mail,
   ChevronDown,
   ChevronUp,
@@ -11,15 +10,16 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
 
 const FAQS = [
   {
-    q: 'How does Lumina AI Studio work?',
+    q: 'How does AI Prime STUDIO work?',
     a: 'Choose any cinematic template, upload your portrait, selfie, or video clip, and our neural engines analyze lighting, face geometry, and styling to synthesize an ultra-high-definition output with professional grading.'
   },
   {
     q: 'What is the ₹1 Pro Pass Daily Autopay?',
-    a: 'Our Pro Pass gives you instant access to 500 premium credits for just ₹1 for the first 24 hours. Afterwards, it renews at ₹199 every 24 hours. You can cancel with 1-click anytime in your Profile with zero cancellation fees.'
+    a: 'Our Pro Pass gives you instant access to 500 premium credits for an introductory payment of ₹1. The recurring daily subscription renewal of ₹499 begins from the next calendar day until cancelled. You can cancel with 1-click anytime in your Profile with zero cancellation fees.'
   },
   {
     q: 'What happens if a generation fails or times out?',
@@ -31,7 +31,7 @@ const FAQS = [
   },
   {
     q: 'How do I cancel my active daily mandate or subscription?',
-    a: 'Simply open the Profile tab, locate your Active Subscription card, and tap "Cancel Subscription". It will instantly cancel future recurring renewals while allowing you to keep any unused credits.'
+    a: `Simply open the Profile tab, locate your Active Subscription card, and tap "Cancel Subscription" (or email us directly at ${SUPPORT_CONFIG.email}). It will instantly cancel all future recurring renewals while allowing you to keep any unused credits.`
   }
 ];
 
@@ -41,12 +41,8 @@ export const SupportModal: React.FC = () => {
 
   if (!supportModalOpen) return null;
 
-  const handleWhatsApp = () => {
-    window.open('https://wa.me/919876543210?text=Hi%20Lumina%20Support%2C%20I%20need%20help%20with%20my%20account', '_blank');
-  };
-
   const handleEmail = () => {
-    window.location.href = 'mailto:support@lumina.studio?subject=Lumina%20Template%20Studio%20Support';
+    window.location.href = `mailto:${SUPPORT_CONFIG.email}?subject=AI%20Prime%20Studio%20Support`;
   };
 
   return (
@@ -63,12 +59,12 @@ export const SupportModal: React.FC = () => {
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center">
-              <HelpCircle className="w-4 h-4 text-emerald-400" />
+            <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center">
+              <HelpCircle className="w-4 h-4 text-[#f5d77f]" />
             </div>
             <div>
               <h3 className="text-lg font-bold font-display text-white">Help & Support</h3>
-              <p className="text-xs text-stone-400">24/7 dedicated creator care</p>
+              <p className="text-xs text-stone-400">Dedicated creator support desk</p>
             </div>
           </div>
           <button
@@ -79,35 +75,37 @@ export const SupportModal: React.FC = () => {
           </button>
         </div>
 
-        {/* Instant Contact Channels */}
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={handleWhatsApp}
-            className="p-4 rounded-2xl bg-emerald-950/40 hover:bg-emerald-950/60 border border-emerald-700/50 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center">
-              <MessageCircle className="w-5 h-5 text-emerald-400" />
+        {/* Customer Support Desk Card */}
+        <div className="p-4 rounded-2xl bg-gradient-to-r from-stone-900/90 via-[#151419] to-stone-900/90 border border-white/10 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Mail className="w-4 h-4 text-[#d4af37]" />
+              <span className="text-xs font-bold text-white uppercase tracking-wider">Email Support Desk</span>
             </div>
-            <div>
-              <span className="text-xs font-bold text-white block">WhatsApp Care</span>
-              <span className="text-[10px] text-emerald-300">Fast 5-min response</span>
-            </div>
-          </button>
+            <span className="text-[10px] text-emerald-400 font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+              Active Desk
+            </span>
+          </div>
 
-          <button
-            type="button"
-            onClick={handleEmail}
-            className="p-4 rounded-2xl bg-stone-900/60 hover:bg-stone-900 border border-white/10 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer"
-          >
-            <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
-              <Mail className="w-5 h-5 text-stone-300" />
-            </div>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
             <div>
-              <span className="text-xs font-bold text-white block">Email Desk</span>
-              <span className="text-[10px] text-stone-400">support@lumina.studio</span>
+              <span className="text-sm font-semibold text-stone-200 block select-all">
+                {SUPPORT_CONFIG.email}
+              </span>
+              <span className="text-[11px] text-stone-400">
+                Guaranteed response within 24 hours for billing, credits, or account inquiries.
+              </span>
             </div>
-          </button>
+
+            <button
+              type="button"
+              onClick={handleEmail}
+              className="py-2.5 px-4 rounded-xl gold-button text-xs font-bold shrink-0 flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>Contact Support</span>
+            </button>
+          </div>
         </div>
 
         {/* FAQs Accordion */}

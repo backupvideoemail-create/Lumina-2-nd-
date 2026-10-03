@@ -16,9 +16,10 @@ import {
   AlertTriangle,
   Zap,
   Lock,
-  MessageCircle
+  Mail
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
 
 export const ProfileView: React.FC = () => {
   const {
@@ -46,7 +47,7 @@ export const ProfileView: React.FC = () => {
   };
 
   const handleCancelSubscription = async () => {
-    if (confirm('Are you sure you want to cancel your daily Pro Pass renewal? You will retain all your current credits.')) {
+    if (confirm('Are you sure you want to cancel your daily Pro Pass renewal (₹499/day)? You will retain all your current credits.')) {
       setCancellingSub(true);
       await cancelSubscription();
       setCancellingSub(false);
@@ -108,7 +109,7 @@ export const ProfileView: React.FC = () => {
               ) : (
                 <div className="flex items-center gap-2">
                   <h3 className="text-lg font-bold font-display text-white truncate">
-                    {user?.name || 'Guest Luminary'}
+                    {user?.name || 'Guest Creator'}
                   </h3>
                   <button
                     onClick={() => {
@@ -122,7 +123,7 @@ export const ProfileView: React.FC = () => {
                 </div>
               )}
               <p className="text-xs text-stone-400 mt-0.5 truncate">
-                {user?.email || 'creator@lumina.studio'}
+                {user?.email || 'creator@aiprime.studio'}
               </p>
               <div className="flex items-center gap-3 mt-2 text-xs text-stone-400">
                 <span>{user?.generationCount || 0} Total Creations</span>
@@ -227,7 +228,7 @@ export const ProfileView: React.FC = () => {
             <div className="flex items-center justify-between pt-1">
               <div>
                 <p className="text-xs text-stone-300 font-medium">Free Tier</p>
-                <p className="text-[11px] text-stone-400">Unlock Pro Pass from just ₹1 for first 24 hours</p>
+                <p className="text-[11px] text-stone-400">Unlock Pro Pass for ₹1 intro payment (then ₹499/day from next calendar day)</p>
               </div>
               <button
                 onClick={() => setPlansModalOpen(true)}
@@ -258,12 +259,15 @@ export const ProfileView: React.FC = () => {
             </button>
 
             <button
-              onClick={() => window.open('https://wa.me/919876543210', '_blank')}
+              onClick={() => window.location.href = `mailto:${SUPPORT_CONFIG.email}?subject=AI%20Prime%20Studio%20Support`}
               className="w-full p-3 rounded-2xl hover:bg-white/5 flex items-center justify-between text-xs text-stone-200 transition-colors"
             >
               <div className="flex items-center gap-3">
-                <MessageCircle className="w-4 h-4 text-emerald-400" />
-                <span>Direct WhatsApp Support</span>
+                <Mail className="w-4 h-4 text-[#d4af37]" />
+                <div className="text-left">
+                  <span className="block text-white font-medium">Email Support</span>
+                  <span className="block text-[10px] text-stone-400 font-mono">{SUPPORT_CONFIG.email}</span>
+                </div>
               </div>
               <ChevronRight className="w-4 h-4 text-stone-500" />
             </button>
@@ -336,7 +340,7 @@ export const ProfileView: React.FC = () => {
 
         {/* Footer info */}
         <div className="text-center text-[11px] text-stone-600 pt-2 pb-6">
-          Lumina AI Template Studio v2.4 · 256-Bit SSL Protected
+          AI Prime STUDIO v2.4 · 256-Bit SSL Protected
         </div>
       </div>
     </div>

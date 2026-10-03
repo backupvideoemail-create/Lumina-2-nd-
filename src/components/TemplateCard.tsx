@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Play, Sparkles, Image as ImageIcon, UserCheck, Music2, ArrowUpRight } from 'lucide-react';
+import { Play, Sparkles, Image as ImageIcon, UserCheck, ArrowUpRight } from 'lucide-react';
 import { Template } from '../types';
 import { useApp } from '../context/AppContext';
 
@@ -21,9 +21,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
   } = useApp();
 
   const heightClasses = {
-    compact: 'h-72 sm:h-80 w-52 sm:w-56 shrink-0',
-    standard: 'h-[370px] sm:h-[420px] w-full',
-    large: 'h-[420px] sm:h-[460px] w-full'
+    compact: 'h-[370px] sm:h-[400px] w-[68vw] max-w-[260px] min-w-[220px] shrink-0',
+    standard: 'h-[400px] sm:h-[440px] w-full',
+    large: 'h-[450px] sm:h-[490px] w-full'
   };
 
   const handleCardClick = (e: React.MouseEvent) => {
@@ -41,111 +41,99 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
 
   return (
     <motion.div
-      whileHover={{ y: -6, scale: 1.018 }}
-      whileTap={{ scale: 0.965 }}
+      whileHover={{ y: -5, scale: 1.015 }}
+      whileTap={{ scale: 0.97 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
       onClick={handleCardClick}
-      className={`group relative rounded-[26px] p-[1.5px] cursor-pointer transition-all duration-300 laser-light-border shadow-[0_20px_45px_-12px_rgba(0,0,0,0.85),0_0_1px_1px_rgba(255,255,255,0.08)] hover:shadow-[0_26px_55px_-10px_rgba(0,0,0,0.95),0_0_24px_rgba(212,175,55,0.22)] ${heightClasses[size]}`}
+      className={`group relative rounded-[24px] p-[1.5px] cursor-pointer transition-all duration-300 laser-light-border shadow-[0_16px_36px_-10px_rgba(0,0,0,0.85)] hover:shadow-[0_22px_45px_-8px_rgba(0,0,0,0.95),0_0_20px_rgba(212,175,55,0.25)] ${heightClasses[size]}`}
     >
-      {/* Inner Frosted Glass Chassis */}
-      <div className="w-full h-full rounded-[24.5px] bg-[#0c0c12]/85 backdrop-blur-2xl p-2 sm:p-2.5 flex flex-col relative overflow-hidden">
+      {/* Full-Frame Card Chassis */}
+      <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
         
-        {/* Subtle Sweeping Reflection Sheen */}
-        <div className="subtle-reflection-sheen" />
+        {/* Full-Bleed Media Canvas - Crystal clear, zero top/center darkening */}
+        <img
+          src={template.cover}
+          alt={template.title}
+          loading="lazy"
+          className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
+        />
 
-        {/* Elevated Floating Media Plate */}
-        <div className="relative w-full flex-1 rounded-[20px] overflow-hidden bg-black/60 shadow-[inset_0_1px_1px_rgba(255,255,255,0.15)] border border-white/10 group-hover:border-white/20 transition-all">
-          <img
-            src={template.cover}
-            alt={template.title}
-            loading="lazy"
-            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
-          />
+        {/* Minimal Bottom Shadow Scrim - Only at lower 40%, leaves 60%+ fully bright & clear */}
+        <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
 
-          {/* Deep Cinematic Vignette */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-black/10 opacity-90 group-hover:opacity-95 transition-opacity" />
-
-          {/* Floating Badges (Partially Overlapping Top of Media) */}
-          <div className="absolute top-2.5 inset-x-2.5 flex items-center justify-between z-10">
-            {/* Format / Type Pill */}
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/65 backdrop-blur-xl border border-white/15 text-[11px] font-semibold text-stone-200 shadow-md">
-              {template.isFaceSwap ? (
-                <>
-                  <UserCheck className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="text-amber-200">Face Swap</span>
-                </>
-              ) : template.type === 'video' ? (
-                <>
-                  <Play className="w-3 h-3 text-amber-400 fill-amber-400" />
-                  <span>Video {template.aspectRatio}</span>
-                </>
-              ) : (
-                <>
-                  <ImageIcon className="w-3 h-3 text-stone-300" />
-                  <span>Photo {template.aspectRatio}</span>
-                </>
-              )}
-            </div>
-
-            {/* Credit Cost Badge */}
-            <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1b170e]/90 backdrop-blur-xl border border-amber-500/40 text-[11px] font-bold text-amber-300 shadow-[0_4px_16px_rgba(212,175,55,0.3)]">
-              <Sparkles className="w-3 h-3 fill-amber-400 text-amber-400" />
-              <span>{template.creditCost} ✦</span>
-            </div>
+        {/* Top Floating Glass Badges */}
+        <div className="relative z-20 p-2.5 flex items-center justify-between">
+          {/* Format / Type Pill */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-xl border border-white/15 text-[10px] font-semibold text-stone-200 shadow-md">
+            {template.isFaceSwap ? (
+              <>
+                <UserCheck className="w-3 h-3 text-amber-400" />
+                <span className="text-amber-200">Face Swap</span>
+              </>
+            ) : template.type === 'video' ? (
+              <>
+                <Play className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
+                <span>Video {template.aspectRatio}</span>
+              </>
+            ) : (
+              <>
+                <ImageIcon className="w-2.5 h-2.5 text-stone-300" />
+                <span>Photo {template.aspectRatio}</span>
+              </>
+            )}
           </div>
 
-          {/* Center Play/Action Indicator on Hover */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-300 transform scale-95 group-hover:scale-100">
-            <div className="w-13 h-13 rounded-full bg-black/50 backdrop-blur-xl border border-amber-400/50 flex items-center justify-center shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
-              {template.isFaceSwap ? (
-                <UserCheck className="w-6 h-6 text-amber-300" />
-              ) : (
-                <Play className="w-6 h-6 text-white fill-white ml-0.5" />
-              )}
-            </div>
+          {/* Credit Cost Pill */}
+          <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-black/65 backdrop-blur-xl border border-amber-500/40 text-[10px] font-bold text-amber-300 shadow-[0_2px_12px_rgba(212,175,55,0.3)]">
+            <Sparkles className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
+            <span>{template.creditCost} ✦</span>
           </div>
-
-          {/* Audio Badge Overlap if Track Available */}
-          {template.musicTrack && (
-            <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-[10px] text-stone-300 z-10">
-              <Music2 className="w-3 h-3 text-amber-400 shrink-0" />
-              <span className="truncate font-medium">{template.musicTrack.name}</span>
-            </div>
-          )}
         </div>
 
-        {/* Floating Glass Metadata Dock (Overlapping Lower Card Rim) */}
-        <div className="mt-2.5 px-2.5 pb-2 flex flex-col justify-between">
-          <div className="flex items-center justify-between gap-2 mb-1">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-200/80">
+        {/* Hover Center Play Button */}
+        <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-300 transform scale-90 group-hover:scale-100">
+          <div className="w-12 h-12 rounded-full bg-black/55 backdrop-blur-xl border border-amber-400/50 flex items-center justify-center shadow-[0_8px_24px_rgba(0,0,0,0.7)]">
+            {template.isFaceSwap ? (
+              <UserCheck className="w-5 h-5 text-amber-300" />
+            ) : (
+              <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+            )}
+          </div>
+        </div>
+
+        {/* iPhone-Style Floating Liquid-Glass Overlapping Bottom Dock */}
+        <div className="relative z-20 mx-2 mb-2 p-2.5 rounded-2xl bg-black/55 backdrop-blur-xl border border-white/12 shadow-[0_8px_24px_rgba(0,0,0,0.5)] flex flex-col gap-1">
+          {/* Top micro metadata row */}
+          <div className="flex items-center justify-between gap-1">
+            <div className="flex items-center gap-1.5 text-[9.5px] font-bold uppercase tracking-wider text-amber-300/90">
               <span>{template.category}</span>
-              <span className="text-stone-600">·</span>
-              <span className="text-stone-400 font-normal">{template.resolutionLabel || '1080p'}</span>
+              <span className="text-stone-500">·</span>
+              <span className="text-stone-300 font-mono text-[9px] bg-white/10 px-1 py-0.2 rounded border border-white/10">
+                {template.resolutionLabel || '1080p'}
+              </span>
             </div>
+
             {template.isFeatured && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+              <span className="px-1.5 py-0.5 rounded-full text-[8.5px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/35">
                 Trending
               </span>
             )}
           </div>
 
-          <h4 className="text-sm sm:text-base font-bold text-white line-clamp-1 group-hover:text-amber-200 transition-colors">
+          {/* Title */}
+          <h4 className="text-xs sm:text-sm font-bold text-white truncate group-hover:text-amber-200 transition-colors drop-shadow-sm leading-tight">
             {template.title}
           </h4>
 
-          <p className="text-[11px] text-stone-400 line-clamp-1 mt-0.5 leading-snug">
-            {template.description}
-          </p>
-
-          {/* Interactive CTA Bar */}
-          <div className="mt-2.5 pt-2 border-t border-white/8 flex items-center justify-between">
-            <span className="text-[11px] text-stone-400">
-              {template.likesCount ? `${(template.likesCount / 1000).toFixed(1)}k uses` : 'Viral Studio'}
+          {/* Action & Uses micro row */}
+          <div className="pt-1 border-t border-white/10 flex items-center justify-between text-[10px]">
+            <span className="text-stone-400 font-medium">
+              {template.likesCount ? `${(template.likesCount / 1000).toFixed(1)}k uses` : 'Viral'}
             </span>
 
-            <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300 group-hover:text-amber-200 transition-colors">
+            <span className="inline-flex items-center gap-0.5 font-bold text-[#f5d77f] group-hover:text-amber-200 transition-colors">
               <span>{template.isFaceSwap ? 'Swap Face' : 'Create'}</span>
-              <ArrowUpRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+              <ArrowUpRight className="w-3 h-3 transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
             </span>
           </div>
         </div>

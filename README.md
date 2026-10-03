@@ -1,4 +1,4 @@
-# Lumina AI Studio
+# AI Prime STUDIO - AI video & Photo Creator
 
 A modern, high-performance AI video and photo template creation studio built with React 19, TypeScript, Tailwind CSS v4, Motion, and an Express.js backend.
 

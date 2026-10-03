@@ -191,7 +191,7 @@ export const PlansModal: React.FC = () => {
                     <div className="text-right">
                       <span className="text-2xl font-bold font-display text-white">₹{plan.price}</span>
                       <span className="text-xs text-stone-400 block">
-                        {plan.renewalInterval === 'daily' ? '/ 24 hrs' : plan.renewalInterval === 'weekly' ? '/ 7 days' : 'one-time'}
+                        {plan.renewalInterval === 'daily' ? 'intro / then ₹499 daily' : plan.renewalInterval === 'weekly' ? '/ 7 days' : 'one-time'}
                       </span>
                     </div>
                   </div>
@@ -303,7 +303,7 @@ export const PlansModal: React.FC = () => {
               className="mt-0.5 rounded border-white/20 text-[#d4af37] focus:ring-[#d4af37]"
             />
             <span>
-              I authorize the ₹1 trial charge for the first 24 hours, followed by ₹199 daily renewal until cancelled. I understand I can cancel anytime with 1-click in my profile.
+              I authorize the ₹1 introductory payment. I understand that the recurring ₹499 daily subscription renewal begins from the next calendar day until cancelled, and I can cancel anytime with 1-click in my profile.
             </span>
           </label>
         )}
@@ -340,7 +340,7 @@ export const PlansModal: React.FC = () => {
             className="text-[#d4af37] hover:underline flex items-center gap-1"
           >
             <HelpCircle className="w-3.5 h-3.5" />
-            <span>WhatsApp & FAQ</span>
+            <span>Email Support & FAQ</span>
           </button>
         </div>
       </motion.div>

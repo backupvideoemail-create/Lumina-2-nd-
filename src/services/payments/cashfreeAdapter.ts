@@ -15,6 +15,7 @@ export class CashfreeAdapter {
       provider: this.providerName,
       paymentToken,
       isMandate: !!params.isMandate,
+      mandateDetails: params.mandateSchedule || null,
       checkoutUrl: null
     };
   }

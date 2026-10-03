@@ -14,141 +14,183 @@ export const Logo: React.FC<LogoProps> = ({
   theme = 'dark'
 }) => {
   const iconSizes = {
-    sm: 'w-7 h-7',
-    md: 'w-9 h-9',
-    lg: 'w-12 h-12',
-    xl: 'w-16 h-16'
+    sm: 'w-8 h-8',
+    md: 'w-10 h-10',
+    lg: 'w-14 h-14',
+    xl: 'w-20 h-20'
   };
 
   const textSizes = {
     sm: 'text-sm',
     md: 'text-base',
-    lg: 'text-xl',
-    xl: 'text-2xl'
+    lg: 'text-2xl',
+    xl: 'text-3xl'
+  };
+
+  const subTextSizes = {
+    sm: 'text-[7.5px] tracking-[0.28em]',
+    md: 'text-[9px] tracking-[0.32em]',
+    lg: 'text-[12px] tracking-[0.34em]',
+    xl: 'text-[15px] tracking-[0.38em]'
   };
 
   return (
     <div className={`flex items-center gap-2.5 select-none ${className}`}>
-      {/* Dimensional Layered AI + Camera/Frame + Play/Spark App Icon */}
+      {/* Dimensional Layered AI + Camera/Photo + Video Play App Icon with Laser Glow */}
       <div
-        className={`relative ${iconSizes[size]} flex items-center justify-center rounded-[22%] p-1 overflow-hidden transition-transform duration-300 hover:scale-105 active:scale-95`}
+        className={`relative ${iconSizes[size]} flex items-center justify-center rounded-[24%] p-1 overflow-hidden transition-transform duration-300 hover:scale-105 active:scale-95 laser-glow-box shrink-0`}
         style={{
           background:
             theme === 'dark'
-              ? 'linear-gradient(145deg, #24221d 0%, #151419 50%, #0d0c10 100%)'
-              : 'linear-gradient(145deg, #ffffff 0%, #f4ede0 50%, #dfd4bf 100%)',
-          boxShadow:
-            '0 4px 16px -2px rgba(0,0,0,0.6), 0 1px 2px rgba(212,175,55,0.25), inset 0 1px 1px rgba(255,255,255,0.2), inset 0 -1px 2px rgba(0,0,0,0.5)'
+              ? 'linear-gradient(145deg, #1f1d18 0%, #111116 55%, #08080a 100%)'
+              : 'linear-gradient(145deg, #ffffff 0%, #f4ede0 50%, #dfd4bf 100%)'
         }}
       >
-        {/* Precision Glass Chamfer Border */}
+        {/* Subtle Rotating Laser Light Border Beam */}
         <div
-          className="absolute inset-0 rounded-[22%] pointer-events-none"
+          className="absolute -inset-[150%] pointer-events-none opacity-70 laser-spin"
           style={{
-            border: '1px solid rgba(245, 215, 127, 0.4)',
-            boxShadow: 'inset 0 0 10px rgba(212, 175, 55, 0.2)'
+            background:
+              'conic-gradient(from 0deg, transparent 0deg, rgba(212,175,55,0.7) 40deg, rgba(255,255,255,0.95) 60deg, rgba(245,215,127,0.8) 80deg, transparent 120deg, transparent 360deg)'
           }}
         />
 
-        {/* Ambient Top Light Reflection (Liquid-Glass style) */}
-        <div className="absolute -top-3 inset-x-0 h-6 bg-gradient-to-b from-white/25 to-transparent rounded-t-full pointer-events-none" />
+        {/* Inner Glass Core Background to keep content crisp */}
+        <div
+          className="absolute inset-[1.5px] rounded-[22%] pointer-events-none"
+          style={{
+            background:
+              theme === 'dark'
+                ? 'linear-gradient(145deg, #18171d 0%, #0d0d12 60%, #09090c 100%)'
+                : '#ffffff',
+            boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.25), inset 0 -1px 2px rgba(0,0,0,0.6)'
+          }}
+        />
 
+        {/* Ambient Top Light Reflection */}
+        <div className="absolute top-0 inset-x-0 h-[45%] bg-gradient-to-b from-white/20 to-transparent rounded-t-[22%] pointer-events-none z-10" />
+
+        {/* SVG Artwork: Camera Viewfinder (Photo) + Cinematic Video Play (Video) + AI Neural Star (AI) */}
         <svg
-          viewBox="0 0 40 40"
+          viewBox="0 0 44 44"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
-          className="w-full h-full drop-shadow-[0_2px_8px_rgba(212,175,55,0.5)]"
+          className="w-full h-full relative z-20 drop-shadow-[0_2px_8px_rgba(212,175,55,0.55)]"
         >
           <defs>
             {/* Primary Metallic Gold Gradient */}
-            <linearGradient id="iconGoldPrimary" x1="4" y1="4" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+            <linearGradient id="aiPrimeGold" x1="4" y1="4" x2="40" y2="40" gradientUnits="userSpaceOnUse">
               <stop offset="0%" stopColor="#fff8e7" />
-              <stop offset="35%" stopColor="#f3cf7a" />
-              <stop offset="70%" stopColor="#d4af37" />
-              <stop offset="100%" stopColor="#8d650c" />
+              <stop offset="30%" stopColor="#f5d77f" />
+              <stop offset="65%" stopColor="#d4af37" />
+              <stop offset="100%" stopColor="#966d0c" />
             </linearGradient>
 
             {/* Aperture Frame Gradient */}
-            <linearGradient id="apertureFrameGrad" x1="8" y1="8" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.8" />
-              <stop offset="50%" stopColor="#d4af37" stopOpacity="0.6" />
-              <stop offset="100%" stopColor="#1a1813" stopOpacity="0.9" />
+            <linearGradient id="lensRingGrad" x1="10" y1="10" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.85" />
+              <stop offset="50%" stopColor="#d4af37" stopOpacity="0.75" />
+              <stop offset="100%" stopColor="#1a1813" stopOpacity="0.95" />
             </linearGradient>
 
-            {/* Inner Play Shadow */}
-            <radialGradient id="playCoreGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#fff5d6" />
-              <stop offset="60%" stopColor="#e5bf4c" />
+            {/* Core Cinematic Video Play Gradient */}
+            <radialGradient id="videoPlayCore" cx="45%" cy="45%" r="55%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="35%" stopColor="#fae29c" />
+              <stop offset="70%" stopColor="#dfb743" />
               <stop offset="100%" stopColor="#a3760e" />
+            </radialGradient>
+
+            {/* AI Neural Beam Glow */}
+            <radialGradient id="aiSparkGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="50%" stopColor="#f7d070" stopOpacity="0.9" />
+              <stop offset="100%" stopColor="#d4af37" stopOpacity="0" />
             </radialGradient>
           </defs>
 
-          {/* 1. Camera Viewfinder Precision Frame with Corner Guides */}
+          {/* 1. Camera Viewfinder Brackets (Photo Studio Aspect) */}
           <path
-            d="M8 14V11C8 9.34315 9.34315 8 11 8H14"
-            stroke="url(#iconGoldPrimary)"
-            strokeWidth="2"
+            d="M8 15V11C8 9.34315 9.34315 8 11 8H15"
+            stroke="url(#aiPrimeGold)"
+            strokeWidth="2.2"
             strokeLinecap="round"
           />
           <path
-            d="M26 8H29C30.6569 8 32 9.34315 32 11V14"
-            stroke="url(#iconGoldPrimary)"
-            strokeWidth="2"
+            d="M29 8H33C34.6569 8 36 9.34315 36 11V15"
+            stroke="url(#aiPrimeGold)"
+            strokeWidth="2.2"
             strokeLinecap="round"
           />
           <path
-            d="M32 26V29C32 30.6569 30.6569 32 29 32H26"
-            stroke="url(#iconGoldPrimary)"
-            strokeWidth="2"
+            d="M36 29V33C36 34.6569 34.6569 36 33 36H29"
+            stroke="url(#aiPrimeGold)"
+            strokeWidth="2.2"
             strokeLinecap="round"
           />
           <path
-            d="M14 32H11C9.34315 32 8 30.6569 8 29V26"
-            stroke="url(#iconGoldPrimary)"
-            strokeWidth="2"
+            d="M15 36H11C9.34315 36 8 34.6569 8 33V29"
+            stroke="url(#aiPrimeGold)"
+            strokeWidth="2.2"
             strokeLinecap="round"
           />
 
-          {/* 2. Concentric Aperture Glass Ring */}
+          {/* 2. Concentric Precision Optical Lens Aperture Ring */}
           <circle
-            cx="20"
-            cy="20"
-            r="10.5"
-            stroke="url(#apertureFrameGrad)"
+            cx="22"
+            cy="22"
+            r="11.5"
+            stroke="url(#lensRingGrad)"
             strokeWidth="1.2"
-            strokeDasharray="1.5 2.5"
+            strokeDasharray="2 2.5"
+            opacity="0.9"
+          />
+
+          {/* 3. Golden Cinematic Video Play Prism (Video Studio Aspect) */}
+          <path
+            d="M18.5 16.5C18.5 15.65 19.45 15.15 20.15 15.62L27.4 20.45C28.05 20.88 28.05 21.85 27.4 22.28L20.15 27.11C19.45 27.58 18.5 27.08 18.5 26.23V16.5Z"
+            fill="url(#videoPlayCore)"
+            style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.6))' }}
+          />
+
+          {/* 4. AI Neural Brilliance Star (Centered Sparkle) */}
+          <path
+            d="M33 5.5L34.3 9.8L38.6 11.1L34.3 12.4L33 16.7L31.7 12.4L27.4 11.1L31.7 9.8L33 5.5Z"
+            fill="#ffffff"
+            style={{ filter: 'drop-shadow(0 0 6px rgba(255,255,255,0.95))' }}
+          />
+          <circle cx="33" cy="11.1" r="1.3" fill="#f5d77f" />
+
+          {/* 5. Micro AI Synthesis Spark (Lower-left balance) */}
+          <circle cx="12" cy="32" r="1.1" fill="#fff5d6" opacity="0.95" />
+          <path
+            d="M12 30V34M10 32H14"
+            stroke="#f5d77f"
+            strokeWidth="0.8"
+            strokeLinecap="round"
             opacity="0.85"
           />
-
-          {/* 3. Golden Beveled Video Play Core Wedge */}
-          <path
-            d="M17 15.2C17 14.394 17.896 13.91 18.57 14.35L25.35 18.77C25.96 19.17 25.96 20.07 25.35 20.47L18.57 24.89C17.896 25.33 17 24.84 17 24.04V15.2Z"
-            fill="url(#playCoreGlow)"
-            style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))' }}
-          />
-
-          {/* 4. AI North Star Diamond Spark (Dimensional top right) */}
-          <path
-            d="M29 5L30.2 9L34.2 10.2L30.2 11.4L29 15.4L27.8 11.4L23.8 10.2L27.8 9L29 5Z"
-            fill="#ffffff"
-            style={{ filter: 'drop-shadow(0 0 5px rgba(255,255,255,0.9))' }}
-          />
-          <circle cx="29" cy="10.2" r="1.2" fill="#d4af37" />
-
-          {/* 5. Subordinate Micro Spark (Lower left) */}
-          <circle cx="11.5" cy="28.5" r="1" fill="#fff8e7" opacity="0.9" />
         </svg>
       </div>
 
+      {/* Brand Typography: "AI Prime" & "STUDIO" */}
       {showText && (
-        <div className="flex flex-col">
+        <div className="flex flex-col justify-center leading-none">
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`font-black tracking-wide font-display gold-gradient-text drop-shadow-[0_2px_10px_rgba(212,175,55,0.35)] ${textSizes[size]}`}
+            >
+              AI Prime
+            </span>
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#f5d77f] shadow-[0_0_8px_#f5d77f] animate-pulse" />
+          </div>
+
           <span
-            className={`font-bold tracking-wider uppercase font-display gold-gradient-text leading-tight ${textSizes[size]}`}
+            className={`font-bold uppercase text-amber-200/80 font-sans mt-0.5 flex items-center gap-1.5 ${subTextSizes[size]}`}
           >
-            LUMINA
-          </span>
-          <span className="text-[9px] tracking-[0.22em] uppercase text-stone-400 font-semibold">
-            AI STUDIO
+            <span className="text-[7px] text-[#d4af37] opacity-75">✦</span>
+            <span>STUDIO</span>
+            <span className="text-[7px] text-[#d4af37] opacity-75">✦</span>
           </span>
         </div>
       )}

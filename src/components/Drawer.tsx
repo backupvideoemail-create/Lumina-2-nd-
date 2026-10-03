@@ -256,7 +256,7 @@ export const Drawer: React.FC = () => {
               </div>
 
               <p className="text-[11px] text-stone-600 pt-1">
-                Lumina Studio © 2026. All rights reserved.
+                AI Prime STUDIO © 2026. All rights reserved.
               </p>
             </div>
           </motion.div>

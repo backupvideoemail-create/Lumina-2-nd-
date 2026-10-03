@@ -224,7 +224,7 @@ export const TemplatesView: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 gap-2.5 sm:gap-3.5">
             {displayList.map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="standard" />
             ))}

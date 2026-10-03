@@ -1,4 +1,5 @@
 import type { Template } from '../types/index.ts';
+import { SUBSCRIPTION_CONFIG } from '../config/subscriptionConfig.ts';
 
 export const SEED_TEMPLATES: Template[] = [
   {
@@ -99,7 +100,7 @@ export const SEED_TEMPLATES: Template[] = [
     isFeatured: true,
     isActive: true,
     tags: ['Gold', 'Luxury', 'Dark Aesthetics', 'High Fashion', 'Editorial'],
-    musicTrack: { name: 'Obsidian Nocturne', author: 'Lumina Audio' },
+    musicTrack: { name: 'Obsidian Nocturne', author: 'Prime Audio' },
     likesCount: 14200,
     resolutionLabel: '4K Ultra HD'
   },
@@ -442,7 +443,7 @@ export const SEED_TEMPLATES: Template[] = [
     isFeatured: false,
     isActive: true,
     tags: ['Cinematic', 'Travel', 'Desert', 'Dubai', 'Warm'],
-    musicTrack: { name: 'Desert Mirage Symphony', author: 'Lumina Cinema' },
+    musicTrack: { name: 'Desert Mirage Symphony', author: 'Prime Cinema' },
     likesCount: 12900,
     resolutionLabel: 'Cinematic 4K'
   },
@@ -686,14 +687,14 @@ export const CATEGORIES = [
 
 export const INITIAL_PLANS = [
   {
-    id: 'plan_intro_daily',
+    id: SUBSCRIPTION_CONFIG.introPlanId,
     name: 'Pro Pass Intro',
     badge: 'Popular',
-    price: 1, // ₹1
+    price: SUBSCRIPTION_CONFIG.introPrice, // ₹1
     durationHours: 24,
-    includedCredits: 500,
-    renewalInterval: 'daily' as const,
-    renewalPrice: 199, // ₹199 per 24 hours
+    includedCredits: SUBSCRIPTION_CONFIG.includedCredits,
+    renewalInterval: SUBSCRIPTION_CONFIG.renewalInterval,
+    renewalPrice: SUBSCRIPTION_CONFIG.renewalPrice, // ₹499 daily from next calendar day
     features: [
       '500 credits immediately unlocked',
       'All AI Photo & Video templates',
@@ -703,7 +704,7 @@ export const INITIAL_PLANS = [
     ],
     isIntro: true,
     isPopular: true,
-    disclosureText: '₹1 for first 24 hours · then ₹199 every 24 hours until cancelled.'
+    disclosureText: SUBSCRIPTION_CONFIG.disclosureText
   },
   {
     id: 'plan_weekly_pass',
@@ -719,7 +720,7 @@ export const INITIAL_PLANS = [
       'Priority GPU queue access',
       'Commercial usage license',
       'Early access to new weekly reels',
-      'VIP WhatsApp support channel'
+      'Priority email support channel'
     ],
     isIntro: false,
     isPopular: false,

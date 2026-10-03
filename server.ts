@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from './src/data/templatesData.ts';
+import { calculateNextCalendarDayStartDate } from './src/config/subscriptionConfig.ts';
 import { SEED_FACE_SWAP_SCENES } from './src/data/faceSwapData.ts';
 import {
   processTemplate,
@@ -367,10 +368,14 @@ app.post('/api/payments/create-order', async (req, res) => {
     itemTitle = plan.name;
     if (plan.renewalInterval === 'daily') {
       isMandate = true;
+      const nextCalDay = calculateNextCalendarDayStartDate();
       mandateDetails = {
         frequency: 'daily',
-        intervalHours: 24,
-        renewalPrice: plan.renewalPrice,
+        scheduleRule: 'next_calendar_day',
+        renewalAmount: plan.renewalPrice,
+        startDateFormatted: nextCalDay.dateString,
+        startAtIso: nextCalDay.isoString,
+        startAtUnixSeconds: nextCalDay.unixSeconds,
         disclosure: plan.disclosureText
       };
     }
@@ -392,7 +397,8 @@ app.post('/api/payments/create-order', async (req, res) => {
       credits,
       itemTitle,
       isMandate,
-      mandateFrequency: 'daily'
+      mandateFrequency: 'daily',
+      mandateSchedule: mandateDetails || undefined
     },
     provider as any
   );
@@ -435,6 +441,12 @@ app.post('/api/payments/verify', (req, res) => {
     creditsToAdd = plan.includedCredits;
     description = `Subscription: ${plan.name} (₹${plan.price})`;
 
+    // Compute next charge date: For next calendar day mandate, schedule from subsequent day boundary
+    const nextCalDay = calculateNextCalendarDayStartDate();
+    const nextChargeAt = (plan.renewalInterval === 'daily' || plan.isIntro)
+      ? nextCalDay.isoString
+      : new Date(Date.now() + (plan.durationHours || 24) * 3600000).toISOString();
+
     // Record subscription
     const subId = `sub_${Date.now()}`;
     const newSubscription: UserSubscription = {
@@ -446,7 +458,7 @@ app.post('/api/payments/verify', (req, res) => {
       mandateId: `mand_${crypto.randomBytes(8).toString('hex')}`,
       status: plan.isIntro ? 'trial' : 'active',
       startAt: new Date().toISOString(),
-      nextChargeAt: new Date(Date.now() + plan.durationHours * 3600000).toISOString(),
+      nextChargeAt,
       renewalAmount: plan.renewalPrice
     };
     db.subscriptions[userId] = newSubscription;
@@ -853,7 +865,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Lumina AI Template Studio server running on http://0.0.0.0:${PORT}`);
+    console.log(`AI Prime STUDIO server running on http://0.0.0.0:${PORT}`);
   });
 }
 

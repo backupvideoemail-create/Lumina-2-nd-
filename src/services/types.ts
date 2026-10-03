@@ -46,6 +46,16 @@ export interface ProviderResult {
 }
 
 // Payment Interfaces
+export interface MandateScheduleDetails {
+  frequency: 'daily' | 'weekly' | 'monthly';
+  scheduleRule: 'next_calendar_day' | 'interval_hours';
+  renewalAmount: number;
+  startDateFormatted: string;
+  startAtIso: string;
+  startAtUnixSeconds: number;
+  disclosure: string;
+}
+
 export interface CreateOrderParams {
   userId: string;
   type: 'plan' | 'topup';
@@ -55,6 +65,7 @@ export interface CreateOrderParams {
   itemTitle: string;
   isMandate?: boolean;
   mandateFrequency?: string;
+  mandateSchedule?: MandateScheduleDetails;
 }
 
 export interface OrderResult {
@@ -64,6 +75,7 @@ export interface OrderResult {
   provider: string;
   paymentToken: string;
   isMandate: boolean;
+  mandateDetails?: MandateScheduleDetails | null;
   checkoutUrl: string | null;
 }
 

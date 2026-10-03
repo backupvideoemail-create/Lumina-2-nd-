@@ -89,7 +89,7 @@ export const HomeView: React.FC = () => {
           <div className="relative rounded-3xl overflow-hidden border border-white/10 shadow-2xl h-80 sm:h-96 w-full">
             <img
               src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1400&q=80"
-              alt="Lumina Hero"
+              alt="AI Prime STUDIO Hero"
               className="w-full h-full object-cover object-top scale-105"
             />
             {/* Dark glass cinematic scrim */}
@@ -226,7 +226,7 @@ export const HomeView: React.FC = () => {
           </div>
 
           {/* Horizontal carousel */}
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 pt-1 -mx-4 px-4">
+          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-3 pt-1 -mx-4 px-4">
             {danceTemplates.slice(0, 6).map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="compact" />
             ))}
@@ -258,7 +258,7 @@ export const HomeView: React.FC = () => {
           </div>
 
           {/* Horizontal carousel */}
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 pt-1 -mx-4 px-4">
+          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-3 pt-1 -mx-4 px-4">
             {trendingVideoTemplates.slice(0, 6).map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="compact" />
             ))}
@@ -289,7 +289,7 @@ export const HomeView: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 pt-1 -mx-4 px-4">
+          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-3 pt-1 -mx-4 px-4">
             {cinematicVideoTemplates.slice(0, 6).map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="compact" />
             ))}
@@ -320,7 +320,7 @@ export const HomeView: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 pt-1 -mx-4 px-4">
+          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-3 pt-1 -mx-4 px-4">
             {luxuryVideoTemplates.slice(0, 6).map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="compact" />
             ))}
@@ -351,7 +351,7 @@ export const HomeView: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2 pt-1 -mx-4 px-4">
+          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-3 pt-1 -mx-4 px-4">
             {allTrendingTemplates.slice(0, 6).map((tpl) => (
               <TemplateCard key={tpl.id} template={tpl} size="compact" />
             ))}

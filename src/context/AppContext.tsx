@@ -16,7 +16,7 @@ import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/template
 const DEFAULT_USER: UserProfile = {
   id: 'usr_guest_demo',
   name: 'Aura Creator',
-  email: 'creator@lumina.studio',
+  email: 'creator@aiprime.studio',
   avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
   onboarded: true,
   role: 'creator',
