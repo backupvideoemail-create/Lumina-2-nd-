@@ -1,12 +1,12 @@
-import {
+import type {
   CreateOrderParams,
   OrderResult,
   VerifyPaymentParams,
   PaymentVerificationResult,
   CancelSubscriptionParams
-} from '../types';
-import { cashfreeAdapter } from './cashfreeAdapter';
-import { razorpayAdapter } from './razorpayAdapter';
+} from '../types.ts';
+import { cashfreeAdapter } from './cashfreeAdapter.ts';
+import { razorpayAdapter } from './razorpayAdapter.ts';
 
 export class PaymentRouter {
   private defaultProvider: 'cashfree' | 'razorpay' = 'cashfree';

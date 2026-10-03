@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { FaceSwapParams, ProviderResult } from '../types';
+import type { FaceSwapParams, ProviderResult } from '../types.ts';
 
 export class FaceSwapAdapter {
   private providerName = 'neural_faceswap_engine';

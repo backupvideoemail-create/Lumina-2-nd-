@@ -1,4 +1,4 @@
-import { Template } from '../types';
+import type { Template } from '../types/index.ts';
 
 export const SEED_TEMPLATES: Template[] = [
   {

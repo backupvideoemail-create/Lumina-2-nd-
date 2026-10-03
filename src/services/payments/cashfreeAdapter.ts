@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { CreateOrderParams, OrderResult, VerifyPaymentParams, PaymentVerificationResult } from '../types';
+import type { CreateOrderParams, OrderResult, VerifyPaymentParams, PaymentVerificationResult } from '../types.ts';
 
 export class CashfreeAdapter {
   readonly providerName = 'cashfree';

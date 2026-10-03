@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { ImageGenerationParams, ProviderResult } from '../types';
+import type { ImageGenerationParams, ProviderResult } from '../types.ts';
 
 export class GeminiAdapter {
   private providerName = 'gemini';

@@ -11,15 +11,15 @@ import {
   generateFaceSwapVideo,
   paymentService,
   subscriptionService
-} from './src/services';
-import {
+} from './src/services/index.ts';
+import type {
   Template,
   UserProfile,
   CreditWallet,
   CreditTransaction,
   Generation,
   UserSubscription
-} from './src/types';
+} from './src/types/index.ts';
 
 dotenv.config();
 

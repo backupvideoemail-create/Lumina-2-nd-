@@ -1,13 +1,13 @@
-import {
+import type {
   ImageGenerationParams,
   VideoGenerationParams,
   FaceSwapParams,
   TemplateProcessParams,
   ProviderResult
-} from '../types';
-import { geminiAdapter } from './geminiAdapter';
-import { videoProviderAdapter } from './videoProviderAdapter';
-import { faceSwapAdapter } from './faceSwapAdapter';
+} from '../types.ts';
+import { geminiAdapter } from './geminiAdapter.ts';
+import { videoProviderAdapter } from './videoProviderAdapter.ts';
+import { faceSwapAdapter } from './faceSwapAdapter.ts';
 
 export interface ProviderConfig {
   imageProvider: 'gemini' | 'mock';

@@ -1,4 +1,4 @@
-import { VideoGenerationParams, ProviderResult } from '../types';
+import type { VideoGenerationParams, ProviderResult } from '../types.ts';
 
 export class VideoProviderAdapter {
   private providerName = 'neural_video_engine';

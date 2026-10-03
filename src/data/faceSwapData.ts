@@ -1,4 +1,4 @@
-import { FaceSwapScene } from '../types';
+import type { FaceSwapScene } from '../types/index.ts';
 
 export const SEED_FACE_SWAP_SCENES: FaceSwapScene[] = [
   {
