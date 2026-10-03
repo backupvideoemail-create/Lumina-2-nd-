@@ -1,0 +1,92 @@
+// Common Provider-Agnostic Interfaces
+
+export interface ImageGenerationParams {
+  prompt: string;
+  sourceImageUrl?: string;
+  aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  styleWorkflow?: string;
+  customParameters?: Record<string, any>;
+}
+
+export interface VideoGenerationParams {
+  prompt: string;
+  sourceMediaUrl: string;
+  aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  durationSeconds?: number;
+  motionStyle?: string;
+  customParameters?: Record<string, any>;
+}
+
+export interface FaceSwapParams {
+  targetVideoUrl: string;
+  sourceFaceUrl: string;
+  sceneTitle: string;
+  aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  customParameters?: Record<string, any>;
+}
+
+export interface TemplateProcessParams {
+  templateId: string;
+  templateTitle: string;
+  templateType: 'photo' | 'video';
+  engine: 'SMART_TEMPLATE' | 'AI_GENERATION';
+  inputMediaUrl: string;
+  aspectRatio: string;
+  workflow: string;
+  customPrompt?: string;
+}
+
+export interface ProviderResult {
+  success: boolean;
+  resultUrl: string;
+  provider: string;
+  model: string;
+  processingTimeMs: number;
+  error?: string;
+}
+
+// Payment Interfaces
+export interface CreateOrderParams {
+  userId: string;
+  type: 'plan' | 'topup';
+  itemId: string;
+  amount: number;
+  credits: number;
+  itemTitle: string;
+  isMandate?: boolean;
+  mandateFrequency?: string;
+}
+
+export interface OrderResult {
+  orderId: string;
+  amount: number;
+  currency: string;
+  provider: string;
+  paymentToken: string;
+  isMandate: boolean;
+  checkoutUrl: string | null;
+}
+
+export interface VerifyPaymentParams {
+  orderId: string;
+  userId: string;
+  paymentId?: string;
+  signature?: string;
+  type: 'plan' | 'topup';
+  itemId: string;
+}
+
+export interface PaymentVerificationResult {
+  success: boolean;
+  creditsAdded: number;
+  orderId: string;
+  provider: string;
+  transactionRef: string;
+  error?: string;
+}
+
+export interface CancelSubscriptionParams {
+  userId: string;
+  subscriptionId?: string;
+  mandateId?: string;
+}

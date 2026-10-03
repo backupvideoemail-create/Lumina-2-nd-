@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --gold-metallic: linear-gradient(135deg, #f7d070 0%, #d4af37 40%, #aa7c11 100%);
+    --gold-subtle: linear-gradient(135deg, rgba(212, 175, 55, 0.15) 0%, rgba(170, 124, 17, 0.05) 100%);
+    --surface-glass: rgba(18, 18, 22, 0.72);
+    --border-glass: rgba(255, 255, 255, 0.08);
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #08080a;
+    color: #f5f5f7;
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1, h2, h3, .font-display {
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Custom scrollbar hiding for horizontal chip bars and carousels */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Metallic gold text and border utility */
+.gold-gradient-text {
+  background: linear-gradient(135deg, #fff2cc 0%, #dfb743 45%, #b3821a 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gold-gradient-border {
+  border-image: linear-gradient(135deg, rgba(247, 208, 112, 0.6) 0%, rgba(212, 175, 55, 0.2) 50%, rgba(170, 124, 17, 0.4) 100%) 1;
+}
+
+.gold-glow {
+  box-shadow: 0 0 24px -4px rgba(212, 175, 55, 0.35);
+}
+
+.gold-button {
+  background: linear-gradient(135deg, #e5bf4c 0%, #c99e28 50%, #a2750e 100%);
+  color: #0a0a0c;
+  font-weight: 600;
+  box-shadow: 0 4px 20px -2px rgba(212, 175, 55, 0.35);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gold-button:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 26px -2px rgba(212, 175, 55, 0.45);
+}
+
+.gold-button:active {
+  transform: scale(0.98);
+}
+
+.glass-panel {
+  background: rgba(16, 16, 20, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Liquid-Glass Surface (iPhone 17 Pro grade translucent depth) */
+.liquid-glass {
+  background: rgba(16, 16, 22, 0.75);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.8), inset 0 1px 1px rgba(255, 255, 255, 0.2);
+}
+
+/* Fluid Reflection sweep */
+.liquid-reflection {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+/* Scroll-Edge Blur */
+.scroll-edge-blur-top {
+  background: linear-gradient(180deg, rgba(8, 8, 10, 0.95) 0%, rgba(8, 8, 10, 0.7) 60%, transparent 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.scroll-edge-blur-bottom {
+  background: linear-gradient(0deg, rgba(8, 8, 10, 0.95) 0%, rgba(8, 8, 10, 0.7) 60%, transparent 100%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* iOS Spring Tap Feedback */
+.ios-spring {
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.ios-spring:active {
+  transform: scale(0.96);
+}
+
+/* Subtle Laser-Light Edge Glow for Floating Glass Cards */
+@keyframes laserEdgeSweep {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.laser-light-border {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.35) 0%,
+    rgba(212, 175, 55, 0.5) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(245, 215, 127, 0.45) 75%,
+    rgba(255, 255, 255, 0.15) 100%
+  );
+  background-size: 300% 300%;
+  animation: laserEdgeSweep 8s ease infinite;
+}
+
+@keyframes slowReflection {
+  0% {
+    transform: translateX(-160%) skewX(-25deg);
+  }
+  35%, 100% {
+    transform: translateX(280%) skewX(-25deg);
+  }
+}
+
+.subtle-reflection-sheen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    transparent 100%
+  );
+  animation: slowReflection 7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+
+
