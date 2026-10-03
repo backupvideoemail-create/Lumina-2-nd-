@@ -6,6 +6,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from './src/data/templatesData.ts';
 import { calculateNextCalendarDayStartDate } from './src/config/subscriptionConfig.ts';
+import { calculateAuthoritativeTemplateCost, BUSINESS_PRICING_CONFIG } from './src/services/pricing/pricingService.ts';
+import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { SEED_FACE_SWAP_SCENES } from './src/data/faceSwapData.ts';
 import {
   processTemplate,
@@ -38,7 +40,12 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // In-Memory Database with optional persistence
@@ -172,26 +179,9 @@ function getUserId(req: express.Request): string {
   return keys[0] || 'usr_guest_demo';
 }
 
-// Configurable Business Cost Engine
-const BUSINESS_CONFIG = {
-  markupPercent: 40, // 40% markup rule as configured in prompt
-  providerCosts: {
-    photoSmart: 10,
-    photoAi: 20,
-    videoSmart: 25,
-    videoAi: 35
-  }
-};
-
+// Configurable Business Cost Engine (Provider Cost + 40% Business Markup = Customer Base Price)
 function calculateAuthoritativeCost(template: Template): number {
-  // Always derive cost server-side
-  if (template.creditCost && template.creditCost > 0) {
-    return template.creditCost;
-  }
-  const baseCost = template.engine === 'AI_GENERATION'
-    ? (template.type === 'video' ? BUSINESS_CONFIG.providerCosts.videoAi : BUSINESS_CONFIG.providerCosts.photoAi)
-    : (template.type === 'video' ? BUSINESS_CONFIG.providerCosts.videoSmart : BUSINESS_CONFIG.providerCosts.photoSmart);
-  return Math.round(baseCost * (1 + BUSINESS_CONFIG.markupPercent / 100));
+  return calculateAuthoritativeTemplateCost(template);
 }
 
 /* =========================================================================
@@ -352,7 +342,7 @@ interface CreateOrderBody {
 
 app.post('/api/payments/create-order', async (req, res) => {
   const userId = getUserId(req);
-  const { type, itemId, provider = 'cashfree' }: CreateOrderBody = req.body;
+  const { type, itemId, provider = 'razorpay' }: CreateOrderBody = req.body;
 
   let amount = 0;
   let credits = 0;
@@ -414,21 +404,22 @@ app.post('/api/payments/create-order', async (req, res) => {
 });
 
 // Server-authoritative Payment Verification
-app.post('/api/payments/verify', (req, res) => {
+app.post('/api/payments/verify', async (req, res) => {
   const userId = getUserId(req);
-  const { orderId, type, itemId, paymentId, provider = 'cashfree', mandateConfirmed } = req.body;
+  const { orderId, type, itemId, paymentId, provider = 'razorpay', mandateConfirmed } = req.body;
 
   if (!orderId || !type || !itemId) {
     return res.status(400).json({ error: 'Missing payment verification details' });
   }
 
-  // Guard against duplicate processing
+  // Guard against duplicate processing (Idempotency)
   const idempotencyKey = `pay_verify_${orderId}`;
   if (db.processedWebhooks.includes(idempotencyKey)) {
     return res.json({
       success: true,
       message: 'Payment already processed and credits added',
-      wallet: db.wallets[userId]
+      wallet: db.wallets[userId],
+      subscription: db.subscriptions[userId] || null
     });
   }
 
@@ -447,15 +438,16 @@ app.post('/api/payments/verify', (req, res) => {
       ? nextCalDay.isoString
       : new Date(Date.now() + (plan.durationHours || 24) * 3600000).toISOString();
 
-    // Record subscription
+    // Record subscription with complete production audit fields
     const subId = `sub_${Date.now()}`;
+    const mandateId = `mand_rzp_${crypto.randomBytes(6).toString('hex')}`;
     const newSubscription: UserSubscription = {
       id: subId,
       userId,
       planId: plan.id,
       planName: plan.name,
       provider: provider as any,
-      mandateId: `mand_${crypto.randomBytes(8).toString('hex')}`,
+      mandateId,
       status: plan.isIntro ? 'trial' : 'active',
       startAt: new Date().toISOString(),
       nextChargeAt,
@@ -507,26 +499,204 @@ app.post('/api/payments/verify', (req, res) => {
   });
 });
 
-// Webhook Handler with Idempotency
-app.post('/api/payments/webhook', (req, res) => {
-  const { eventType, eventId, orderId, userId, amount, signature } = req.body;
+// Production-ready Razorpay Webhook Handler with Signature Verification and Idempotency
+const handleRazorpayWebhook = async (req: express.Request, res: express.Response) => {
+  const signature = (req.headers['x-razorpay-signature'] as string) || '';
+  const rawBody = (req as any).rawBody || JSON.stringify(req.body);
 
-  if (!eventId || db.processedWebhooks.includes(eventId)) {
-    return res.status(200).json({ status: 'ignored_or_duplicate' });
+  // 1. Cryptographic Signature Verification via RAZORPAY_WEBHOOK_SECRET
+  const verification = razorpayAdapter.verifyWebhookSignature(rawBody, signature);
+  if (!verification.isValid) {
+    console.warn(`[Razorpay Webhook] Rejected request - ${verification.error}`);
+    return res.status(400).json({
+      error: 'Invalid webhook signature',
+      message: verification.error
+    });
   }
 
-  db.processedWebhooks.push(eventId);
-  saveDB();
-  res.status(200).json({ status: 'processed' });
-});
+  const event = req.body;
+  if (!event || !event.event) {
+    return res.status(400).json({ error: 'Malformed webhook payload' });
+  }
 
-// Cancel Subscription
-app.post('/api/subscriptions/cancel', (req, res) => {
+  const eventType = event.event;
+  const eventId = event.event_id || event.id || `evt_${eventType}_${event.created_at || Date.now()}`;
+
+  // 2. Idempotency Guard - Duplicate events return 200 OK without re-processing
+  if (db.processedWebhooks.includes(eventId)) {
+    return res.status(200).json({
+      status: 'ignored_duplicate',
+      eventId,
+      message: 'Event previously processed'
+    });
+  }
+
+  // 3. Connect to existing payment / subscription / credit ledger architecture
+  try {
+    if (eventType === 'payment.captured') {
+      const payment = event.payload?.payment?.entity;
+      if (payment) {
+        const orderId = payment.order_id;
+        const paymentId = payment.id;
+        const userId = payment.notes?.userId || Object.keys(db.users)[0] || 'usr_guest_demo';
+        const itemId = payment.notes?.itemId || 'plan_intro_daily';
+        const isMandate = payment.notes?.isMandate === 'true';
+
+        // Ensure user wallet exists
+        if (!db.wallets[userId]) {
+          db.wallets[userId] = {
+            userId,
+            balance: 0,
+            lifetimeCredits: 0,
+            spentCredits: 0,
+            updatedAt: new Date().toISOString()
+          };
+        }
+
+        // Idempotent ledger check: ensure this payment ID or order ID was not credited already
+        const alreadyCredited = db.transactions.some(
+          tx => tx.referenceId === paymentId || (orderId && tx.referenceId === orderId)
+        );
+
+        if (!alreadyCredited) {
+          let creditsToAdd = 0;
+          let description = '';
+
+          if (isMandate || payment.notes?.type === 'plan') {
+            const plan = INITIAL_PLANS.find(p => p.id === itemId) || INITIAL_PLANS[0];
+            creditsToAdd = plan.includedCredits;
+            description = `Subscription: ${plan.name} (₹${payment.amount / 100})`;
+
+            // Establish or update subscription record
+            if (!db.subscriptions[userId]) {
+              const nextCalDay = calculateNextCalendarDayStartDate();
+              db.subscriptions[userId] = {
+                id: `sub_${Date.now()}`,
+                userId,
+                planId: plan.id,
+                planName: plan.name,
+                provider: 'razorpay',
+                mandateId: payment.id,
+                status: 'trial',
+                startAt: new Date().toISOString(),
+                nextChargeAt: nextCalDay.isoString,
+                renewalAmount: plan.renewalPrice
+              };
+            }
+          } else {
+            const topUp = INITIAL_TOP_UPS.find(t => t.id === itemId);
+            if (topUp) {
+              creditsToAdd = topUp.credits + (topUp.bonusCredits || 0);
+              description = `Credit Top-Up: ${creditsToAdd} Credits (₹${topUp.price})`;
+            }
+          }
+
+          if (creditsToAdd > 0) {
+            db.wallets[userId].balance += creditsToAdd;
+            db.wallets[userId].lifetimeCredits += creditsToAdd;
+            db.wallets[userId].updatedAt = new Date().toISOString();
+
+            db.transactions.unshift({
+              id: `tx_${Date.now()}`,
+              userId,
+              amount: creditsToAdd,
+              type: isMandate ? 'subscription' : 'purchase',
+              description,
+              referenceId: paymentId || orderId,
+              createdAt: new Date().toISOString()
+            });
+          }
+        }
+      }
+    } else if (eventType === 'subscription.authenticated' || eventType === 'subscription.activated') {
+      const subEntity = event.payload?.subscription?.entity;
+      if (subEntity) {
+        const userId = subEntity.notes?.userId || Object.keys(db.users)[0] || 'usr_guest_demo';
+        if (db.subscriptions[userId]) {
+          db.subscriptions[userId].status = 'active';
+          if (subEntity.id) {
+            db.subscriptions[userId].mandateId = subEntity.id;
+          }
+        }
+      }
+    } else if (eventType === 'subscription.charged') {
+      const subEntity = event.payload?.subscription?.entity;
+      const payment = event.payload?.payment?.entity;
+      const userId = subEntity?.notes?.userId || payment?.notes?.userId || Object.keys(db.users)[0] || 'usr_guest_demo';
+      const paymentId = payment?.id || `recur_${Date.now()}`;
+
+      // Prevent duplicate crediting on repeated webhook retries
+      const alreadyCredited = db.transactions.some(tx => tx.referenceId === paymentId);
+      if (!alreadyCredited && db.wallets[userId]) {
+        const dailyCredits = 500;
+        db.wallets[userId].balance += dailyCredits;
+        db.wallets[userId].lifetimeCredits += dailyCredits;
+        db.wallets[userId].updatedAt = new Date().toISOString();
+
+        db.transactions.unshift({
+          id: `tx_recur_${Date.now()}`,
+          userId,
+          amount: dailyCredits,
+          type: 'subscription',
+          description: 'Daily Pro Pass AutoPay Renewal (₹499)',
+          referenceId: paymentId,
+          createdAt: new Date().toISOString()
+        });
+
+        if (db.subscriptions[userId]) {
+          db.subscriptions[userId].status = 'active';
+          const nextCalDay = calculateNextCalendarDayStartDate();
+          db.subscriptions[userId].nextChargeAt = nextCalDay.isoString;
+        }
+      }
+    } else if (
+      eventType === 'subscription.cancelled' ||
+      eventType === 'subscription.paused' ||
+      eventType === 'subscription.halted'
+    ) {
+      const subEntity = event.payload?.subscription?.entity;
+      if (subEntity) {
+        const userId = subEntity.notes?.userId || Object.keys(db.users)[0] || 'usr_guest_demo';
+        if (db.subscriptions[userId]) {
+          db.subscriptions[userId].status = 'cancelled';
+          db.subscriptions[userId].cancelledAt = new Date().toISOString();
+        }
+      }
+    }
+
+    // 4. Record event ID in processed list and save database
+    db.processedWebhooks.push(eventId);
+    saveDB();
+
+    return res.status(200).json({
+      status: 'processed',
+      event: eventType,
+      eventId
+    });
+  } catch (err: any) {
+    console.error('[Razorpay Webhook] Processing error:', err);
+    return res.status(500).json({ error: 'Internal webhook processing failure' });
+  }
+};
+
+// Official Razorpay Webhook Public Endpoint
+app.post('/api/razorpay/webhook', handleRazorpayWebhook);
+
+// Backward-compatible alias
+app.post('/api/payments/webhook', handleRazorpayWebhook);
+
+// Cancel Subscription (Server-side + Gateway sync)
+app.post('/api/subscriptions/cancel', async (req, res) => {
   const userId = getUserId(req);
   const sub = db.subscriptions[userId];
 
   if (!sub) {
     return res.status(404).json({ error: 'No active subscription found' });
+  }
+
+  // Synchronize cancellation with Razorpay adapter
+  if (sub.provider === 'razorpay' && sub.mandateId) {
+    await razorpayAdapter.cancelSubscription(sub.mandateId);
   }
 
   sub.status = 'cancelled';
