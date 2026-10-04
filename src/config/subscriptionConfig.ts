@@ -1,18 +1,92 @@
 /**
  * Centralized Configuration for Customer Support, Subscriptions, and Recurring Mandates.
  * 
- * Rules:
- * - Introductory Offer: ₹1 introductory charge followed by ₹499 recurring daily subscription.
- * - Next Calendar Day: Recurring schedule begins on the subsequent calendar day (not 24h from purchase).
- *   Example: If paid at 10:00 PM on 3 October, the recurring ₹499 schedule starts on 4 October.
- * - Provider-agnostic: Supports Cashfree firstChargeDate (YYYY-MM-DD) and Razorpay start_at (Unix seconds).
+ * Rules & Plans:
+ * 1. Plan 1: Double Bonanza (₹1 Intro, 500 credits, then ₹499 daily from next calendar day)
+ * 2. Plan 2: Creator Weekly (₹199, 230 credits, 7 days validity, renews every 7 days)
+ * 3. Plan 3: Creator Monthly (₹998, 1200 credits, 30 days validity, renews monthly)
+ * 
+ * Centralized: All plans, prices, credits, renewal amounts, validity and disclosures are stored here.
+ * Future changes can be made without rebuilding the complete application.
  */
 
 export const SUPPORT_CONFIG = {
   email: 'ai.prime.studio.pro@gmail.com',
-  name: 'AI Prime Studio Support',
+  name: 'AI Prime Studio Support Desk',
   responseTime: 'Within 24 hours'
 } as const;
+
+export interface CentralSubscriptionPlan {
+  id: string;
+  name: string;
+  cardTitle: string;
+  validityLabel: string;
+  price: number;
+  periodLabel: string;
+  includedCredits: number;
+  renewalPrice: number;
+  renewalInterval: 'daily' | 'weekly' | 'monthly';
+  validityDays: number;
+  autoPayEnabled: boolean;
+  scheduleRule: 'next_calendar_day' | 'interval_days';
+  disclosureText: string;
+  badge?: string;
+  isPopular?: boolean;
+  isIntro?: boolean;
+}
+
+export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
+  {
+    id: 'plan_intro_daily',
+    name: 'Double Bonanza',
+    cardTitle: 'Double Bonanza',
+    validityLabel: 'Exclusive Intro Offer Plan',
+    price: 1,
+    periodLabel: '1 month validity',
+    includedCredits: 500, // 500 credits immediately unlocked
+    renewalPrice: 499, // ₹499 recurring daily
+    renewalInterval: 'daily',
+    validityDays: 1,
+    autoPayEnabled: true,
+    scheduleRule: 'next_calendar_day',
+    disclosureText: '₹1 today · then ₹499 daily until cancelled.',
+    badge: 'HOT',
+    isIntro: true,
+    isPopular: true
+  },
+  {
+    id: 'plan_weekly_pass',
+    name: 'Creator Weekly',
+    cardTitle: '230 AI Trends Credit',
+    validityLabel: '7 days validity',
+    price: 199,
+    periodLabel: '7 days',
+    includedCredits: 230,
+    renewalPrice: 199,
+    renewalInterval: 'weekly',
+    validityDays: 7,
+    autoPayEnabled: true,
+    scheduleRule: 'interval_days',
+    disclosureText: '₹199 · renews every 7 days until cancelled.',
+    badge: 'Weekly'
+  },
+  {
+    id: 'plan_monthly_pass',
+    name: 'Creator Monthly',
+    cardTitle: '1200 AI Trends Credit',
+    validityLabel: '30 days validity',
+    price: 998,
+    periodLabel: '30 days',
+    includedCredits: 1200,
+    renewalPrice: 998,
+    renewalInterval: 'monthly',
+    validityDays: 30,
+    autoPayEnabled: true,
+    scheduleRule: 'interval_days',
+    disclosureText: '₹998 · renews monthly until cancelled.',
+    badge: 'Best Value'
+  }
+];
 
 export const SUBSCRIPTION_CONFIG = {
   introPlanId: 'plan_intro_daily',
@@ -23,23 +97,18 @@ export const SUBSCRIPTION_CONFIG = {
   includedCredits: 500,
   timezone: 'Asia/Kolkata',
   timezoneOffsetMinutes: 330, // UTC+5:30 (Indian Standard Time for INR ₹ transactions)
-  disclosureText: '₹1 introductory payment + ₹499 daily renewal from the next calendar day until cancelled.',
-  agreementCheckboxText:
-    'I authorize the ₹1 introductory payment. I understand that the recurring ₹499 daily subscription renewal begins from the next calendar day until cancelled, and I can cancel anytime with 1-click in my profile.'
+  disclosureText: '₹1 today · then ₹499 daily until cancelled.',
+  plans: CENTRAL_SUBSCRIPTION_PLANS
 } as const;
 
 /**
  * Calculates the next calendar day starting boundary according to standard payment gateway
  * scheduled-debit rules.
- * 
- * @param fromDate Reference date of purchase (defaults to now)
- * @param timezoneOffsetMinutes Timezone offset in minutes (defaults to IST +330)
  */
 export function calculateNextCalendarDayStartDate(
   fromDate: Date = new Date(),
   timezoneOffsetMinutes: number = SUBSCRIPTION_CONFIG.timezoneOffsetMinutes
 ) {
-  // Convert current time to target timezone
   const utcMs = fromDate.getTime() + fromDate.getTimezoneOffset() * 60000;
   const targetDate = new Date(utcMs + timezoneOffsetMinutes * 60000);
 
@@ -50,12 +119,11 @@ export function calculateNextCalendarDayStartDate(
   const year = targetDate.getFullYear();
   const month = String(targetDate.getMonth() + 1).padStart(2, '0');
   const day = String(targetDate.getDate()).padStart(2, '0');
-  const dateString = `${year}-${month}-${day}`; // Format YYYY-MM-DD for Cashfree first_charge_date
+  const dateString = `${year}-${month}-${day}`;
 
-  // Convert back to UTC ISO timestamp
   const nextDayUtcMs = targetDate.getTime() - timezoneOffsetMinutes * 60000;
   const nextDayDate = new Date(nextDayUtcMs);
-  const unixSeconds = Math.floor(nextDayUtcMs / 1000); // Unix timestamp for Razorpay start_at
+  const unixSeconds = Math.floor(nextDayUtcMs / 1000);
 
   return {
     dateString,
@@ -63,4 +131,12 @@ export function calculateNextCalendarDayStartDate(
     unixSeconds,
     displayDate: nextDayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   };
+}
+
+/**
+ * Helper to fetch a plan by ID from centralized configuration.
+ */
+export function getSubscriptionPlanById(planId: string): CentralSubscriptionPlan {
+  const found = CENTRAL_SUBSCRIPTION_PLANS.find(p => p.id === planId);
+  return found || CENTRAL_SUBSCRIPTION_PLANS[0];
 }

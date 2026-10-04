@@ -139,6 +139,10 @@ interface AppContextType {
   setReportModalGenId: (id: string | null) => void;
   transactionsModalOpen: boolean;
   setTransactionsModalOpen: (open: boolean) => void;
+  templateManagerOpen: boolean;
+  setTemplateManagerOpen: (open: boolean) => void;
+  diagnosticsModalOpen: boolean;
+  setDiagnosticsModalOpen: (open: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -179,6 +183,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [legalModal, setLegalModal] = useState<'privacy' | 'terms' | 'refund' | 'delete' | null>(null);
   const [reportModalGenId, setReportModalGenId] = useState<string | null>(null);
   const [transactionsModalOpen, setTransactionsModalOpen] = useState(false);
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
+  const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
 
   // Fetch Templates
   const fetchTemplates = useCallback(async () => {
@@ -513,7 +519,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const initiateCheckout = async (
     type: 'plan' | 'topup',
     itemId: string,
-    provider: 'cashfree' | 'razorpay' = 'cashfree'
+    provider: 'razorpay' | 'cashfree' = 'razorpay'
   ): Promise<{ success: boolean; orderId?: string; error?: string }> => {
     try {
       setIsPaying(true);
@@ -539,7 +545,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     orderId: string,
     type: 'plan' | 'topup',
     itemId: string,
-    provider = 'cashfree'
+    provider: string = 'razorpay'
   ): Promise<boolean> => {
     try {
       const res = await fetch('/api/payments/verify', {
@@ -555,6 +561,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        if (data.wallet) {
+          setWallet(data.wallet);
+        }
+        if (data.subscription) {
+          setActiveSubscription(data.subscription);
+        }
         await refreshUserData();
         setIsPaying(false);
         return true;
@@ -661,7 +673,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reportModalGenId,
         setReportModalGenId,
         transactionsModalOpen,
-        setTransactionsModalOpen
+        setTransactionsModalOpen,
+        templateManagerOpen,
+        setTemplateManagerOpen,
+        diagnosticsModalOpen,
+        setDiagnosticsModalOpen
       }}
     >
       {children}

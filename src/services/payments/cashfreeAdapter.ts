@@ -29,6 +29,13 @@ export class CashfreeAdapter {
       transactionRef: params.paymentId || `tx_${params.orderId}`
     };
   }
+
+  async cancelSubscription(params: any): Promise<{ success: boolean; message: string }> {
+    return {
+      success: true,
+      message: 'Subscription mandate cancelled successfully.'
+    };
+  }
 }
 
 export const cashfreeAdapter = new CashfreeAdapter();

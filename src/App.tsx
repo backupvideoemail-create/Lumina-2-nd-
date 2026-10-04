@@ -17,9 +17,11 @@ import { LegalModal } from './components/LegalModal';
 import { ReportModal } from './components/ReportModal';
 import { OnboardingModal } from './components/OnboardingModal';
 import { FaceSwapModal } from './components/FaceSwapModal';
+import { TemplateManagerModal } from './components/TemplateManagerModal';
+import { DiagnosticsModal } from './components/DiagnosticsModal';
 
 const AppContent: React.FC = () => {
-  const { activeTab } = useApp();
+  const { activeTab, templateManagerOpen, setTemplateManagerOpen, diagnosticsModalOpen, setDiagnosticsModalOpen } = useApp();
 
   return (
     <div className="relative min-h-screen bg-[#08080a] text-stone-100 flex flex-col font-sans selection:bg-[#d4af37]/30 selection:text-amber-200">
@@ -93,6 +95,8 @@ const AppContent: React.FC = () => {
       <ReportModal />
       <OnboardingModal />
       <FaceSwapModal />
+      <TemplateManagerModal isOpen={templateManagerOpen} onClose={() => setTemplateManagerOpen(false)} />
+      <DiagnosticsModal isOpen={diagnosticsModalOpen} onClose={() => setDiagnosticsModalOpen(false)} />
     </div>
   );
 };

@@ -13,7 +13,9 @@ import {
   RotateCcw,
   Trash2,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  Cpu,
+  UploadCloud
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { useApp } from '../context/AppContext';
@@ -29,7 +31,9 @@ export const Drawer: React.FC = () => {
     setPlansModalOpen,
     setSupportModalOpen,
     setLegalModal,
-    setOnboardingOpen
+    setOnboardingOpen,
+    setTemplateManagerOpen,
+    setDiagnosticsModalOpen
   } = useApp();
 
   const handleNav = (tab: 'home' | 'templates' | 'creations' | 'profile') => {
@@ -211,6 +215,41 @@ export const Drawer: React.FC = () => {
                   </div>
                   <ChevronRight className="w-4 h-4 text-stone-600" />
                 </button>
+
+                {/* Studio Tools & Admin */}
+                <div className="pt-2 border-t border-white/5 space-y-1">
+                  <button
+                    onClick={() => {
+                      setDrawerOpen(false);
+                      setTemplateManagerOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-[#ff9f00] hover:bg-[#ff9f00]/10 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
+                      <span>Template Manager (Gallery)</span>
+                    </div>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#ff9f00]/20 text-[#ff9f00]">
+                      Admin
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setDrawerOpen(false);
+                      setDiagnosticsModalOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Cpu className="w-4 h-4 text-emerald-400" />
+                      <span>System Diagnostics</span>
+                    </div>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                      Live
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
 

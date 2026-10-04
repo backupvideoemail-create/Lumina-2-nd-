@@ -136,11 +136,35 @@ export interface UserSubscription {
   planName: string;
   provider: 'cashfree' | 'razorpay' | 'mandate_gateway';
   mandateId: string;
+  subscriptionId?: string;
   status: SubscriptionStatus;
+  introPaymentId?: string;
   startAt: string;
   nextChargeAt: string;
   renewalAmount: number;
+  dailyCredits?: number;
   cancelledAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PaymentRecord {
+  id: string;
+  orderId: string;
+  paymentId: string;
+  subscriptionId?: string;
+  mandateId?: string;
+  userId: string;
+  provider: 'razorpay' | 'cashfree';
+  amount: number; // in INR
+  currency: string;
+  type: 'intro_mandate' | 'recurring_renewal' | 'one_time';
+  status: 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
+  isAutoPay: boolean;
+  verificationStatus: 'verified' | 'unverified' | 'failed';
+  signature?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PricingPlan {
