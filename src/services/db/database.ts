@@ -327,7 +327,13 @@ class ProductionDatabase {
     this.syncToFirestore('transactions', tx.id, tx);
   }
 
-  public creditWallet(userId: string, amount: number, description: string, orderId: string): void {
+  public creditWallet(
+    userId: string,
+    amount: number,
+    description: string,
+    orderId: string,
+    type: TransactionType = 'purchase'
+  ): void {
     const wallet = this.getWallet(userId);
     wallet.balance += amount;
     wallet.lifetimeCredits += amount;
@@ -337,7 +343,7 @@ class ProductionDatabase {
       id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
       amount,
-      type: 'purchase',
+      type,
       description,
       referenceId: orderId,
       createdAt: new Date().toISOString()
@@ -347,6 +353,32 @@ class ProductionDatabase {
     this.save();
     this.syncToFirestore('wallets', userId, wallet);
     this.syncToFirestore('transactions', tx.id, tx);
+  }
+
+  public isPaymentProcessed(paymentId: string): boolean {
+    if (!paymentId) return false;
+    const byPayment = Object.values(this.db.payments).some(
+      p => p.paymentId === paymentId && (p.status === 'captured' || p.status === 'completed')
+    );
+    const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
+    return byPayment || byTx;
+  }
+
+  public hasTransactionForReference(refId: string): boolean {
+    if (!refId) return false;
+    return this.db.transactions.some(t => t.referenceId === refId);
+  }
+
+  public getPaymentByPaymentId(paymentId: string): PaymentRecord | null {
+    return Object.values(this.db.payments).find(p => p.paymentId === paymentId) || null;
+  }
+
+  public getSubscriptionByMandateOrId(subOrMandateId: string): UserSubscription | null {
+    return (
+      Object.values(this.db.subscriptions).find(
+        s => s.mandateId === subOrMandateId || (s as any).subscriptionId === subOrMandateId
+      ) || null
+    );
   }
 
   public getUserTransactions(userId: string): CreditTransaction[] {

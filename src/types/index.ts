@@ -77,6 +77,7 @@ export interface CreditWallet {
 
 export type TransactionType =
   | 'purchase'
+  | 'topup'
   | 'subscription'
   | 'generation'
   | 'refund'

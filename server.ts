@@ -94,11 +94,12 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-// Admin Authorization Guard
+// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or authenticated user with admin role)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   const adminKey = req.headers['x-admin-key'] as string;
-  const expectedKey = process.env.ADMIN_SECRET_KEY || 'lumina_admin_2026_secure';
-  if (adminKey && adminKey === expectedKey) {
+  const configuredSecret = process.env.ADMIN_SECRET_KEY;
+
+  if (configuredSecret && adminKey && adminKey === configuredSecret) {
     return next();
   }
 
@@ -107,12 +108,7 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
     return next();
   }
 
-  // Developer internal check for diagnostic tests
-  if (req.headers['x-lumina-internal'] === 'true') {
-    return next();
-  }
-
-  return res.status(403).json({ error: 'Forbidden: Admin credentials or role required' });
+  return res.status(403).json({ error: 'Forbidden: Valid admin credentials or admin account role required' });
 }
 
 // Rate Limiter
@@ -184,20 +180,83 @@ app.post('/api/media/upload', requireAuth, rateLimit(60000, 30), async (req, res
    3. AUTHENTICATION (REAL FIREBASE AUTH & USER PROFILE)
 ========================================================================= */
 
-// Real Firebase Auth Session Ingestion (Google or Phone OTP completed via Firebase SDK)
+/**
+ * Genuinely verifies Firebase ID Tokens server-side using Google's Identity Toolkit API.
+ * Guarantees that neither Google Sign-In nor Phone OTP identities can be forged by the client.
+ */
+async function verifyFirebaseToken(idToken: string): Promise<{
+  uid: string;
+  email?: string;
+  phone?: string;
+  name?: string;
+  avatar?: string;
+} | null> {
+  if (!idToken || typeof idToken !== 'string') return null;
+
+  try {
+    const apiKey = firebaseConfig.apiKey;
+    if (!apiKey) {
+      console.error('[Firebase Token Verification] API key is missing');
+      return null;
+    }
+
+    const response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      }
+    );
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.warn('[Firebase Token Verification] Identity Toolkit error:', response.status, errText);
+      return null;
+    }
+
+    const data = await response.json();
+    const userRecord = data.users?.[0];
+    if (!userRecord || !userRecord.localId) {
+      return null;
+    }
+
+    return {
+      uid: userRecord.localId,
+      email: userRecord.email,
+      phone: userRecord.phoneNumber,
+      name: userRecord.displayName,
+      avatar: userRecord.photoUrl
+    };
+  } catch (err: any) {
+    console.error('[Firebase Token Verification Exception]:', err.message);
+    return null;
+  }
+}
+
+// Real Firebase Auth Session Ingestion (Strict: Requires verified Firebase ID Token)
 app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) => {
   try {
-    const { firebaseUid, email, phone, name, avatar } = req.body;
-    if (!firebaseUid) {
-      return res.status(400).json({ error: 'Missing firebaseUid in authentication request' });
+    const { idToken, name, avatar } = req.body;
+    if (!idToken) {
+      return res.status(401).json({
+        error: 'Missing Firebase ID token. Unverified client identities are strictly rejected in production.'
+      });
+    }
+
+    const verified = await verifyFirebaseToken(idToken);
+    if (!verified || !verified.uid) {
+      return res.status(401).json({
+        error: 'Invalid, forged, or expired Firebase ID token. Cryptographic server verification failed.'
+      });
     }
 
     const { user, token, isNewUser } = prodDb.getOrCreateUser({
-      firebaseUid,
-      email,
-      phone,
-      name,
-      avatar
+      firebaseUid: verified.uid,
+      email: verified.email,
+      phone: verified.phone,
+      name: verified.name || name,
+      avatar: verified.avatar || avatar
     });
 
     const wallet = prodDb.getWallet(user.id);
@@ -485,6 +544,27 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   }
 
   try {
+    // For autoPayEnabled plans, create actual Razorpay subscription
+    let liveSubId: string | null = null;
+    let mandateDetails: any = null;
+    if (plan.autoPayEnabled) {
+      try {
+        const subRes = await razorpayAdapter.createSubscription({
+          userId: user.id,
+          userEmail: user.email
+        });
+        liveSubId = subRes.subscriptionId;
+        mandateDetails = {
+          subscriptionId: subRes.subscriptionId,
+          planId: subRes.planId,
+          status: subRes.status,
+          totalCycles: subRes.totalCount
+        };
+      } catch (err: any) {
+        console.warn('[AutoPay Subscription Create Note]:', err.message);
+      }
+    }
+
     const orderResult = await razorpayAdapter.createOrder({
       userId: user.id,
       type: 'plan',
@@ -492,7 +572,8 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       amount: plan.price,
       credits: plan.includedCredits,
       itemTitle: plan.name,
-      isMandate: plan.autoPayEnabled
+      isMandate: plan.autoPayEnabled,
+      mandateSchedule: mandateDetails
     });
 
     // Store authoritative payment record in DB
@@ -508,6 +589,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       status: 'pending',
       isAutoPay: plan.autoPayEnabled,
       verificationStatus: 'unverified',
+      subscriptionId: liveSubId || undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -520,7 +602,8 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       currency: 'INR',
       planId: plan.id,
       itemTitle: plan.name,
-      credits: plan.includedCredits
+      credits: plan.includedCredits,
+      subscriptionId: liveSubId
     });
   } catch (err: any) {
     console.error('[Create Order Error]:', err.message);
@@ -537,11 +620,19 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(400).json({ error: 'Missing orderId for verification' });
   }
 
-  const isTopUp = type === 'topup' || itemId.startsWith('topup_');
+  // Look up stored server-side order
+  const payRec = prodDb.getPayment(orderId);
+  if (!payRec) {
+    return res.status(404).json({ error: `Stored server-side order '${orderId}' not found.` });
+  }
 
-  // Idempotency: Prevent replay and duplicate credit activation
+  // Idempotency: Race-safe check against paymentId and orderId
   const idempotencyKey = `pay_verify_${orderId}`;
-  if (prodDb.isWebhookProcessed(idempotencyKey)) {
+  if (
+    prodDb.isWebhookProcessed(idempotencyKey) ||
+    (paymentId && prodDb.isPaymentProcessed(paymentId)) ||
+    (paymentId && prodDb.hasTransactionForReference(paymentId))
+  ) {
     return res.json({
       success: true,
       message: 'Payment already processed and credits added',
@@ -550,35 +641,36 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     });
   }
 
+  const isTopUp = type === 'topup' || itemId.startsWith('topup_');
+
   // 1. TOP-UP PAYMENT VERIFICATION & ATOMIC CREDIT GRANT
   if (isTopUp) {
     const pack = getTopUpPackById(itemId) || CENTRAL_TOP_UP_PACKS[0];
 
-    // Real cryptographic HMAC-SHA256 signature verification
+    // Real cryptographic HMAC-SHA256 signature verification & Razorpay live status check
     const verification = await razorpayAdapter.verifyPayment({
       orderId,
       userId: user.id,
       paymentId,
       signature,
       type: 'topup',
-      itemId: pack.id
+      itemId: pack.id,
+      expectedAmountRupees: pack.price
     });
 
     if (!verification.verified) {
-      return res.status(400).json({ error: verification.error || 'Payment signature verification failed' });
+      return res.status(400).json({ error: verification.error || 'Payment verification failed' });
     }
 
     // Update Payment Record
-    const payRec = prodDb.getPayment(orderId);
-    if (payRec) {
-      payRec.paymentId = paymentId || payRec.paymentId;
-      payRec.status = 'captured';
-      payRec.verificationStatus = 'verified';
-      payRec.updatedAt = new Date().toISOString();
-    }
+    payRec.paymentId = paymentId || payRec.paymentId;
+    payRec.status = 'captured';
+    payRec.verificationStatus = 'verified';
+    payRec.updatedAt = new Date().toISOString();
+    prodDb.recordPayment(payRec);
 
-    // Credit wallet atomically with dedicated Top-Up entry (no AutoPay or subscription modification)
-    prodDb.creditWallet(user.id, pack.credits, `Top-Up: ${pack.name} (₹${pack.price})`, orderId);
+    // Credit wallet atomically with dedicated Top-Up entry (type: 'topup')
+    prodDb.creditWallet(user.id, pack.credits, `Top-Up: ${pack.name} (₹${pack.price})`, paymentId || orderId, 'topup');
     prodDb.markWebhookProcessed(idempotencyKey);
 
     return res.json({
@@ -593,45 +685,49 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   // 2. SUBSCRIPTION PLAN PAYMENT VERIFICATION
   const plan = getSubscriptionPlanById(itemId);
 
-  // Real cryptographic HMAC-SHA256 signature verification
+  // Real cryptographic HMAC-SHA256 signature verification & status check
   const verification = await razorpayAdapter.verifyPayment({
     orderId,
     userId: user.id,
     paymentId,
     signature,
     type: 'plan',
-    itemId: plan.id
+    itemId: plan.id,
+    subscriptionId: payRec.subscriptionId,
+    expectedAmountRupees: plan.price
   });
 
   if (!verification.verified) {
-    return res.status(400).json({ error: verification.error || 'Payment signature verification failed' });
+    return res.status(400).json({ error: verification.error || 'Payment verification failed' });
   }
 
   // Update Payment Record
-  const payRec = prodDb.getPayment(orderId);
-  if (payRec) {
-    payRec.paymentId = paymentId || payRec.paymentId;
-    payRec.status = 'captured';
-    payRec.verificationStatus = 'verified';
-    payRec.updatedAt = new Date().toISOString();
-  }
+  payRec.paymentId = paymentId || payRec.paymentId;
+  payRec.status = 'captured';
+  payRec.verificationStatus = 'verified';
+  payRec.updatedAt = new Date().toISOString();
+  prodDb.recordPayment(payRec);
 
-  // Activate Mandate Subscription
+  // Activate Mandate Subscription using real Razorpay Subscription ID
   const nextCalDay = calculateNextCalendarDayStartDate();
   const nextChargeAt =
     plan.renewalInterval === 'daily' || plan.isIntro
       ? nextCalDay.isoString
       : new Date(Date.now() + plan.validityDays * 86400000).toISOString();
 
-  const subId = `sub_${Date.now()}`;
-  const mandateId = paymentId ? `mand_${paymentId}` : `mand_rzp_${crypto.randomBytes(6).toString('hex')}`;
+  const realSubId = payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_')
+    ? payRec.subscriptionId
+    : (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_')
+      ? req.body.subscriptionId
+      : `sub_rzp_${paymentId || Date.now()}`);
+
   const newSubscription: UserSubscription = {
-    id: subId,
+    id: realSubId,
     userId: user.id,
     planId: plan.id,
     planName: plan.name,
     provider: 'razorpay',
-    mandateId,
+    mandateId: realSubId,
     status: plan.isIntro ? 'trial' : 'active',
     startAt: new Date().toISOString(),
     nextChargeAt,
@@ -639,8 +735,8 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   };
   prodDb.setSubscription(newSubscription);
 
-  // Credit wallet exactly once
-  prodDb.creditWallet(user.id, plan.includedCredits, `Subscription: ${plan.name} (₹${plan.price})`, orderId);
+  // Credit wallet exactly once (type: 'purchase')
+  prodDb.creditWallet(user.id, plan.includedCredits, `Subscription: ${plan.name} (₹${plan.price})`, paymentId || orderId, 'purchase');
   prodDb.markWebhookProcessed(idempotencyKey);
 
   res.json({
@@ -659,7 +755,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
     console.warn('[Razorpay Webhook] Rejected request - RAZORPAY_WEBHOOK_SECRET is not configured on server');
     return res.status(400).json({
       error: 'Invalid webhook signature',
-      message: 'RAZORPAY_WEBHOOK_SECRET is not configured on server'
+      message: 'RAZORPAY_WEBHOOK_SECRET is mandatory and not configured on server'
     });
   }
 
@@ -688,34 +784,48 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
     if (eventType === 'payment.captured') {
       const payment = event.payload?.payment?.entity;
       if (payment) {
+        const paymentId = payment.id;
+        const orderId = payment.order_id;
         const userId = payment.notes?.userId;
         const itemId = payment.notes?.itemId || payment.notes?.planId || 'plan_intro_daily';
         const isTopUp = payment.notes?.type === 'topup' || itemId.startsWith('topup_');
 
-        if (userId && prodDb.getUser(userId)) {
-          // Check if already credited via order verify
-          const paymentKey = `pay_verify_${payment.order_id}`;
-          if (!prodDb.isWebhookProcessed(paymentKey)) {
+        // Race-safe check against duplicate crediting
+        if (
+          !prodDb.isPaymentProcessed(paymentId) &&
+          !prodDb.hasTransactionForReference(paymentId) &&
+          !prodDb.isWebhookProcessed(`pay_verify_${orderId}`)
+        ) {
+          if (userId && prodDb.getUser(userId)) {
             if (isTopUp) {
               const pack = getTopUpPackById(itemId) || CENTRAL_TOP_UP_PACKS[0];
-              prodDb.creditWallet(userId, pack.credits, `Top-Up Webhook: ${pack.name}`, payment.id);
+              prodDb.creditWallet(userId, pack.credits, `Top-Up Webhook: ${pack.name}`, paymentId, 'topup');
             } else {
               const plan = getSubscriptionPlanById(itemId);
-              prodDb.creditWallet(userId, plan.includedCredits, `Webhook Credit: ${plan.name}`, payment.id);
+              prodDb.creditWallet(userId, plan.includedCredits, `Webhook Credit: ${plan.name}`, paymentId, 'purchase');
             }
-            prodDb.markWebhookProcessed(paymentKey);
+            prodDb.markWebhookProcessed(`pay_verify_${orderId}`);
           }
         }
       }
     } else if (eventType === 'subscription.charged') {
       const subEntity = event.payload?.subscription?.entity;
       const payment = event.payload?.payment?.entity;
+      const subscriptionId = subEntity?.id;
+      const paymentId = payment?.id;
       const userId = subEntity?.notes?.userId || payment?.notes?.userId;
 
-      if (userId && prodDb.getUser(userId)) {
-        // Daily recurring credit grant (₹499 charge verified)
-        prodDb.creditWallet(userId, 500, 'Daily Pro Pass AutoPay Renewal (₹499)', payment?.id || eventId);
-        const sub = prodDb.getSubscription(userId);
+      // Race-safe check against duplicate crediting
+      if (paymentId && (prodDb.isPaymentProcessed(paymentId) || prodDb.hasTransactionForReference(paymentId))) {
+        return res.status(200).json({ status: 'already_processed', paymentId });
+      }
+
+      const sub = subscriptionId ? prodDb.getSubscriptionByMandateOrId(subscriptionId) : (userId ? prodDb.getSubscription(userId) : null);
+      const targetUserId = userId || sub?.userId;
+
+      if (targetUserId && prodDb.getUser(targetUserId)) {
+        // Daily recurring credit grant (₹499 charge verified) -> 120 credits with type 'subscription'
+        prodDb.creditWallet(targetUserId, 120, 'Lumina Pro AutoPay Renewal (₹499)', paymentId || eventId, 'subscription');
         if (sub) {
           sub.status = 'active';
           const nextCalDay = calculateNextCalendarDayStartDate();
@@ -725,14 +835,13 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       }
     } else if (eventType === 'subscription.cancelled') {
       const subEntity = event.payload?.subscription?.entity;
+      const subscriptionId = subEntity?.id;
       const userId = subEntity?.notes?.userId;
-      if (userId) {
-        const sub = prodDb.getSubscription(userId);
-        if (sub) {
-          sub.status = 'cancelled';
-          sub.cancelledAt = new Date().toISOString();
-          prodDb.setSubscription(sub);
-        }
+      const sub = subscriptionId ? prodDb.getSubscriptionByMandateOrId(subscriptionId) : (userId ? prodDb.getSubscription(userId) : null);
+      if (sub) {
+        sub.status = 'cancelled';
+        sub.cancelledAt = new Date().toISOString();
+        prodDb.setSubscription(sub);
       }
     }
 
@@ -744,11 +853,11 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
   }
 };
 
-// Route both /api/razorpay/webhook AND /api/payments/webhook
+// Route both /api/razorpay/webhook (canonical production) AND /api/payments/webhook
 app.post('/api/razorpay/webhook', handleRazorpayWebhook);
 app.post('/api/payments/webhook', handleRazorpayWebhook);
 
-// Subscription Cancellation Endpoint
+// Subscription Cancellation Endpoint (Strictly uses real Razorpay subscription ID)
 app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
   const sub = prodDb.getSubscription(user.id);
@@ -757,8 +866,8 @@ app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'No active subscription found to cancel' });
   }
 
-  // Cancel on Razorpay if live mandate exists
-  if (sub.mandateId) {
+  // Cancel on Razorpay if real subscription exists
+  if (sub.mandateId && sub.mandateId.startsWith('sub_')) {
     await razorpayAdapter.cancelSubscription(sub.mandateId);
   }
 
