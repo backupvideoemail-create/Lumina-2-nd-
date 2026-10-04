@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   ChevronLeft,
   Zap,
@@ -8,15 +8,12 @@ import {
   UserCheck,
   Ban,
   ArrowRight,
-  ArrowLeft,
-  Info,
-  CheckCircle2,
-  Tv
+  Tv,
+  AlertCircle
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import {
-  CENTRAL_SUBSCRIPTION_PLANS,
-  CentralSubscriptionPlan
+  CENTRAL_SUBSCRIPTION_PLANS
 } from '../config/subscriptionConfig';
 import creatorModelImg from '../assets/images/nikhil_creator_hero_1791103631854.jpg';
 
@@ -27,23 +24,13 @@ export const PlansModal: React.FC = () => {
     initiateCheckout,
     verifyPayment,
     isPaying,
-    activeSubscription
+    activeSubscription,
+    refreshUserData
   } = useApp();
 
-  // Default selection is "Double Bonanza" (₹1) as in reference
+  // Default selection is "Double Bonanza" (₹1)
   const [selectedPlanId, setSelectedPlanId] = useState<string>('plan_intro_daily');
-
-  // Simulated / Fallback Razorpay UPI AutoPay authorization sheet
-  const [autopaySheet, setAutopaySheet] = useState<{
-    open: boolean;
-    orderId: string;
-    amount: number;
-    plan: CentralSubscriptionPlan;
-    merchantRef: string;
-  } | null>(null);
-
-  const [authorizing, setAuthorizing] = useState(false);
-  const [authSuccess, setAuthSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!plansModalOpen) return null;
 
@@ -51,90 +38,88 @@ export const PlansModal: React.FC = () => {
     CENTRAL_SUBSCRIPTION_PLANS.find((p) => p.id === selectedPlanId) ||
     CENTRAL_SUBSCRIPTION_PLANS[0];
 
-  const handleStartAutoPay = async () => {
+  const handleStartRealPayment = async () => {
+    setErrorMessage(null);
+
+    // 1. Request real order from server
     const res = await initiateCheckout('plan', currentPlan.id, 'razorpay');
-    if (res.success && res.orderId) {
-      try {
-        const configRes = await fetch('/api/payments/config');
-        const configData = await configRes.json();
-        if (
-          (window as any).Razorpay &&
-          configData?.keyId &&
-          !configData.keyId.includes('rzp_test_placeholder')
-        ) {
-          const options = {
-            key: configData.keyId,
-            order_id: res.orderId,
-            amount: currentPlan.price * 100,
-            currency: 'INR',
-            name: 'AI Prime Studio',
-            description:
-              currentPlan.id === 'plan_intro_daily'
-                ? 'Exclusive Intro Offer · ₹1'
-                : `${currentPlan.name} AutoPay`,
-            image: creatorModelImg,
-            handler: async () => {
-              const verified = await verifyPayment(
-                res.orderId!,
-                'plan',
-                currentPlan.id,
-                'razorpay'
-              );
-              if (verified) {
-                setPlansModalOpen(false);
-              }
-            },
-            prefill: {
-              contact: '',
-              email: 'ai.prime.studio.pro@gmail.com'
-            },
-            notes: {
-              planId: currentPlan.id,
-              isAutoPay: true,
-              renewalAmount: currentPlan.renewalPrice
-            },
-            theme: {
-              color: '#ff9f00'
-            }
-          };
-          const rzp = new (window as any).Razorpay(options);
-          rzp.open();
-          return;
-        }
-      } catch {
-        // Fallback to simulated authorization sheet below
+    if (!res.success || !res.orderId) {
+      setErrorMessage(res.error || 'Failed to initiate checkout order with payment server. Please try again.');
+      return;
+    }
+
+    // 2. Fetch live Razorpay client configuration from server
+    try {
+      const configRes = await fetch('/api/payments/config');
+      const configData = await configRes.json();
+
+      if (!configData?.keyId) {
+        setErrorMessage('Razorpay live configuration is missing on the server. Please contact support.');
+        return;
       }
 
-      const randomRef = `OM${Date.now()}${Math.floor(1000 + Math.random() * 9000)}W`;
-      setAutopaySheet({
-        open: true,
-        orderId: res.orderId,
-        amount: currentPlan.price,
-        plan: currentPlan,
-        merchantRef: randomRef
+      if (!(window as any).Razorpay) {
+        setErrorMessage('Razorpay Checkout SDK is still loading. Please check your network and retry.');
+        return;
+      }
+
+      // 3. Open actual Razorpay Checkout Modal
+      const options = {
+        key: configData.keyId,
+        order_id: res.orderId,
+        amount: Math.round(currentPlan.price * 100),
+        currency: 'INR',
+        name: 'AI Prime Studio',
+        description:
+          currentPlan.id === 'plan_intro_daily'
+            ? 'Double Bonanza · Exclusive Intro Offer'
+            : `${currentPlan.name} AutoPay`,
+        image: creatorModelImg,
+        handler: async (response: any) => {
+          // Send real payment verification payload to server
+          const verified = await verifyPayment(
+            response.razorpay_order_id || res.orderId,
+            'plan',
+            currentPlan.id,
+            'razorpay',
+            response.razorpay_payment_id,
+            response.razorpay_signature
+          );
+
+          if (verified) {
+            await refreshUserData();
+            setPlansModalOpen(false);
+          } else {
+            setErrorMessage('Payment verification failed on the server. If money was debited, it will reflect within a few minutes.');
+          }
+        },
+        prefill: {
+          contact: '',
+          email: 'ai.prime.studio.pro@gmail.com'
+        },
+        notes: {
+          planId: currentPlan.id,
+          isAutoPay: true,
+          renewalPrice: currentPlan.renewalPrice
+        },
+        theme: {
+          color: '#ff9f00'
+        },
+        modal: {
+          ondismiss: () => {
+            console.log('[Razorpay] Checkout modal dismissed by user');
+          }
+        }
+      };
+
+      const rzp = new (window as any).Razorpay(options);
+      rzp.on('payment.failed', (failResponse: any) => {
+        console.error('[Razorpay Payment Failed]:', failResponse.error);
+        setErrorMessage(failResponse.error?.description || 'Payment was declined or cancelled.');
       });
-    }
-  };
-
-  const handleConfirmMandate = async () => {
-    if (!autopaySheet) return;
-    setAuthorizing(true);
-
-    const success = await verifyPayment(
-      autopaySheet.orderId,
-      'plan',
-      autopaySheet.plan.id,
-      'razorpay'
-    );
-
-    setAuthorizing(false);
-    if (success) {
-      setAuthSuccess(true);
-      setTimeout(() => {
-        setAuthSuccess(false);
-        setAutopaySheet(null);
-        setPlansModalOpen(false);
-      }, 1600);
+      rzp.open();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Could not launch Razorpay checkout.');
     }
   };
 
@@ -153,7 +138,7 @@ export const PlansModal: React.FC = () => {
       {/* Backdrop click to dismiss */}
       <div
         className="absolute inset-0"
-        onClick={() => !autopaySheet && !isPaying && setPlansModalOpen(false)}
+        onClick={() => !isPaying && setPlansModalOpen(false)}
       />
 
       {/* Main Paywall Card - Professional Full-Bleed Cinematic Architecture */}
@@ -164,7 +149,7 @@ export const PlansModal: React.FC = () => {
         transition={{ type: 'spring', damping: 28, stiffness: 340 }}
         className="relative w-full max-w-[430px] bg-[#07060b] border-t sm:border border-white/10 rounded-t-[36px] sm:rounded-[36px] shadow-[0_-20px_60px_rgba(0,0,0,0.95)] z-10 max-h-[96vh] overflow-y-auto no-scrollbar pb-4"
       >
-        {/* 1. FULL-BLEED IMMERSIVE VISUAL HERO BANNER (Face framed with headroom, no awkward crop) */}
+        {/* 1. FULL-BLEED IMMERSIVE VISUAL HERO BANNER */}
         <div className="relative w-full h-[350px] sm:h-[375px] overflow-hidden">
           {/* Creator Portrait - Framed with face perfectly visible in upper third */}
           <motion.img
@@ -183,7 +168,7 @@ export const PlansModal: React.FC = () => {
           <div className="absolute bottom-16 left-0 w-48 h-48 bg-pink-500/20 blur-[80px] pointer-events-none" />
           <div className="absolute top-1/3 left-1/4 w-44 h-44 bg-cyan-400/15 blur-[70px] pointer-events-none" />
 
-          {/* TOP APP BAR OVERLAY - Clean & 100% Professional (No personal tags) */}
+          {/* TOP APP BAR OVERLAY */}
           <div className="absolute top-3.5 inset-x-4 flex items-center justify-between z-30">
             <button
               onClick={() => setPlansModalOpen(false)}
@@ -276,7 +261,10 @@ export const PlansModal: React.FC = () => {
               <motion.div
                 key={plan.id}
                 whileTap={{ scale: 0.985 }}
-                onClick={() => setSelectedPlanId(plan.id)}
+                onClick={() => {
+                  setSelectedPlanId(plan.id);
+                  setErrorMessage(null);
+                }}
                 className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
                   // Plan 1: Glowing Golden-Amber Card
                   isFirst
@@ -326,7 +314,6 @@ export const PlansModal: React.FC = () => {
                     ₹{plan.price}
                   </div>
                   <div className="text-[10px] text-stone-400 font-semibold mt-1">
-                    {/* Explicitly '7 days' for ₹199 plan, '1 month validity' for ₹1 plan, '30 days' for ₹998 plan */}
                     {plan.periodLabel}
                   </div>
                 </div>
@@ -335,18 +322,28 @@ export const PlansModal: React.FC = () => {
           })}
         </div>
 
+        {/* Error notification if checkout fails */}
+        {errorMessage && (
+          <div className="mx-3.5 mt-3 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
+
         {/* 3. PRIMARY CTA BUTTON: High-Impact Gold-to-Electric-Blue Gradient with Sheen */}
         <div className="px-3.5 pt-3">
           <motion.button
             whileTap={{ scale: 0.98 }}
-            onClick={handleStartAutoPay}
+            onClick={handleStartRealPayment}
             disabled={isPaying}
             className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
           >
             {/* Shimmer laser sheen across button */}
             <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
             <span className="relative z-10">
-              {selectedPlanId === 'plan_intro_daily'
+              {isPaying
+                ? 'Connecting to Razorpay...'
+                : selectedPlanId === 'plan_intro_daily'
                 ? 'Continue & Pay ₹1'
                 : `Continue & Pay ₹${currentPlan.price}`}
             </span>
@@ -361,116 +358,6 @@ export const PlansModal: React.FC = () => {
           </p>
         </div>
       </motion.div>
-
-      {/* RAZORPAY UPI AUTOPAY AUTHORIZATION SHEET MODAL (FALLBACK) */}
-      <AnimatePresence>
-        {autopaySheet && (
-          <div className="fixed inset-0 z-60 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md">
-            <motion.div
-              initial={{ y: '100%', opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: '100%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 30, stiffness: 350 }}
-              className="relative w-full max-w-sm bg-white text-stone-900 rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl space-y-4"
-            >
-              {/* Sheet Header */}
-              <div className="flex items-center justify-between pb-1 border-b border-stone-100">
-                <button
-                  onClick={() => !authorizing && setAutopaySheet(null)}
-                  className="p-1 text-stone-600 hover:text-black rounded-full"
-                >
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <h4 className="text-sm font-bold text-stone-800">Autopay details</h4>
-                <button className="p-1 text-stone-400 hover:text-stone-700">
-                  <Info className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Merchant Identifier */}
-              <div className="flex flex-col items-center justify-center pt-1 pb-2">
-                <div className="w-12 h-12 rounded-full bg-[#1b873f] text-white flex items-center justify-center text-lg font-bold shadow-md">
-                  A
-                </div>
-                <span className="text-xs font-semibold text-stone-700 mt-2">
-                  To AI Prime Studio
-                </span>
-              </div>
-
-              {/* Mandate Details Card */}
-              <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200/80 space-y-3">
-                <div className="flex justify-between items-baseline">
-                  <span className="text-xs text-stone-500 font-medium">First payment</span>
-                  <span className="text-xl font-black text-stone-900">
-                    ₹{autopaySheet.amount}
-                  </span>
-                </div>
-
-                <div className="pt-2 border-t border-stone-200 space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-stone-500">Payment Limit</span>
-                    <span className="font-semibold text-stone-800">
-                      Up to ₹{autopaySheet.plan.renewalPrice}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-stone-500">Frequency</span>
-                    <span className="font-semibold text-stone-800">
-                      {autopaySheet.plan.renewalInterval === 'daily'
-                        ? 'Daily / As presented'
-                        : autopaySheet.plan.renewalInterval === 'weekly'
-                        ? 'Weekly (Every 7 days)'
-                        : 'Monthly'}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-stone-500">Validity</span>
-                    <span className="font-semibold text-stone-800">Until Cancelled</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-stone-500">Merchant reference ID</span>
-                    <span className="font-mono text-stone-700 text-[10px] truncate max-w-[150px]">
-                      {autopaySheet.merchantRef}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <p className="text-[11px] text-stone-500 text-center">
-                You can pause or cancel this Autopay anytime in your account settings.
-              </p>
-
-              {/* Mandate Authorization CTA */}
-              <button
-                type="button"
-                onClick={handleConfirmMandate}
-                disabled={authorizing || authSuccess}
-                className="w-full py-3.5 px-4 rounded-xl bg-[#0b57d0] hover:bg-[#0842a0] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md transition-all active:scale-[0.98] disabled:opacity-60 cursor-pointer"
-              >
-                {authorizing ? (
-                  <span>Securing Mandate...</span>
-                ) : authSuccess ? (
-                  <span className="flex items-center gap-1.5 text-emerald-300">
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Mandate Active!</span>
-                  </span>
-                ) : (
-                  <span>Authorize & Pay ₹{autopaySheet.amount}</span>
-                )}
-              </button>
-
-              <div className="flex items-center justify-center gap-1.5 pt-1 text-[10px] text-stone-400 font-bold tracking-wider">
-                <span>UPI AUTOPAY</span>
-                <span>·</span>
-                <span>NPCI CERTIFIED</span>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };

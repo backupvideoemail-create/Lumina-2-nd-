@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { X, Play, CheckCircle2, XCircle, AlertCircle, RefreshCw, Cpu } from 'lucide-react';
+import { X, Play, CheckCircle2, XCircle, AlertCircle, RefreshCw, Cpu, Key } from 'lucide-react';
 
 interface DiagnosticResult {
   id: string;
   name: string;
-  category: string;
-  status: 'pending' | 'running' | 'passed' | 'failed';
+  category: 'Core Architecture' | 'Live Provider Integration' | 'Security & Payments';
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'pending_config';
   details?: string;
   durationMs?: number;
+  requiredConfig?: string;
 }
 
 interface DiagnosticsModalProps {
@@ -19,55 +20,37 @@ interface DiagnosticsModalProps {
 export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onClose }) => {
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<DiagnosticResult[]>([
-    { id: 'auth_isolation', name: 'Authentication & User Isolation', category: 'Security', status: 'pending' },
-    { id: 'pricing_markup', name: 'Central Pricing Engine (USD/INR + 40% Markup)', category: 'Pricing', status: 'pending' },
-    { id: 'razorpay_order_3plans', name: 'Razorpay AutoPay Orders (₹1, ₹199, ₹998)', category: 'Payments', status: 'pending' },
-    { id: 'payment_idempotency', name: 'Server Verification & Idempotency Guard', category: 'Payments', status: 'pending' },
-    { id: 'webhook_dedup', name: 'Duplicate Webhook Protection', category: 'Payments', status: 'pending' },
-    { id: 'credit_atomic_refund', name: 'Atomic Credit Reserve & Failure Refund', category: 'Ledger', status: 'pending' },
-    { id: 'gemini_image_pipeline', name: 'Gemini Image Generation Pipeline', category: 'AI Pipeline', status: 'pending' },
-    { id: 'video_job_pipeline', name: 'Video Generation Async Queue Pipeline', category: 'AI Pipeline', status: 'pending' },
-    { id: 'faceswap_pipeline', name: 'Face Swap Video Adapter Pipeline', category: 'AI Pipeline', status: 'pending' },
-    { id: 'template_manager_db', name: 'Self-Service Dynamic Template Manager', category: 'Templates', status: 'pending' }
+    { id: 'auth_isolation', name: 'Authentication & Multi-Tenant User Isolation', category: 'Core Architecture', status: 'pending' },
+    { id: 'pricing_markup', name: 'Central Pricing Engine (USD/INR + 40% Markup Rule)', category: 'Core Architecture', status: 'pending' },
+    { id: 'payment_idempotency', name: 'Server Payment Verification & Idempotency Guard', category: 'Security & Payments', status: 'pending' },
+    { id: 'credit_atomic_refund', name: 'Atomic Credit Reserve, Finalize & 100% Refund', category: 'Core Architecture', status: 'pending' },
+    { id: 'template_manager_db', name: 'Self-Service Runtime Dynamic Template Manager', category: 'Core Architecture', status: 'pending' },
+    { id: 'media_storage_engine', name: 'Durable Media Storage & Protected Asset Access', category: 'Core Architecture', status: 'pending' },
+    { id: 'razorpay_live_gateway', name: 'Razorpay Live Gateway & UPI AutoPay Mandates', category: 'Live Provider Integration', status: 'pending' },
+    { id: 'gemini_image_pipeline', name: 'Google Gemini Photo Pipeline (gemini-3.1-flash-image)', category: 'Live Provider Integration', status: 'pending' },
+    { id: 'veo_video_pipeline', name: 'Google Veo Video Pipeline (veo-3.1-lite-generate-preview)', category: 'Live Provider Integration', status: 'pending' },
+    { id: 'higgsfield_faceswap', name: 'Higgsfield Neural Face Swap Adapter Pipeline', category: 'Live Provider Integration', status: 'pending' }
   ]);
 
   if (!isOpen) return null;
 
   const runDiagnostics = async () => {
     setRunning(true);
-
     try {
       const res = await fetch('/api/admin/diagnostics', { method: 'POST' });
       const data = await res.json();
       if (data.results) {
         setResults(data.results);
       }
-    } catch {
-      // Fallback local test runner
-      for (let i = 0; i < results.length; i++) {
-        setResults((prev) =>
-          prev.map((r, idx) => (idx === i ? { ...r, status: 'running' } : r))
-        );
-        await new Promise((r) => setTimeout(r, 180));
-        setResults((prev) =>
-          prev.map((r, idx) =>
-            idx === i
-              ? {
-                  ...r,
-                  status: 'passed',
-                  durationMs: Math.floor(45 + Math.random() * 50),
-                  details: 'Validated production-ready compliance'
-                }
-              : r
-          )
-        );
-      }
+    } catch (err: any) {
+      console.error('[Diagnostics Error]:', err);
     } finally {
       setRunning(false);
     }
   };
 
   const passedCount = results.filter((r) => r.status === 'passed').length;
+  const pendingConfigCount = results.filter((r) => r.status === 'pending_config').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-md overflow-hidden">
@@ -77,7 +60,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.96 }}
-        className="relative w-full max-w-xl bg-[#0f0e14] border border-white/15 rounded-3xl shadow-2xl z-10 overflow-hidden flex flex-col max-h-[88vh]"
+        className="relative w-full max-w-xl bg-[#0f0e14] border border-white/15 rounded-3xl shadow-2xl z-10 overflow-hidden flex flex-col max-h-[90vh]"
       >
         {/* Header */}
         <div className="p-5 border-b border-white/10 flex items-center justify-between">
@@ -87,10 +70,10 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
             </div>
             <div>
               <h3 className="text-base font-bold text-white font-display">
-                Production System Diagnostics
+                Production Readiness & Integration Audit
               </h3>
               <p className="text-xs text-stone-400">
-                End-to-end verification of Payments, Ledger, DB, AI pipelines & Templates
+                Live verification of Payments, Ledger, DB, AI pipelines & Provider Credentials
               </p>
             </div>
           </div>
@@ -102,60 +85,96 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
           </button>
         </div>
 
-        {/* Content list */}
-        <div className="p-5 flex-1 overflow-y-auto no-scrollbar space-y-2.5">
-          <div className="flex items-center justify-between pb-2 text-xs">
-            <span className="text-stone-300 font-semibold">
-              Test Suites ({passedCount}/{results.length} Passed)
+        {/* Status Bar */}
+        <div className="px-5 py-3 bg-white/[0.02] border-b border-white/5 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>{passedCount} Passed</span>
             </span>
-            <button
-              onClick={runDiagnostics}
-              disabled={running}
-              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#ff9f00] to-amber-500 text-black font-extrabold text-xs flex items-center gap-1.5 shadow-md active:scale-95 disabled:opacity-60 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${running ? 'animate-spin' : ''}`} />
-              <span>{running ? 'Running Tests...' : 'Run All Tests'}</span>
-            </button>
+            {pendingConfigCount > 0 && (
+              <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
+                <Key className="w-3.5 h-3.5" />
+                <span>{pendingConfigCount} Awaiting External Key</span>
+              </span>
+            )}
           </div>
+          <button
+            onClick={runDiagnostics}
+            disabled={running}
+            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-black text-xs flex items-center gap-1.5 shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
+          >
+            {running ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Running Audit...</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5 fill-black" />
+                <span>Run Live Test Suite</span>
+              </>
+            )}
+          </button>
+        </div>
 
-          <div className="space-y-2">
-            {results.map((r) => (
+        {/* Results List */}
+        <div className="p-5 overflow-y-auto space-y-2.5 flex-1 no-scrollbar">
+          {results.map((r) => {
+            const isPassed = r.status === 'passed';
+            const isPendingConfig = r.status === 'pending_config';
+            const isFailed = r.status === 'failed';
+
+            return (
               <div
                 key={r.id}
-                className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between"
+                className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-1.5"
               >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-white">{r.name}</span>
-                    <span className="text-[10px] text-stone-400 px-1.5 py-0.2 rounded bg-white/5 border border-white/10">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400">
                       {r.category}
                     </span>
+                    <h4 className="text-xs sm:text-sm font-semibold text-white">
+                      {r.name}
+                    </h4>
                   </div>
-                  {r.details && (
-                    <p className="text-[11px] text-stone-400 mt-0.5">{r.details}</p>
-                  )}
+
+                  <div className="shrink-0 pt-0.5">
+                    {isPassed && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>PASS ({r.durationMs}ms)</span>
+                      </span>
+                    )}
+                    {isPendingConfig && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[10px] font-bold">
+                        <Key className="w-3 h-3" />
+                        <span>CONFIG REQUIRED</span>
+                      </span>
+                    )}
+                    {isFailed && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-400 text-[10px] font-bold">
+                        <XCircle className="w-3 h-3" />
+                        <span>FAIL</span>
+                      </span>
+                    )}
+                    {r.status === 'pending' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-stone-800 text-stone-400 text-[10px] font-medium">
+                        READY
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                <div className="shrink-0 pl-3">
-                  {r.status === 'passed' && (
-                    <div className="flex items-center gap-1 text-emerald-400 text-xs font-bold">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>{r.durationMs}ms</span>
-                    </div>
-                  )}
-                  {r.status === 'running' && (
-                    <div className="w-4 h-4 border-2 border-[#ff9f00] border-t-transparent rounded-full animate-spin" />
-                  )}
-                  {r.status === 'failed' && (
-                    <XCircle className="w-4 h-4 text-red-400" />
-                  )}
-                  {r.status === 'pending' && (
-                    <span className="text-[11px] text-stone-500">Ready</span>
-                  )}
-                </div>
+                {r.details && (
+                  <p className="text-[11px] text-stone-300 font-mono bg-black/40 p-2 rounded-xl border border-white/5 break-words">
+                    {r.details}
+                  </p>
+                )}
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </motion.div>
     </div>

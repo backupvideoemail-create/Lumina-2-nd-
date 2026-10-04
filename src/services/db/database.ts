@@ -21,8 +21,8 @@ import type {
   Generation,
   UserSubscription,
   PaymentRecord
-} from '../../types';
-import { SEED_TEMPLATES } from '../../data/templatesData';
+} from '../../types/index.ts';
+import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 
 export interface AuthIdentity {
   userId: string;
@@ -89,6 +89,15 @@ class ProductionDatabase {
         parsed.payments = parsed.payments || {};
         parsed.subscriptions = parsed.subscriptions || {};
         parsed.templates = (parsed.templates && parsed.templates.length > 0) ? parsed.templates : [...SEED_TEMPLATES];
+
+        // Merge any newly introduced seed templates
+        const existingIds = new Set(parsed.templates.map((t: Template) => t.id));
+        for (const seedTpl of SEED_TEMPLATES) {
+          if (!existingIds.has(seedTpl.id)) {
+            parsed.templates.push(seedTpl);
+          }
+        }
+
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
         return parsed;
@@ -391,6 +400,48 @@ class ProductionDatabase {
       this.db.processedWebhooks.push(eventId);
       this.save();
     }
+  }
+
+  /* =========================================================================
+     SESSION LOGOUT, AUDIT & ACCOUNT DELETION
+  ========================================================================= */
+  public revokeToken(token: string): boolean {
+    for (const identity of Object.values(this.db.authIdentities)) {
+      if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
+        identity.sessionTokens = identity.sessionTokens.filter(t => t !== token);
+        this.save();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public deleteAccount(userId: string): boolean {
+    if (!this.db.users[userId]) return false;
+
+    // 1. Delete associated media files on disk
+    const userGenerations = this.db.generations.filter(g => g.userId === userId);
+    for (const gen of userGenerations) {
+      if (gen.resultMediaUrl && gen.resultMediaUrl.startsWith('/api/media/')) {
+        const fileId = gen.resultMediaUrl.replace('/api/media/', '');
+        try {
+          const safeName = path.basename(fileId);
+          const p = path.join(DATA_DIR, 'uploads', safeName);
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {}
+      }
+    }
+
+    // 2. Wipe user records from database
+    delete this.db.users[userId];
+    delete this.db.authIdentities[userId];
+    delete this.db.wallets[userId];
+    delete this.db.subscriptions[userId];
+    this.db.generations = this.db.generations.filter(g => g.userId !== userId);
+    this.db.transactions = this.db.transactions.filter(t => t.userId !== userId);
+
+    this.save();
+    return true;
   }
 }
 

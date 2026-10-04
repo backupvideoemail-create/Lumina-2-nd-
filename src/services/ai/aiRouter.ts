@@ -1,3 +1,11 @@
+/**
+ * Unified AI Generation Router.
+ * 
+ * Orchestrates calls between Gemini (Image & Editing), Veo (Video Generation),
+ * and Higgsfield (Face Swap) without passing static fallback URLs.
+ * Ensures genuine AI synthesis, with automatic error propagation for credit rollback.
+ */
+
 import type {
   ImageGenerationParams,
   VideoGenerationParams,
@@ -9,75 +17,52 @@ import { geminiAdapter } from './geminiAdapter.ts';
 import { videoProviderAdapter } from './videoProviderAdapter.ts';
 import { faceSwapAdapter } from './faceSwapAdapter.ts';
 
-export interface ProviderConfig {
-  imageProvider: 'gemini' | 'mock';
-  videoProvider: 'default_video' | 'mock';
-  faceSwapProvider: 'default_faceswap' | 'mock';
-}
-
 export class AIRouter {
-  private config: ProviderConfig = {
-    imageProvider: 'gemini',
-    videoProvider: 'default_video',
-    faceSwapProvider: 'default_faceswap'
-  };
-
-  setProviderConfig(newConfig: Partial<ProviderConfig>) {
-    this.config = { ...this.config, ...newConfig };
+  // 1. Unified Image Generation
+  async generateImage(params: ImageGenerationParams): Promise<ProviderResult> {
+    return await geminiAdapter.generateImage(params);
   }
 
-  // 1. Unified Image Generation interface
-  async generateImage(params: ImageGenerationParams, fallbackResultUrl: string): Promise<ProviderResult> {
-    return await geminiAdapter.generateImage(params, fallbackResultUrl);
+  // 2. Unified Video Generation
+  async generateVideo(params: VideoGenerationParams): Promise<ProviderResult> {
+    return await videoProviderAdapter.generateVideo(params);
   }
 
-  // 2. Unified Video Generation interface
-  async generateVideo(params: VideoGenerationParams, fallbackResultUrl: string): Promise<ProviderResult> {
-    return await videoProviderAdapter.generateVideo(params, fallbackResultUrl);
+  // 3. Unified Face Swap Video
+  async generateFaceSwapVideo(params: FaceSwapParams): Promise<ProviderResult> {
+    return await faceSwapAdapter.generateFaceSwapVideo(params);
   }
 
-  // 3. Unified Face Swap Video interface
-  async generateFaceSwapVideo(params: FaceSwapParams, fallbackResultUrl: string): Promise<ProviderResult> {
-    return await faceSwapAdapter.generateFaceSwapVideo(params, fallbackResultUrl);
-  }
-
-  // 4. Unified Template Processing interface
-  async processTemplate(params: TemplateProcessParams, defaultResultUrl: string): Promise<ProviderResult> {
+  // 4. Unified Template Processing
+  async processTemplate(params: TemplateProcessParams): Promise<ProviderResult> {
     if (params.templateType === 'video') {
-      return await this.generateVideo(
-        {
-          prompt: params.customPrompt || `Synthesize video reel for ${params.templateTitle}`,
-          sourceMediaUrl: params.inputMediaUrl,
-          aspectRatio: (params.aspectRatio as any) || '9:16',
-          motionStyle: params.workflow
-        },
-        defaultResultUrl
-      );
+      return await this.generateVideo({
+        prompt: params.customPrompt || `Synthesize video reel for ${params.templateTitle}`,
+        userImageUrl: params.inputMediaUrl,
+        aspectRatio: (params.aspectRatio as any) || '9:16',
+        styleWorkflow: params.workflow
+      });
     } else {
-      return await this.generateImage(
-        {
-          prompt: params.customPrompt || `Transform image with ${params.templateTitle} aesthetic`,
-          sourceImageUrl: params.inputMediaUrl,
-          aspectRatio: (params.aspectRatio as any) || '4:5',
-          styleWorkflow: params.workflow
-        },
-        defaultResultUrl
-      );
+      return await this.generateImage({
+        prompt: params.customPrompt || `Transform image with ${params.templateTitle} aesthetic`,
+        userImageUrl: params.inputMediaUrl,
+        aspectRatio: (params.aspectRatio as any) || '9:16',
+        styleWorkflow: params.workflow
+      });
     }
   }
 }
 
 export const aiRouter = new AIRouter();
 
-// Top-level standardized functional exports for the application
-export const generateImage = (params: ImageGenerationParams, fallback: string) =>
-  aiRouter.generateImage(params, fallback);
+export const generateImage = (params: ImageGenerationParams) =>
+  aiRouter.generateImage(params);
 
-export const generateVideo = (params: VideoGenerationParams, fallback: string) =>
-  aiRouter.generateVideo(params, fallback);
+export const generateVideo = (params: VideoGenerationParams) =>
+  aiRouter.generateVideo(params);
 
-export const generateFaceSwapVideo = (params: FaceSwapParams, fallback: string) =>
-  aiRouter.generateFaceSwapVideo(params, fallback);
+export const generateFaceSwapVideo = (params: FaceSwapParams) =>
+  aiRouter.generateFaceSwapVideo(params);
 
-export const processTemplate = (params: TemplateProcessParams, fallback: string) =>
-  aiRouter.processTemplate(params, fallback);
+export const processTemplate = (params: TemplateProcessParams) =>
+  aiRouter.processTemplate(params);
