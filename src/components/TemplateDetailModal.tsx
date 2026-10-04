@@ -23,6 +23,8 @@ export const TemplateDetailModal: React.FC = () => {
     selectedTemplate,
     setSelectedTemplate,
     wallet,
+    user,
+    triggerHighIntentAction,
     createGeneration,
     setInsufficientCreditsModal
   } = useApp();
@@ -87,6 +89,15 @@ export const TemplateDetailModal: React.FC = () => {
   const handleGenerate = async () => {
     if (!uploadedMedia) {
       setUploadError('Please upload your photo or video first to create this template.');
+      return;
+    }
+
+    if (!user) {
+      triggerHighIntentAction({
+        type: 'generate',
+        templateId: tpl.id,
+        inputMediaUrl: uploadedMedia
+      });
       return;
     }
 

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
   Sparkles,
+  Zap,
   Grid,
   Clapperboard,
   User,
@@ -29,9 +30,11 @@ export const Drawer: React.FC = () => {
     activeTab,
     setActiveTab,
     setPlansModalOpen,
+    setTopUpModalOpen,
+    hasActivePlan,
     setSupportModalOpen,
     setLegalModal,
-    setOnboardingOpen,
+    setAuthModalOpen,
     setTemplateManagerOpen,
     setDiagnosticsModalOpen
   } = useApp();
@@ -102,7 +105,7 @@ export const Drawer: React.FC = () => {
                     <button
                       onClick={() => {
                         setDrawerOpen(false);
-                        setOnboardingOpen(true);
+                        setAuthModalOpen(true);
                       }}
                       className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-[#d4af37] text-black"
                     >
@@ -111,17 +114,30 @@ export const Drawer: React.FC = () => {
                   </div>
                 )}
 
-                {/* Upgrade Button */}
-                <button
-                  onClick={() => {
-                    setDrawerOpen(false);
-                    setPlansModalOpen(true);
-                  }}
-                  className="mt-3 w-full py-2.5 px-3 rounded-xl gold-button text-xs font-semibold flex items-center justify-center gap-2"
-                >
-                  <CreditCard className="w-3.5 h-3.5" />
-                  <span>Get Credits · Pro Pass (₹1)</span>
-                </button>
+                {/* Plan / Top-Up Action Button */}
+                {hasActivePlan ? (
+                  <button
+                    onClick={() => {
+                      setDrawerOpen(false);
+                      setTopUpModalOpen(true);
+                    }}
+                    className="mt-3 w-full py-2.5 px-3 rounded-xl gold-button text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Zap className="w-3.5 h-3.5 fill-black" />
+                    <span>Buy More Credits (Top-Up)</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setDrawerOpen(false);
+                      setPlansModalOpen(true);
+                    }}
+                    className="mt-3 w-full py-2.5 px-3 rounded-xl gold-button text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" />
+                    <span>Unlock Pro Pass (₹1)</span>
+                  </button>
+                )}
               </div>
 
               {/* Primary Links */}

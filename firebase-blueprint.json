@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with authentication and role information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "avatar": { "type": "string", "maxLength": 1000 },
+        "role": { "type": "string", "enum": ["creator", "admin"] },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "createdAt"]
+    },
+    "CreditWallet": {
+      "title": "CreditWallet",
+      "description": "Server-authoritative credit wallet balance",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "balance": { "type": "number" },
+        "lifetimeCredits": { "type": "number" },
+        "spentCredits": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["userId", "balance", "updatedAt"]
+    },
+    "CreditTransaction": {
+      "title": "CreditTransaction",
+      "description": "Immutable ledger record for credit transactions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["purchase", "generation", "refund", "subscription", "promo"] },
+        "description": { "type": "string", "maxLength": 500 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "userId", "amount", "type", "createdAt"]
+    },
+    "Generation": {
+      "title": "Generation",
+      "description": "AI generation job and output metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "templateId": { "type": "string", "maxLength": 128 },
+        "templateTitle": { "type": "string", "maxLength": 200 },
+        "templateType": { "type": "string", "enum": ["photo", "video"] },
+        "status": { "type": "string", "enum": ["queued", "processing", "completed", "failed"] },
+        "inputMediaUrl": { "type": "string", "maxLength": 2000 },
+        "resultMediaUrl": { "type": "string", "maxLength": 2000 },
+        "creditCost": { "type": "number" },
+        "engine": { "type": "string", "maxLength": 50 },
+        "model": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "completedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "userId", "templateId", "status", "createdAt"]
+    },
+    "UserSubscription": {
+      "title": "UserSubscription",
+      "description": "User AutoPay recurring subscription details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "planId": { "type": "string", "maxLength": 100 },
+        "planName": { "type": "string", "maxLength": 100 },
+        "provider": { "type": "string", "maxLength": 50 },
+        "mandateId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["trial", "active", "cancelled", "paused", "halted"] },
+        "startAt": { "type": "string", "maxLength": 50 },
+        "nextChargeAt": { "type": "string", "maxLength": 50 },
+        "renewalAmount": { "type": "number" },
+        "cancelledAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "userId", "planId", "status"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Payment records for topups and plans",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "maxLength": 128 },
+        "paymentId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 10 },
+        "status": { "type": "string", "enum": ["created", "verified", "failed", "refunded"] },
+        "type": { "type": "string", "enum": ["plan", "topup"] },
+        "itemId": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["orderId", "userId", "amount", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles"
+    },
+    "/wallets/{userId}": {
+      "schema": "CreditWallet",
+      "description": "Authoritative credit wallets"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "CreditTransaction",
+      "description": "Credit ledger transactions"
+    },
+    "/generations/{generationId}": {
+      "schema": "Generation",
+      "description": "AI generation job records"
+    },
+    "/subscriptions/{userId}": {
+      "schema": "UserSubscription",
+      "description": "User subscription states"
+    },
+    "/payments/{paymentId}": {
+      "schema": "PaymentRecord",
+      "description": "Payment transaction history"
+    }
+  }
+}

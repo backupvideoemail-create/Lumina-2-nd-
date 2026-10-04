@@ -1,23 +1,28 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, X, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Sparkles, X, ArrowRight, ShieldCheck, Zap } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export const InsufficientCreditsModal: React.FC = () => {
   const {
     insufficientCreditsModal,
     setInsufficientCreditsModal,
-    setPlansModalOpen
+    setPlansModalOpen,
+    setTopUpModalOpen,
+    hasActivePlan
   } = useApp();
 
   if (!insufficientCreditsModal?.open) return null;
 
   const { requiredCredits, availableCredits } = insufficientCreditsModal;
-  const shortfall = Math.max(0, requiredCredits - availableCredits);
 
-  const handleOpenPlans = () => {
+  const handleAction = () => {
     setInsufficientCreditsModal(null);
-    setPlansModalOpen(true);
+    if (hasActivePlan) {
+      setTopUpModalOpen(true);
+    } else {
+      setPlansModalOpen(true);
+    }
   };
 
   return (
@@ -80,17 +85,28 @@ export const InsufficientCreditsModal: React.FC = () => {
 
         {/* Call to action */}
         <div className="space-y-3">
-          <button
-            onClick={handleOpenPlans}
-            className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group"
-          >
-            <span>Get Credits · Unlock Pro Pass (₹1)</span>
-            <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-          </button>
+          {hasActivePlan ? (
+            <button
+              onClick={handleAction}
+              className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
+            >
+              <Zap className="w-4 h-4 fill-black" />
+              <span>Buy More Credits (Top-Up)</span>
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+            </button>
+          ) : (
+            <button
+              onClick={handleAction}
+              className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
+            >
+              <span>Get Credits · Unlock Pro Pass (₹1)</span>
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+            </button>
+          )}
 
           <button
             onClick={() => setInsufficientCreditsModal(null)}
-            className="w-full py-2.5 text-xs text-stone-400 hover:text-stone-200 transition-colors"
+            className="w-full py-2.5 text-xs text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
           >
             Maybe Later
           </button>
@@ -105,3 +121,4 @@ export const InsufficientCreditsModal: React.FC = () => {
     </div>
   );
 };
+

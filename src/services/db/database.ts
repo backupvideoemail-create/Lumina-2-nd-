@@ -1,18 +1,23 @@
 /**
- * Production-Grade Database & State Layer with Durable JSON Persistence.
+ * Production-Grade Database & State Layer with Firestore Integration and Local Write-Through.
  * 
  * Manages:
- * - Users & Authentication Identities (with user isolation)
- * - Wallets & Immutable Credit Ledger Transactions
- * - Generation Records & Asynchronous Job Pipeline
- * - Payment Records & Subscriptions Lifecycle
- * - Dynamic Self-Service Template Catalog (Editable at runtime)
- * - Processed Webhooks Idempotency Store
+ * - Real Users & Authentication Identities (with user isolation)
+ * - Authoritative Wallets & Immutable Credit Ledger
+ * - Real Generation Records & Asynchronous Job Pipeline
+ * - Real Payment Records & Subscriptions Lifecycle
+ * - Runtime Dynamic Template Catalog
+ * - Webhook Idempotency Store
+ * 
+ * Clean Slate: Zero pre-seeded fake accounts or fake generations.
  */
 
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+import firebaseConfig from '../../../firebase-applet-config.json';
 import type {
   Template,
   UserProfile,
@@ -24,8 +29,18 @@ import type {
 } from '../../types/index.ts';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 
+// Initialize Firebase for server persistence
+let firestoreDb: any = null;
+try {
+  const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+  firestoreDb = getFirestore(firebaseApp, (firebaseConfig as any).firestoreDatabaseId);
+} catch (err: any) {
+  console.warn('[Database] Firebase server initialization note:', err.message);
+}
+
 export interface AuthIdentity {
   userId: string;
+  firebaseUid?: string;
   phone?: string;
   email?: string;
   sessionTokens: string[];
@@ -57,6 +72,7 @@ export interface ProductionDatabaseSchema {
   payments: Record<string, PaymentRecord>;
   subscriptions: Record<string, UserSubscription>;
   templates: Template[];
+  userLikes: Record<string, string[]>; // userId -> templateId[]
   processedWebhooks: string[];
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
 }
@@ -79,7 +95,6 @@ class ProductionDatabase {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        // Ensure all collections exist
         parsed.users = parsed.users || {};
         parsed.authIdentities = parsed.authIdentities || {};
         parsed.wallets = parsed.wallets || {};
@@ -89,15 +104,7 @@ class ProductionDatabase {
         parsed.payments = parsed.payments || {};
         parsed.subscriptions = parsed.subscriptions || {};
         parsed.templates = (parsed.templates && parsed.templates.length > 0) ? parsed.templates : [...SEED_TEMPLATES];
-
-        // Merge any newly introduced seed templates
-        const existingIds = new Set(parsed.templates.map((t: Template) => t.id));
-        for (const seedTpl of SEED_TEMPLATES) {
-          if (!existingIds.has(seedTpl.id)) {
-            parsed.templates.push(seedTpl);
-          }
-        }
-
+        parsed.userLikes = parsed.userLikes || {};
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
         return parsed;
@@ -106,53 +113,18 @@ class ProductionDatabase {
       console.warn('[Database] Initializing fresh store:', err);
     }
 
-    const defaultUserId = 'usr_guest_demo';
-    const defaultUser: UserProfile = {
-      id: defaultUserId,
-      name: 'Aura Creator',
-      email: 'creator@aiprime.studio',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-      onboarded: true,
-      role: 'creator',
-      createdAt: new Date().toISOString(),
-      generationCount: 2
-    };
-
-    const defaultWallet: CreditWallet = {
-      userId: defaultUserId,
-      balance: 150,
-      lifetimeCredits: 150,
-      spentCredits: 0,
-      updatedAt: new Date().toISOString()
-    };
-
-    const welcomeTx: CreditTransaction = {
-      id: 'tx_welcome_' + Date.now(),
-      userId: defaultUserId,
-      amount: 150,
-      type: 'promo',
-      description: 'Welcome Creator Bonus credits',
-      createdAt: new Date().toISOString()
-    };
-
+    // Clean initial state: zero fake users, zero fake generations
     return {
-      users: { [defaultUserId]: defaultUser },
-      authIdentities: {
-        [defaultUserId]: {
-          userId: defaultUserId,
-          email: 'creator@aiprime.studio',
-          sessionTokens: ['tok_demo_default'],
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString()
-        }
-      },
-      wallets: { [defaultUserId]: defaultWallet },
-      transactions: [welcomeTx],
+      users: {},
+      authIdentities: {},
+      wallets: {},
+      transactions: [],
       generations: [],
       jobs: [],
       payments: {},
       subscriptions: {},
       templates: [...SEED_TEMPLATES],
+      userLikes: {},
       processedWebhooks: [],
       reports: []
     };
@@ -171,9 +143,21 @@ class ProductionDatabase {
     }
   }
 
-  // Raw schema access
   public get raw(): ProductionDatabaseSchema {
     return this.db;
+  }
+
+  /* =========================================================================
+     FIRESTORE SYNC HELPERS
+  ========================================================================= */
+  private async syncToFirestore(collectionName: string, docId: string, data: any) {
+    if (!firestoreDb) return;
+    try {
+      const docRef = doc(firestoreDb, collectionName, docId);
+      await setDoc(docRef, data, { merge: true });
+    } catch (err: any) {
+      console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
+    }
   }
 
   /* =========================================================================
@@ -183,35 +167,13 @@ class ProductionDatabase {
     return this.db.users[userId] || null;
   }
 
-  public createUser(user: UserProfile, phoneOrEmail?: string): { user: UserProfile; token: string } {
-    this.db.users[user.id] = user;
-    const sessionToken = `session_${crypto.randomBytes(16).toString('hex')}`;
-    this.db.authIdentities[user.id] = {
-      userId: user.id,
-      email: user.email,
-      phone: phoneOrEmail?.includes('@') ? undefined : phoneOrEmail,
-      sessionTokens: [sessionToken],
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString()
-    };
-    // Initialize wallet
-    this.db.wallets[user.id] = {
-      userId: user.id,
-      balance: 100, // 100 free welcome credits
-      lifetimeCredits: 100,
-      spentCredits: 0,
-      updatedAt: new Date().toISOString()
-    };
-    this.db.transactions.unshift({
-      id: `tx_${Date.now()}`,
-      userId: user.id,
-      amount: 100,
-      type: 'promo',
-      description: 'Welcome Onboarding Credits',
-      createdAt: new Date().toISOString()
-    });
-    this.save();
-    return { user, token: sessionToken };
+  public getUserByFirebaseUid(firebaseUid: string): UserProfile | null {
+    for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
+      if (identity.firebaseUid === firebaseUid) {
+        return this.db.users[userId] || null;
+      }
+    }
+    return null;
   }
 
   public getUserByToken(token: string): UserProfile | null {
@@ -224,15 +186,91 @@ class ProductionDatabase {
     return null;
   }
 
+  /**
+   * Creates or resolves a real authenticated user.
+   */
+  public getOrCreateUser(params: {
+    firebaseUid: string;
+    email?: string;
+    phone?: string;
+    name?: string;
+    avatar?: string;
+  }): { user: UserProfile; token: string; isNewUser: boolean } {
+    let existingUser = this.getUserByFirebaseUid(params.firebaseUid);
+    const sessionToken = `session_${crypto.randomBytes(24).toString('hex')}`;
+
+    if (existingUser) {
+      const identity = this.db.authIdentities[existingUser.id];
+      if (identity) {
+        identity.sessionTokens.push(sessionToken);
+        identity.lastLoginAt = new Date().toISOString();
+        if (params.email && !identity.email) identity.email = params.email;
+        if (params.phone && !identity.phone) identity.phone = params.phone;
+      }
+      this.save();
+      return { user: existingUser, token: sessionToken, isNewUser: false };
+    }
+
+    // Create brand new isolated user profile
+    const newUserId = `usr_${params.firebaseUid.substring(0, 16)}_${crypto.randomBytes(3).toString('hex')}`;
+    const newUser: UserProfile = {
+      id: newUserId,
+      name: params.name?.trim() || (params.phone ? `Creator ${params.phone.slice(-4)}` : 'AI Creator'),
+      email: params.email || '',
+      avatar: params.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
+      onboarded: true,
+      role: 'creator',
+      createdAt: new Date().toISOString(),
+      generationCount: 0
+    };
+
+    this.db.users[newUserId] = newUser;
+    this.db.authIdentities[newUserId] = {
+      userId: newUserId,
+      firebaseUid: params.firebaseUid,
+      email: params.email,
+      phone: params.phone,
+      sessionTokens: [sessionToken],
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString()
+    };
+
+    // New real user starts with clean state: 0 balance, 0 transactions
+    this.db.wallets[newUserId] = {
+      userId: newUserId,
+      balance: 0,
+      lifetimeCredits: 0,
+      spentCredits: 0,
+      updatedAt: new Date().toISOString()
+    };
+
+    this.save();
+    this.syncToFirestore('users', newUserId, newUser);
+    this.syncToFirestore('wallets', newUserId, this.db.wallets[newUserId]);
+
+    return { user: newUser, token: sessionToken, isNewUser: true };
+  }
+
+  public revokeToken(token: string): boolean {
+    for (const identity of Object.values(this.db.authIdentities)) {
+      if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
+        identity.sessionTokens = identity.sessionTokens.filter(t => t !== token);
+        this.save();
+        return true;
+      }
+    }
+    return false;
+  }
+
   /* =========================================================================
-     WALLET & CREDIT LEDGER (ATOMIC & ISOLATED)
+     WALLETS & CREDIT LEDGER
   ========================================================================= */
   public getWallet(userId: string): CreditWallet {
     if (!this.db.wallets[userId]) {
       this.db.wallets[userId] = {
         userId,
-        balance: 50,
-        lifetimeCredits: 50,
+        balance: 0,
+        lifetimeCredits: 0,
         spentCredits: 0,
         updatedAt: new Date().toISOString()
       };
@@ -241,9 +279,6 @@ class ProductionDatabase {
     return this.db.wallets[userId];
   }
 
-  /**
-   * Atomic Credit Reservation for Generation
-   */
   public reserveCredits(userId: string, amount: number, description: string, refId: string): boolean {
     const wallet = this.getWallet(userId);
     if (wallet.balance < amount) {
@@ -253,7 +288,7 @@ class ProductionDatabase {
     wallet.spentCredits += amount;
     wallet.updatedAt = new Date().toISOString();
 
-    this.db.transactions.unshift({
+    const tx: CreditTransaction = {
       id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
       amount: -amount,
@@ -261,21 +296,22 @@ class ProductionDatabase {
       description,
       referenceId: refId,
       createdAt: new Date().toISOString()
-    });
+    };
+
+    this.db.transactions.unshift(tx);
     this.save();
+    this.syncToFirestore('wallets', userId, wallet);
+    this.syncToFirestore('transactions', tx.id, tx);
     return true;
   }
 
-  /**
-   * Atomic Credit Refund on Generation Failure
-   */
   public refundCredits(userId: string, amount: number, description: string, refId: string): void {
     const wallet = this.getWallet(userId);
     wallet.balance += amount;
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
 
-    this.db.transactions.unshift({
+    const tx: CreditTransaction = {
       id: `tx_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
       amount,
@@ -283,20 +319,21 @@ class ProductionDatabase {
       description,
       referenceId: refId,
       createdAt: new Date().toISOString()
-    });
+    };
+
+    this.db.transactions.unshift(tx);
     this.save();
+    this.syncToFirestore('wallets', userId, wallet);
+    this.syncToFirestore('transactions', tx.id, tx);
   }
 
-  /**
-   * Add Credits from Verified Payment
-   */
   public creditWallet(userId: string, amount: number, description: string, orderId: string): void {
     const wallet = this.getWallet(userId);
     wallet.balance += amount;
     wallet.lifetimeCredits += amount;
     wallet.updatedAt = new Date().toISOString();
 
-    this.db.transactions.unshift({
+    const tx: CreditTransaction = {
       id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
       amount,
@@ -304,8 +341,12 @@ class ProductionDatabase {
       description,
       referenceId: orderId,
       createdAt: new Date().toISOString()
-    });
+    };
+
+    this.db.transactions.unshift(tx);
     this.save();
+    this.syncToFirestore('wallets', userId, wallet);
+    this.syncToFirestore('transactions', tx.id, tx);
   }
 
   public getUserTransactions(userId: string): CreditTransaction[] {
@@ -325,6 +366,7 @@ class ProductionDatabase {
       this.db.users[gen.userId].generationCount = (this.db.users[gen.userId].generationCount || 0) + 1;
     }
     this.save();
+    this.syncToFirestore('generations', gen.id, gen);
   }
 
   public updateGeneration(genId: string, updates: Partial<Generation>): void {
@@ -332,30 +374,19 @@ class ProductionDatabase {
     if (gen) {
       Object.assign(gen, updates);
       this.save();
+      this.syncToFirestore('generations', genId, gen);
     }
   }
 
   /* =========================================================================
-     TEMPLATES (SELF-SERVICE DYNAMIC CATALOG)
+     TEMPLATES & INTERACTIVE LIKES
   ========================================================================= */
   public getTemplates(): Template[] {
     return this.db.templates.filter(t => t.isActive !== false);
   }
 
-  public getAllTemplatesAdmin(): Template[] {
-    return this.db.templates;
-  }
-
   public addTemplate(tpl: Template): Template {
     this.db.templates.unshift(tpl);
-    this.save();
-    return tpl;
-  }
-
-  public updateTemplate(id: string, updates: Partial<Template>): Template | null {
-    const tpl = this.db.templates.find(t => t.id === id);
-    if (!tpl) return null;
-    Object.assign(tpl, updates);
     this.save();
     return tpl;
   }
@@ -370,12 +401,44 @@ class ProductionDatabase {
     return false;
   }
 
+  /**
+   * Real, working user like toggle on templates.
+   */
+  public toggleTemplateLike(userId: string, templateId: string): { isLiked: boolean; totalLikes: number } {
+    if (!this.db.userLikes[userId]) {
+      this.db.userLikes[userId] = [];
+    }
+    const userLikes = this.db.userLikes[userId];
+    const isAlreadyLiked = userLikes.includes(templateId);
+
+    const tpl = this.db.templates.find(t => t.id === templateId);
+    let totalLikes = tpl?.likesCount || 0;
+
+    if (isAlreadyLiked) {
+      this.db.userLikes[userId] = userLikes.filter(id => id !== templateId);
+      totalLikes = Math.max(0, totalLikes - 1);
+      if (tpl) tpl.likesCount = totalLikes;
+    } else {
+      this.db.userLikes[userId].push(templateId);
+      totalLikes += 1;
+      if (tpl) tpl.likesCount = totalLikes;
+    }
+
+    this.save();
+    return { isLiked: !isAlreadyLiked, totalLikes };
+  }
+
+  public getUserLikedTemplates(userId: string): string[] {
+    return this.db.userLikes[userId] || [];
+  }
+
   /* =========================================================================
      PAYMENTS & SUBSCRIPTIONS
   ========================================================================= */
   public recordPayment(record: PaymentRecord): void {
     this.db.payments[record.orderId] = record;
     this.save();
+    this.syncToFirestore('payments', record.orderId, record);
   }
 
   public getPayment(orderId: string): PaymentRecord | null {
@@ -385,6 +448,7 @@ class ProductionDatabase {
   public setSubscription(sub: UserSubscription): void {
     this.db.subscriptions[sub.userId] = sub;
     this.save();
+    this.syncToFirestore('subscriptions', sub.userId, sub);
   }
 
   public getSubscription(userId: string): UserSubscription | null {
@@ -403,40 +467,16 @@ class ProductionDatabase {
   }
 
   /* =========================================================================
-     SESSION LOGOUT, AUDIT & ACCOUNT DELETION
+     ACCOUNT DELETION
   ========================================================================= */
-  public revokeToken(token: string): boolean {
-    for (const identity of Object.values(this.db.authIdentities)) {
-      if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
-        identity.sessionTokens = identity.sessionTokens.filter(t => t !== token);
-        this.save();
-        return true;
-      }
-    }
-    return false;
-  }
-
   public deleteAccount(userId: string): boolean {
     if (!this.db.users[userId]) return false;
 
-    // 1. Delete associated media files on disk
-    const userGenerations = this.db.generations.filter(g => g.userId === userId);
-    for (const gen of userGenerations) {
-      if (gen.resultMediaUrl && gen.resultMediaUrl.startsWith('/api/media/')) {
-        const fileId = gen.resultMediaUrl.replace('/api/media/', '');
-        try {
-          const safeName = path.basename(fileId);
-          const p = path.join(DATA_DIR, 'uploads', safeName);
-          if (fs.existsSync(p)) fs.unlinkSync(p);
-        } catch {}
-      }
-    }
-
-    // 2. Wipe user records from database
     delete this.db.users[userId];
     delete this.db.authIdentities[userId];
     delete this.db.wallets[userId];
     delete this.db.subscriptions[userId];
+    delete this.db.userLikes[userId];
     this.db.generations = this.db.generations.filter(g => g.userId !== userId);
     this.db.transactions = this.db.transactions.filter(t => t.userId !== userId);
 

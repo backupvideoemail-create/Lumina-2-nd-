@@ -134,6 +134,68 @@ export function calculateNextCalendarDayStartDate(
 }
 
 /**
+ * Centralized Top-Up Packs Configuration
+ * 
+ * Rules:
+ * - One-time credit purchase (NOT a subscription, no AutoPay mandate)
+ * - Only available to users who have activated a valid plan
+ * - Initial Packs:
+ *   ₹49  -> 45 credits
+ *   ₹99  -> 95 credits
+ *   ₹199 -> 200 credits
+ *   ₹399 -> 420 credits
+ */
+export interface CentralTopUpPack {
+  id: string;
+  name: string;
+  price: number;
+  credits: number;
+  tagline: string;
+  badge?: string;
+  isPopular?: boolean;
+}
+
+export const CENTRAL_TOP_UP_PACKS: CentralTopUpPack[] = [
+  {
+    id: 'topup_49',
+    name: 'Starter Top-Up',
+    price: 49,
+    credits: 45,
+    tagline: 'Instant 45 Credits',
+    badge: 'Quick'
+  },
+  {
+    id: 'topup_99',
+    name: 'Creator Top-Up',
+    price: 99,
+    credits: 95,
+    tagline: 'Instant 95 Credits',
+    badge: 'Popular',
+    isPopular: true
+  },
+  {
+    id: 'topup_199',
+    name: 'Power Top-Up',
+    price: 199,
+    credits: 200,
+    tagline: 'Instant 200 Credits',
+    badge: 'Recommended'
+  },
+  {
+    id: 'topup_399',
+    name: 'Studio Top-Up',
+    price: 399,
+    credits: 420,
+    tagline: 'Instant 420 Credits',
+    badge: 'Best Value'
+  }
+];
+
+export function getTopUpPackById(id: string): CentralTopUpPack | undefined {
+  return CENTRAL_TOP_UP_PACKS.find(p => p.id === id);
+}
+
+/**
  * Helper to fetch a plan by ID from centralized configuration.
  */
 export function getSubscriptionPlanById(planId: string): CentralSubscriptionPlan {

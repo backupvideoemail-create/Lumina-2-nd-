@@ -4,7 +4,7 @@ import { Sparkles, Grid, Clapperboard, User } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export const BottomNav: React.FC = () => {
-  const { activeTab, setActiveTab } = useApp();
+  const { activeTab, setActiveTab, user, triggerHighIntentAction } = useApp();
   const [scrollingDown, setScrollingDown] = useState(false);
   const lastScrollY = useRef(0);
 
@@ -83,7 +83,15 @@ export const BottomNav: React.FC = () => {
               <motion.button
                 key={item.id}
                 whileTap={{ scale: 0.92 }}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  if ((item.id === 'creations' || item.id === 'profile') && !user) {
+                    triggerHighIntentAction({
+                      type: item.id === 'creations' ? 'navigate_creations' : 'navigate_profile'
+                    });
+                    return;
+                  }
+                  setActiveTab(item.id);
+                }}
                 className="relative flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-full transition-all focus:outline-none cursor-pointer"
               >
                 {/* Active Soft Gold Background Capsule */}

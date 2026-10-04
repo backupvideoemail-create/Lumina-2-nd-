@@ -25,7 +25,9 @@ export const PlansModal: React.FC = () => {
     verifyPayment,
     isPaying,
     activeSubscription,
-    refreshUserData
+    refreshUserData,
+    user,
+    triggerHighIntentAction
   } = useApp();
 
   // Default selection is "Double Bonanza" (₹1)
@@ -40,6 +42,15 @@ export const PlansModal: React.FC = () => {
 
   const handleStartRealPayment = async () => {
     setErrorMessage(null);
+
+    // Gate with high-intent authentication
+    if (!user) {
+      triggerHighIntentAction({
+        type: 'buy_plan',
+        planId: currentPlan.id
+      });
+      return;
+    }
 
     // 1. Request real order from server
     const res = await initiateCheckout('plan', currentPlan.id, 'razorpay');
@@ -355,6 +366,9 @@ export const PlansModal: React.FC = () => {
         <div className="text-center pt-2 px-5">
           <p className="text-[9px] sm:text-[9.5px] text-stone-400/90 leading-tight font-normal max-w-sm mx-auto">
             Subscription auto-renews at the same price unless cancelled 24 hrs before renewal. Cancel anytime in account settings. Subscription is optional.
+          </p>
+          <p className="text-[10.5px] text-amber-200/80 font-medium mt-1.5">
+            Need more credits? Top-up is available after plan activation.
           </p>
         </div>
       </motion.div>

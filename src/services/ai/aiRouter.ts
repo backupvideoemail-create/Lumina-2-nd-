@@ -38,6 +38,7 @@ export class AIRouter {
     if (params.templateType === 'video') {
       return await this.generateVideo({
         prompt: params.customPrompt || `Synthesize video reel for ${params.templateTitle}`,
+        sourceMediaUrl: params.inputMediaUrl,
         userImageUrl: params.inputMediaUrl,
         aspectRatio: (params.aspectRatio as any) || '9:16',
         styleWorkflow: params.workflow

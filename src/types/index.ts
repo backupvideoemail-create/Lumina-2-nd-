@@ -13,7 +13,8 @@ export type TemplateCategory =
   | 'Stories'
   | 'Social'
   | 'Creative'
-  | 'Professional';
+  | 'Professional'
+  | 'Retro 80s';
 
 export type AspectRatio = '9:16' | '4:5' | '1:1' | '16:9';
 
@@ -61,7 +62,7 @@ export interface UserProfile {
   email: string;
   avatar: string;
   onboarded: boolean;
-  role: 'user' | 'creator' | 'vip';
+  role: 'user' | 'creator' | 'vip' | 'admin';
   createdAt: string;
   generationCount: number;
 }
@@ -184,11 +185,13 @@ export interface PricingPlan {
 
 export interface TopUpOption {
   id: string;
+  name?: string;
   price: number;
   credits: number;
   bonusCredits?: number;
   popular?: boolean;
   tagline?: string;
+  badge?: string;
 }
 
 export interface FaceSwapScene {

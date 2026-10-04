@@ -31,7 +31,9 @@ export const ProfileView: React.FC = () => {
     setTransactionsModalOpen,
     setSupportModalOpen,
     setLegalModal,
-    setOnboardingOpen,
+    setAuthModalOpen,
+    setTopUpModalOpen,
+    hasActivePlan,
     updateProfile
   } = useApp();
 
@@ -60,13 +62,23 @@ export const ProfileView: React.FC = () => {
       <div className="sticky top-0 z-30 bg-[#08080a]/85 backdrop-blur-xl border-b border-white/5 px-4 py-3">
         <div className="max-w-xl mx-auto flex items-center justify-between">
           <h2 className="text-xl font-bold font-display text-white">Profile & Account</h2>
-          <button
-            onClick={() => setPlansModalOpen(true)}
-            className="px-3 py-1.5 rounded-full gold-button text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Get Credits</span>
-          </button>
+          {hasActivePlan ? (
+            <button
+              onClick={() => setTopUpModalOpen(true)}
+              className="px-3 py-1.5 rounded-full gold-button text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Zap className="w-3.5 h-3.5 fill-black" />
+              <span>Buy More Credits</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setPlansModalOpen(true)}
+              className="px-3 py-1.5 rounded-full gold-button text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Unlock Pro (₹1)</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -157,12 +169,22 @@ export const ProfileView: React.FC = () => {
               <span className="text-base font-bold text-[#f5d77f]">✦ Credits</span>
             </div>
 
-            <button
-              onClick={() => setPlansModalOpen(true)}
-              className="py-2 px-4 gold-button rounded-xl text-xs font-semibold"
-            >
-              + Add Credits
-            </button>
+            {hasActivePlan ? (
+              <button
+                onClick={() => setTopUpModalOpen(true)}
+                className="py-2 px-4 gold-button rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Zap className="w-3.5 h-3.5 fill-black" />
+                <span>+ Buy More Credits</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setPlansModalOpen(true)}
+                className="py-2 px-4 gold-button rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <span>Activate Plan (₹1)</span>
+              </button>
+            )}
           </div>
 
           <div className="pt-3 border-t border-white/5 grid grid-cols-2 gap-3 text-xs text-stone-400">
@@ -326,7 +348,7 @@ export const ProfileView: React.FC = () => {
             </button>
 
             <button
-              onClick={() => setOnboardingOpen(true)}
+              onClick={() => setAuthModalOpen(true)}
               className="w-full p-3 rounded-2xl hover:bg-white/5 flex items-center justify-between text-xs text-stone-400 hover:text-white transition-colors"
             >
               <div className="flex items-center gap-3">

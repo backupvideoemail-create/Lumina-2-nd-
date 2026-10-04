@@ -3,6 +3,7 @@
 export interface ImageGenerationParams {
   prompt: string;
   sourceImageUrl?: string;
+  userImageUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
@@ -11,9 +12,11 @@ export interface ImageGenerationParams {
 export interface VideoGenerationParams {
   prompt: string;
   sourceMediaUrl: string;
+  userImageUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   durationSeconds?: number;
   motionStyle?: string;
+  styleWorkflow?: string;
   customParameters?: Record<string, any>;
 }
 
@@ -89,11 +92,15 @@ export interface VerifyPaymentParams {
 }
 
 export interface PaymentVerificationResult {
-  success: boolean;
-  creditsAdded: number;
+  success?: boolean;
+  verified?: boolean;
+  creditsAdded?: number;
   orderId: string;
-  provider: string;
-  transactionRef: string;
+  provider?: string;
+  transactionRef?: string;
+  paymentId?: string;
+  status?: string;
+  amount?: number;
   error?: string;
 }
 

@@ -100,15 +100,21 @@ export function calculateCustomerPrice(
 
 /**
  * Server-Authoritative calculation of required generation credits.
- * Evaluates template parameters against provider cost catalog + USD conversion + 40% markup.
- * Client-provided creditCost is validated or calculated automatically.
+ * Evaluates template parameters against provider cost catalog + USD conversion + 40% markup:
+ * Actual Provider Cost -> INR Conversion -> +40% Business Markup -> Required Customer Credits
+ * 
+ * Supports:
+ * - Photo: model/resolution based cost (Gemini 3.1 Flash Image, 4K HDR diffusion, smart preset)
+ * - Video: model + duration + resolution based cost (Google Veo 3.1 Lite, duration scaling, 1080p 60FPS)
  */
 export function calculateAuthoritativeTemplateCost(
   template: Partial<Template> & {
     type?: string;
     isFaceSwap?: boolean;
     engine?: string;
+    model?: string;
     resolutionLabel?: string;
+    durationSeconds?: number;
     creditCost?: number;
     providerCostUsd?: number;
   }
@@ -118,7 +124,7 @@ export function calculateAuthoritativeTemplateCost(
     return calculateCreditsFromUsd(template.providerCostUsd);
   }
 
-  // If template already has an explicit creditCost and it meets standard thresholds, use it
+  // If template already has an explicit creditCost specified in catalog, use it
   if (template.creditCost && template.creditCost > 0) {
     return template.creditCost;
   }
@@ -129,13 +135,30 @@ export function calculateAuthoritativeTemplateCost(
   if (template.isFaceSwap) {
     baseUsd = providerCostsUsd.faceSwapVideoUsd;
   } else if (template.type === 'video') {
-    baseUsd = template.engine === 'AI_GENERATION'
-      ? providerCostsUsd.videoAiDiffusionUsd // $5.00 -> ~675 credits
-      : providerCostsUsd.videoSmartMotionUsd; // $0.26 -> ~35 credits
+    // Video: model + duration + resolution based cost
+    const isVeoAi = template.engine === 'AI_GENERATION' || template.model?.includes('veo');
+    const is1080p60 = template.resolutionLabel?.includes('60FPS') || template.resolutionLabel?.includes('1080p');
+    const duration = template.durationSeconds || 5;
+    const durationMultiplier = Math.max(1, duration / 5);
+    const resolutionMultiplier = is1080p60 ? 1.2 : 1.0;
+
+    if (isVeoAi) {
+      baseUsd = 0.35 * durationMultiplier * resolutionMultiplier;
+    } else {
+      baseUsd = providerCostsUsd.videoSmartMotionUsd * durationMultiplier;
+    }
   } else {
-    baseUsd = template.resolutionLabel?.includes('4K')
-      ? providerCostsUsd.photo4kHdrDiffusionUsd
-      : (template.engine === 'AI_GENERATION' ? providerCostsUsd.photoAiDiffusionUsd : providerCostsUsd.photoSmartUsd);
+    // Photo: model + resolution based cost
+    const isGeminiAi = template.engine === 'AI_GENERATION' || template.model?.includes('gemini');
+    const is4k = template.resolutionLabel?.includes('4K');
+
+    if (is4k) {
+      baseUsd = providerCostsUsd.photo4kHdrDiffusionUsd;
+    } else if (isGeminiAi) {
+      baseUsd = providerCostsUsd.photoAiDiffusionUsd;
+    } else {
+      baseUsd = providerCostsUsd.photoSmartUsd;
+    }
   }
 
   return calculateCreditsFromUsd(baseUsd);

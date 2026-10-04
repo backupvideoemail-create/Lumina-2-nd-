@@ -874,24 +874,32 @@ export const INITIAL_PLANS = [
 
 export const INITIAL_TOP_UPS = [
   {
-    id: 'topup_starter',
+    id: 'topup_49',
     price: 49,
-    credits: 250,
-    tagline: 'Quick Pack'
+    credits: 45,
+    tagline: 'Instant 45 Credits',
+    badge: 'Quick'
   },
   {
-    id: 'topup_popular',
+    id: 'topup_99',
     price: 99,
-    credits: 600,
-    bonusCredits: 50,
+    credits: 95,
+    tagline: 'Instant 95 Credits',
     popular: true,
-    tagline: 'Most Popular'
+    badge: 'Popular'
   },
   {
-    id: 'topup_pro',
+    id: 'topup_199',
     price: 199,
-    credits: 1400,
-    bonusCredits: 200,
-    tagline: 'Best Value'
+    credits: 200,
+    tagline: 'Instant 200 Credits',
+    badge: 'Recommended'
+  },
+  {
+    id: 'topup_399',
+    price: 399,
+    credits: 420,
+    tagline: 'Instant 420 Credits',
+    badge: 'Best Value'
   }
 ];

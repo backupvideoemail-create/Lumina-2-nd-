@@ -11,11 +11,12 @@ import { TemplateDetailModal } from './components/TemplateDetailModal';
 import { InsufficientCreditsModal } from './components/InsufficientCreditsModal';
 import { GenerationViewerModal } from './components/GenerationViewerModal';
 import { PlansModal } from './components/PlansModal';
+import { TopUpModal } from './components/TopUpModal';
 import { TransactionLedgerModal } from './components/TransactionLedgerModal';
 import { SupportModal } from './components/SupportModal';
 import { LegalModal } from './components/LegalModal';
 import { ReportModal } from './components/ReportModal';
-import { OnboardingModal } from './components/OnboardingModal';
+import { AuthModal } from './components/AuthModal';
 import { FaceSwapModal } from './components/FaceSwapModal';
 import { TemplateManagerModal } from './components/TemplateManagerModal';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
@@ -89,11 +90,12 @@ const AppContent: React.FC = () => {
       <InsufficientCreditsModal />
       <GenerationViewerModal />
       <PlansModal />
+      <TopUpModal />
       <TransactionLedgerModal />
       <SupportModal />
       <LegalModal />
       <ReportModal />
-      <OnboardingModal />
+      <AuthModal />
       <FaceSwapModal />
       <TemplateManagerModal isOpen={templateManagerOpen} onClose={() => setTemplateManagerOpen(false)} />
       <DiagnosticsModal isOpen={diagnosticsModalOpen} onClose={() => setDiagnosticsModalOpen(false)} />

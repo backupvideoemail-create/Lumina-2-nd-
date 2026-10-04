@@ -13,69 +13,19 @@ import {
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
 
-const DEFAULT_USER: UserProfile = {
-  id: 'usr_guest_demo',
-  name: 'Aura Creator',
-  email: 'creator@aiprime.studio',
-  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-  onboarded: true,
-  role: 'creator',
-  createdAt: new Date().toISOString(),
-  generationCount: 2
-};
-
-const DEFAULT_WALLET: CreditWallet = {
-  userId: 'usr_guest_demo',
-  balance: 150,
-  lifetimeCredits: 150,
-  spentCredits: 0,
-  updatedAt: new Date().toISOString()
-};
-
-const DEFAULT_GENERATIONS: Generation[] = [
-  {
-    id: 'gen_seed_1',
-    userId: 'usr_guest_demo',
-    templateId: 'tpl_gold_noir',
-    templateTitle: 'Imperial Gold Noir',
-    templateType: 'photo',
-    aspectRatio: '4:5',
-    status: 'completed',
-    inputMediaUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80',
-    resultMediaUrl: 'https://images.unsplash.com/photo-1509967419530-da38b4704bc6?auto=format&fit=crop&w=900&q=80',
-    creditCost: 25,
-    engine: 'AI_GENERATION',
-    model: 'gemini-3.1-flash-image',
-    workflow: 'luxury-gold-noir',
-    createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-    completedAt: new Date(Date.now() - 3600000 * 2 + 15000).toISOString(),
-    isAiGenerated: true
-  }
-];
-
-// Resilient fetch helper with retry
-async function safeFetchJson<T>(url: string, retries = 2, delayMs = 600): Promise<T | null> {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) {
-        return (await res.json()) as T;
-      }
-    } catch {
-      if (i < retries) {
-        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
-      }
-    }
-  }
-  return null;
-}
+export type PendingAction =
+  | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
+  | { type: 'buy_plan'; planId?: string }
+  | { type: 'faceswap'; sceneId: string; facePhotoUrl: string }
+  | { type: 'navigate_creations' }
+  | { type: 'navigate_profile' };
 
 interface AppContextType {
   // Navigation & Screens
   activeTab: 'home' | 'templates' | 'creations' | 'profile';
   setActiveTab: (tab: 'home' | 'templates' | 'creations' | 'profile') => void;
 
-  // Face Swap Video (Top Priority Feature)
+  // Face Swap Video
   faceSwapScenes: FaceSwapScene[];
   selectedFaceSwapScene: FaceSwapScene | null;
   setSelectedFaceSwapScene: (scene: FaceSwapScene | null) => void;
@@ -94,6 +44,8 @@ interface AppContextType {
   setSearchQuery: (q: string) => void;
   filterType: 'all' | 'photo' | 'video';
   setFilterType: (type: 'all' | 'photo' | 'video') => void;
+  likedTemplates: string[];
+  toggleLikeTemplate: (templateId: string) => Promise<void>;
 
   // User & Wallet
   user: UserProfile | null;
@@ -102,8 +54,8 @@ interface AppContextType {
   transactions: CreditTransaction[];
   refreshUserData: () => Promise<void>;
   updateProfile: (name: string, avatar: string) => Promise<boolean>;
-  completeOnboarding: (name: string, avatar: string) => Promise<boolean>;
   deleteAccount: () => Promise<boolean>;
+  logout: () => Promise<void>;
 
   // Generations
   generations: Generation[];
@@ -117,20 +69,29 @@ interface AppContextType {
   // Plans & Payments
   plans: PricingPlan[];
   topUps: TopUpOption[];
+  hasActivePlan: boolean;
   isPaying: boolean;
   initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; error?: string }>;
-  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string) => Promise<boolean>;
+  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string) => Promise<boolean>;
   cancelSubscription: () => Promise<boolean>;
+
+  // High-Intent Auth Modal & Pending Action Execution
+  authModalOpen: boolean;
+  setAuthModalOpen: (open: boolean) => void;
+  pendingAction: PendingAction | null;
+  setPendingAction: (action: PendingAction | null) => void;
+  triggerHighIntentAction: (action: PendingAction) => boolean;
+  onAuthSuccess: (authenticatedUser: UserProfile, token: string) => Promise<void>;
 
   // Modals & Sheets
   drawerOpen: boolean;
   setDrawerOpen: (open: boolean) => void;
   plansModalOpen: boolean;
   setPlansModalOpen: (open: boolean) => void;
+  topUpModalOpen: boolean;
+  setTopUpModalOpen: (open: boolean) => void;
   insufficientCreditsModal: { open: boolean; requiredCredits: number; availableCredits: number } | null;
   setInsufficientCreditsModal: (val: { open: boolean; requiredCredits: number; availableCredits: number } | null) => void;
-  onboardingOpen: boolean;
-  setOnboardingOpen: (open: boolean) => void;
   supportModalOpen: boolean;
   setSupportModalOpen: (open: boolean) => void;
   legalModal: 'privacy' | 'terms' | 'refund' | 'delete' | null;
@@ -155,18 +116,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedCategory, setSelectedCategory] = useState<string>('Trending');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterType, setFilterType] = useState<'all' | 'photo' | 'video'>('all');
+  const [likedTemplates, setLikedTemplates] = useState<string[]>([]);
 
   // Face Swap Video state
   const [faceSwapScenes, setFaceSwapScenes] = useState<FaceSwapScene[]>(SEED_FACE_SWAP_SCENES);
   const [selectedFaceSwapScene, setSelectedFaceSwapScene] = useState<FaceSwapScene | null>(null);
   const [faceSwapModalOpen, setFaceSwapModalOpen] = useState(false);
 
-  const [user, setUser] = useState<UserProfile | null>(DEFAULT_USER);
-  const [wallet, setWallet] = useState<CreditWallet | null>(DEFAULT_WALLET);
+  // Clean initial user state: starts at NULL for unauthenticated visitors
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [wallet, setWallet] = useState<CreditWallet | null>({
+    userId: '',
+    balance: 0,
+    lifetimeCredits: 0,
+    spentCredits: 0,
+    updatedAt: new Date().toISOString()
+  });
   const [activeSubscription, setActiveSubscription] = useState<UserSubscription | null>(null);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
 
-  const [generations, setGenerations] = useState<Generation[]>(DEFAULT_GENERATIONS);
+  // Clean initial generations: zero fake generations
+  const [generations, setGenerations] = useState<Generation[]>([]);
   const [loadingGenerations, setLoadingGenerations] = useState(false);
   const [activeGeneration, setActiveGeneration] = useState<Generation | null>(null);
 
@@ -174,11 +144,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [topUps, setTopUps] = useState<TopUpOption[]>(INITIAL_TOP_UPS);
   const [isPaying, setIsPaying] = useState(false);
 
-  // Modals
+  // High-Intent Action & Auth Modal
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+
+  // Other Modals
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [plansModalOpen, setPlansModalOpen] = useState(false);
+  const [topUpModalOpen, setTopUpModalOpen] = useState(false);
   const [insufficientCreditsModal, setInsufficientCreditsModal] = useState<{ open: boolean; requiredCredits: number; availableCredits: number } | null>(null);
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [supportModalOpen, setSupportModalOpen] = useState(false);
   const [legalModal, setLegalModal] = useState<'privacy' | 'terms' | 'refund' | 'delete' | null>(null);
   const [reportModalGenId, setReportModalGenId] = useState<string | null>(null);
@@ -186,20 +160,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
 
-  // Fetch Templates
+  // Active Plan Check: true if user has an active or trial subscription plan
+  const hasActivePlan = Boolean(
+    activeSubscription &&
+      (activeSubscription.status === 'active' ||
+        activeSubscription.status === 'trial' ||
+        Boolean(activeSubscription.mandateId))
+  );
+
+  // Sync Plans and Top-Up packs from Central Server Configuration
+  useEffect(() => {
+    fetch('/api/payments/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.plans) setPlans(data.plans);
+        if (data?.topUps) setTopUps(data.topUps);
+      })
+      .catch((err) => console.warn('[AppContext] Payment config sync note:', err));
+  }, []);
+
+  // Auth Header Helper
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem('lumina_session_token');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  // Fetch Templates (Publicly accessible to any visitor)
   const fetchTemplates = useCallback(async () => {
     try {
+      setLoadingTemplates(true);
       const params = new URLSearchParams();
       if (filterType !== 'all') params.append('type', filterType);
-      if (selectedCategory && selectedCategory !== 'Trending') params.append('category', selectedCategory);
+      if (selectedCategory && selectedCategory !== 'All') params.append('category', selectedCategory);
       if (searchQuery.trim()) params.append('search', searchQuery.trim());
 
-      const data = await safeFetchJson<{ templates: Template[] }>(`/api/templates?${params.toString()}`);
-      if (data?.templates && data.templates.length > 0) {
-        setTemplates(data.templates);
+      const res = await fetch(`/api/templates?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.templates && data.templates.length > 0) {
+          setTemplates(data.templates);
+        }
       }
     } catch {
-      // Keep existing templates safely
+      // Keep existing
+    } finally {
+      setLoadingTemplates(false);
     }
   }, [filterType, selectedCategory, searchQuery]);
 
@@ -207,413 +212,416 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fetchTemplates();
   }, [fetchTemplates]);
 
-  // Fetch User & Wallet
+  // Fetch User & Wallet (Only if session token exists)
   const refreshUserData = useCallback(async () => {
-    try {
-      const data = await safeFetchJson<{ user: UserProfile; wallet: CreditWallet; activeSubscription: UserSubscription | null }>('/api/auth/me');
-      if (data?.user) {
-        setUser(data.user);
-        if (data.wallet) setWallet(data.wallet);
-        setActiveSubscription(data.activeSubscription || null);
-      }
+    const token = localStorage.getItem('lumina_session_token');
+    if (!token) {
+      setUser(null);
+      setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() });
+      setActiveSubscription(null);
+      setTransactions([]);
+      setGenerations([]);
+      return;
+    }
 
-      // Also get transactions
-      const txData = await safeFetchJson<{ transactions: CreditTransaction[] }>('/api/wallet');
-      if (txData?.transactions) {
-        setTransactions(txData.transactions);
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.user) {
+          setUser(data.user);
+          if (data.wallet) setWallet(data.wallet);
+          setActiveSubscription(data.activeSubscription || null);
+          if (data.likedTemplates) setLikedTemplates(data.likedTemplates);
+        } else {
+          // Token expired or invalid
+          localStorage.removeItem('lumina_session_token');
+          setUser(null);
+        }
       }
     } catch {
-      // Keep existing user and wallet safely
+      // Keep current state
     }
   }, []);
 
-  // Fetch Plans
-  const fetchPlans = useCallback(async () => {
-    try {
-      const data = await safeFetchJson<{ plans: PricingPlan[]; topUps: TopUpOption[] }>('/api/plans');
-      if (data?.plans && data.plans.length > 0) {
-        setPlans(data.plans);
-        if (data.topUps) setTopUps(data.topUps);
-      }
-    } catch {
-      // Keep default plans safely
-    }
-  }, []);
-
-  // Fetch Generations
+  // Fetch Generations for Authenticated User
   const refreshGenerations = useCallback(async () => {
+    const token = localStorage.getItem('lumina_session_token');
+    if (!token) {
+      setGenerations([]);
+      return;
+    }
+
     try {
-      const data = await safeFetchJson<{ generations: Generation[] }>('/api/generations');
-      if (data?.generations) {
-        setGenerations(data.generations);
+      setLoadingGenerations(true);
+      const res = await fetch('/api/generations', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.generations) {
+          setGenerations(data.generations);
+        }
       }
     } catch {
-      // Keep existing generations safely
+      // Keep existing
+    } finally {
+      setLoadingGenerations(false);
     }
   }, []);
 
   useEffect(() => {
     refreshUserData();
-    fetchPlans();
-    refreshGenerations();
-  }, [refreshUserData, fetchPlans, refreshGenerations]);
+  }, [refreshUserData]);
 
-  // Poll active processing generations
   useEffect(() => {
-    const hasProcessing = generations.some(g => g.status === 'processing' || g.status === 'preparing' || g.status === 'uploading');
-    if (!hasProcessing) return;
-
-    const interval = setInterval(() => {
+    if (user) {
       refreshGenerations();
-      refreshUserData();
-    }, 2000);
+    }
+  }, [user, refreshGenerations]);
 
-    return () => clearInterval(interval);
-  }, [generations, refreshGenerations, refreshUserData]);
+  // Real Interactive Like Toggle on Templates
+  const toggleLikeTemplate = async (templateId: string) => {
+    if (!user) {
+      setPendingAction(null);
+      setAuthModalOpen(true);
+      return;
+    }
 
-  // Keep activeGeneration in sync
-  useEffect(() => {
-    if (activeGeneration) {
-      const latest = generations.find(g => g.id === activeGeneration.id);
-      if (latest && latest.status !== activeGeneration.status) {
-        setActiveGeneration(latest);
+    // Optimistic UI update
+    const isCurrentlyLiked = likedTemplates.includes(templateId);
+    setLikedTemplates((prev) =>
+      isCurrentlyLiked ? prev.filter((id) => id !== templateId) : [...prev, templateId]
+    );
+
+    setTemplates((prev) =>
+      prev.map((t) => {
+        if (t.id === templateId) {
+          return {
+            ...t,
+            likesCount: Math.max(0, (t.likesCount || 0) + (isCurrentlyLiked ? -1 : 1))
+          };
+        }
+        return t;
+      })
+    );
+
+    try {
+      await fetch(`/api/templates/${templateId}/like`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        }
+      });
+    } catch (err) {
+      console.warn('Like toggle sync error:', err);
+    }
+  };
+
+  // High-Intent Action Trigger Helper:
+  // If user is already authenticated, returns true to proceed immediately.
+  // If visitor is unauthenticated, stores the pending action, opens auth modal, and returns false.
+  const triggerHighIntentAction = (action: PendingAction): boolean => {
+    if (user) {
+      return true;
+    }
+    setPendingAction(action);
+    setAuthModalOpen(true);
+    return false;
+  };
+
+  // Called after successful Firebase authentication
+  const onAuthSuccess = async (authenticatedUser: UserProfile, token: string) => {
+    localStorage.setItem('lumina_session_token', token);
+    setUser(authenticatedUser);
+    setAuthModalOpen(false);
+    await refreshUserData();
+    await refreshGenerations();
+
+    // Automatically resume the high-intent action without user having to repeat steps!
+    if (pendingAction) {
+      const action = pendingAction;
+      setPendingAction(null);
+
+      if (action.type === 'generate') {
+        // Automatically trigger generation with the selected template & uploaded media!
+        const tpl = templates.find((t) => t.id === action.templateId);
+        if (tpl) {
+          setSelectedTemplate(tpl);
+          createGeneration(action.templateId, action.inputMediaUrl, action.customPrompt);
+        }
+      } else if (action.type === 'buy_plan') {
+        setPlansModalOpen(true);
+      } else if (action.type === 'faceswap') {
+        setFaceSwapModalOpen(true);
+        generateFaceSwapVideo(action.sceneId, action.facePhotoUrl);
+      } else if (action.type === 'navigate_creations') {
+        setActiveTab('creations');
+      } else if (action.type === 'navigate_profile') {
+        setActiveTab('profile');
       }
     }
-  }, [generations, activeGeneration]);
+  };
 
-  // Onboarding
-  const completeOnboarding = async (name: string, avatar: string): Promise<boolean> => {
+  // Profile Update
+  const updateProfile = async (name: string, avatar: string): Promise<boolean> => {
+    if (!user) return false;
     try {
-      const res = await fetch('/api/auth/onboard', {
+      const res = await fetch('/api/auth/update', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
         body: JSON.stringify({ name, avatar })
       });
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
-        setWallet(data.wallet);
-        await refreshUserData();
         return true;
       }
-      return false;
-    } catch (err) {
-      console.error('Onboarding failed:', err);
-      return false;
+    } catch {
+      // Error
     }
+    return false;
   };
 
-  const updateProfile = async (name: string, avatar: string): Promise<boolean> => {
-    try {
-      const res = await fetch('/api/auth/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, avatar })
-      });
-      if (res.ok) {
-        await refreshUserData();
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error('Profile update failed:', err);
-      return false;
-    }
-  };
-
+  // Real Account Deletion
   const deleteAccount = async (): Promise<boolean> => {
+    if (!user) return false;
     try {
-      const res = await fetch('/api/auth/delete-account', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+      const res = await fetch('/api/auth/account', {
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       if (res.ok) {
+        localStorage.removeItem('lumina_session_token');
         setUser(null);
-        setWallet(null);
+        setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
         setGenerations([]);
-        setLegalModal(null);
-        setOnboardingOpen(true);
+        setTransactions([]);
+        setActiveTab('home');
         return true;
       }
-      return false;
-    } catch (err) {
-      console.error('Account deletion error:', err);
-      return false;
+    } catch {
+      // Error
     }
+    return false;
   };
 
-  // Generation Action
+  // Logout
+  const logout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+    } catch {}
+    localStorage.removeItem('lumina_session_token');
+    setUser(null);
+    setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
+    setGenerations([]);
+    setTransactions([]);
+    setActiveTab('home');
+  };
+
+  // Create Generation (Atomic Credit Reserve)
   const createGeneration = async (
     templateId: string,
     inputMediaUrl: string,
     customPrompt?: string
   ): Promise<{ success: boolean; error?: string }> => {
+    if (!user) {
+      setPendingAction({ type: 'generate', templateId, inputMediaUrl, customPrompt });
+      setAuthModalOpen(true);
+      return { success: false, error: 'Authentication required' };
+    }
+
     try {
       const res = await fetch('/api/generations/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
         body: JSON.stringify({ templateId, inputMediaUrl, customPrompt })
       });
 
       const data = await res.json();
-
-      if (res.status === 402) {
-        // Insufficient credits
-        setInsufficientCreditsModal({
-          open: true,
-          requiredCredits: data.requiredCredits,
-          availableCredits: data.availableCredits
-        });
-        return { success: false, error: 'Insufficient credits' };
+      if (res.ok && data.generation) {
+        setActiveGeneration(data.generation);
+        setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
+        if (data.remainingCredits !== undefined && wallet) {
+          setWallet({ ...wallet, balance: data.remainingCredits });
+        }
+        await refreshUserData();
+        return { success: true };
+      } else {
+        if (res.status === 402) {
+          setInsufficientCreditsModal({
+            open: true,
+            requiredCredits: data.requiredCredits || 30,
+            availableCredits: wallet?.balance ?? 0
+          });
+        }
+        return { success: false, error: data.error || 'Generation request failed' };
       }
-
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Failed to start generation' };
-      }
-
-      // Success
-      setActiveGeneration(data.generation);
-      await refreshUserData();
-      await refreshGenerations();
-      return { success: true };
-    } catch {
-      // Fallback local execution if network/server is unavailable
-      const tpl = SEED_TEMPLATES.find((t) => t.id === templateId);
-      const cost = tpl?.creditCost || 25;
-      if ((wallet?.balance ?? 0) < cost) {
-        setInsufficientCreditsModal({
-          open: true,
-          requiredCredits: cost,
-          availableCredits: wallet?.balance ?? 0
-        });
-        return { success: false, error: 'Insufficient credits' };
-      }
-
-      setWallet((prev) =>
-        prev
-          ? {
-              ...prev,
-              balance: Math.max(0, prev.balance - cost),
-              spentCredits: prev.spentCredits + cost
-            }
-          : null
-      );
-
-      const fallbackGen: Generation = {
-        id: `gen_${Date.now()}`,
-        userId: user?.id || 'usr_guest_demo',
-        templateId,
-        templateTitle: tpl?.title || 'Template Generation',
-        templateType: tpl?.type || 'photo',
-        aspectRatio: tpl?.aspectRatio || '4:5',
-        status: 'completed',
-        inputMediaUrl,
-        resultMediaUrl: tpl?.sampleResult || tpl?.preview,
-        creditCost: cost,
-        engine: tpl?.engine || 'AI_GENERATION',
-        model: tpl?.model || 'gemini-3.1-flash-image',
-        workflow: tpl?.workflow || 'cinematic-filter',
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        isAiGenerated: true
-      };
-
-      setGenerations((prev) => [fallbackGen, ...prev]);
-      setActiveGeneration(fallbackGen);
-      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Network error' };
     }
   };
 
-  // Modular Face Swap Video generation
+  // Face Swap Generation
   const generateFaceSwapVideo = async (
     sceneId: string,
     facePhotoUrl: string
   ): Promise<{ success: boolean; error?: string }> => {
+    if (!user) {
+      setPendingAction({ type: 'faceswap', sceneId, facePhotoUrl });
+      setAuthModalOpen(true);
+      return { success: false, error: 'Authentication required' };
+    }
+
     try {
       const res = await fetch('/api/faceswap/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
         body: JSON.stringify({ sceneId, facePhotoUrl })
       });
 
       const data = await res.json();
-
-      if (res.status === 402) {
-        setInsufficientCreditsModal({
-          open: true,
-          requiredCredits: data.requiredCredits,
-          availableCredits: data.availableCredits
-        });
-        return { success: false, error: 'Insufficient credits' };
+      if (res.ok && data.generation) {
+        setActiveGeneration(data.generation);
+        setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
+        if (data.remainingCredits !== undefined && wallet) {
+          setWallet({ ...wallet, balance: data.remainingCredits });
+        }
+        await refreshUserData();
+        return { success: true };
+      } else {
+        return { success: false, error: data.error || 'Face swap request failed' };
       }
-
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Face swap generation failed' };
-      }
-
-      setActiveGeneration(data.generation);
-      await refreshUserData();
-      await refreshGenerations();
-      return { success: true };
-    } catch {
-      // Fallback local execution if network/server is unavailable
-      const scene = SEED_FACE_SWAP_SCENES.find((s) => s.id === sceneId) || SEED_FACE_SWAP_SCENES[0];
-      const cost = scene.creditCost;
-      if ((wallet?.balance ?? 0) < cost) {
-        setInsufficientCreditsModal({
-          open: true,
-          requiredCredits: cost,
-          availableCredits: wallet?.balance ?? 0
-        });
-        return { success: false, error: 'Insufficient credits' };
-      }
-
-      setWallet((prev) =>
-        prev
-          ? {
-              ...prev,
-              balance: Math.max(0, prev.balance - cost),
-              spentCredits: prev.spentCredits + cost
-            }
-          : null
-      );
-
-      const fallbackGen: Generation = {
-        id: `gen_fsv_${Date.now()}`,
-        userId: user?.id || 'usr_guest_demo',
-        templateId: scene.id,
-        templateTitle: `Face Swap: ${scene.title}`,
-        templateType: 'video',
-        aspectRatio: scene.aspectRatio,
-        status: 'completed',
-        inputMediaUrl: facePhotoUrl,
-        resultMediaUrl: scene.resultVideoPreview,
-        creditCost: cost,
-        engine: 'AI_GENERATION',
-        model: 'veo-3.1-lite-generate-preview',
-        workflow: 'neural-face-swap-reels',
-        createdAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        isAiGenerated: true
-      };
-
-      setGenerations((prev) => [fallbackGen, ...prev]);
-      setActiveGeneration(fallbackGen);
-      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Network error' };
     }
   };
 
-  const deleteGeneration = async (id: string) => {
+  // Delete Generation
+  const deleteGeneration = async (id: string): Promise<void> => {
     try {
-      await fetch(`/api/generations/${id}`, { method: 'DELETE' });
-    } catch {
-      // Ignore network errors on delete
+      await fetch(`/api/generations/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      setGenerations((prev) => prev.filter((g) => g.id !== id));
+      if (activeGeneration?.id === id) {
+        setActiveGeneration(null);
+      }
+    } catch (err) {
+      console.error('Delete generation error:', err);
     }
-    if (activeGeneration?.id === id) {
-      setActiveGeneration(null);
-    }
-    setGenerations((prev) => prev.filter((g) => g.id !== id));
   };
 
-  // Checkout & Payments
+  // Initiate Razorpay Checkout Order
   const initiateCheckout = async (
     type: 'plan' | 'topup',
     itemId: string,
     provider: 'razorpay' | 'cashfree' = 'razorpay'
   ): Promise<{ success: boolean; orderId?: string; error?: string }> => {
+    if (!user) {
+      setPendingAction({ type: 'buy_plan', planId: itemId });
+      setAuthModalOpen(true);
+      return { success: false, error: 'Authentication required' };
+    }
+
     try {
       setIsPaying(true);
-      const res = await fetch('/api/payments/create-order', {
+      const res = await fetch('/api/payments/checkout/order', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, itemId, provider })
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ type, planId: itemId, topUpId: itemId, itemId, provider })
       });
       const data = await res.json();
-      if (!res.ok) {
-        setIsPaying(false);
-        return { success: false, error: data.error };
-      }
-      return { success: true, orderId: data.orderId };
-    } catch {
-      // Offline fallback order id
       setIsPaying(false);
-      return { success: true, orderId: `ord_local_${Date.now()}` };
+
+      if (res.ok && data.orderId) {
+        return { success: true, orderId: data.orderId };
+      } else {
+        return { success: false, error: data.error || 'Failed to create payment order' };
+      }
+    } catch (err: any) {
+      setIsPaying(false);
+      return { success: false, error: err.message || 'Payment initiation error' };
     }
   };
 
+  // Verify Real Razorpay Payment Signature
   const verifyPayment = async (
     orderId: string,
     type: 'plan' | 'topup',
     itemId: string,
-    provider: string = 'razorpay'
+    provider: string = 'razorpay',
+    paymentId?: string,
+    signature?: string
   ): Promise<boolean> => {
     try {
       const res = await fetch('/api/payments/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
         body: JSON.stringify({
           orderId,
           type,
           itemId,
           provider,
-          paymentId: `pay_${Date.now()}`
+          paymentId,
+          signature
         })
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        if (data.wallet) {
-          setWallet(data.wallet);
-        }
-        if (data.subscription) {
-          setActiveSubscription(data.subscription);
-        }
+        if (data.wallet) setWallet(data.wallet);
+        if (data.subscription) setActiveSubscription(data.subscription);
         await refreshUserData();
         setIsPaying(false);
         return true;
       }
-    } catch {
-      // Offline fallback verification
+    } catch (err) {
+      console.error('Payment verify error:', err);
     }
-
-    // Local ledger update on verified customer action
-    let creditsToAdd = 250;
-    if (type === 'plan') {
-      const plan = INITIAL_PLANS.find((p) => p.id === itemId);
-      creditsToAdd = plan?.includedCredits || 500;
-    } else {
-      const topUp = INITIAL_TOP_UPS.find((t) => t.id === itemId);
-      creditsToAdd = (topUp?.credits || 250) + (topUp?.bonusCredits || 0);
-    }
-
-    setWallet((prev) =>
-      prev
-        ? {
-            ...prev,
-            balance: prev.balance + creditsToAdd,
-            lifetimeCredits: prev.lifetimeCredits + creditsToAdd
-          }
-        : null
-    );
-
     setIsPaying(false);
-    return true;
+    return false;
   };
 
+  // Cancel Subscription
   const cancelSubscription = async (): Promise<boolean> => {
     try {
-      const res = await fetch('/api/subscriptions/cancel', {
+      const res = await fetch('/api/subscription/cancel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        }
       });
       if (res.ok) {
         await refreshUserData();
         return true;
       }
-      return false;
     } catch (err) {
-      console.error('Failed to cancel subscription:', err);
-      return false;
+      console.error('Subscription cancellation error:', err);
     }
+    return false;
   };
 
   return (
@@ -637,14 +645,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSearchQuery,
         filterType,
         setFilterType,
+        likedTemplates,
+        toggleLikeTemplate,
         user,
         wallet,
         activeSubscription,
         transactions,
         refreshUserData,
         updateProfile,
-        completeOnboarding,
         deleteAccount,
+        logout,
         generations,
         loadingGenerations,
         activeGeneration,
@@ -654,18 +664,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refreshGenerations,
         plans,
         topUps,
+        hasActivePlan,
         isPaying,
         initiateCheckout,
         verifyPayment,
         cancelSubscription,
+        authModalOpen,
+        setAuthModalOpen,
+        pendingAction,
+        setPendingAction,
+        triggerHighIntentAction,
+        onAuthSuccess,
         drawerOpen,
         setDrawerOpen,
         plansModalOpen,
         setPlansModalOpen,
+        topUpModalOpen,
+        setTopUpModalOpen,
         insufficientCreditsModal,
         setInsufficientCreditsModal,
-        onboardingOpen,
-        setOnboardingOpen,
         supportModalOpen,
         setSupportModalOpen,
         legalModal,
