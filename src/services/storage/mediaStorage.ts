@@ -320,6 +320,28 @@ export class MediaStorageService {
     }
     return false;
   }
+
+  /**
+   * Deletes all private media assets belonging to a user (used during account deletion).
+   */
+  public async deleteUserMedia(userId: string): Promise<number> {
+    if (!userId) return 0;
+    const userFiles = Object.values(this.metadataIndex).filter(
+      (m) => m.ownerUserId === userId
+    );
+
+    let deletedCount = 0;
+    for (const file of userFiles) {
+      try {
+        await this.deleteMedia(file.fileId);
+        deletedCount++;
+      } catch (err: any) {
+        console.warn(`[MediaStorage] Error deleting user file ${file.fileId}:`, err.message);
+      }
+    }
+
+    return deletedCount;
+  }
 }
 
 export const mediaStorage = new MediaStorageService();

@@ -119,11 +119,13 @@ export class VideoProviderAdapter {
       throw new Error('Veo operation completed but did not return video bytes.');
     }
 
-    // 3. Save actual video bytes to durable storage
+    // 3. Save actual video bytes to durable storage with owner isolation
     const stored = await mediaStorage.saveMedia(
       videoData.videoBytes,
       'generation',
-      `veo_${Date.now()}.mp4`
+      `veo_${Date.now()}.mp4`,
+      params.ownerUserId,
+      false
     );
 
     return {

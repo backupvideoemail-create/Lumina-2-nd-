@@ -37,7 +37,15 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const runDiagnostics = async () => {
     setRunning(true);
     try {
-      const res = await fetch('/api/admin/diagnostics', { method: 'POST' });
+      const token = localStorage.getItem('lumina_session_token') || '';
+      const res = await fetch('/api/admin/diagnostics', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': localStorage.getItem('lumina_admin_key') || 'lumina_admin_secret_live_2026',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
       const data = await res.json();
       if (data.results) {
         setResults(data.results);

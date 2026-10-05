@@ -62,6 +62,11 @@ export class RazorpayAdapter {
    * Resolves or creates a real Razorpay AutoPay Plan for recurring billing.
    * Daily cadence: period: 'daily', interval: 1 for ₹499 renewal.
    */
+  /**
+   * Resolves or creates a real Razorpay AutoPay Plan for recurring billing.
+   * Note: Razorpay enforces minimum interval 7 for period 'daily' (which equals weekly).
+   * For ₹499 renewal, uses existing live plan 'plan_TjsjORpnQrwUzl' or creates an authorized plan.
+   */
   async getOrCreateAutoPayPlan(
     amountInRupees = 499,
     period: 'daily' | 'weekly' | 'monthly' = 'daily'
@@ -76,7 +81,36 @@ export class RazorpayAdapter {
       return this.cachedPlans[cacheKey];
     }
 
+    // Use confirmed live plan if matching 499
+    if (amountInRupees === 499 && (period === 'daily' || period === 'weekly')) {
+      this.cachedPlans[cacheKey] = 'plan_TjsjORpnQrwUzl';
+      return 'plan_TjsjORpnQrwUzl';
+    }
+
     const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
+    
+    // First check existing plans on account
+    try {
+      const listRes = await fetch('https://api.razorpay.com/v1/plans?count=10', {
+        headers: { 'Authorization': `Basic ${authHeader}` }
+      });
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const existing = listData.items?.find((p: any) => p.item?.amount === Math.round(amountInRupees * 100));
+        if (existing) {
+          this.cachedPlans[cacheKey] = existing.id;
+          return existing.id;
+        }
+      }
+    } catch {
+      // Continue to create
+    }
+
+    // In Razorpay, daily with interval 1 is rejected by RBI/NPCI rule (min interval is 7).
+    // Use interval 1 with period 'weekly' for recurring cadence, or requested period.
+    const planPeriod = period === 'daily' ? 'weekly' : period;
+    const planInterval = 1;
+
     const response = await fetch('https://api.razorpay.com/v1/plans', {
       method: 'POST',
       headers: {
@@ -84,13 +118,13 @@ export class RazorpayAdapter {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        period,
-        interval: 1,
+        period: planPeriod,
+        interval: planInterval,
         item: {
-          name: `Lumina Double Bonanza ${period === 'daily' ? 'Daily' : period} AutoPay`,
+          name: `Lumina AutoPay ${amountInRupees}`,
           amount: Math.round(amountInRupees * 100),
           currency: 'INR',
-          description: `Lumina AI Studio ${period === 'daily' ? '400 Daily' : period} Recurring Credits AutoPay`
+          description: `Lumina AI Studio Recurring Credits AutoPay (₹${amountInRupees})`
         }
       })
     });
@@ -106,7 +140,45 @@ export class RazorpayAdapter {
   }
 
   /**
-   * Creates a real Razorpay UPI AutoPay Subscription.
+   * Fetches real Subscription state from Razorpay API.
+   */
+  async getSubscription(subscriptionId: string): Promise<any> {
+    const config = this.getConfig();
+    if (!config.keyId || !config.keySecret) {
+      throw new Error('Razorpay credentials missing on server.');
+    }
+    const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
+    const res = await fetch(`https://api.razorpay.com/v1/subscriptions/${subscriptionId}`, {
+      headers: { 'Authorization': `Basic ${authHeader}` }
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Razorpay subscription lookup failed: HTTP ${res.status} - ${errText}`);
+    }
+    return await res.json();
+  }
+
+  /**
+   * Fetches real Payment state from Razorpay API.
+   */
+  async getPayment(paymentId: string): Promise<any> {
+    const config = this.getConfig();
+    if (!config.keyId || !config.keySecret) {
+      throw new Error('Razorpay credentials missing on server.');
+    }
+    const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
+    const res = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}`, {
+      headers: { 'Authorization': `Basic ${authHeader}` }
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Razorpay payment lookup failed: HTTP ${res.status} - ${errText}`);
+    }
+    return await res.json();
+  }
+
+  /**
+   * Creates a real Razorpay UPI AutoPay Subscription with ₹1 initial mandate authorization.
    */
   async createSubscription(params: {
     userId: string;
@@ -115,6 +187,7 @@ export class RazorpayAdapter {
     totalCycles?: number;
     startAt?: number;
     amountInRupees?: number;
+    introAddonRupees?: number;
     period?: 'daily' | 'weekly' | 'monthly';
   }): Promise<CreateSubscriptionResult> {
     const config = this.getConfig();
@@ -127,7 +200,7 @@ export class RazorpayAdapter {
 
     const payload: any = {
       plan_id: planId,
-      total_count: params.totalCycles || (params.period === 'daily' ? 365 : 52),
+      total_count: params.totalCycles || 52,
       quantity: 1,
       customer_notify: 1,
       notes: {
@@ -135,6 +208,19 @@ export class RazorpayAdapter {
         product: `Lumina AutoPay (${params.period || 'daily'})`
       }
     };
+
+    // Attach upfront ₹1 addon if requested
+    if (params.introAddonRupees && params.introAddonRupees > 0) {
+      payload.addons = [
+        {
+          item: {
+            name: 'Double Bonanza 24h Intro Access',
+            amount: Math.round(params.introAddonRupees * 100),
+            currency: 'INR'
+          }
+        }
+      ];
+    }
 
     if (params.startAt && params.startAt > Math.floor(Date.now() / 1000) + 300) {
       payload.start_at = params.startAt;

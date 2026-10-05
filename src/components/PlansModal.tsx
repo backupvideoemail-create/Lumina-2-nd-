@@ -52,9 +52,9 @@ export const PlansModal: React.FC = () => {
       return;
     }
 
-    // 1. Request real order from server
+    // 1. Request real order or subscription mandate from server
     const res = await initiateCheckout('plan', currentPlan.id, 'razorpay');
-    if (!res.success || !res.orderId) {
+    if (!res.success || (!res.orderId && !res.subscriptionId)) {
       setErrorMessage(res.error || 'Failed to initiate checkout order with payment server. Please try again.');
       return;
     }
@@ -75,26 +75,26 @@ export const PlansModal: React.FC = () => {
       }
 
       // 3. Open actual Razorpay Checkout Modal
-      const options = {
+      const isAutoPay = Boolean(res.subscriptionId || currentPlan.autoPayEnabled);
+
+      const options: any = {
         key: configData.keyId,
-        order_id: res.orderId,
-        amount: Math.round(currentPlan.price * 100),
-        currency: 'INR',
         name: 'Lumina AI Studio',
         description:
           currentPlan.id === 'plan_intro_daily'
-            ? 'Double Bonanza · Exclusive 1 Day Intro Offer'
+            ? 'Double Bonanza · ₹1 Intro Access + AutoPay Mandate'
             : `${currentPlan.name} AutoPay`,
         image: creatorModelImg,
         handler: async (response: any) => {
-          // Send real payment verification payload to server
+          // Send real payment & mandate verification payload to server
           const verified = await verifyPayment(
-            response.razorpay_order_id || res.orderId,
+            response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || '',
             'plan',
             currentPlan.id,
             'razorpay',
             response.razorpay_payment_id,
-            response.razorpay_signature
+            response.razorpay_signature,
+            response.razorpay_subscription_id || res.subscriptionId
           );
 
           if (verified) {
@@ -105,12 +105,12 @@ export const PlansModal: React.FC = () => {
           }
         },
         prefill: {
-          contact: '',
-          email: 'ai.prime.studio.pro@gmail.com'
+          contact: user?.phone || '',
+          email: user?.email || 'ai.prime.studio.pro@gmail.com'
         },
         notes: {
           planId: currentPlan.id,
-          isAutoPay: true,
+          isAutoPay: String(isAutoPay),
           renewalPrice: currentPlan.renewalPrice
         },
         theme: {
@@ -122,6 +122,15 @@ export const PlansModal: React.FC = () => {
           }
         }
       };
+
+      // CRITICAL: For AutoPay plans, pass subscription_id to authorize recurring mandate!
+      if (res.subscriptionId) {
+        options.subscription_id = res.subscriptionId;
+      } else {
+        options.order_id = res.orderId;
+        options.amount = Math.round(currentPlan.price * 100);
+        options.currency = 'INR';
+      }
 
       const rzp = new (window as any).Razorpay(options);
       rzp.on('payment.failed', (failResponse: any) => {

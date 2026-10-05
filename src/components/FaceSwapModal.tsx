@@ -48,11 +48,10 @@ export const FaceSwapModal: React.FC = () => {
 
   // 2. Video Duration Trimmer (Clamped between 4 and 15 seconds)
   const [durationSeconds, setDurationSeconds] = useState<number>(5);
+  const [detectedVideoDuration, setDetectedVideoDuration] = useState<number | null>(null);
 
-  // 3. Face Reference Images (1 to 8 photos, recommended 4-5)
-  const [referenceImages, setReferenceImages] = useState<string[]>(
-    activeScene?.sampleFace ? [activeScene.sampleFace] : []
-  );
+  // 3. Face Reference Images (1 to 8 photos, recommended 4-5, starts strictly with 0 customer references)
+  const [referenceImages, setReferenceImages] = useState<string[]>([]);
 
   // 4. Custom Instructions (Optional, Hindi/English/Hinglish)
   const [customInstructions, setCustomInstructions] = useState<string>('');
@@ -121,6 +120,26 @@ export const FaceSwapModal: React.FC = () => {
       setErrorMessage('Video exceeds 80MB limit. Please upload a smaller video.');
       return;
     }
+
+    // Client-side duration detection via temporary HTMLVideoElement
+    const tempVideoUrl = URL.createObjectURL(file);
+    const tempVideo = document.createElement('video');
+    tempVideo.preload = 'metadata';
+    tempVideo.onloadedmetadata = () => {
+      URL.revokeObjectURL(tempVideoUrl);
+      const dur = tempVideo.duration;
+      if (dur < 3.8) {
+        setErrorMessage(`Video is too short (${dur.toFixed(1)}s). Minimum 4 seconds required for Face Swap.`);
+        setSourceVideoFile(null);
+        setSourceVideoBase64(null);
+        setDetectedVideoDuration(null);
+        return;
+      }
+      setDetectedVideoDuration(Math.round(dur));
+      const targetSec = Math.max(4, Math.min(15, Math.round(dur)));
+      setDurationSeconds(targetSec);
+    };
+    tempVideo.src = tempVideoUrl;
 
     setSourceVideoFile(file);
     const reader = new FileReader();

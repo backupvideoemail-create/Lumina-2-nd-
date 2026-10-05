@@ -54,12 +54,15 @@ export interface Template {
   resolutionLabel?: string;
   isFaceSwap?: boolean;
   faceSwapSceneId?: string;
+  badge?: string;
+  providerCostUsd?: number;
 }
 
 export interface UserProfile {
   id: string;
   name: string;
   email: string;
+  phone?: string;
   avatar: string;
   onboarded: boolean;
   role: 'user' | 'creator' | 'vip' | 'admin';

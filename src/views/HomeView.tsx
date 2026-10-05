@@ -48,18 +48,36 @@ export const HomeView: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-rotating Hero Carousel State (4.5s timer)
+  const [banners, setBanners] = useState<HomeBannerItem[]>(HOME_HERO_BANNERS);
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
 
+  // Fetch live admin-managed banners dynamically
   useEffect(() => {
-    if (isPaused) return;
+    let isMounted = true;
+    fetch('/api/banners')
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.banners && Array.isArray(data.banners) && data.banners.length > 0) {
+          const active = data.banners.filter((b: any) => b.isActive !== false);
+          if (active.length > 0) setBanners(active);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isPaused || banners.length === 0) return;
     const interval = setInterval(() => {
-      setCurrentBannerIndex((prev) => (prev + 1) % HOME_HERO_BANNERS.length);
+      setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
     }, 4500);
     return () => clearInterval(interval);
-  }, [isPaused]);
+  }, [isPaused, banners.length]);
 
-  const activeBanner: HomeBannerItem = HOME_HERO_BANNERS[currentBannerIndex];
+  const activeBanner: HomeBannerItem = banners[currentBannerIndex] || banners[0] || HOME_HERO_BANNERS[0];
 
   const handleBannerClick = (banner: HomeBannerItem) => {
     const targetTpl = templates.find((t) => t.id === banner.targetTemplateId);

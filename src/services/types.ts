@@ -7,6 +7,7 @@ export interface ImageGenerationParams {
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
+  ownerUserId?: string;
 }
 
 export interface VideoGenerationParams {
@@ -18,6 +19,7 @@ export interface VideoGenerationParams {
   motionStyle?: string;
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
+  ownerUserId?: string;
 }
 
 export interface FaceSwapParams {
@@ -31,6 +33,7 @@ export interface FaceSwapParams {
   durationSeconds?: number;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   customParameters?: Record<string, any>;
+  ownerUserId?: string;
 }
 
 export interface TemplateProcessParams {
@@ -42,6 +45,7 @@ export interface TemplateProcessParams {
   aspectRatio: string;
   workflow: string;
   customPrompt?: string;
+  ownerUserId?: string;
 }
 
 export interface ProviderResult {

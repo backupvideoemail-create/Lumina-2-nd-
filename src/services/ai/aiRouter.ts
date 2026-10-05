@@ -61,7 +61,8 @@ export class AIRouter {
         sourceMediaUrl: params.inputMediaUrl,
         userImageUrl: params.inputMediaUrl,
         aspectRatio: (params.aspectRatio as any) || '9:16',
-        styleWorkflow: params.workflow
+        styleWorkflow: params.workflow,
+        ownerUserId: params.ownerUserId
       });
     } else {
       const basePrompt = `Transform image with ${params.templateTitle} aesthetic. Workflow: ${params.workflow}.`;
@@ -74,7 +75,8 @@ export class AIRouter {
         prompt: combinedPrompt,
         userImageUrl: params.inputMediaUrl,
         aspectRatio: (params.aspectRatio as any) || '9:16',
-        styleWorkflow: params.workflow
+        styleWorkflow: params.workflow,
+        ownerUserId: params.ownerUserId
       });
     }
   }

@@ -119,49 +119,50 @@ export function calculateAuthoritativeTemplateCost(
     providerCostUsd?: number;
   }
 ): number {
-  // If template specifies a direct provider cost in USD, calculate dynamically:
+  // 1. Face Swap: Dynamic calculation based on duration ($0.318/sec @ 480p + 40% markup)
+  if (template.isFaceSwap || template.model?.includes('genjutsu') || template.model?.includes('faceswap')) {
+    return calculateFaceSwapCredits(template.durationSeconds || 5).credits;
+  }
+
+  // 2. Video Templates: Server-authoritative dynamic calculation based on model, duration, and resolution
+  if (template.type === 'video') {
+    const is1080p = Boolean(
+      template.resolutionLabel?.includes('1080p') ||
+      template.resolutionLabel?.includes('60FPS') ||
+      template.resolutionLabel?.includes('FHD')
+    );
+    const duration = Math.max(1, template.durationSeconds || 5);
+    const isVeoAi = template.engine === 'AI_GENERATION' || template.model?.includes('veo') || !template.engine;
+
+    let baseUsd: number;
+    if (isVeoAi) {
+      // Current Google Veo 3.1 Lite pricing: 720p = $0.05/sec, 1080p = $0.08/sec
+      const ratePerSecUsd = is1080p ? 0.08 : 0.05;
+      baseUsd = duration * ratePerSecUsd;
+    } else {
+      baseUsd = CENTRAL_PRICING_CONFIG.providerCostsUsd.videoSmartMotionUsd * (duration / 5);
+    }
+    return calculateCreditsFromUsd(baseUsd);
+  }
+
+  // 3. If template specifies an explicit providerCostUsd, calculate dynamically
   if (template.providerCostUsd && template.providerCostUsd > 0) {
     return calculateCreditsFromUsd(template.providerCostUsd);
   }
 
-  // If template already has an explicit creditCost specified in catalog, use it
-  if (template.creditCost && template.creditCost > 0) {
-    return template.creditCost;
-  }
-
+  // 4. Photo Templates: dynamic model and resolution based cost
   const { providerCostsUsd } = CENTRAL_PRICING_CONFIG;
-  let baseUsd = providerCostsUsd.photoSmartUsd;
+  const isGeminiAi = template.engine === 'AI_GENERATION' || template.model?.includes('gemini');
+  const is4k = Boolean(template.resolutionLabel?.includes('4K') || template.resolutionLabel?.includes('HDR'));
 
-  if (template.isFaceSwap) {
-    return calculateFaceSwapCredits(template.durationSeconds || 5).credits;
-  } else if (template.type === 'video') {
-    // Video: dynamic model + duration + resolution based cost
-    const isVeoAi = template.engine === 'AI_GENERATION' || template.model?.includes('veo');
-    const is1080p = template.resolutionLabel?.includes('1080p') || template.resolutionLabel?.includes('60FPS');
-    const duration = Math.max(1, template.durationSeconds || 5);
-
-    if (isVeoAi) {
-      // Current Google Veo 3.1 Lite: 720p = $0.05/sec, 1080p = $0.08/sec
-      const ratePerSecUsd = is1080p ? 0.08 : 0.05;
-      baseUsd = duration * ratePerSecUsd;
-    } else {
-      baseUsd = providerCostsUsd.videoSmartMotionUsd * (duration / 5);
-    }
-  } else {
-    // Photo: model + resolution based cost
-    const isGeminiAi = template.engine === 'AI_GENERATION' || template.model?.includes('gemini');
-    const is4k = template.resolutionLabel?.includes('4K');
-
-    if (is4k) {
-      baseUsd = providerCostsUsd.photo4kHdrDiffusionUsd;
-    } else if (isGeminiAi) {
-      baseUsd = providerCostsUsd.photoAiDiffusionUsd;
-    } else {
-      baseUsd = providerCostsUsd.photoSmartUsd;
-    }
+  let photoUsd = providerCostsUsd.photoSmartUsd;
+  if (is4k) {
+    photoUsd = providerCostsUsd.photo4kHdrDiffusionUsd;
+  } else if (isGeminiAi) {
+    photoUsd = providerCostsUsd.photoAiDiffusionUsd;
   }
 
-  return calculateCreditsFromUsd(baseUsd);
+  return calculateCreditsFromUsd(photoUsd);
 }
 
 /**

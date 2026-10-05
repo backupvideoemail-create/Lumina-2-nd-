@@ -12,6 +12,9 @@ export interface HomeBannerItem {
   commentsCount: string;
   sharesCount: string;
   gradientOverlay?: string;
+  mediaType?: 'image' | 'video';
+  coverMedia?: string;
+  isActive?: boolean;
 }
 
 /**

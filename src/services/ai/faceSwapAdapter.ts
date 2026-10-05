@@ -10,8 +10,11 @@
  * - Required parameters: video_url, image_urls
  * - Optional parameters: prompt (Protected Base Identity Prompt + user instructions), resolution: "480p"
  * - Locked to 480p MVP
- * - 4 to 15 seconds input duration enforcement
+ * - Real physical video duration enforcement
  * - Supports 1 to multiple reference images (recommended 4-5)
+ * - Provider-documented status polling (request_id, status_url)
+ * - Terminal states: queued, in_progress, completed, failed, canceled
+ * - Stored with ownerUserId and private ownership (isPublic = false)
  * - If credentials missing or provider fails, throws clean error for 100% exact atomic credit refund
  */
 
@@ -39,6 +42,7 @@ export interface GenjutsuMotionTransferParams {
   customInstructions?: string;
   resolution?: '480p';
   durationSeconds?: number;
+  ownerUserId?: string;
 }
 
 export class HiggsfieldGenjutsuAdapter {
@@ -133,10 +137,12 @@ export class HiggsfieldGenjutsuAdapter {
 
     // Check for direct output or asynchronous polling
     let resultVideoUrl: string | null =
-      data.video ||
+      (typeof data.video === 'string' ? data.video : data.video?.url) ||
       data.video_url ||
+      data.output?.video?.url ||
       data.output?.video_url ||
       data.result_url ||
+      data.result_video_url ||
       null;
 
     const requestId = data.request_id || data.id;
@@ -155,19 +161,27 @@ export class HiggsfieldGenjutsuAdapter {
           const pollRes = await fetch(pollEndpoint, { headers });
           if (pollRes.ok) {
             const pollData = await pollRes.json();
-            const currentStatus = pollData.status;
+            const currentStatus = (pollData.status || '').toLowerCase();
 
-            if (currentStatus === 'completed' || currentStatus === 'succeeded') {
+            if (currentStatus === 'completed' || currentStatus === 'succeeded' || currentStatus === 'finished') {
               resultVideoUrl =
-                pollData.video ||
+                (typeof pollData.video === 'string' ? pollData.video : pollData.video?.url) ||
                 pollData.video_url ||
+                pollData.output?.video?.url ||
                 pollData.output?.video_url ||
                 pollData.result_url ||
                 pollData.result_video_url ||
                 null;
               break;
-            } else if (currentStatus === 'failed' || currentStatus === 'canceled' || currentStatus === 'nsfw') {
-              throw new Error(`Higgsfield Genjutsu job terminated with status: ${currentStatus} - ${pollData.error || 'Provider rejected generation'}`);
+            } else if (
+              currentStatus === 'failed' ||
+              currentStatus === 'canceled' ||
+              currentStatus === 'cancelled' ||
+              currentStatus === 'nsfw'
+            ) {
+              throw new Error(
+                `Higgsfield Genjutsu job terminated with status: ${currentStatus} - ${pollData.error || pollData.message || 'Provider rejected generation'}`
+              );
             }
           }
         } catch (pollErr: any) {
@@ -183,7 +197,7 @@ export class HiggsfieldGenjutsuAdapter {
       throw new Error('Higgsfield Genjutsu generation timed out or did not return a valid video output.');
     }
 
-    // Download generated video bytes and save to persistent storage
+    // Download generated video bytes and save to persistent storage with authenticated ownerUserId
     const videoRes = await fetch(resultVideoUrl);
     if (!videoRes.ok) {
       throw new Error(`Failed to download generated video asset from provider: HTTP ${videoRes.status}`);
@@ -191,9 +205,11 @@ export class HiggsfieldGenjutsuAdapter {
 
     const arrayBuffer = await videoRes.arrayBuffer();
     const stored = await mediaStorage.saveMedia(
-      Buffer.from(arrayBuffer).toString('base64'),
+      Buffer.from(arrayBuffer),
       'generation',
-      `genjutsu_${Date.now()}.mp4`
+      `genjutsu_${Date.now()}.mp4`,
+      params.ownerUserId,
+      false // Private: owned by authenticated user
     );
 
     return {

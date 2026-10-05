@@ -9,6 +9,23 @@ export const FaceSwapFeaturedCard: React.FC = () => {
   const [isPlayingDemo, setIsPlayingDemo] = useState(false);
 
   const topScene = faceSwapScenes[0]; // Trending Dance & Viral
+  const [liveDemoVideoUrl, setLiveDemoVideoUrl] = useState<string>(topScene.demoVideoUrl || '');
+
+  // Fetch live admin-managed demo video from server
+  React.useEffect(() => {
+    let isMounted = true;
+    fetch('/api/faceswap/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.demoVideoUrl) {
+          setLiveDemoVideoUrl(data.demoVideoUrl);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const handleOpenFaceSwap = () => {
     setSelectedFaceSwapScene(topScene);
@@ -50,9 +67,9 @@ export const FaceSwapFeaturedCard: React.FC = () => {
         {/* Center Visual: Dedicated Demo Video Slot & Before/After Interactive Preview */}
         <div className="relative px-3 sm:px-5">
           <div className="relative rounded-xl overflow-hidden aspect-[21/9] sm:aspect-[24/9] w-full bg-stone-950 border border-white/10 shadow-xl">
-            {previewMode === 'demo' && topScene.demoVideoUrl ? (
+            {previewMode === 'demo' && (liveDemoVideoUrl || topScene.demoVideoUrl) ? (
               <video
-                src={topScene.demoVideoUrl}
+                src={liveDemoVideoUrl || topScene.demoVideoUrl}
                 autoPlay
                 playsInline
                 loop

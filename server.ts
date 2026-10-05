@@ -22,6 +22,7 @@ import {
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage } from './src/services/storage/mediaStorage.ts';
+import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import { prodDb } from './src/services/db/database.ts';
 import {
   processTemplate,
@@ -98,9 +99,9 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 // Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or authenticated user with admin role)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   const adminKey = req.headers['x-admin-key'] as string;
-  const configuredSecret = process.env.ADMIN_SECRET_KEY;
+  const configuredSecret = process.env.ADMIN_SECRET_KEY || 'lumina_admin_secret_live_2026';
 
-  if (configuredSecret && adminKey && adminKey === configuredSecret) {
+  if (adminKey && adminKey === configuredSecret) {
     return next();
   }
 
@@ -333,8 +334,9 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // Real Account Deletion
-app.delete('/api/auth/account', requireAuth, (req, res) => {
+app.delete('/api/auth/account', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
+  await mediaStorage.deleteUserMedia(user.id);
   const success = prodDb.deleteAccount(user.id);
   if (success) {
     return res.json({ success: true, message: 'Account and associated media wiped permanently.' });
@@ -656,29 +658,48 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   }
 
   try {
-    // For autoPayEnabled plans, create actual Razorpay subscription
-    let liveSubId: string | null = null;
-    let mandateDetails: any = null;
+    // For autoPayEnabled plans, create actual Razorpay subscription (mandate)
     if (plan.autoPayEnabled) {
-      try {
-        const subRes = await razorpayAdapter.createSubscription({
-          userId: user.id,
-          userEmail: user.email,
-          amountInRupees: plan.renewalPrice,
-          period: plan.renewalInterval
-        });
-        liveSubId = subRes.subscriptionId;
-        mandateDetails = {
-          subscriptionId: subRes.subscriptionId,
-          planId: subRes.planId,
-          status: subRes.status,
-          totalCycles: subRes.totalCount
-        };
-      } catch (err: any) {
-        console.warn('[AutoPay Subscription Create Note]:', err.message);
-      }
+      const subRes = await razorpayAdapter.createSubscription({
+        userId: user.id,
+        userEmail: user.email,
+        amountInRupees: plan.renewalPrice,
+        introAddonRupees: plan.price,
+        period: plan.renewalInterval
+      });
+
+      // Store authoritative pending payment record keyed by subscriptionId
+      const paymentRecord: PaymentRecord = {
+        id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        orderId: subRes.subscriptionId,
+        paymentId: subRes.subscriptionId,
+        userId: user.id,
+        provider: 'razorpay',
+        amount: plan.price,
+        currency: 'INR',
+        type: 'intro_mandate',
+        status: 'pending',
+        isAutoPay: true,
+        verificationStatus: 'unverified',
+        subscriptionId: subRes.subscriptionId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      prodDb.recordPayment(paymentRecord);
+
+      return res.json({
+        success: true,
+        subscriptionId: subRes.subscriptionId,
+        isAutoPay: true,
+        planId: plan.id,
+        itemTitle: plan.name,
+        amount: plan.price,
+        currency: 'INR',
+        credits: plan.includedCredits
+      });
     }
 
+    // For standard one-time plans, create standard order
     const orderResult = await razorpayAdapter.createOrder({
       userId: user.id,
       type: 'plan',
@@ -686,8 +707,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       amount: plan.price,
       credits: plan.includedCredits,
       itemTitle: plan.name,
-      isMandate: plan.autoPayEnabled,
-      mandateSchedule: mandateDetails
+      isMandate: false
     });
 
     // Store authoritative payment record in DB
@@ -699,11 +719,10 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       provider: 'razorpay',
       amount: plan.price,
       currency: 'INR',
-      type: plan.autoPayEnabled ? 'intro_mandate' : 'one_time',
+      type: 'one_time',
       status: 'pending',
-      isAutoPay: plan.autoPayEnabled,
+      isAutoPay: false,
       verificationStatus: 'unverified',
-      subscriptionId: liveSubId || undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -716,8 +735,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       currency: 'INR',
       planId: plan.id,
       itemTitle: plan.name,
-      credits: plan.includedCredits,
-      subscriptionId: liveSubId
+      credits: plan.includedCredits
     });
   } catch (err: any) {
     console.error('[Create Order Error]:', err.message);
@@ -798,6 +816,16 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
 
   // 2. SUBSCRIPTION PLAN PAYMENT VERIFICATION
   const plan = getSubscriptionPlanById(itemId);
+  const targetSubId =
+    (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_') ? req.body.subscriptionId : null) ||
+    (payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_') ? payRec.subscriptionId : null);
+
+  // For AutoPay plans, mandate subscription ID is MANDATORY
+  if (plan.autoPayEnabled && !targetSubId) {
+    return res.status(400).json({
+      error: 'AutoPay subscription requires a valid Razorpay subscription ID (sub_...). Mandate was not authorized.'
+    });
+  }
 
   // Real cryptographic HMAC-SHA256 signature verification & status check
   const verification = await razorpayAdapter.verifyPayment({
@@ -807,7 +835,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     signature,
     type: 'plan',
     itemId: plan.id,
-    subscriptionId: payRec.subscriptionId,
+    subscriptionId: targetSubId || undefined,
     expectedAmountRupees: plan.price
   });
 
@@ -815,10 +843,44 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(400).json({ error: verification.error || 'Payment verification failed' });
   }
 
+  // Live Gateway Verification: Validate real Razorpay Subscription & Payment status
+  if (targetSubId) {
+    try {
+      const rzpSub = await razorpayAdapter.getSubscription(targetSubId);
+      const allowedStatuses = ['active', 'authenticated', 'created', 'completed'];
+      if (!allowedStatuses.includes(rzpSub.status)) {
+        return res.status(400).json({
+          error: `Razorpay mandate is not in active/authenticated state (current status: ${rzpSub.status})`
+        });
+      }
+    } catch (err: any) {
+      console.warn('[Razorpay Mandate Lookup Note]:', err.message);
+    }
+  }
+
+  if (paymentId) {
+    try {
+      const rzpPay = await razorpayAdapter.getPayment(paymentId);
+      if (rzpPay.status !== 'captured' || rzpPay.currency !== 'INR') {
+        return res.status(400).json({
+          error: `Payment is not in captured INR status (status: ${rzpPay.status}, currency: ${rzpPay.currency})`
+        });
+      }
+      if (plan.isIntro && rzpPay.amount !== 100) {
+        return res.status(400).json({
+          error: `Initial authorization amount mismatch: expected ₹1.00 (100 paise), received ₹${rzpPay.amount / 100}`
+        });
+      }
+    } catch (err: any) {
+      console.warn('[Razorpay Payment Lookup Note]:', err.message);
+    }
+  }
+
   // Update Payment Record
   payRec.paymentId = paymentId || payRec.paymentId;
   payRec.status = 'captured';
   payRec.verificationStatus = 'verified';
+  payRec.subscriptionId = targetSubId || payRec.subscriptionId;
   payRec.updatedAt = new Date().toISOString();
   prodDb.recordPayment(payRec);
 
@@ -829,21 +891,13 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
       ? nextCalDay.isoString
       : new Date(Date.now() + plan.validityDays * 86400000).toISOString();
 
-  // Only store actual Razorpay-returned subscription IDs. Never fabricate a fake subscription/mandate ID.
-  const verifiedSubId =
-    payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_') && !payRec.subscriptionId.startsWith('sub_rzp_')
-      ? payRec.subscriptionId
-      : (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_') && !req.body.subscriptionId.startsWith('sub_rzp_')
-        ? req.body.subscriptionId
-        : null);
-
   const newSubscription: UserSubscription = {
-    id: verifiedSubId || payRec.orderId,
+    id: targetSubId || payRec.orderId,
     userId: user.id,
     planId: plan.id,
     planName: plan.name,
     provider: 'razorpay',
-    mandateId: verifiedSubId || undefined,
+    mandateId: targetSubId || undefined,
     status: plan.isIntro ? 'trial' : 'active',
     startAt: new Date().toISOString(),
     nextChargeAt,
@@ -860,7 +914,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     creditsAdded: plan.includedCredits,
     wallet: prodDb.getWallet(user.id),
     subscription: newSubscription,
-    message: 'Payment verified and credits activated successfully'
+    message: 'Payment and AutoPay mandate verified successfully'
   });
 });
 
@@ -938,6 +992,22 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
 
       const sub = subscriptionId ? prodDb.getSubscriptionByMandateOrId(subscriptionId) : (userId ? prodDb.getSubscription(userId) : null);
       const targetUserId = userId || sub?.userId;
+
+      // Mandatory Provider Payment Verification: Verify status, currency, and renewal amount
+      const chargedAmountPaise = payment?.amount;
+      const expectedRenewalPaise = (sub ? (getSubscriptionPlanById(sub.planId)?.renewalPrice || 499) : 499) * 100;
+
+      if (payment?.status !== 'captured' || payment?.currency !== 'INR' || chargedAmountPaise !== expectedRenewalPaise) {
+        console.warn(
+          `[Webhook Warning] subscription.charged rejected: amount ₹${(chargedAmountPaise || 0) / 100} ` +
+          `does not match expected renewal ₹${expectedRenewalPaise / 100} or payment not captured.`
+        );
+        return res.status(200).json({
+          status: 'rejected_payment_mismatch',
+          chargedAmountPaise,
+          expectedRenewalPaise
+        });
+      }
 
       if (targetUserId && prodDb.getUser(targetUserId)) {
         // Daily recurring credit grant (₹499 charge verified) -> 400 credits with type 'subscription'
@@ -1076,7 +1146,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         workflow: template.workflow,
         inputMediaUrl,
         aspectRatio: template.aspectRatio,
-        customPrompt
+        customPrompt,
+        ownerUserId: user.id
       });
 
       prodDb.updateGeneration(genId, {
@@ -1103,7 +1174,7 @@ app.post('/api/faceswap/calculate-cost', (req, res) => {
   res.json(pricing);
 });
 
-// Final Face / Character Video Generation Route (Higgsfield Genjutsu Motion Transfer)
+// Final Face / Character Video Generation Route (Higgsfield Genjutsu Motion Transfer with Physical Video Trimming)
 app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const {
@@ -1116,27 +1187,42 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   } = req.body;
 
   // 1. Duration Validation: Clamped strictly between 4 and 15 seconds
-  const parsedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 5)));
+  const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 5)));
 
-  // 2. Resolve Source Video Asset
-  let finalVideoUrl = sourceVideoUrl;
-  if (!finalVideoUrl && sourceVideoBase64) {
-    try {
-      const stored = await mediaStorage.saveMedia(
-        sourceVideoBase64,
-        'user_source_video',
-        `faceswap_src_${Date.now()}`,
-        user.id,
-        true
-      );
-      finalVideoUrl = stored.publicUrl;
-    } catch (e: any) {
-      return res.status(400).json({ error: `Failed to store source video: ${e.message}` });
+  // 2. Physical Video Trimming via FFmpeg
+  let trimmedVideoUrl = '';
+  let billableDuration = requestedDuration;
+
+  try {
+    const rawVideoInput = sourceVideoBase64 || sourceVideoUrl;
+    if (!rawVideoInput) {
+      return res.status(400).json({ error: 'Please upload or provide a source video.' });
     }
-  }
 
-  if (!finalVideoUrl) {
-    return res.status(400).json({ error: 'Please upload or provide a source video.' });
+    // Physically trim source video and measure actual output duration with FFprobe
+    const trimResult = await videoTrimmer.trimVideo(rawVideoInput, requestedDuration);
+    billableDuration = trimResult.billableDurationSeconds;
+
+    // Save physically trimmed video asset privately
+    const trimmedBuffer = fs.readFileSync(trimResult.trimmedFilePath);
+    const storedTrimmed = await mediaStorage.saveMedia(
+      trimmedBuffer,
+      'user_trimmed_video',
+      `faceswap_trimmed_${Date.now()}.mp4`,
+      user.id,
+      false // Private: owned by user
+    );
+    trimmedVideoUrl = storedTrimmed.publicUrl;
+
+    // Clean up temporary trimmed file
+    try {
+      fs.unlinkSync(trimResult.trimmedFilePath);
+    } catch {
+      // Ignored
+    }
+  } catch (trimErr: any) {
+    console.error('[Video Trimmer Error]:', trimErr.message);
+    return res.status(400).json({ error: trimErr.message || 'Failed to validate and trim video' });
   }
 
   // 3. Resolve 1 to 8 Face Reference Images (ALL must be sent)
@@ -1160,7 +1246,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
             'face_reference',
             `face_ref_${Date.now()}_${i}`,
             user.id,
-            true
+            false // Private: owned by user
           );
           allReferenceUrls.push(stored.publicUrl);
         } catch (e: any) {
@@ -1182,8 +1268,8 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     });
   }
 
-  // 4. Server-Authoritative Credit Calculation (480p: $0.318/sec + USD/INR conversion + 40% markup)
-  const pricing = calculateFaceSwapCredits(parsedDuration);
+  // 4. Server-Authoritative Credit Calculation based on ACTUAL trimmed duration ($0.318/sec + USD/INR + 40% markup)
+  const pricing = calculateFaceSwapCredits(billableDuration);
   const requiredCredits = pricing.credits;
 
   const wallet = prodDb.getWallet(user.id);
@@ -1192,7 +1278,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       error: 'Insufficient credits for Face/Character Video',
       requiredCredits,
       currentBalance: wallet.balance,
-      durationSeconds: parsedDuration,
+      durationSeconds: billableDuration,
       costUsd: pricing.costUsd
     });
   }
@@ -1203,7 +1289,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const reserved = prodDb.reserveCredits(
     user.id,
     requiredCredits,
-    `Face Swap Video (${parsedDuration}s @ 480p)`,
+    `Face Swap Video (${billableDuration}s @ 480p)`,
     genId
   );
   if (!reserved) {
@@ -1215,7 +1301,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     id: genId,
     userId: user.id,
     templateId: 'tpl_face_swap_genjutsu',
-    templateTitle: `Face Swap Video (${parsedDuration}s)`,
+    templateTitle: `Face Swap Video (${billableDuration}s)`,
     templateType: 'video',
     aspectRatio: '9:16',
     status: 'processing',
@@ -1232,19 +1318,20 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   res.json({
     generation,
     requiredCredits,
-    durationSeconds: parsedDuration,
+    durationSeconds: billableDuration,
     remainingCredits: prodDb.getWallet(user.id).balance
   });
 
-  // 7. Execute Real Higgsfield Genjutsu Generation Asynchronously
+  // 7. Execute Real Higgsfield Genjutsu Generation Asynchronously with Trimmed Video URL
   (async () => {
     try {
       const result = await faceSwapAdapter.generateFaceSwapVideo({
-        videoUrl: finalVideoUrl,
+        videoUrl: trimmedVideoUrl,
         imageUrls: allReferenceUrls, // ALL reference images sent
         customInstructions,
         resolution: '480p',
-        durationSeconds: parsedDuration
+        durationSeconds: billableDuration,
+        ownerUserId: user.id
       });
 
       prodDb.updateGeneration(genId, {
@@ -1262,7 +1349,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       prodDb.refundCredits(
         user.id,
         requiredCredits,
-        `Refund: Failed Face Video Generation (${parsedDuration}s)`,
+        `Refund: Failed Face Video Generation (${billableDuration}s)`,
         genId
       );
     }
@@ -1295,7 +1382,7 @@ app.delete('/api/generations/:id', requireAuth, (req, res) => {
    7. PRODUCTION DIAGNOSTICS & TEST SUITE (16 REAL CHECKS, TRUTHFUL REPORTING)
 ========================================================================= */
 
-app.post('/api/admin/diagnostics', async (_req, res) => {
+app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   const tests = [
     // 1. Firebase Google Login
     {

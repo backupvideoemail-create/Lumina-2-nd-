@@ -96,8 +96,8 @@ interface AppContextType {
   topUps: TopUpOption[];
   hasActivePlan: boolean;
   isPaying: boolean;
-  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; error?: string }>;
-  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string) => Promise<boolean>;
+  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; isAutoPay?: boolean; error?: string }>;
+  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<boolean>;
   cancelSubscription: () => Promise<boolean>;
 
   // High-Intent Auth Modal & Pending Action Execution
@@ -580,12 +580,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Initiate Razorpay Checkout Order
+  // Initiate Razorpay Checkout Order / Subscription
   const initiateCheckout = async (
     type: 'plan' | 'topup',
     itemId: string,
     provider: 'razorpay' | 'cashfree' = 'razorpay'
-  ): Promise<{ success: boolean; orderId?: string; error?: string }> => {
+  ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; isAutoPay?: boolean; error?: string }> => {
     if (!user) {
       setPendingAction({ type: 'buy_plan', planId: itemId });
       setAuthModalOpen(true);
@@ -605,10 +605,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const data = await res.json();
       setIsPaying(false);
 
-      if (res.ok && data.orderId) {
-        return { success: true, orderId: data.orderId };
+      if (res.ok && (data.orderId || data.subscriptionId)) {
+        return {
+          success: true,
+          orderId: data.orderId,
+          subscriptionId: data.subscriptionId,
+          isAutoPay: Boolean(data.isAutoPay || data.subscriptionId)
+        };
       } else {
-        return { success: false, error: data.error || 'Failed to create payment order' };
+        return { success: false, error: data.error || 'Failed to create payment order or mandate' };
       }
     } catch (err: any) {
       setIsPaying(false);
@@ -616,14 +621,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Verify Real Razorpay Payment Signature
+  // Verify Real Razorpay Payment Signature & Subscription Mandate
   const verifyPayment = async (
     orderId: string,
     type: 'plan' | 'topup',
     itemId: string,
     provider: string = 'razorpay',
     paymentId?: string,
-    signature?: string
+    signature?: string,
+    subscriptionId?: string
   ): Promise<boolean> => {
     try {
       const res = await fetch('/api/payments/verify', {
@@ -638,7 +644,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           itemId,
           provider,
           paymentId,
-          signature
+          signature,
+          subscriptionId
         })
       });
       const data = await res.json();

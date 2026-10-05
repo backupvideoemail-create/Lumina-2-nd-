@@ -138,11 +138,13 @@ export class GeminiAdapter {
       throw new Error(`Gemini model did not return image bytes. Details: ${textOutput}`);
     }
 
-    // Save actual generated image to durable storage
+    // Save actual generated image to durable storage with owner isolation
     const stored = await mediaStorage.saveMedia(
       generatedBase64,
       'generation',
-      `gemini_${Date.now()}.${generatedMimeType.includes('png') ? 'png' : 'jpg'}`
+      `gemini_${Date.now()}.${generatedMimeType.includes('png') ? 'png' : 'jpg'}`,
+      params.ownerUserId,
+      false
     );
 
     return {
