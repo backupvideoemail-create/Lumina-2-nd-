@@ -11,8 +11,8 @@
  */
 
 export const SUPPORT_CONFIG = {
-  email: 'ai.prime.studio.pro@gmail.com',
-  name: 'AI Prime Studio Support Desk',
+  email: 'backupvideoemail@gmail.com',
+  name: 'Lumina AI Studio Support Desk',
   responseTime: 'Within 24 hours'
 } as const;
 
@@ -40,16 +40,16 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     id: 'plan_intro_daily',
     name: 'Double Bonanza',
     cardTitle: 'Double Bonanza',
-    validityLabel: 'Exclusive Intro Offer Plan',
+    validityLabel: 'Exclusive 1 Day Intro Pass',
     price: 1,
-    periodLabel: '1 month validity',
+    periodLabel: '1 day validity',
     includedCredits: 500, // 500 credits immediately unlocked
     renewalPrice: 499, // ₹499 recurring daily
     renewalInterval: 'daily',
     validityDays: 1,
     autoPayEnabled: true,
     scheduleRule: 'next_calendar_day',
-    disclosureText: '₹1 today · then ₹499 daily until cancelled.',
+    disclosureText: '₹1 today for 1 day · then ₹499 daily until cancelled.',
     badge: 'HOT',
     isIntro: true,
     isPopular: true

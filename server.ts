@@ -48,7 +48,7 @@ const app = express();
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-admin-key, x-lumina-internal');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-admin-key');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -152,6 +152,17 @@ app.get('/api/media/:fileId', (req, res) => {
   res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
   res.setHeader('Cache-Control', 'private, max-age=86400');
   res.sendFile(authResult.filePath);
+});
+
+// Get presigned URL for direct/cloud storage access with ownership validation
+app.get('/api/media/:fileId/signed-url', requireAuth, async (req, res) => {
+  const fileId = req.params.fileId;
+  const user = (req as any).user as UserProfile;
+  const signedUrl = await mediaStorage.getPresignedUrl(fileId, user.id);
+  if (!signedUrl) {
+    return res.status(403).json({ error: 'Access denied or media not found' });
+  }
+  res.json({ success: true, url: signedUrl });
 });
 
 // Upload media file with user isolation
@@ -1235,34 +1246,87 @@ app.post('/api/admin/diagnostics', async (_req, res) => {
         return 'Credits credited atomically with immutable transaction trail';
       }
     },
-    // 10. Gemini Photo Pipeline
+    // 10. Gemini Photo Pipeline (Real generation test)
     {
       id: 'gemini_photo_pipeline',
       name: 'Google Gemini Photo Pipeline (gemini-3.1-flash-image)',
       category: 'AI Synthesis' as const,
-      fn: () => {
+      fn: async () => {
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
           const err: any = new Error('GEMINI_API_KEY is not configured in environment variables.');
           err.code = 'PENDING_CONFIG';
           throw err;
         }
-        return 'gemini-3.1-flash-image active and configured with Gemini API Key';
+
+        try {
+          const res = await geminiAdapter.generateImage({
+            prompt: 'Ultra-realistic cinematic portrait of an Indian creator in modern studio lighting',
+            aspectRatio: '9:16',
+            styleWorkflow: 'cinematic portrait'
+          });
+
+          if (!res.success || !res.resultUrl) {
+            throw new Error('Gemini generation did not return a valid result URL');
+          }
+
+          // Verify stored media exists and has bytes
+          const fileId = res.resultUrl.replace('/api/media/', '');
+          const filePath = mediaStorage.getFilePath(fileId);
+          if (!filePath || !fs.existsSync(filePath)) {
+            throw new Error('Generated output bytes were not written to storage');
+          }
+
+          const stats = fs.statSync(filePath);
+          if (stats.size === 0) {
+            throw new Error('Generated image file is 0 bytes');
+          }
+
+          return `Real photo generation verified with Gemini API! Output: ${res.resultUrl} (${Math.round(stats.size / 1024)} KB, ${res.processingTimeMs}ms)`;
+        } catch (err: any) {
+          throw new Error(`Real Gemini generation test: ${err.message}`);
+        }
       }
     },
-    // 11. Veo Video Pipeline
+    // 11. Veo Video Pipeline (Real generation test)
     {
       id: 'veo_video_pipeline',
       name: 'Google Veo Video Pipeline (veo-3.1-lite-generate-preview)',
       category: 'AI Synthesis' as const,
-      fn: () => {
+      fn: async () => {
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) {
           const err: any = new Error('GEMINI_API_KEY is not configured in environment variables.');
           err.code = 'PENDING_CONFIG';
           throw err;
         }
-        return 'veo-3.1-lite-generate-preview async polling pipeline ready';
+
+        try {
+          const res = await videoProviderAdapter.generateVideo({
+            prompt: 'Cinematic fluid light streaks in cyberpunk night city 9:16',
+            aspectRatio: '9:16',
+            styleWorkflow: 'viral motion'
+          });
+
+          if (!res.success || !res.resultUrl) {
+            throw new Error('Veo generation did not return a valid result URL');
+          }
+
+          const fileId = res.resultUrl.replace('/api/media/', '');
+          const filePath = mediaStorage.getFilePath(fileId);
+          if (!filePath || !fs.existsSync(filePath)) {
+            throw new Error('Generated video bytes were not written to storage');
+          }
+
+          const stats = fs.statSync(filePath);
+          if (stats.size === 0) {
+            throw new Error('Generated video file is 0 bytes');
+          }
+
+          return `Real video generation verified with Google Veo! Output: ${res.resultUrl} (${Math.round(stats.size / 1024)} KB, ${res.processingTimeMs}ms)`;
+        } catch (err: any) {
+          throw new Error(`Real Veo generation test: ${err.message}`);
+        }
       }
     },
     // 12. 100% Failure Refund

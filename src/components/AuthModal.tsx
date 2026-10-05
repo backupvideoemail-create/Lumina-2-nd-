@@ -226,7 +226,7 @@ export const AuthModal: React.FC = () => {
         <div className="text-center flex flex-col items-center mb-5 relative z-10">
           <Logo size="lg" showText={false} />
           <h3 className="text-2xl font-black font-display text-white tracking-tight leading-tight mt-2">
-            AI Prime Studio
+            Lumina AI Studio
           </h3>
           <p className="text-xs text-amber-200 mt-1 flex items-center gap-1 font-semibold text-center max-w-xs">
             <Sparkles className="w-3.5 h-3.5 text-[#ffb703] fill-[#ffb703] shrink-0" />

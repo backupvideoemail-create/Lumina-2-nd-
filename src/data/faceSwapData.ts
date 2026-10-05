@@ -12,7 +12,8 @@ export const SEED_FACE_SWAP_SCENES: FaceSwapScene[] = [
     durationSeconds: 9,
     aspectRatio: '9:16',
     category: 'Dance & Viral',
-    tags: ['Face Swap', 'Dance', 'Instagram Reels', 'TikTok Dance', 'Viral Trend']
+    tags: ['Face Swap', 'Dance', 'Instagram Reels', 'TikTok Dance', 'Viral Trend'],
+    demoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-party-with-lights-40915-large.mp4'
   },
   {
     id: 'fsv_monaco_racer',

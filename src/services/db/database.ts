@@ -16,27 +16,67 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  collection,
+  getDocs,
+  deleteDoc
+} from 'firebase/firestore';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import type {
   Template,
   UserProfile,
   CreditWallet,
   CreditTransaction,
+  TransactionType,
   Generation,
   UserSubscription,
   PaymentRecord
 } from '../../types/index.ts';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 
-// Initialize Firebase for server persistence
+// Initialize Firebase client / admin for server persistence
 let firestoreDb: any = null;
+let adminFirestoreDb: any = null;
+
 try {
   const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
   firestoreDb = getFirestore(firebaseApp, (firebaseConfig as any).firestoreDatabaseId);
 } catch (err: any) {
-  console.warn('[Database] Firebase server initialization note:', err.message);
+  console.warn('[Database] Firebase client initialization note:', err.message);
 }
+
+// Attempt Firebase Admin initialization if service account is provided
+(async () => {
+  try {
+    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (serviceAccountKey) {
+      const { initializeApp: initAdminApp, cert } = await import('firebase-admin/app');
+      const { getFirestore: getAdminFirestore } = await import('firebase-admin/firestore');
+      
+      let credentialObj;
+      if (serviceAccountKey.trim().startsWith('{')) {
+        credentialObj = JSON.parse(serviceAccountKey);
+      } else if (fs.existsSync(serviceAccountKey)) {
+        credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
+      }
+
+      if (credentialObj) {
+        const adminApp = initAdminApp({
+          credential: cert(credentialObj),
+          projectId: (firebaseConfig as any).projectId
+        }, 'lumina-admin-app');
+        adminFirestoreDb = getAdminFirestore(adminApp, (firebaseConfig as any).firestoreDatabaseId);
+        console.log('[Database] Firebase Admin SDK connected to Firestore with privileged credentials');
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Database] Firebase Admin optional initialization note:', err.message);
+  }
+})();
 
 export interface AuthIdentity {
   userId: string;
@@ -151,12 +191,32 @@ class ProductionDatabase {
      FIRESTORE SYNC HELPERS
   ========================================================================= */
   private async syncToFirestore(collectionName: string, docId: string, data: any) {
-    if (!firestoreDb) return;
     try {
-      const docRef = doc(firestoreDb, collectionName, docId);
-      await setDoc(docRef, data, { merge: true });
+      if (adminFirestoreDb) {
+        await adminFirestoreDb.collection(collectionName).doc(docId).set(data, { merge: true });
+        return;
+      }
+      if (firestoreDb) {
+        const docRef = doc(firestoreDb, collectionName, docId);
+        await setDoc(docRef, data, { merge: true });
+      }
     } catch (err: any) {
       console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
+    }
+  }
+
+  private async deleteFromFirestore(collectionName: string, docId: string) {
+    try {
+      if (adminFirestoreDb) {
+        await adminFirestoreDb.collection(collectionName).doc(docId).delete();
+        return;
+      }
+      if (firestoreDb) {
+        const docRef = doc(firestoreDb, collectionName, docId);
+        await deleteDoc(docRef);
+      }
+    } catch (err: any) {
+      console.warn(`[Firestore Delete] ${collectionName}/${docId}:`, err.message);
     }
   }
 
@@ -358,7 +418,7 @@ class ProductionDatabase {
   public isPaymentProcessed(paymentId: string): boolean {
     if (!paymentId) return false;
     const byPayment = Object.values(this.db.payments).some(
-      p => p.paymentId === paymentId && (p.status === 'captured' || p.status === 'completed')
+      p => p.paymentId === paymentId && p.status === 'captured'
     );
     const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
     return byPayment || byTx;
@@ -420,6 +480,7 @@ class ProductionDatabase {
   public addTemplate(tpl: Template): Template {
     this.db.templates.unshift(tpl);
     this.save();
+    this.syncToFirestore('templates', tpl.id, tpl);
     return tpl;
   }
 
@@ -428,6 +489,7 @@ class ProductionDatabase {
     if (index !== -1) {
       this.db.templates.splice(index, 1);
       this.save();
+      this.deleteFromFirestore('templates', id);
       return true;
     }
     return false;
@@ -457,6 +519,7 @@ class ProductionDatabase {
     }
 
     this.save();
+    this.syncToFirestore('user_likes', userId, { templateIds: this.db.userLikes[userId] });
     return { isLiked: !isAlreadyLiked, totalLikes };
   }
 
@@ -495,6 +558,7 @@ class ProductionDatabase {
     if (!this.db.processedWebhooks.includes(eventId)) {
       this.db.processedWebhooks.push(eventId);
       this.save();
+      this.syncToFirestore('processed_webhooks', eventId, { eventId, processedAt: new Date().toISOString() });
     }
   }
 
@@ -513,6 +577,13 @@ class ProductionDatabase {
     this.db.transactions = this.db.transactions.filter(t => t.userId !== userId);
 
     this.save();
+
+    this.deleteFromFirestore('users', userId);
+    this.deleteFromFirestore('auth_identities', userId);
+    this.deleteFromFirestore('wallets', userId);
+    this.deleteFromFirestore('subscriptions', userId);
+    this.deleteFromFirestore('user_likes', userId);
+
     return true;
   }
 }

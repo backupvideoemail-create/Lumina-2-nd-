@@ -1,84 +1,170 @@
 /**
- * Production Higgsfield Face Swap Adapter Architecture.
+ * Production Higgsfield Genjutsu Motion Transfer Adapter.
  * 
- * Modular adapter designed specifically for Higgsfield neural face swap pipeline.
- * Manages:
- * - Target video scene + Source user face input
- * - Asynchronous job lifecycle (queued -> processing -> completed / failed)
- * - Credential checking (HIGGSFIELD_API_KEY / HIGGSFIELD_API_SECRET)
+ * Model: higgsfield/genjutsu/motion-transfer/v1.0
+ * Official Endpoint: https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0
  * 
- * Per architectural requirements:
- * Does NOT report fake results or return static previews as generated results.
- * If credentials are not yet configured, cleanly raises an informative error so
- * caller automatically refunds user credits immediately without balance penalty.
+ * Architecture Rules:
+ * - Real API integration, no placeholder /v1/faceswap
+ * - Server-side only credentials (never exposed to client)
+ * - Required parameters: video_url, image_urls
+ * - Optional parameters: prompt (Protected Base Identity Prompt + user instructions), resolution: "480p"
+ * - Locked to 480p MVP
+ * - 4 to 15 seconds input duration enforcement
+ * - Supports 1 to multiple reference images (recommended 4-5)
+ * - If credentials missing or provider fails, throws clean error for 100% exact atomic credit refund
  */
 
-import type { FaceSwapParams, ProviderResult } from '../types.ts';
 import { mediaStorage } from '../storage/mediaStorage.ts';
+import type { ProviderResult } from '../types.ts';
 
-export class HiggsfieldFaceSwapAdapter {
+export const HIGGSFIELD_BASE_IDENTITY_PROMPT =
+  "Replace the main character in the source video with the person shown in the uploaded reference images. " +
+  "Preserve the person's facial identity as faithfully as possible throughout the entire video. " +
+  "Use all supplied reference images together as identity references for the SAME person. " +
+  "Compare the facial features across the references and maintain consistent identity throughout the video. " +
+  "Do not combine, average, or blend identities from different people. " +
+  "Keep the same facial structure, eyes, nose, lips, jawline, skin tone, hairstyle and overall identity as faithfully as possible. " +
+  "Do not redesign, beautify, age, de-age, cartoonize or intentionally alter the person's identity. " +
+  "Preserve the original body motion, camera movement, timing, framing, pose, clothing, environment, lighting and scene composition unless the source video naturally requires changes. " +
+  "Keep the replacement face naturally aligned with the original head movement, perspective and camera angle. " +
+  "Maintain realistic skin texture and natural facial integration. " +
+  "Avoid face distortion, identity drift, double faces, warped features, flickering, unnatural skin, inconsistent facial appearance, facial artifacts, or sudden identity changes between frames. " +
+  "Use all uploaded reference images as visual identity references for the same person and maintain consistent appearance across the entire video. " +
+  "Prioritize natural-looking face integration and consistent identity while preserving the original motion and scene.";
+
+export interface GenjutsuMotionTransferParams {
+  videoUrl: string;
+  imageUrls: string[];
+  customInstructions?: string;
+  resolution?: '480p';
+  durationSeconds?: number;
+}
+
+export class HiggsfieldGenjutsuAdapter {
   readonly providerName = 'higgsfield';
-  readonly modelName = 'higgsfield-faceswap-v1';
+  readonly modelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
+  readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0';
 
   private getConfig() {
     const apiKey = process.env.HIGGSFIELD_API_KEY || '';
     const apiSecret = process.env.HIGGSFIELD_API_SECRET || '';
-    return { apiKey, apiSecret, isConfigured: Boolean(apiKey && apiSecret) };
+    return { apiKey, apiSecret, isConfigured: Boolean(apiKey) };
   }
 
   getPublicStatus() {
     const config = this.getConfig();
     return {
       provider: this.providerName,
+      model: this.modelName,
       status: config.isConfigured ? 'active' : 'pending_credentials',
-      model: this.modelName
+      resolution: '480p'
     };
   }
 
   /**
-   * Generates a face-swapped video via Higgsfield.
+   * Generates a face/character video via official Higgsfield Genjutsu Motion Transfer.
    */
-  async generateFaceSwapVideo(params: FaceSwapParams): Promise<ProviderResult> {
+  async generateFaceSwapVideo(params: GenjutsuMotionTransferParams): Promise<ProviderResult> {
     const startTime = Date.now();
     const config = this.getConfig();
 
     if (!config.isConfigured) {
       throw new Error(
-        'Higgsfield API credentials are not yet configured. Please supply HIGGSFIELD_API_KEY and HIGGSFIELD_API_SECRET in server environment to enable neural face swap processing. Credits have been refunded.'
+        'HIGGSFIELD_API_KEY is not configured in server environment variables. ' +
+        'Please set HIGGSFIELD_API_KEY to enable neural motion transfer processing. ' +
+        'Your credits have been refunded in full.'
       );
     }
 
-    // Live Higgsfield Pipeline
-    const response = await fetch('https://api.higgsfield.ai/v1/faceswap', {
+    if (!params.videoUrl) {
+      throw new Error('Missing video_url for Genjutsu Motion Transfer.');
+    }
+
+    if (!params.imageUrls || params.imageUrls.length === 0) {
+      throw new Error('At least 1 face reference image is required (4-5 recommended).');
+    }
+
+    // Build protected prompt: Protected Base Identity Prompt + User Custom Instructions
+    let finalPrompt = HIGGSFIELD_BASE_IDENTITY_PROMPT;
+    if (params.customInstructions && params.customInstructions.trim()) {
+      finalPrompt = `${HIGGSFIELD_BASE_IDENTITY_PROMPT}\n\nAdditional User Styling & Adjustments: ${params.customInstructions.trim()}`;
+    }
+
+    const payload = {
+      video_url: params.videoUrl,
+      image_urls: params.imageUrls,
+      prompt: finalPrompt,
+      resolution: '480p'
+    };
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`
+    };
+
+    if (config.apiSecret) {
+      headers['X-Higgsfield-Secret'] = config.apiSecret;
+    }
+
+    const response = await fetch(this.endpoint, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        target_video_url: params.targetVideoUrl,
-        source_face_url: params.sourceFaceUrl,
-        workflow: 'reels_60fps_high_quality'
-      })
+      headers,
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Higgsfield API returned HTTP ${response.status}: ${errText}`);
+      throw new Error(`Higgsfield Genjutsu API returned HTTP ${response.status}: ${errText}`);
     }
 
-    const jobData = await response.json();
-    if (!jobData.result_video_url) {
-      throw new Error('Higgsfield face swap completed without returning video asset.');
+    const data = await response.json();
+
+    // Check for direct output or async job
+    let resultVideoUrl: string | null = data.video_url || data.output?.video_url || data.result_video_url || null;
+
+    if (!resultVideoUrl && data.id) {
+      // Async polling job until terminal state
+      const pollEndpoint = data.poll_url || `https://api.higgsfield.ai/jobs/${data.id}`;
+      let attempts = 0;
+      const maxAttempts = 60; // 5 minutes max (5s interval)
+
+      while (attempts < maxAttempts && !resultVideoUrl) {
+        await new Promise((r) => setTimeout(r, 5000));
+        attempts++;
+
+        try {
+          const pollRes = await fetch(pollEndpoint, { headers });
+          if (pollRes.ok) {
+            const pollData = await pollRes.json();
+            if (pollData.status === 'completed' || pollData.status === 'succeeded') {
+              resultVideoUrl = pollData.video_url || pollData.output?.video_url || pollData.result_video_url;
+              break;
+            } else if (pollData.status === 'failed' || pollData.status === 'canceled') {
+              throw new Error(`Higgsfield Genjutsu job terminated with status: ${pollData.status} - ${pollData.error || 'Unknown error'}`);
+            }
+          }
+        } catch (pollErr: any) {
+          console.warn('[Higgsfield Poll Note]:', pollErr.message);
+        }
+      }
     }
 
-    // Save actual result to media storage
-    const downloadedRes = await fetch(jobData.result_video_url);
-    const arrayBuf = await downloadedRes.arrayBuffer();
+    if (!resultVideoUrl) {
+      throw new Error('Higgsfield Genjutsu did not return generated video output.');
+    }
+
+    // Download generated video bytes and save to persistent storage
+    const videoRes = await fetch(resultVideoUrl);
+    if (!videoRes.ok) {
+      throw new Error(`Failed to download generated video asset from provider: HTTP ${videoRes.status}`);
+    }
+
+    const arrayBuffer = await videoRes.arrayBuffer();
     const stored = await mediaStorage.saveMedia(
-      Buffer.from(arrayBuf).toString('base64'),
+      Buffer.from(arrayBuffer).toString('base64'),
       'generation',
-      `higgsfield_${Date.now()}.mp4`
+      `genjutsu_${Date.now()}.mp4`
     );
 
     return {
@@ -91,4 +177,4 @@ export class HiggsfieldFaceSwapAdapter {
   }
 }
 
-export const faceSwapAdapter = new HiggsfieldFaceSwapAdapter();
+export const faceSwapAdapter = new HiggsfieldGenjutsuAdapter();

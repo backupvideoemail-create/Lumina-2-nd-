@@ -30,9 +30,9 @@ export const HOME_HERO_BANNERS: HomeBannerItem[] = [
     image: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=1200&q=80',
     targetTemplateId: 'tpl_viral_photo_dance_reel',
     category: 'Dance Video',
-    likesCount: '10.8K',
-    commentsCount: '1.2K',
-    sharesCount: '2.5K',
+    likesCount: '1.4K',
+    commentsCount: '180',
+    sharesCount: '340',
     gradientOverlay: 'from-[#1a0826]/80 via-transparent to-[#08080a]'
   },
   {
@@ -45,9 +45,9 @@ export const HOME_HERO_BANNERS: HomeBannerItem[] = [
     image: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=80',
     targetTemplateId: 'tpl_monaco_f1_motion',
     category: 'Trending',
-    likesCount: '24.5K',
-    commentsCount: '3.1K',
-    sharesCount: '8.9K',
+    likesCount: '1.8K',
+    commentsCount: '210',
+    sharesCount: '520',
     gradientOverlay: 'from-[#1f0a0d]/80 via-transparent to-[#08080a]'
   },
   {
@@ -60,9 +60,9 @@ export const HOME_HERO_BANNERS: HomeBannerItem[] = [
     image: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=1200&q=80',
     targetTemplateId: 'tpl_neon_tokyo_cyber',
     category: 'Retro 80s',
-    likesCount: '18.2K',
-    commentsCount: '2.4K',
-    sharesCount: '5.1K',
+    likesCount: '1.2K',
+    commentsCount: '140',
+    sharesCount: '280',
     gradientOverlay: 'from-[#081a24]/80 via-transparent to-[#08080a]'
   },
   {
@@ -75,9 +75,9 @@ export const HOME_HERO_BANNERS: HomeBannerItem[] = [
     image: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=80',
     targetTemplateId: 'tpl_baroque_gold_filigree',
     category: 'Proposal & Wedding',
-    likesCount: '31.4K',
-    commentsCount: '4.8K',
-    sharesCount: '12.3K',
+    likesCount: '1.5K',
+    commentsCount: '190',
+    sharesCount: '410',
     gradientOverlay: 'from-[#241708]/80 via-transparent to-[#08080a]'
   },
   {
@@ -90,15 +90,15 @@ export const HOME_HERO_BANNERS: HomeBannerItem[] = [
     image: 'https://images.unsplash.com/photo-1513151233558-d860c5398176?auto=format&fit=crop&w=1200&q=80',
     targetTemplateId: 'tpl_met_gala_couture',
     category: 'Birthday',
-    likesCount: '15.6K',
-    commentsCount: '1.9K',
-    sharesCount: '4.2K',
+    likesCount: '1.1K',
+    commentsCount: '120',
+    sharesCount: '230',
     gradientOverlay: 'from-[#190a2a]/80 via-transparent to-[#08080a]'
   }
 ];
 
 /**
- * QUICK CATEGORY ICONS (Displayed below carousel banner, matching reference screenshot)
+ * QUICK CATEGORY ICONS (Compact Trending & Viral categories)
  */
 export interface QuickCategoryIcon {
   id: string;
@@ -111,44 +111,45 @@ export interface QuickCategoryIcon {
 
 export const QUICK_CATEGORY_ICONS: QuickCategoryIcon[] = [
   {
-    id: 'cat_birthday',
-    name: 'Birthday',
-    categoryFilter: 'Festival',
-    iconType: 'birthday',
-    glowColor: 'from-amber-600/30 to-amber-900/40 border-amber-500/40'
-  },
-  {
-    id: 'cat_proposal',
-    name: 'Proposal & Wedding',
-    categoryFilter: 'Luxury',
-    iconType: 'wedding',
-    glowColor: 'from-orange-600/30 to-rose-900/40 border-orange-500/40'
-  },
-  {
-    id: 'cat_dance',
-    name: 'Dance Video',
-    categoryFilter: 'Dance',
-    iconType: 'dance',
-    glowColor: 'from-yellow-600/30 to-amber-900/40 border-yellow-500/40',
+    id: 'cat_trending_reels',
+    name: 'Trending Reels',
+    categoryFilter: 'Trending',
+    iconType: 'trending',
+    glowColor: 'from-amber-600/30 to-amber-900/40 border-amber-500/40',
     badge: 'HOT'
   },
   {
-    id: 'cat_horse',
-    name: 'Horse & Royal',
+    id: 'cat_viral_templates',
+    name: 'Viral Templates',
+    categoryFilter: 'Trending',
+    iconType: 'dance',
+    glowColor: 'from-orange-600/30 to-rose-900/40 border-orange-500/40',
+    badge: 'VIRAL'
+  },
+  {
+    id: 'cat_cinematic',
+    name: 'Cinematic AI',
     categoryFilter: 'Cinematic',
     iconType: 'horse',
+    glowColor: 'from-yellow-600/30 to-amber-900/40 border-yellow-500/40'
+  },
+  {
+    id: 'cat_luxury_vip',
+    name: 'Luxury & VIP',
+    categoryFilter: 'Luxury',
+    iconType: 'wedding',
     glowColor: 'from-amber-600/30 to-yellow-900/40 border-amber-500/40'
   }
 ];
 
 /**
- * QUICK PILL TAGS UNDER SEARCH BAR (Matching reference screenshot)
+ * QUICK PILL TAGS UNDER SEARCH BAR
  */
 export const QUICK_PILL_TAGS = [
-  { label: 'Greetings and Wishes', filter: 'Festival' },
-  { label: 'Instagram Poster', filter: 'Fashion' },
-  { label: 'Devotional', filter: 'Cinematic' },
-  { label: 'Viral Dance', filter: 'Dance' },
-  { label: 'Retro 80s', filter: 'Trending' },
+  { label: 'Trending Reels', filter: 'Trending' },
+  { label: 'Viral Motion', filter: 'Dance' },
+  { label: 'Cinematic Portrait', filter: 'Cinematic' },
+  { label: 'Luxury & VIP', filter: 'Luxury' },
+  { label: 'Retro 80s', filter: 'Retro 80s' },
   { label: 'Supercars & Swag', filter: 'Trending' }
 ];

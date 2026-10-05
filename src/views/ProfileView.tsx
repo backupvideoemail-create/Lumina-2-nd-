@@ -16,7 +16,8 @@ import {
   AlertTriangle,
   Zap,
   Lock,
-  Mail
+  Mail,
+  Heart
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
@@ -34,7 +35,10 @@ export const ProfileView: React.FC = () => {
     setAuthModalOpen,
     setTopUpModalOpen,
     hasActivePlan,
-    updateProfile
+    updateProfile,
+    templates,
+    likedTemplates,
+    setSelectedTemplate
   } = useApp();
 
   const [isEditing, setIsEditing] = useState(false);
@@ -262,7 +266,54 @@ export const ProfileView: React.FC = () => {
           )}
         </div>
 
-        {/* 4. Support & Direct Assistance */}
+        {/* 4. Liked Templates / Favorites (Keeps creations and liked templates separate) */}
+        <div className="p-5 rounded-3xl bg-stone-900/80 border border-white/10 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Heart className="w-4 h-4 text-rose-400 fill-rose-400" />
+              <h4 className="text-sm font-bold text-white">Liked Templates & Favorites</h4>
+            </div>
+            <span className="text-xs font-semibold text-stone-400">
+              {likedTemplates.length} Saved
+            </span>
+          </div>
+
+          {likedTemplates.length === 0 ? (
+            <div className="py-6 text-center text-xs text-stone-500 bg-black/20 rounded-2xl border border-white/5">
+              <Heart className="w-6 h-6 text-stone-600 mx-auto mb-1.5 opacity-40" />
+              <p>No liked templates yet.</p>
+              <p className="text-[11px] text-stone-600 mt-0.5">Tap the heart icon on any template to save it here.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+              {templates
+                .filter((t) => likedTemplates.includes(t.id))
+                .map((tpl) => (
+                  <div
+                    key={tpl.id}
+                    onClick={() => setSelectedTemplate(tpl)}
+                    className="group relative rounded-xl overflow-hidden aspect-[9/16] bg-stone-950 border border-white/10 hover:border-amber-400/50 transition-all cursor-pointer shadow-md"
+                  >
+                    <img
+                      src={tpl.cover}
+                      alt={tpl.title}
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent" />
+                    <div className="absolute top-2 right-2 p-1 rounded-full bg-black/60 backdrop-blur-md">
+                      <Heart className="w-3 h-3 text-rose-400 fill-rose-400" />
+                    </div>
+                    <div className="absolute bottom-2 inset-x-2">
+                      <p className="text-xs font-bold text-white truncate drop-shadow">{tpl.title}</p>
+                      <span className="text-[10px] text-amber-300 font-medium">{tpl.category}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+
+        {/* 5. Support & Direct Assistance */}
         <div className="p-4 rounded-3xl bg-stone-900/60 border border-white/5 space-y-2">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-stone-400 px-1">
             Support & Help Desk

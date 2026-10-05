@@ -28,24 +28,50 @@ export class AIRouter {
     return await videoProviderAdapter.generateVideo(params);
   }
 
-  // 3. Unified Face Swap Video
+  // 3. Unified Face Swap Video (Higgsfield Genjutsu Motion Transfer)
   async generateFaceSwapVideo(params: FaceSwapParams): Promise<ProviderResult> {
-    return await faceSwapAdapter.generateFaceSwapVideo(params);
+    const videoUrl = params.videoUrl || params.targetVideoUrl || '';
+    const imageUrls =
+      params.imageUrls && params.imageUrls.length > 0
+        ? params.imageUrls
+        : params.sourceFaceUrl
+        ? [params.sourceFaceUrl]
+        : [];
+
+    return await faceSwapAdapter.generateFaceSwapVideo({
+      videoUrl,
+      imageUrls,
+      customInstructions: params.customInstructions,
+      resolution: '480p',
+      durationSeconds: params.durationSeconds
+    });
   }
 
-  // 4. Unified Template Processing
+  // 4. Unified Template Processing (Protected template prompt + user custom instructions safely combined)
   async processTemplate(params: TemplateProcessParams): Promise<ProviderResult> {
     if (params.templateType === 'video') {
+      const basePrompt = `Synthesize video reel for ${params.templateTitle}. Workflow: ${params.workflow}.`;
+      const combinedPrompt =
+        params.customPrompt && params.customPrompt.trim()
+          ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
+          : basePrompt;
+
       return await this.generateVideo({
-        prompt: params.customPrompt || `Synthesize video reel for ${params.templateTitle}`,
+        prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,
         userImageUrl: params.inputMediaUrl,
         aspectRatio: (params.aspectRatio as any) || '9:16',
         styleWorkflow: params.workflow
       });
     } else {
+      const basePrompt = `Transform image with ${params.templateTitle} aesthetic. Workflow: ${params.workflow}.`;
+      const combinedPrompt =
+        params.customPrompt && params.customPrompt.trim()
+          ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
+          : basePrompt;
+
       return await this.generateImage({
-        prompt: params.customPrompt || `Transform image with ${params.templateTitle} aesthetic`,
+        prompt: combinedPrompt,
         userImageUrl: params.inputMediaUrl,
         aspectRatio: (params.aspectRatio as any) || '9:16',
         styleWorkflow: params.workflow

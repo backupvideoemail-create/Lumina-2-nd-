@@ -1,6 +1,6 @@
 {
   "name": "Lumina AI Template Studio",
-  "description": "Premium cinematic AI photo and video template studio for Instagram Reels, Stories, fashion, and luxury visuals.",
+  "description": "LUMINA AI STUDIO - AI Video & Photo Creator. Premium cinematic AI photo and video template studio for Instagram Reels, Stories, fashion, and luxury visuals.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

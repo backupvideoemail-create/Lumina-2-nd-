@@ -207,5 +207,6 @@ export interface FaceSwapScene {
   aspectRatio: AspectRatio;
   category: string;
   tags: string[];
+  demoVideoUrl?: string;
 }
 

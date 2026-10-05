@@ -11,7 +11,7 @@ export interface ImageGenerationParams {
 
 export interface VideoGenerationParams {
   prompt: string;
-  sourceMediaUrl: string;
+  sourceMediaUrl?: string;
   userImageUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   durationSeconds?: number;
@@ -21,9 +21,14 @@ export interface VideoGenerationParams {
 }
 
 export interface FaceSwapParams {
-  targetVideoUrl: string;
-  sourceFaceUrl: string;
-  sceneTitle: string;
+  targetVideoUrl?: string;
+  sourceFaceUrl?: string;
+  videoUrl?: string;
+  imageUrls?: string[];
+  sceneTitle?: string;
+  customInstructions?: string;
+  resolution?: '480p';
+  durationSeconds?: number;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   customParameters?: Record<string, any>;
 }

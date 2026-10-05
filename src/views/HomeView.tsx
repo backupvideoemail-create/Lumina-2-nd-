@@ -143,21 +143,21 @@ export const HomeView: React.FC = () => {
         >
           <Sparkles className="w-3.5 h-3.5 text-[#ffb703] fill-[#ffb703]" />
           <span className="text-xs font-black text-[#ffb703]">
-            {wallet?.balance ?? 0} Credits
+            {wallet && wallet.balance > 0 ? `${wallet.balance} Credits` : 'Get Pro'}
           </span>
           <span className="text-[10px] font-bold text-amber-300/80 pl-1 border-l border-white/10 uppercase">
-            Pro
+            ✦
           </span>
         </button>
       </header>
 
       {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 4.5 seconds) */}
       <section
-        className="px-3.5 pt-2.5 pb-2 relative"
+        className="px-3.5 pt-2 pb-2 relative"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
-        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 h-72 sm:h-80 w-full group">
+        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 h-64 sm:h-72 w-full group">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
@@ -187,38 +187,8 @@ export const HomeView: React.FC = () => {
                 <span>{activeBanner.badge}</span>
               </div>
 
-              {/* Instagram Reel Side Interaction Counters */}
-              <div className="absolute right-4 bottom-14 z-20 flex flex-col items-center gap-3 text-stone-200">
-                <div className="flex flex-col items-center">
-                  <div className="w-8 h-8 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-md">
-                    <Heart className="w-4 h-4 text-rose-400 fill-rose-400" />
-                  </div>
-                  <span className="text-[10px] font-bold text-white mt-0.5">
-                    {activeBanner.likesCount}
-                  </span>
-                </div>
-
-                <div className="flex flex-col items-center">
-                  <div className="w-8 h-8 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-md">
-                    <MessageCircle className="w-4 h-4 text-cyan-300" />
-                  </div>
-                  <span className="text-[10px] font-bold text-white mt-0.5">
-                    {activeBanner.commentsCount}
-                  </span>
-                </div>
-
-                <div className="flex flex-col items-center">
-                  <div className="w-8 h-8 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-md">
-                    <Share2 className="w-4 h-4 text-emerald-300" />
-                  </div>
-                  <span className="text-[10px] font-bold text-white mt-0.5">
-                    {activeBanner.sharesCount}
-                  </span>
-                </div>
-              </div>
-
               {/* Banner Text Overlays (Title, Highlight, Subtitle) */}
-              <div className="absolute bottom-5 inset-x-5 z-20 max-w-[260px] sm:max-w-md space-y-1">
+              <div className="absolute bottom-5 inset-x-5 z-20 max-w-[280px] sm:max-w-md space-y-1">
                 <h2 className="text-2xl sm:text-3xl font-black text-white leading-tight font-display tracking-tight drop-shadow-[0_2px_12px_rgba(0,0,0,0.9)]">
                   <span className="text-[#ffb703]">{activeBanner.title}</span>
                   <br />
@@ -255,9 +225,9 @@ export const HomeView: React.FC = () => {
         </div>
       </section>
 
-      {/* 3. QUICK CATEGORY ICONS ROW (4 Rounded Amber Squares - Exactly matching reference) */}
-      <section className="px-3.5 pt-2 pb-1.5 max-w-4xl mx-auto">
-        <div className="grid grid-cols-4 gap-2.5">
+      {/* 3. QUICK CATEGORY ICONS ROW (Compact, Space-Saving) */}
+      <section className="px-3.5 pt-1.5 pb-1 max-w-4xl mx-auto">
+        <div className="grid grid-cols-4 gap-2">
           {QUICK_CATEGORY_ICONS.map((cat) => (
             <button
               key={cat.id}
@@ -265,20 +235,20 @@ export const HomeView: React.FC = () => {
                 setSelectedCategory(cat.categoryFilter);
                 setActiveTab('templates');
               }}
-              className="flex flex-col items-center gap-1.5 p-2 rounded-2xl bg-[#121118]/80 hover:bg-[#191722] border border-amber-500/20 hover:border-amber-500/40 shadow-sm transition-all active:scale-95 cursor-pointer group"
+              className="flex flex-col items-center gap-1 p-1.5 rounded-xl bg-[#121118]/80 hover:bg-[#191722] border border-amber-500/20 hover:border-amber-500/40 shadow-sm transition-all active:scale-95 cursor-pointer group"
             >
-              {/* Rounded Square Amber Glow Icon Container */}
+              {/* Compact Rounded Square Amber Glow Icon Container */}
               <div
-                className={`w-13 h-13 sm:w-14 sm:h-14 rounded-2xl bg-gradient-to-b ${cat.glowColor} flex items-center justify-center shadow-[0_4px_16px_rgba(245,158,11,0.2)] group-hover:scale-105 transition-transform relative`}
+                className={`w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-b ${cat.glowColor} flex items-center justify-center shadow-[0_2px_10px_rgba(245,158,11,0.2)] group-hover:scale-105 transition-transform relative`}
               >
                 {renderQuickIcon(cat.iconType)}
                 {cat.badge && (
-                  <span className="absolute -top-1 -right-1 px-1.5 py-0.5 rounded-md bg-[#ff9f00] text-black text-[8px] font-black uppercase shadow">
+                  <span className="absolute -top-1 -right-1 px-1 py-0.2 rounded-md bg-[#ff9f00] text-black text-[7.5px] font-black uppercase shadow">
                     {cat.badge}
                   </span>
                 )}
               </div>
-              <span className="text-[11px] font-bold text-stone-200 text-center leading-tight line-clamp-1">
+              <span className="text-[10px] sm:text-[11px] font-bold text-stone-200 text-center leading-tight line-clamp-1">
                 {cat.name}
               </span>
             </button>

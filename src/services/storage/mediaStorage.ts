@@ -11,6 +11,13 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const UPLOADS_DIR = path.resolve(process.cwd(), '.data', 'uploads');
 
@@ -24,6 +31,7 @@ export interface StoredMediaMetadata {
   ownerUserId?: string;
   isPublic?: boolean;
   provider: 'local' | 'cloudflare_r2';
+  r2Key?: string;
   createdAt: string;
 }
 
@@ -31,6 +39,7 @@ export interface StorageProviderStatus {
   activeDriver: 'local' | 'cloudflare_r2';
   r2Configured: boolean;
   message: string;
+  bucket?: string;
   requiredEnvVars: string[];
 }
 
@@ -43,11 +52,36 @@ export class MediaStorageService {
     publicBaseUrl: process.env.R2_PUBLIC_BASE_URL || ''
   };
 
+  private s3Client: S3Client | null = null;
   private metadataIndex: Record<string, StoredMediaMetadata> = {};
 
   constructor() {
     this.ensureDirectory();
     this.loadIndex();
+    this.initR2Client();
+  }
+
+  private initR2Client() {
+    if (
+      this.r2Config.accountId &&
+      this.r2Config.accessKeyId &&
+      this.r2Config.secretAccessKey &&
+      this.r2Config.bucketName
+    ) {
+      try {
+        this.s3Client = new S3Client({
+          region: 'auto',
+          endpoint: `https://${this.r2Config.accountId}.r2.cloudflarestorage.com`,
+          credentials: {
+            accessKeyId: this.r2Config.accessKeyId,
+            secretAccessKey: this.r2Config.secretAccessKey
+          }
+        });
+      } catch (err: any) {
+        console.error('[MediaStorage] Failed to initialize R2 S3Client:', err.message);
+        this.s3Client = null;
+      }
+    }
   }
 
   private ensureDirectory() {
@@ -78,18 +112,17 @@ export class MediaStorageService {
 
   public getStatus(): StorageProviderStatus {
     const isR2Ready = Boolean(
-      this.r2Config.accountId &&
-      this.r2Config.accessKeyId &&
-      this.r2Config.secretAccessKey &&
+      this.s3Client &&
       this.r2Config.bucketName
     );
 
     return {
       activeDriver: isR2Ready ? 'cloudflare_r2' : 'local',
       r2Configured: isR2Ready,
+      bucket: this.r2Config.bucketName || undefined,
       message: isR2Ready
-        ? `Cloudflare R2 active on bucket: ${this.r2Config.bucketName}`
-        : 'Cloudflare R2 adapter ready. Awaiting R2 credentials (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME). Operating on local secure isolated storage.',
+        ? `Cloudflare R2 active on bucket '${this.r2Config.bucketName}' with authenticated presigned URLs & user isolation.`
+        : 'Cloudflare R2 adapter initialized. Operating in local secure isolated storage until R2 credentials are provided.',
       requiredEnvVars: [
         'R2_ACCOUNT_ID',
         'R2_ACCESS_KEY_ID',
@@ -145,10 +178,38 @@ export class MediaStorageService {
     const filename = `${fileId}.${ext}`;
     const filePath = path.join(UPLOADS_DIR, filename);
 
-    // Write file securely
+    // Save local copy for rapid response or backup
     fs.writeFileSync(filePath, buffer);
 
-    const publicUrl = `/api/media/${filename}`;
+    let publicUrl = `/api/media/${filename}`;
+    let provider: 'local' | 'cloudflare_r2' = 'local';
+    let r2Key: string | undefined = undefined;
+
+    // If Cloudflare R2 is configured, upload to bucket
+    if (this.s3Client && this.r2Config.bucketName) {
+      try {
+        r2Key = `uploads/${ownerUserId || 'public'}/${filename}`;
+        await this.s3Client.send(new PutObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: r2Key,
+          Body: buffer,
+          ContentType: mimeType,
+          Metadata: {
+            ownerUserId: ownerUserId || 'anonymous',
+            originalName: customFileName || filename,
+            isPublic: String(isPublic || prefix.startsWith('tpl_'))
+          }
+        }));
+
+        provider = 'cloudflare_r2';
+        if (isPublic && this.r2Config.publicBaseUrl) {
+          const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
+          publicUrl = `${base}/${r2Key}`;
+        }
+      } catch (err: any) {
+        console.error('[MediaStorage] Failed to upload to Cloudflare R2, falling back to local storage:', err.message);
+      }
+    }
 
     const metadata: StoredMediaMetadata = {
       fileId: filename,
@@ -159,7 +220,8 @@ export class MediaStorageService {
       publicUrl,
       ownerUserId,
       isPublic: isPublic || prefix.startsWith('tpl_'),
-      provider: 'local',
+      provider,
+      r2Key,
       createdAt: new Date().toISOString()
     };
 
@@ -170,7 +232,40 @@ export class MediaStorageService {
   }
 
   /**
-   * Verifies access and retrieves file path.
+   * Generates a signed presigned URL for private R2 object with owner validation.
+   */
+  public async getPresignedUrl(
+    fileName: string,
+    requestingUserId?: string,
+    expiresInSeconds: number = 3600
+  ): Promise<string | null> {
+    const safeName = path.basename(fileName);
+    const meta = this.metadataIndex[safeName];
+
+    if (!meta) return null;
+
+    // Validate ownership for private files
+    if (!meta.isPublic && meta.ownerUserId && meta.ownerUserId !== requestingUserId) {
+      return null;
+    }
+
+    if (this.s3Client && this.r2Config.bucketName && meta.r2Key) {
+      try {
+        const command = new GetObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: meta.r2Key
+        });
+        return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+      } catch (err: any) {
+        console.error('[MediaStorage] getSignedUrl error:', err.message);
+      }
+    }
+
+    return meta.publicUrl;
+  }
+
+  /**
+   * Verifies access and retrieves file path or presigned stream.
    * Ensures user isolation: private user media cannot be accessed by other users.
    */
   public getAuthorizedFilePath(
@@ -201,8 +296,21 @@ export class MediaStorageService {
     return fs.existsSync(fullPath) ? fullPath : null;
   }
 
-  public deleteMedia(fileName: string): boolean {
+  public async deleteMedia(fileName: string): Promise<boolean> {
     const safeName = path.basename(fileName);
+    const meta = this.metadataIndex[safeName];
+
+    if (this.s3Client && this.r2Config.bucketName && meta?.r2Key) {
+      try {
+        await this.s3Client.send(new DeleteObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: meta.r2Key
+        }));
+      } catch (err: any) {
+        console.error('[MediaStorage] Failed to delete from R2:', err.message);
+      }
+    }
+
     const fullPath = path.join(UPLOADS_DIR, safeName);
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);

@@ -165,6 +165,30 @@ export function calculateAuthoritativeTemplateCost(
 }
 
 /**
+ * Authoritative Face/Character Video Cost Calculation (Higgsfield Genjutsu Motion Transfer).
+ * Rate: 480p = $0.318 per source-video second.
+ * Formula: Duration (sec) × $0.318 × USD/INR Rate × 1.40 (+40% Business Markup) -> Required Customer Credits.
+ */
+export function calculateFaceSwapCredits(durationSeconds: number): {
+  durationSeconds: number;
+  providerRatePerSecondUsd: number;
+  costUsd: number;
+  credits: number;
+} {
+  // Clamped duration: minimum 4 seconds, maximum 15 seconds
+  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(durationSeconds || 5)));
+  const providerRatePerSecondUsd = 0.318;
+  const costUsd = Number((clampedDuration * providerRatePerSecondUsd).toFixed(3));
+  const credits = calculateCreditsFromUsd(costUsd);
+  return {
+    durationSeconds: clampedDuration,
+    providerRatePerSecondUsd,
+    costUsd,
+    credits
+  };
+}
+
+/**
  * Update pricing configuration dynamically (e.g. from Admin).
  */
 export function updatePricingSettings(updates: Partial<PricingSettings>) {
