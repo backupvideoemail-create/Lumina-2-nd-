@@ -812,18 +812,18 @@ export const CATEGORIES = [
 export const INITIAL_PLANS = [
   {
     id: SUBSCRIPTION_CONFIG.introPlanId,
-    name: 'Pro Pass Intro',
+    name: 'Double Bonanza Intro',
     badge: 'Popular',
     price: SUBSCRIPTION_CONFIG.introPrice, // ₹1
     durationHours: 24,
-    includedCredits: SUBSCRIPTION_CONFIG.includedCredits,
+    includedCredits: SUBSCRIPTION_CONFIG.includedCredits, // 40
     renewalInterval: SUBSCRIPTION_CONFIG.renewalInterval,
     renewalPrice: SUBSCRIPTION_CONFIG.renewalPrice, // ₹499 daily from next calendar day
     features: [
-      '500 credits immediately unlocked',
+      '40 credits immediately unlocked (24 hours)',
+      '400 credits on verified daily renewal',
       'All AI Photo & Video templates',
       '1080p & 4K Ultra HD exports',
-      'No watermarks & instant processing',
       'Cancel easily anytime in 1-click'
     ],
     isIntro: true,
@@ -833,14 +833,14 @@ export const INITIAL_PLANS = [
   {
     id: 'plan_weekly_pass',
     name: 'Creator Weekly',
-    badge: 'Best Value',
-    price: 399,
+    badge: 'Weekly',
+    price: 199,
     durationHours: 168,
-    includedCredits: 2200,
+    includedCredits: 230,
     renewalInterval: 'weekly' as const,
-    renewalPrice: 399,
+    renewalPrice: 199,
     features: [
-      '2,200 high-speed credits',
+      '230 high-speed credits (7 days)',
       'Priority GPU queue access',
       'Commercial usage license',
       'Early access to new weekly reels',
@@ -848,27 +848,27 @@ export const INITIAL_PLANS = [
     ],
     isIntro: false,
     isPopular: false,
-    disclosureText: '₹399 billed every 7 days. Cancel anytime.'
+    disclosureText: '₹199 billed every 7 days. Cancel anytime.'
   },
   {
-    id: 'plan_annual_studio',
-    name: 'Studio Annual',
-    badge: 'Save 70%',
-    price: 2499,
-    durationHours: 8760,
-    includedCredits: 15000,
-    renewalInterval: 'one_time' as const,
-    renewalPrice: 2499,
+    id: 'plan_monthly_pass',
+    name: 'Creator Monthly',
+    badge: 'Best Value',
+    price: 998,
+    durationHours: 720,
+    includedCredits: 1200,
+    renewalInterval: 'monthly' as const,
+    renewalPrice: 998,
     features: [
-      '15,000 premium credits',
+      '1,200 high-speed credits (30 days)',
       'Dedicated enterprise AI rendering',
       'Custom watermark branding',
       'All 4K photo & 60fps video models',
       '1-on-1 prompt engineering help'
     ],
     isIntro: false,
-    isPopular: false,
-    disclosureText: '₹2,499 billed once for 1 full year access.'
+    isPopular: true,
+    disclosureText: '₹998 billed monthly. Cancel anytime.'
   }
 ];
 

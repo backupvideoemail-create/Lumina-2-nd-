@@ -30,6 +30,7 @@ import type {
   Template,
   UserProfile,
   CreditWallet,
+  CreditGrant,
   CreditTransaction,
   TransactionType,
   Generation,
@@ -37,6 +38,7 @@ import type {
   PaymentRecord
 } from '../../types/index.ts';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
+import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
 
 // Initialize Firebase client / admin for server persistence
 let firestoreDb: any = null;
@@ -106,12 +108,15 @@ export interface ProductionDatabaseSchema {
   users: Record<string, UserProfile>;
   authIdentities: Record<string, AuthIdentity>;
   wallets: Record<string, CreditWallet>;
+  creditGrants: CreditGrant[];
   transactions: CreditTransaction[];
   generations: Generation[];
   jobs: GenerationJob[];
   payments: Record<string, PaymentRecord>;
   subscriptions: Record<string, UserSubscription>;
   templates: Template[];
+  banners: HomeBannerItem[];
+  faceSwapDemoVideoUrl: string;
   userLikes: Record<string, string[]>; // userId -> templateId[]
   processedWebhooks: string[];
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
@@ -138,12 +143,15 @@ class ProductionDatabase {
         parsed.users = parsed.users || {};
         parsed.authIdentities = parsed.authIdentities || {};
         parsed.wallets = parsed.wallets || {};
+        parsed.creditGrants = parsed.creditGrants || [];
         parsed.transactions = parsed.transactions || [];
         parsed.generations = parsed.generations || [];
         parsed.jobs = parsed.jobs || [];
         parsed.payments = parsed.payments || {};
         parsed.subscriptions = parsed.subscriptions || {};
         parsed.templates = (parsed.templates && parsed.templates.length > 0) ? parsed.templates : [...SEED_TEMPLATES];
+        parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
+        parsed.faceSwapDemoVideoUrl = parsed.faceSwapDemoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4';
         parsed.userLikes = parsed.userLikes || {};
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
@@ -158,12 +166,15 @@ class ProductionDatabase {
       users: {},
       authIdentities: {},
       wallets: {},
+      creditGrants: [],
       transactions: [],
       generations: [],
       jobs: [],
       payments: {},
       subscriptions: {},
       templates: [...SEED_TEMPLATES],
+      banners: [...HOME_HERO_BANNERS],
+      faceSwapDemoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4',
       userLikes: {},
       processedWebhooks: [],
       reports: []
@@ -323,20 +334,54 @@ class ProductionDatabase {
   }
 
   /* =========================================================================
-     WALLETS & CREDIT LEDGER
+     WALLETS & CREDIT LEDGER (WITH SERVER-AUTHORITATIVE EXPIRY & BUCKETS)
   ========================================================================= */
+  public getUserGrants(userId: string): CreditGrant[] {
+    return (this.db.creditGrants || []).filter(g => g.userId === userId);
+  }
+
   public getWallet(userId: string): CreditWallet {
     if (!this.db.wallets[userId]) {
       this.db.wallets[userId] = {
         userId,
         balance: 0,
+        expiringBalance: 0,
+        topupBalance: 0,
         lifetimeCredits: 0,
         spentCredits: 0,
+        grants: [],
         updatedAt: new Date().toISOString()
       };
       this.save();
     }
-    return this.db.wallets[userId];
+
+    const wallet = this.db.wallets[userId];
+    const grants = this.getUserGrants(userId);
+    const now = new Date();
+
+    // Partition unexpired grants
+    let activeExpiringBalance = 0;
+    let topupBalance = 0;
+
+    for (const grant of grants) {
+      if (grant.creditsRemaining <= 0) continue;
+
+      const isExpired = grant.expiresAt ? new Date(grant.expiresAt) <= now : false;
+      if (!isExpired) {
+        if (grant.expiresAt) {
+          activeExpiringBalance += grant.creditsRemaining;
+        } else {
+          topupBalance += grant.creditsRemaining;
+        }
+      }
+    }
+
+    wallet.balance = activeExpiringBalance + topupBalance;
+    wallet.expiringBalance = activeExpiringBalance;
+    wallet.topupBalance = topupBalance;
+    wallet.grants = grants;
+
+    return wallet;
   }
 
   public reserveCredits(userId: string, amount: number, description: string, refId: string): boolean {
@@ -344,7 +389,33 @@ class ProductionDatabase {
     if (wallet.balance < amount) {
       return false;
     }
-    wallet.balance -= amount;
+
+    const now = new Date();
+    // Retrieve all active unexpired grants with remaining credits
+    const activeGrants = (this.db.creditGrants || [])
+      .filter(g => g.userId === userId && g.creditsRemaining > 0)
+      .filter(g => !g.expiresAt || new Date(g.expiresAt) > now);
+
+    // Business rule: Generation must consume the earliest-expiring eligible plan credits first (FIFO)
+    // Non-expiring (e.g. topup) credits are consumed LAST
+    activeGrants.sort((a, b) => {
+      if (a.expiresAt && b.expiresAt) {
+        return new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime();
+      }
+      if (a.expiresAt && !b.expiresAt) return -1; // expiring first
+      if (!a.expiresAt && b.expiresAt) return 1;  // non-expiring last
+      return new Date(a.grantedAt).getTime() - new Date(b.grantedAt).getTime();
+    });
+
+    let needed = amount;
+    for (const grant of activeGrants) {
+      if (needed <= 0) break;
+      const take = Math.min(grant.creditsRemaining, needed);
+      grant.creditsRemaining -= take;
+      needed -= take;
+      this.syncToFirestore('credit_grants', grant.id, grant);
+    }
+
     wallet.spentCredits += amount;
     wallet.updatedAt = new Date().toISOString();
 
@@ -362,14 +433,32 @@ class ProductionDatabase {
     this.save();
     this.syncToFirestore('wallets', userId, wallet);
     this.syncToFirestore('transactions', tx.id, tx);
+
+    // Refresh wallet computed balance
+    this.getWallet(userId);
     return true;
   }
 
   public refundCredits(userId: string, amount: number, description: string, refId: string): void {
     const wallet = this.getWallet(userId);
-    wallet.balance += amount;
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
+
+    // Refunded credits are restored into an active grant valid for 24 hours
+    const refundGrant: CreditGrant = {
+      id: `grant_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      userId,
+      source: 'refund',
+      creditsGranted: amount,
+      creditsRemaining: amount,
+      grantedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      referenceId: refId
+    };
+
+    if (!this.db.creditGrants) this.db.creditGrants = [];
+    this.db.creditGrants.unshift(refundGrant);
+    this.syncToFirestore('credit_grants', refundGrant.id, refundGrant);
 
     const tx: CreditTransaction = {
       id: `tx_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -385,6 +474,8 @@ class ProductionDatabase {
     this.save();
     this.syncToFirestore('wallets', userId, wallet);
     this.syncToFirestore('transactions', tx.id, tx);
+
+    this.getWallet(userId);
   }
 
   public creditWallet(
@@ -392,12 +483,49 @@ class ProductionDatabase {
     amount: number,
     description: string,
     orderId: string,
-    type: TransactionType = 'purchase'
-  ): void {
+    type: TransactionType = 'purchase',
+    planId?: string
+  ): CreditGrant {
+    const now = new Date();
+    let source: CreditGrant['source'] = 'intro';
+    let expiresAt: string | null = null;
+
+    if (type === 'topup' || description.toLowerCase().includes('top-up') || (planId && planId.startsWith('topup_'))) {
+      source = 'topup';
+      expiresAt = null; // Top-Up credits NEVER expire
+    } else if (planId === 'plan_weekly_pass' || description.toLowerCase().includes('weekly')) {
+      source = 'weekly';
+      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // 7 days
+    } else if (planId === 'plan_monthly_pass' || description.toLowerCase().includes('monthly')) {
+      source = 'monthly';
+      expiresAt = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(); // 30 days
+    } else if (type === 'subscription' || description.toLowerCase().includes('renewal') || amount === 400) {
+      source = 'renewal';
+      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // 24 hours
+    } else {
+      source = 'intro';
+      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // 24 hours
+    }
+
+    const grant: CreditGrant = {
+      id: `grant_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      userId,
+      source,
+      creditsGranted: amount,
+      creditsRemaining: amount,
+      grantedAt: now.toISOString(),
+      expiresAt,
+      planId: planId || (source === 'intro' ? 'plan_intro_daily' : undefined),
+      referenceId: orderId
+    };
+
+    if (!this.db.creditGrants) this.db.creditGrants = [];
+    this.db.creditGrants.unshift(grant);
+    this.syncToFirestore('credit_grants', grant.id, grant);
+
     const wallet = this.getWallet(userId);
-    wallet.balance += amount;
     wallet.lifetimeCredits += amount;
-    wallet.updatedAt = new Date().toISOString();
+    wallet.updatedAt = now.toISOString();
 
     const tx: CreditTransaction = {
       id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -406,13 +534,16 @@ class ProductionDatabase {
       type,
       description,
       referenceId: orderId,
-      createdAt: new Date().toISOString()
+      createdAt: now.toISOString()
     };
 
     this.db.transactions.unshift(tx);
     this.save();
     this.syncToFirestore('wallets', userId, wallet);
     this.syncToFirestore('transactions', tx.id, tx);
+
+    this.getWallet(userId);
+    return grant;
   }
 
   public isPaymentProcessed(paymentId: string): boolean {
@@ -477,10 +608,23 @@ class ProductionDatabase {
     return this.db.templates.filter(t => t.isActive !== false);
   }
 
+  public getAllTemplatesAdmin(): Template[] {
+    return this.db.templates;
+  }
+
   public addTemplate(tpl: Template): Template {
     this.db.templates.unshift(tpl);
     this.save();
     this.syncToFirestore('templates', tpl.id, tpl);
+    return tpl;
+  }
+
+  public updateTemplate(id: string, updates: Partial<Template>): Template | null {
+    const tpl = this.db.templates.find(t => t.id === id);
+    if (!tpl) return null;
+    Object.assign(tpl, updates);
+    this.save();
+    this.syncToFirestore('templates', id, tpl);
     return tpl;
   }
 
@@ -493,6 +637,29 @@ class ProductionDatabase {
       return true;
     }
     return false;
+  }
+
+  public getBanners(): HomeBannerItem[] {
+    return this.db.banners || [];
+  }
+
+  public setBanners(banners: HomeBannerItem[]): void {
+    this.db.banners = banners;
+    this.save();
+    this.syncToFirestore('config', 'banners', { banners, updatedAt: new Date().toISOString() });
+  }
+
+  public getFaceSwapDemoVideoUrl(): string {
+    return (
+      this.db.faceSwapDemoVideoUrl ||
+      'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4'
+    );
+  }
+
+  public setFaceSwapDemoVideoUrl(url: string): void {
+    this.db.faceSwapDemoVideoUrl = url;
+    this.save();
+    this.syncToFirestore('config', 'faceswap_demo', { demoVideoUrl: url, updatedAt: new Date().toISOString() });
   }
 
   /**

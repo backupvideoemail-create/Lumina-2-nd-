@@ -31,7 +31,19 @@ interface AppContextType {
   setSelectedFaceSwapScene: (scene: FaceSwapScene | null) => void;
   faceSwapModalOpen: boolean;
   setFaceSwapModalOpen: (open: boolean) => void;
-  generateFaceSwapVideo: (sceneId: string, facePhotoUrl: string) => Promise<{ success: boolean; error?: string }>;
+  generateFaceSwapVideo: (
+    payloadOrSceneId:
+      | string
+      | {
+          sourceVideoUrl?: string;
+          sourceVideoBase64?: string;
+          durationSeconds: number;
+          faceReferenceUrls?: string[];
+          faceReferenceBase64List?: string[];
+          customInstructions?: string;
+        },
+    legacyFacePhotoUrl?: string
+  ) => Promise<{ success: boolean; error?: string }>;
 
   // Templates
   templates: Template[];

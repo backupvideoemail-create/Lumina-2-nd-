@@ -17,7 +17,8 @@ import {
 import {
   calculateAuthoritativeTemplateCost,
   calculateCreditsFromUsd,
-  calculateCustomerPrice
+  calculateCustomerPrice,
+  calculateFaceSwapCredits
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage } from './src/services/storage/mediaStorage.ts';
@@ -453,12 +454,112 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
   }
 });
 
+// Admin Get All Templates (Including Inactive)
+app.get('/api/admin/templates', requireAdmin, (_req, res) => {
+  res.json({ templates: prodDb.getAllTemplatesAdmin() });
+});
+
+// Admin Update Template (Self-service edit, replace media, tags, active, ranking)
+app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // If media replacement base64 provided
+    if (updates.mediaBase64) {
+      const stored = await mediaStorage.saveMedia(
+        updates.mediaBase64,
+        'tpl_asset',
+        `tpl_updated_${Date.now()}`,
+        undefined,
+        true
+      );
+      updates.cover = stored.publicUrl;
+      updates.preview = stored.publicUrl;
+      delete updates.mediaBase64;
+    }
+
+    if (updates.coverBase64) {
+      const stored = await mediaStorage.saveMedia(
+        updates.coverBase64,
+        'tpl_cover',
+        `tpl_cover_${Date.now()}`,
+        undefined,
+        true
+      );
+      updates.cover = stored.publicUrl;
+      delete updates.coverBase64;
+    }
+
+    if (updates.providerCostUsd && Number(updates.providerCostUsd) > 0) {
+      updates.creditCost = calculateCreditsFromUsd(Number(updates.providerCostUsd));
+    }
+
+    const updated = prodDb.updateTemplate(id, updates);
+    if (!updated) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    res.json({ success: true, template: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update template' });
+  }
+});
+
 app.delete('/api/admin/templates/:id', requireAdmin, (req, res) => {
   const success = prodDb.deleteTemplate(req.params.id);
   if (success) {
     return res.json({ success: true, message: 'Template removed successfully' });
   }
   res.status(404).json({ error: 'Template not found' });
+});
+
+// Home Hero Banners API
+app.get('/api/banners', (_req, res) => {
+  res.json({ banners: prodDb.getBanners() });
+});
+
+app.put('/api/admin/banners', requireAdmin, (req, res) => {
+  const { banners } = req.body;
+  if (!Array.isArray(banners)) {
+    return res.status(400).json({ error: 'Expected banners array' });
+  }
+  prodDb.setBanners(banners);
+  res.json({ success: true, banners: prodDb.getBanners() });
+});
+
+// Face Swap Demo Video Config API
+app.get('/api/faceswap/config', (_req, res) => {
+  res.json({ demoVideoUrl: prodDb.getFaceSwapDemoVideoUrl() });
+});
+
+app.put('/api/admin/faceswap/config', requireAdmin, (req, res) => {
+  const { demoVideoUrl } = req.body;
+  if (!demoVideoUrl || typeof demoVideoUrl !== 'string') {
+    return res.status(400).json({ error: 'Missing demoVideoUrl' });
+  }
+  prodDb.setFaceSwapDemoVideoUrl(demoVideoUrl.trim());
+  res.json({ success: true, demoVideoUrl: prodDb.getFaceSwapDemoVideoUrl() });
+});
+
+// Admin Universal Media Upload (for banners, demo videos, thumbnails)
+app.post('/api/admin/upload-media', requireAdmin, async (req, res) => {
+  try {
+    const { mediaBase64, filename = 'asset' } = req.body;
+    if (!mediaBase64) {
+      return res.status(400).json({ error: 'Missing mediaBase64 payload' });
+    }
+    const stored = await mediaStorage.saveMedia(
+      mediaBase64,
+      'admin_upload',
+      `${filename}_${Date.now()}`,
+      undefined,
+      true
+    );
+    res.json({ success: true, url: stored.publicUrl, fileId: stored.fileId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Media upload failed' });
+  }
 });
 
 /* =========================================================================
@@ -562,7 +663,9 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       try {
         const subRes = await razorpayAdapter.createSubscription({
           userId: user.id,
-          userEmail: user.email
+          userEmail: user.email,
+          amountInRupees: plan.renewalPrice,
+          period: plan.renewalInterval
         });
         liveSubId = subRes.subscriptionId;
         mandateDetails = {
@@ -726,19 +829,21 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
       ? nextCalDay.isoString
       : new Date(Date.now() + plan.validityDays * 86400000).toISOString();
 
-  const realSubId = payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_')
-    ? payRec.subscriptionId
-    : (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_')
-      ? req.body.subscriptionId
-      : `sub_rzp_${paymentId || Date.now()}`);
+  // Only store actual Razorpay-returned subscription IDs. Never fabricate a fake subscription/mandate ID.
+  const verifiedSubId =
+    payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_') && !payRec.subscriptionId.startsWith('sub_rzp_')
+      ? payRec.subscriptionId
+      : (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_') && !req.body.subscriptionId.startsWith('sub_rzp_')
+        ? req.body.subscriptionId
+        : null);
 
   const newSubscription: UserSubscription = {
-    id: realSubId,
+    id: verifiedSubId || payRec.orderId,
     userId: user.id,
     planId: plan.id,
     planName: plan.name,
     provider: 'razorpay',
-    mandateId: realSubId,
+    mandateId: verifiedSubId || undefined,
     status: plan.isIntro ? 'trial' : 'active',
     startAt: new Date().toISOString(),
     nextChargeAt,
@@ -835,8 +940,16 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       const targetUserId = userId || sub?.userId;
 
       if (targetUserId && prodDb.getUser(targetUserId)) {
-        // Daily recurring credit grant (₹499 charge verified) -> 120 credits with type 'subscription'
-        prodDb.creditWallet(targetUserId, 120, 'Lumina Pro AutoPay Renewal (₹499)', paymentId || eventId, 'subscription');
+        // Daily recurring credit grant (₹499 charge verified) -> 400 credits with type 'subscription'
+        const renewalCredits = sub ? (getSubscriptionPlanById(sub.planId)?.renewalCredits || 400) : 400;
+        prodDb.creditWallet(
+          targetUserId,
+          renewalCredits,
+          `Lumina AutoPay Renewal (${sub?.planName || 'Double Bonanza'}) (₹499)`,
+          paymentId || eventId,
+          'subscription',
+          sub?.planId || 'plan_intro_daily'
+        );
         if (sub) {
           sub.status = 'active';
           const nextCalDay = calculateNextCalendarDayStartDate();
@@ -983,50 +1096,134 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   })();
 });
 
-// Face Swap Generation Route
+// Calculate Face Swap Credits Dynamically based on trimmed duration (4-15 seconds)
+app.post('/api/faceswap/calculate-cost', (req, res) => {
+  const { durationSeconds = 5 } = req.body;
+  const pricing = calculateFaceSwapCredits(Number(durationSeconds) || 5);
+  res.json(pricing);
+});
+
+// Final Face / Character Video Generation Route (Higgsfield Genjutsu Motion Transfer)
 app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const { sceneId, facePhotoUrl } = req.body;
+  const {
+    sourceVideoUrl,
+    sourceVideoBase64,
+    durationSeconds = 5,
+    faceReferenceUrls = [],
+    faceReferenceBase64List = [],
+    customInstructions
+  } = req.body;
 
-  const scene = SEED_FACE_SWAP_SCENES.find((s) => s.id === sceneId);
-  if (!scene) {
-    return res.status(404).json({ error: 'Face Swap video scene not found' });
-  }
-  if (!facePhotoUrl) {
-    return res.status(400).json({ error: 'Please upload face photo' });
+  // 1. Duration Validation: Clamped strictly between 4 and 15 seconds
+  const parsedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 5)));
+
+  // 2. Resolve Source Video Asset
+  let finalVideoUrl = sourceVideoUrl;
+  if (!finalVideoUrl && sourceVideoBase64) {
+    try {
+      const stored = await mediaStorage.saveMedia(
+        sourceVideoBase64,
+        'user_source_video',
+        `faceswap_src_${Date.now()}`,
+        user.id,
+        true
+      );
+      finalVideoUrl = stored.publicUrl;
+    } catch (e: any) {
+      return res.status(400).json({ error: `Failed to store source video: ${e.message}` });
+    }
   }
 
-  const requiredCredits = calculateAuthoritativeTemplateCost({ isFaceSwap: true });
+  if (!finalVideoUrl) {
+    return res.status(400).json({ error: 'Please upload or provide a source video.' });
+  }
+
+  // 3. Resolve 1 to 8 Face Reference Images (ALL must be sent)
+  const allReferenceUrls: string[] = [];
+
+  if (Array.isArray(faceReferenceUrls)) {
+    for (const url of faceReferenceUrls) {
+      if (url && typeof url === 'string' && url.trim()) {
+        allReferenceUrls.push(url.trim());
+      }
+    }
+  }
+
+  if (Array.isArray(faceReferenceBase64List)) {
+    for (let i = 0; i < faceReferenceBase64List.length; i++) {
+      const b64 = faceReferenceBase64List[i];
+      if (b64 && typeof b64 === 'string') {
+        try {
+          const stored = await mediaStorage.saveMedia(
+            b64,
+            'face_reference',
+            `face_ref_${Date.now()}_${i}`,
+            user.id,
+            true
+          );
+          allReferenceUrls.push(stored.publicUrl);
+        } catch (e: any) {
+          console.warn('[Face Reference Store Note]:', e.message);
+        }
+      }
+    }
+  }
+
+  if (allReferenceUrls.length === 0) {
+    return res.status(400).json({
+      error: 'Please upload at least 1 face reference photo (4–5 recommended from different angles).'
+    });
+  }
+
+  if (allReferenceUrls.length > 8) {
+    return res.status(400).json({
+      error: 'Maximum 8 face reference photos are supported.'
+    });
+  }
+
+  // 4. Server-Authoritative Credit Calculation (480p: $0.318/sec + USD/INR conversion + 40% markup)
+  const pricing = calculateFaceSwapCredits(parsedDuration);
+  const requiredCredits = pricing.credits;
+
   const wallet = prodDb.getWallet(user.id);
-
   if (wallet.balance < requiredCredits) {
     return res.status(402).json({
-      error: 'Insufficient credits for Face Swap',
+      error: 'Insufficient credits for Face/Character Video',
       requiredCredits,
-      currentBalance: wallet.balance
+      currentBalance: wallet.balance,
+      durationSeconds: parsedDuration,
+      costUsd: pricing.costUsd
     });
   }
 
   const genId = `gen_fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-  const reserved = prodDb.reserveCredits(user.id, requiredCredits, `Face Swap: ${scene.title}`, genId);
+  // 5. Atomic Credit Reservation
+  const reserved = prodDb.reserveCredits(
+    user.id,
+    requiredCredits,
+    `Face Swap Video (${parsedDuration}s @ 480p)`,
+    genId
+  );
   if (!reserved) {
     return res.status(402).json({ error: 'Failed to reserve credits' });
   }
 
+  // 6. Record Generation State (Locked to 480p)
   const generation: Generation = {
     id: genId,
     userId: user.id,
-    templateId: scene.id,
-    templateTitle: scene.title,
+    templateId: 'tpl_face_swap_genjutsu',
+    templateTitle: `Face Swap Video (${parsedDuration}s)`,
     templateType: 'video',
-    aspectRatio: scene.aspectRatio,
+    aspectRatio: '9:16',
     status: 'processing',
-    inputMediaUrl: facePhotoUrl,
+    inputMediaUrl: allReferenceUrls[0],
     creditCost: requiredCredits,
     engine: 'AI_GENERATION',
-    model: 'higgsfield-faceswap-v1',
-    workflow: 'neural-face-swap-reels',
+    model: 'higgsfield/genjutsu/motion-transfer/v1.0',
+    workflow: 'neural-motion-transfer-480p',
     createdAt: new Date().toISOString(),
     isAiGenerated: true
   };
@@ -1034,15 +1231,20 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
 
   res.json({
     generation,
+    requiredCredits,
+    durationSeconds: parsedDuration,
     remainingCredits: prodDb.getWallet(user.id).balance
   });
 
+  // 7. Execute Real Higgsfield Genjutsu Generation Asynchronously
   (async () => {
     try {
-      const result = await generateFaceSwapVideo({
-        targetVideoUrl: scene.resultVideoPreview,
-        sourceFaceUrl: facePhotoUrl,
-        sceneTitle: scene.title
+      const result = await faceSwapAdapter.generateFaceSwapVideo({
+        videoUrl: finalVideoUrl,
+        imageUrls: allReferenceUrls, // ALL reference images sent
+        customInstructions,
+        resolution: '480p',
+        durationSeconds: parsedDuration
       });
 
       prodDb.updateGeneration(genId, {
@@ -1051,13 +1253,18 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
         completedAt: new Date().toISOString()
       });
     } catch (err: any) {
-      console.error('[FaceSwap Pipeline Failed]:', err.message);
+      console.error('[Higgsfield Motion Transfer Failed]:', err.message);
       prodDb.updateGeneration(genId, {
         status: 'failed',
         error: err.message || 'Face swap generation failed'
       });
-      // 100% Exact Automatic Credit Refund
-      prodDb.refundCredits(user.id, requiredCredits, `Refund: Failed face swap (${scene.title})`, genId);
+      // 100% Exact Automatic Credit Refund on Failure
+      prodDb.refundCredits(
+        user.id,
+        requiredCredits,
+        `Refund: Failed Face Video Generation (${parsedDuration}s)`,
+        genId
+      );
     }
   })();
 });

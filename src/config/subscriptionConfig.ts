@@ -25,8 +25,10 @@ export interface CentralSubscriptionPlan {
   periodLabel: string;
   includedCredits: number;
   renewalPrice: number;
+  renewalCredits: number;
   renewalInterval: 'daily' | 'weekly' | 'monthly';
   validityDays: number;
+  validityHours: number;
   autoPayEnabled: boolean;
   scheduleRule: 'next_calendar_day' | 'interval_days';
   disclosureText: string;
@@ -40,16 +42,18 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     id: 'plan_intro_daily',
     name: 'Double Bonanza',
     cardTitle: 'Double Bonanza',
-    validityLabel: 'Exclusive 1 Day Intro Pass',
+    validityLabel: '24 Hours Validity',
     price: 1,
-    periodLabel: '1 day validity',
-    includedCredits: 500, // 500 credits immediately unlocked
+    periodLabel: '24 hours',
+    includedCredits: 40, // 40 credits immediately unlocked for 24 hours
     renewalPrice: 499, // ₹499 recurring daily
+    renewalCredits: 400, // 400 credits upon verified renewal
     renewalInterval: 'daily',
     validityDays: 1,
+    validityHours: 24,
     autoPayEnabled: true,
     scheduleRule: 'next_calendar_day',
-    disclosureText: '₹1 today for 1 day · then ₹499 daily until cancelled.',
+    disclosureText: '₹1 today for 24 hours · then ₹499 daily for 400 credits until cancelled.',
     badge: 'HOT',
     isIntro: true,
     isPopular: true
@@ -63,8 +67,10 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     periodLabel: '7 days',
     includedCredits: 230,
     renewalPrice: 199,
+    renewalCredits: 230,
     renewalInterval: 'weekly',
     validityDays: 7,
+    validityHours: 168,
     autoPayEnabled: true,
     scheduleRule: 'interval_days',
     disclosureText: '₹199 · renews every 7 days until cancelled.',
@@ -79,8 +85,10 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     periodLabel: '30 days',
     includedCredits: 1200,
     renewalPrice: 998,
+    renewalCredits: 1200,
     renewalInterval: 'monthly',
     validityDays: 30,
+    validityHours: 720,
     autoPayEnabled: true,
     scheduleRule: 'interval_days',
     disclosureText: '₹998 · renews monthly until cancelled.',
@@ -92,12 +100,14 @@ export const SUBSCRIPTION_CONFIG = {
   introPlanId: 'plan_intro_daily',
   introPrice: 1,
   renewalPrice: 499,
+  renewalCredits: 400,
   renewalInterval: 'daily' as const,
   scheduleRule: 'next_calendar_day' as const,
-  includedCredits: 500,
+  includedCredits: 40,
+  validityHours: 24,
   timezone: 'Asia/Kolkata',
   timezoneOffsetMinutes: 330, // UTC+5:30 (Indian Standard Time for INR ₹ transactions)
-  disclosureText: '₹1 today · then ₹499 daily until cancelled.',
+  disclosureText: '₹1 today for 24 hours · then ₹499 daily for 400 credits until cancelled.',
   plans: CENTRAL_SUBSCRIPTION_PLANS
 } as const;
 

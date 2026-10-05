@@ -47,8 +47,8 @@ export class HiggsfieldGenjutsuAdapter {
   readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0';
 
   private getConfig() {
-    const apiKey = process.env.HIGGSFIELD_API_KEY || '';
-    const apiSecret = process.env.HIGGSFIELD_API_SECRET || '';
+    const apiKey = process.env.HIGGSFIELD_API_KEY || process.env.HF_API_KEY_ID || '';
+    const apiSecret = process.env.HIGGSFIELD_API_SECRET || process.env.HF_API_KEY_SECRET || '';
     return { apiKey, apiSecret, isConfigured: Boolean(apiKey) };
   }
 
@@ -64,6 +64,8 @@ export class HiggsfieldGenjutsuAdapter {
 
   /**
    * Generates a face/character video via official Higgsfield Genjutsu Motion Transfer.
+   * Model: higgsfield/genjutsu/motion-transfer/v1.0
+   * Lifecycle: request accepted -> request_id/status -> poll -> completed/failed
    */
   async generateFaceSwapVideo(params: GenjutsuMotionTransferParams): Promise<ProviderResult> {
     const startTime = Date.now();
@@ -72,25 +74,26 @@ export class HiggsfieldGenjutsuAdapter {
     if (!config.isConfigured) {
       throw new Error(
         'HIGGSFIELD_API_KEY is not configured in server environment variables. ' +
-        'Please set HIGGSFIELD_API_KEY to enable neural motion transfer processing. ' +
+        'Please set HIGGSFIELD_API_KEY (and optional HIGGSFIELD_API_SECRET) to enable real neural motion transfer. ' +
         'Your credits have been refunded in full.'
       );
     }
 
     if (!params.videoUrl) {
-      throw new Error('Missing video_url for Genjutsu Motion Transfer.');
+      throw new Error('Missing videoUrl for Genjutsu Motion Transfer.');
     }
 
     if (!params.imageUrls || params.imageUrls.length === 0) {
-      throw new Error('At least 1 face reference image is required (4-5 recommended).');
+      throw new Error('At least 1 face reference image is required (4-5 recommended from different angles).');
     }
 
     // Build protected prompt: Protected Base Identity Prompt + User Custom Instructions
     let finalPrompt = HIGGSFIELD_BASE_IDENTITY_PROMPT;
     if (params.customInstructions && params.customInstructions.trim()) {
-      finalPrompt = `${HIGGSFIELD_BASE_IDENTITY_PROMPT}\n\nAdditional User Styling & Adjustments: ${params.customInstructions.trim()}`;
+      finalPrompt = `${HIGGSFIELD_BASE_IDENTITY_PROMPT}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${params.customInstructions.trim()}`;
     }
 
+    // All selected reference images must be sent
     const payload = {
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
@@ -98,14 +101,22 @@ export class HiggsfieldGenjutsuAdapter {
       resolution: '480p'
     };
 
+    // Official Higgsfield Authorization: "Key ${keyId}:${keySecret}" or "Key ${apiKey}"
+    let authHeaderValue: string;
+    if (config.apiKey && config.apiSecret) {
+      authHeaderValue = `Key ${config.apiKey}:${config.apiSecret}`;
+    } else if (config.apiKey.includes(':')) {
+      authHeaderValue = `Key ${config.apiKey}`;
+    } else if (config.apiKey.startsWith('Bearer ') || config.apiKey.startsWith('Key ')) {
+      authHeaderValue = config.apiKey;
+    } else {
+      authHeaderValue = `Key ${config.apiKey}`;
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`
+      'Authorization': authHeaderValue
     };
-
-    if (config.apiSecret) {
-      headers['X-Higgsfield-Secret'] = config.apiSecret;
-    }
 
     const response = await fetch(this.endpoint, {
       method: 'POST',
@@ -120,12 +131,19 @@ export class HiggsfieldGenjutsuAdapter {
 
     const data = await response.json();
 
-    // Check for direct output or async job
-    let resultVideoUrl: string | null = data.video_url || data.output?.video_url || data.result_video_url || null;
+    // Check for direct output or asynchronous polling
+    let resultVideoUrl: string | null =
+      data.video ||
+      data.video_url ||
+      data.output?.video_url ||
+      data.result_url ||
+      null;
 
-    if (!resultVideoUrl && data.id) {
-      // Async polling job until terminal state
-      const pollEndpoint = data.poll_url || `https://api.higgsfield.ai/jobs/${data.id}`;
+    const requestId = data.request_id || data.id;
+
+    if (!resultVideoUrl && (data.status_url || requestId)) {
+      // Official status polling endpoint: status_url returned by provider, or canonical /v1/generations/{id}
+      const pollEndpoint = data.status_url || `https://api.higgsfield.ai/v1/generations/${requestId}`;
       let attempts = 0;
       const maxAttempts = 60; // 5 minutes max (5s interval)
 
@@ -137,21 +155,32 @@ export class HiggsfieldGenjutsuAdapter {
           const pollRes = await fetch(pollEndpoint, { headers });
           if (pollRes.ok) {
             const pollData = await pollRes.json();
-            if (pollData.status === 'completed' || pollData.status === 'succeeded') {
-              resultVideoUrl = pollData.video_url || pollData.output?.video_url || pollData.result_video_url;
+            const currentStatus = pollData.status;
+
+            if (currentStatus === 'completed' || currentStatus === 'succeeded') {
+              resultVideoUrl =
+                pollData.video ||
+                pollData.video_url ||
+                pollData.output?.video_url ||
+                pollData.result_url ||
+                pollData.result_video_url ||
+                null;
               break;
-            } else if (pollData.status === 'failed' || pollData.status === 'canceled') {
-              throw new Error(`Higgsfield Genjutsu job terminated with status: ${pollData.status} - ${pollData.error || 'Unknown error'}`);
+            } else if (currentStatus === 'failed' || currentStatus === 'canceled' || currentStatus === 'nsfw') {
+              throw new Error(`Higgsfield Genjutsu job terminated with status: ${currentStatus} - ${pollData.error || 'Provider rejected generation'}`);
             }
           }
         } catch (pollErr: any) {
+          if (pollErr.message.includes('terminated with status')) {
+            throw pollErr;
+          }
           console.warn('[Higgsfield Poll Note]:', pollErr.message);
         }
       }
     }
 
     if (!resultVideoUrl) {
-      throw new Error('Higgsfield Genjutsu did not return generated video output.');
+      throw new Error('Higgsfield Genjutsu generation timed out or did not return a valid video output.');
     }
 
     // Download generated video bytes and save to persistent storage

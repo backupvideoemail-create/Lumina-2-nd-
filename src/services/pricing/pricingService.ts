@@ -133,19 +133,19 @@ export function calculateAuthoritativeTemplateCost(
   let baseUsd = providerCostsUsd.photoSmartUsd;
 
   if (template.isFaceSwap) {
-    baseUsd = providerCostsUsd.faceSwapVideoUsd;
+    return calculateFaceSwapCredits(template.durationSeconds || 5).credits;
   } else if (template.type === 'video') {
-    // Video: model + duration + resolution based cost
+    // Video: dynamic model + duration + resolution based cost
     const isVeoAi = template.engine === 'AI_GENERATION' || template.model?.includes('veo');
-    const is1080p60 = template.resolutionLabel?.includes('60FPS') || template.resolutionLabel?.includes('1080p');
-    const duration = template.durationSeconds || 5;
-    const durationMultiplier = Math.max(1, duration / 5);
-    const resolutionMultiplier = is1080p60 ? 1.2 : 1.0;
+    const is1080p = template.resolutionLabel?.includes('1080p') || template.resolutionLabel?.includes('60FPS');
+    const duration = Math.max(1, template.durationSeconds || 5);
 
     if (isVeoAi) {
-      baseUsd = 0.35 * durationMultiplier * resolutionMultiplier;
+      // Current Google Veo 3.1 Lite: 720p = $0.05/sec, 1080p = $0.08/sec
+      const ratePerSecUsd = is1080p ? 0.08 : 0.05;
+      baseUsd = duration * ratePerSecUsd;
     } else {
-      baseUsd = providerCostsUsd.videoSmartMotionUsd * durationMultiplier;
+      baseUsd = providerCostsUsd.videoSmartMotionUsd * (duration / 5);
     }
   } else {
     // Photo: model + resolution based cost

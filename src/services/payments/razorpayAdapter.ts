@@ -35,7 +35,7 @@ export interface CreateSubscriptionResult {
 
 export class RazorpayAdapter {
   readonly providerName = 'razorpay';
-  private cachedPlanId: string | null = 'plan_TjsjORpnQrwUzl';
+  private cachedPlans: Record<string, string> = {};
 
   private getConfig(): RazorpaySubscriptionConfig {
     const keyId = process.env.RAZORPAY_KEY_ID || '';
@@ -60,15 +60,20 @@ export class RazorpayAdapter {
 
   /**
    * Resolves or creates a real Razorpay AutoPay Plan for recurring billing.
+   * Daily cadence: period: 'daily', interval: 1 for ₹499 renewal.
    */
-  async getOrCreateAutoPayPlan(amountInRupees = 499): Promise<string> {
+  async getOrCreateAutoPayPlan(
+    amountInRupees = 499,
+    period: 'daily' | 'weekly' | 'monthly' = 'daily'
+  ): Promise<string> {
     const config = this.getConfig();
     if (!config.keyId || !config.keySecret) {
       throw new Error('Razorpay credentials missing on server.');
     }
 
-    if (this.cachedPlanId) {
-      return this.cachedPlanId;
+    const cacheKey = `${period}_${amountInRupees}`;
+    if (this.cachedPlans[cacheKey]) {
+      return this.cachedPlans[cacheKey];
     }
 
     const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
@@ -79,24 +84,24 @@ export class RazorpayAdapter {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        period: 'weekly',
+        period,
         interval: 1,
         item: {
-          name: 'Lumina Pro AutoPay',
+          name: `Lumina Double Bonanza ${period === 'daily' ? 'Daily' : period} AutoPay`,
           amount: Math.round(amountInRupees * 100),
           currency: 'INR',
-          description: 'Lumina Pro 120 Recurring Credits AutoPay'
+          description: `Lumina AI Studio ${period === 'daily' ? '400 Daily' : period} Recurring Credits AutoPay`
         }
       })
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Failed to create Razorpay Plan: HTTP ${response.status} - ${errText}`);
+      throw new Error(`Failed to create Razorpay Plan (${period} ₹${amountInRupees}): HTTP ${response.status} - ${errText}`);
     }
 
     const plan = await response.json();
-    this.cachedPlanId = plan.id;
+    this.cachedPlans[cacheKey] = plan.id;
     return plan.id;
   }
 
@@ -109,23 +114,25 @@ export class RazorpayAdapter {
     userPhone?: string;
     totalCycles?: number;
     startAt?: number;
+    amountInRupees?: number;
+    period?: 'daily' | 'weekly' | 'monthly';
   }): Promise<CreateSubscriptionResult> {
     const config = this.getConfig();
     if (!config.keyId || !config.keySecret) {
       throw new Error('Razorpay credentials missing on server.');
     }
 
-    const planId = await this.getOrCreateAutoPayPlan(499);
+    const planId = await this.getOrCreateAutoPayPlan(params.amountInRupees || 499, params.period || 'daily');
     const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
 
     const payload: any = {
       plan_id: planId,
-      total_count: params.totalCycles || 52,
+      total_count: params.totalCycles || (params.period === 'daily' ? 365 : 52),
       quantity: 1,
       customer_notify: 1,
       notes: {
         userId: params.userId,
-        product: 'Lumina Pro AutoPay'
+        product: `Lumina AutoPay (${params.period || 'daily'})`
       }
     };
 

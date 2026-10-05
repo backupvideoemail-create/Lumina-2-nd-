@@ -67,11 +67,26 @@ export interface UserProfile {
   generationCount: number;
 }
 
+export interface CreditGrant {
+  id: string;
+  userId: string;
+  source: 'intro' | 'renewal' | 'weekly' | 'monthly' | 'topup' | 'admin' | 'refund';
+  creditsGranted: number;
+  creditsRemaining: number;
+  grantedAt: string;
+  expiresAt: string | null; // null for non-expiring like topup
+  planId?: string;
+  referenceId?: string;
+}
+
 export interface CreditWallet {
   userId: string;
   balance: number;
+  expiringBalance?: number;
+  topupBalance?: number;
   lifetimeCredits: number;
   spentCredits: number;
+  grants?: CreditGrant[];
   updatedAt: string;
 }
 
