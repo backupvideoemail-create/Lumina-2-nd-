@@ -16,7 +16,20 @@ import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/template
 export type PendingAction =
   | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
   | { type: 'buy_plan'; planId?: string }
-  | { type: 'faceswap'; sceneId: string; facePhotoUrl: string }
+  | {
+      type: 'faceswap';
+      payloadOrSceneId:
+        | string
+        | {
+            sourceVideoUrl?: string;
+            sourceVideoBase64?: string;
+            durationSeconds: number;
+            faceReferenceUrls?: string[];
+            faceReferenceBase64List?: string[];
+            customInstructions?: string;
+          };
+      legacyFacePhotoUrl?: string;
+    }
   | { type: 'navigate_creations' }
   | { type: 'navigate_profile' };
 
@@ -369,7 +382,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setPlansModalOpen(true);
       } else if (action.type === 'faceswap') {
         setFaceSwapModalOpen(true);
-        generateFaceSwapVideo(action.sceneId, action.facePhotoUrl);
+        generateFaceSwapVideo(action.payloadOrSceneId, action.legacyFacePhotoUrl);
       } else if (action.type === 'navigate_creations') {
         setActiveTab('creations');
       } else if (action.type === 'navigate_profile') {
@@ -488,23 +501,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Face Swap Generation
   const generateFaceSwapVideo = async (
-    sceneId: string,
-    facePhotoUrl: string
+    payloadOrSceneId:
+      | string
+      | {
+          sourceVideoUrl?: string;
+          sourceVideoBase64?: string;
+          durationSeconds: number;
+          faceReferenceUrls?: string[];
+          faceReferenceBase64List?: string[];
+          customInstructions?: string;
+        },
+    legacyFacePhotoUrl?: string
   ): Promise<{ success: boolean; error?: string }> => {
     if (!user) {
-      setPendingAction({ type: 'faceswap', sceneId, facePhotoUrl });
+      setPendingAction({ type: 'faceswap', payloadOrSceneId, legacyFacePhotoUrl });
       setAuthModalOpen(true);
       return { success: false, error: 'Authentication required' };
     }
 
     try {
+      let requestBody: any;
+      if (typeof payloadOrSceneId === 'string') {
+        requestBody = {
+          sourceVideoUrl: payloadOrSceneId,
+          faceReferenceUrls: legacyFacePhotoUrl ? [legacyFacePhotoUrl] : [],
+          durationSeconds: 5
+        };
+      } else {
+        requestBody = payloadOrSceneId;
+      }
+
       const res = await fetch('/api/faceswap/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...getAuthHeaders()
         },
-        body: JSON.stringify({ sceneId, facePhotoUrl })
+        body: JSON.stringify(requestBody)
       });
 
       const data = await res.json();
@@ -517,6 +550,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await refreshUserData();
         return { success: true };
       } else {
+        if (res.status === 402) {
+          setInsufficientCreditsModal({
+            open: true,
+            requiredCredits: data.requiredCredits || 214,
+            availableCredits: wallet?.balance ?? 0
+          });
+        }
         return { success: false, error: data.error || 'Face swap request failed' };
       }
     } catch (err: any) {
