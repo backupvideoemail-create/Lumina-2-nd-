@@ -111,11 +111,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const bannerFileRef = useRef<HTMLInputElement>(null);
   const demoFileRef = useRef<HTMLInputElement>(null);
 
-  const getAdminHeaders = () => ({
-    'Content-Type': 'application/json',
-    'x-admin-key': localStorage.getItem('lumina_admin_key') || 'lumina_admin_secret_live_2026',
-    'Authorization': `Bearer ${localStorage.getItem('lumina_session_token') || ''}`
-  });
+  const getAdminHeaders = () => {
+    const token = localStorage.getItem('lumina_session_token') || '';
+    const adminKey = localStorage.getItem('lumina_admin_key') || '';
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    };
+    if (adminKey) {
+      headers['x-admin-key'] = adminKey;
+    }
+    return headers;
+  };
 
   // Load live banners and demo video
   useEffect(() => {

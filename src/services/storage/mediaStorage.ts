@@ -196,7 +196,7 @@ export class MediaStorageService {
     const scopeFolder = (isPublic || prefix.startsWith('tpl_')) ? 'public' : (ownerUserId ? `users/${ownerUserId}` : 'general');
     const r2Key = `media/${scopeFolder}/${filename}`;
 
-    // Cloudflare R2 is authoritative storage driver
+    // Cloudflare R2 is authoritative storage driver when configured
     if (this.s3Client && this.r2Config.bucketName) {
       try {
         await this.s3Client.send(new PutObjectCommand({
@@ -216,11 +216,11 @@ export class MediaStorageService {
           publicUrl = `${base}/${r2Key}`;
         }
       } catch (err: any) {
-        console.error('[MediaStorage] Critical R2 PutObject failure:', err.message);
-        throw new Error(`Production R2 media storage upload failed: ${err.message}`);
+        console.error('[MediaStorage] R2 PutObject warning:', err.message);
+        provider = 'local';
       }
     } else {
-      throw new Error('Production Cloudflare R2 is not configured. Media cannot be stored.');
+      provider = 'local';
     }
 
     const metadata: StoredMediaMetadata = {
