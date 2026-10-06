@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Play, Sparkles, Image as ImageIcon, UserCheck, ArrowUpRight } from 'lucide-react';
 import { Template } from '../types';
@@ -19,6 +19,41 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
     setFaceSwapModalOpen,
     faceSwapScenes
   } = useApp();
+
+  const cardRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const isVideo = Boolean(
+    template.cover?.endsWith('.mp4') ||
+    template.cover?.endsWith('.webm') ||
+    template.cover?.startsWith('data:video/') ||
+    (template.preview && (template.preview.endsWith('.mp4') || template.preview.startsWith('data:video/')))
+  );
+
+  // Viewport-aware video playback: play ONLY when in viewport, pause when off-screen
+  useEffect(() => {
+    const cardEl = cardRef.current;
+    const videoEl = videoRef.current;
+    if (!cardEl || !videoEl || !isVideo) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            videoEl.play().catch(() => {});
+          } else {
+            videoEl.pause();
+          }
+        });
+      },
+      { threshold: 0.25 }
+    );
+
+    observer.observe(cardEl);
+    return () => {
+      observer.disconnect();
+    };
+  }, [isVideo]);
 
   const heightClasses = {
     compact: 'h-[370px] sm:h-[400px] w-[68vw] max-w-[260px] min-w-[220px] shrink-0',
@@ -41,6 +76,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
 
   return (
     <motion.div
+      ref={cardRef}
       whileHover={{ y: -5, scale: 1.015 }}
       whileTap={{ scale: 0.97 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
@@ -51,18 +87,14 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
       <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
         
         {/* Full-Bleed Media Canvas - Crystal clear, zero top/center darkening */}
-        {Boolean(
-          template.cover?.endsWith('.mp4') ||
-          template.cover?.endsWith('.webm') ||
-          template.cover?.startsWith('data:video/') ||
-          (template.preview && (template.preview.endsWith('.mp4') || template.preview.startsWith('data:video/')))
-        ) ? (
+        {isVideo ? (
           <video
+            ref={videoRef}
             src={template.preview || template.cover}
-            autoPlay
             loop
             muted
             playsInline
+            preload="metadata"
             className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
           />
         ) : (

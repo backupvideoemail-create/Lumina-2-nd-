@@ -543,8 +543,14 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         undefined,
         true
       );
-      updates.cover = stored.publicUrl;
       updates.preview = stored.publicUrl;
+      // Only set cover to preview if no cover is explicitly provided or present
+      if (!updates.cover) {
+        const existing = prodDb.getTemplates().find((t) => t.id === id);
+        if (!existing?.cover) {
+          updates.cover = stored.publicUrl;
+        }
+      }
       delete updates.mediaBase64;
     }
 
@@ -558,6 +564,18 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       );
       updates.cover = stored.publicUrl;
       delete updates.coverBase64;
+    }
+
+    if (updates.sampleResultBase64) {
+      const storedSample = await mediaStorage.saveMedia(
+        updates.sampleResultBase64,
+        'tpl_sample',
+        `tpl_sample_${Date.now()}`,
+        undefined,
+        true
+      );
+      updates.sampleResult = storedSample.publicUrl;
+      delete updates.sampleResultBase64;
     }
 
     if (updates.drivingVideoBase64) {
@@ -593,6 +611,184 @@ app.delete('/api/admin/templates/:id', requireAdmin, (req, res) => {
     return res.json({ success: true, message: 'Template removed successfully' });
   }
   res.status(404).json({ error: 'Template not found' });
+});
+
+// Official Dynamic Provider Catalog (Higgsfield API + Google Veo + Gemini Imagen)
+app.get('/api/admin/provider-catalog', requireAdmin, async (_req, res) => {
+  try {
+    const apiKey = process.env.HIGGSFIELD_API_KEY || '';
+    let higgsfieldItems: any[] = [];
+    let providerSource = 'cached_verified';
+
+    if (apiKey) {
+      try {
+        const hfRes = await fetch('https://api.higgsfield.ai/models', {
+          headers: { Authorization: apiKey.startsWith('Key ') ? apiKey : `Key ${apiKey}` }
+        });
+        if (hfRes.ok) {
+          const hfData = await hfRes.json();
+          if (hfData && Array.isArray(hfData.items)) {
+            providerSource = 'official_higgsfield_api';
+            higgsfieldItems = hfData.items;
+          }
+        }
+      } catch (e: any) {
+        console.warn('[ProviderCatalog] Higgsfield API live fetch note:', e.message);
+      }
+    }
+
+    // Map Higgsfield dynamic items
+    const rawHfList = higgsfieldItems.length > 0 ? higgsfieldItems : [
+      {
+        slug: 'higgsfield/genjutsu/motion-transfer/v1.0',
+        title: 'Genjutsu Motion Transfer',
+        description: 'Transfers motion dynamics and poses from driving video to reference faces.',
+        operation_type: ['video2video'],
+        output_type: 'video'
+      },
+      {
+        slug: 'higgsfield/genjutsu/character-swap/v1.0',
+        title: 'Character Identity Swap',
+        description: 'Replaces character identity in scene videos while maintaining realistic lighting.',
+        operation_type: ['video2video'],
+        output_type: 'video'
+      },
+      {
+        slug: 'higgsfield/cinema-studio/4.0',
+        title: 'Cinema Studio 4.0',
+        description: 'Cinema-grade neural video transformation pipeline.',
+        operation_type: ['video2video'],
+        output_type: 'video'
+      },
+      {
+        slug: 'higgsfield/ai-influencer',
+        title: 'AI Influencer',
+        description: 'Generates consistent AI persona and portrait variations.',
+        operation_type: ['image_edit', 'text2image'],
+        output_type: 'image'
+      }
+    ];
+
+    const mappedHiggsfield = rawHfList.map((item: any) => {
+      const isMotionTransfer = item.slug === 'higgsfield/genjutsu/motion-transfer/v1.0';
+      const isCharacterSwap = item.slug === 'higgsfield/genjutsu/character-swap/v1.0';
+      const hasExecutableRecipe = isMotionTransfer;
+
+      return {
+        id: `hf_${item.slug.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        provider: 'higgsfield',
+        sourceId: item.slug,
+        name: item.title ? `Higgsfield: ${item.title}` : item.slug,
+        model: item.slug,
+        operationType: item.operation_type || ['video2video'],
+        outputType: item.output_type || 'video',
+        category: isMotionTransfer ? 'Dance' : item.output_type === 'video' ? 'Trending' : 'Portraits',
+        aspectRatio: '9:16',
+        description: item.description || 'Official Higgsfield neural model.',
+        inputType: item.output_type === 'video' ? (isMotionTransfer ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') : 'IMAGE_ONLY',
+        requiresDrivingVideo: Boolean(isMotionTransfer || isCharacterSwap),
+        providerCostUsd: item.output_type === 'video' ? 1.59 : 0.15,
+        manualRecipeRequired: !hasExecutableRecipe,
+        recipe: hasExecutableRecipe
+          ? {
+              version: '1.0',
+              inputType: 'IMAGE_ONLY',
+              provider: 'higgsfield',
+              model: item.slug,
+              engine: 'AI_GENERATION',
+              workflow: 'motion-transfer',
+              prompt: 'Preserve face identity, transfer full body dynamics and camera angles smoothly, 480p motion transfer.',
+              aspectRatio: '9:16',
+              duration: 5
+            }
+          : null
+      };
+    });
+
+    // Google Veo & Gemini Official Studio Models
+    const googleItems = [
+      {
+        id: 'g_veo_3_1_lite',
+        provider: 'google_veo',
+        sourceId: 'google/veo-3.1-lite',
+        name: 'Google Veo 3.1 Lite (Viral Reels)',
+        model: 'veo-3.1-lite-generate-preview',
+        operationType: ['image2video', 'text2video'],
+        outputType: 'video',
+        category: 'Trending',
+        aspectRatio: '9:16',
+        description: 'Google DeepMind official video generation model. 60FPS fluid motion.',
+        inputType: 'IMAGE_OR_VIDEO',
+        requiresDrivingVideo: false,
+        providerCostUsd: 0.25,
+        manualRecipeRequired: false,
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_OR_VIDEO',
+          provider: 'google_veo',
+          model: 'veo-3.1-lite-generate-preview',
+          engine: 'AI_GENERATION',
+          workflow: 'viral-reels',
+          prompt: 'Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.',
+          aspectRatio: '9:16',
+          duration: 5
+        }
+      },
+      {
+        id: 'g_gemini_2_5_photo',
+        provider: 'gemini',
+        sourceId: 'google/gemini-2.5-flash-image',
+        name: 'Gemini 2.5 Flash Studio (Editorial Portrait)',
+        model: 'gemini-2.5-flash-image',
+        operationType: ['image2image', 'text2image'],
+        outputType: 'image',
+        category: 'Portraits',
+        aspectRatio: '9:16',
+        description: 'Official Google Gemini image synthesis model with medium-format studio aesthetics.',
+        inputType: 'IMAGE_ONLY',
+        requiresDrivingVideo: false,
+        providerCostUsd: 0.08,
+        manualRecipeRequired: false,
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'gemini',
+          model: 'gemini-2.5-flash-image',
+          engine: 'AI_GENERATION',
+          workflow: 'neural-portrait-studio',
+          prompt: 'Studio editorial magazine portrait, Hasselblad medium-format clarity, studio rim lights, magazine cover aesthetic.',
+          aspectRatio: '9:16'
+        }
+      },
+      {
+        id: 'g_veo_experimental_raw',
+        provider: 'google_veo',
+        sourceId: 'google/veo-experimental-raw',
+        name: 'Google Veo Experimental (Custom Pipeline)',
+        model: 'veo-experimental-raw',
+        operationType: ['video2video'],
+        outputType: 'video',
+        category: 'Experimental',
+        aspectRatio: '16:9',
+        description: 'Unbound raw Veo diffusion pipeline. Requires custom prompts and parameters.',
+        inputType: 'VIDEO_ONLY',
+        requiresDrivingVideo: false,
+        providerCostUsd: 0.40,
+        manualRecipeRequired: true,
+        recipe: null
+      }
+    ];
+
+    res.json({
+      success: true,
+      source: providerSource,
+      totalModels: mappedHiggsfield.length + googleItems.length,
+      items: [...mappedHiggsfield, ...googleItems],
+      fetchedAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch provider catalog' });
+  }
 });
 
 // Home Hero Banners API

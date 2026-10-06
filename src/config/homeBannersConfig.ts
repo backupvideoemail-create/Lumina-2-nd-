@@ -13,6 +13,7 @@ export interface HomeBannerItem {
   sharesCount: string;
   gradientOverlay?: string;
   mediaType?: 'image' | 'video';
+  videoUrl?: string;
   coverMedia?: string;
   isActive?: boolean;
 }

@@ -39,7 +39,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 }) => {
   const { templates, refreshGenerations, refreshTemplates } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'templates' | 'banners' | 'demo'>('templates');
+  const [activeTab, setActiveTab] = useState<'templates' | 'catalog' | 'banners' | 'demo'>('templates');
   const [subTab, setSubTab] = useState<'list' | 'add' | 'edit'>('list');
 
   // TEMPLATES STATE
@@ -54,6 +54,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplTagsInput, setTplTagsInput] = useState('Viral, AI, Instagram Reels');
   const [tplCostUsd, setTplCostUsd] = useState<number>(0.25);
   const [tplMediaPreview, setTplMediaPreview] = useState<string>('');
+  const [tplCoverPreview, setTplCoverPreview] = useState<string>('');
+  const [tplSampleResultPreview, setTplSampleResultPreview] = useState<string>('');
   const [tplDetectedType, setTplDetectedType] = useState<'photo' | 'video'>('video');
 
   // Input Type Enforcement: 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO'
@@ -67,6 +69,19 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [recipePrompt, setRecipePrompt] = useState<string>('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
   const [recipeDrivingVideoUrl, setRecipeDrivingVideoUrl] = useState<string>('');
   const [recipeDrivingVideoPreview, setRecipeDrivingVideoPreview] = useState<string>('');
+
+  // PROVIDER CATALOG STATE
+  const [catalogItems, setCatalogItems] = useState<any[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState<boolean>(false);
+  const [catalogSource, setCatalogSource] = useState<string>('');
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'higgsfield' | 'google_veo' | 'gemini'>('all');
+  const [catalogSearch, setCatalogSearch] = useState<string>('');
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+
+  // RECIPE JSON UPLOAD & PASTE STATE
+  const [showPasteJsonModal, setShowPasteJsonModal] = useState<boolean>(false);
+  const [pasteJsonText, setPasteJsonText] = useState<string>('');
+  const [pasteJsonError, setPasteJsonError] = useState<string | null>(null);
 
   // BANNERS STATE
   const [banners, setBanners] = useState<HomeBannerItem[]>([]);
@@ -89,6 +104,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const tplFileRef = useRef<HTMLInputElement>(null);
+  const coverFileRef = useRef<HTMLInputElement>(null);
+  const sampleResultFileRef = useRef<HTMLInputElement>(null);
+  const recipeJsonFileRef = useRef<HTMLInputElement>(null);
   const drivingFileRef = useRef<HTMLInputElement>(null);
   const bannerFileRef = useRef<HTMLInputElement>(null);
   const demoFileRef = useRef<HTMLInputElement>(null);
@@ -154,7 +172,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  // --- TEMPLATE HANDLERS ---
+  // --- MEDIA FILE HANDLERS (Independent Cover, Preview, and Sample Result) ---
   const handleTplFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -163,6 +181,26 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       setTplMediaPreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleCoverFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTplCoverPreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSampleResultFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTplSampleResultPreview(reader.result as string);
     };
     reader.readAsDataURL(file);
   };
@@ -178,6 +216,119 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     reader.readAsDataURL(file);
   };
 
+  // --- PROVIDER CATALOG HANDLERS ---
+  const fetchProviderCatalog = async () => {
+    setCatalogLoading(true);
+    try {
+      const res = await fetch('/api/admin/provider-catalog', {
+        headers: getAdminHeaders()
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.items)) {
+        setCatalogItems(data.items);
+        setCatalogSource(data.source || 'official_higgsfield_api');
+        showNotification(`Catalog refreshed: ${data.items.length} official models available`);
+      } else {
+        showNotification('Failed to load catalog: ' + (data.error || 'Unknown error'), 'error');
+      }
+    } catch (err: any) {
+      showNotification('Network error loading catalog', 'error');
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  const handleImportCatalogItem = (item: any) => {
+    setEditingTemplate(null);
+    setTplTitle(item.name || item.model);
+    setTplDescription(item.description || `Official ${item.provider} ${item.name}`);
+    setTplCategory(item.category || 'Trending');
+    setTplAspectRatio(item.aspectRatio || '9:16');
+    setTplCostUsd(item.providerCostUsd || 0.25);
+    setTplDetectedType(item.outputType === 'video' ? 'video' : 'photo');
+    setTplInputType(item.inputType || 'IMAGE_OR_VIDEO');
+
+    setRecipeProvider(item.provider);
+    setRecipeModel(item.model);
+    setRecipeWorkflow(item.recipe?.workflow || 'neural-cinematic');
+    setRecipePrompt(
+      item.recipe?.prompt ||
+      `${item.name}. Official provider preset: ${item.model}. Preserve identity & high aesthetic production quality.`
+    );
+    setRecipePreset('custom');
+
+    // Reset media assets for user review upload
+    setTplCoverPreview('');
+    setTplMediaPreview('');
+    setTplSampleResultPreview('');
+
+    if (item.manualRecipeRequired) {
+      setImportNotice(
+        '⚠️ Manual Recipe Required: The provider catalog did not supply complete executable prompts. Please review and customize the prompt and parameters below before publishing.'
+      );
+    } else {
+      setImportNotice(null);
+    }
+
+    setActiveTab('templates');
+    setSubTab('add');
+    showNotification(`Imported ${item.name}! Add preview media & review before publishing live.`);
+  };
+
+  // --- RECIPE JSON UPLOAD & PASTE HANDLERS ---
+  const applyRecipeJsonObject = (recipeObj: any) => {
+    if (!recipeObj || typeof recipeObj !== 'object') {
+      showNotification('Recipe must be a valid JSON object', 'error');
+      return;
+    }
+    const r = recipeObj.recipe || recipeObj;
+    if (r.provider) setRecipeProvider(r.provider);
+    if (r.model) setRecipeModel(r.model);
+    if (r.workflow) setRecipeWorkflow(r.workflow);
+    if (r.prompt) setRecipePrompt(r.prompt);
+    if (r.inputType) setTplInputType(r.inputType);
+    if (r.drivingVideoUrl) setRecipeDrivingVideoUrl(r.drivingVideoUrl);
+    if (recipeObj.title && !tplTitle) setTplTitle(recipeObj.title);
+    if (recipeObj.description && !tplDescription) setTplDescription(recipeObj.description);
+    if (recipeObj.category) setTplCategory(recipeObj.category);
+    if (recipeObj.aspectRatio) setTplAspectRatio(recipeObj.aspectRatio);
+    if (recipeObj.providerCostUsd) setTplCostUsd(Number(recipeObj.providerCostUsd));
+    setRecipePreset('custom');
+    showNotification('Recipe JSON validated and applied successfully!');
+  };
+
+  const handleUploadRecipeJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        applyRecipeJsonObject(parsed);
+      } catch (err: any) {
+        showNotification('Invalid Recipe JSON: ' + err.message, 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleApplyPastedJson = () => {
+    setPasteJsonError(null);
+    if (!pasteJsonText.trim()) {
+      setPasteJsonError('Please paste JSON text');
+      return;
+    }
+    try {
+      const parsed = JSON.parse(pasteJsonText.trim());
+      applyRecipeJsonObject(parsed);
+      setShowPasteJsonModal(false);
+      setPasteJsonText('');
+    } catch (err: any) {
+      setPasteJsonError('Invalid JSON format: ' + err.message);
+    }
+  };
+
   const startEditTemplate = (tpl: Template) => {
     setEditingTemplate(tpl);
     setTplTitle(tpl.title);
@@ -189,9 +340,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTplBadge(tpl.badge || '');
     setTplTagsInput(tpl.tags ? tpl.tags.join(', ') : '');
     setTplCostUsd(tpl.providerCostUsd || 0.25);
-    setTplMediaPreview(tpl.preview || tpl.cover);
+    setTplCoverPreview(tpl.cover || '');
+    setTplMediaPreview(tpl.preview || tpl.cover || '');
+    setTplSampleResultPreview(tpl.sampleResult || '');
     setTplDetectedType(tpl.type);
     setTplInputType(tpl.inputType || (tpl.type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'));
+    setImportNotice(null);
 
     if (tpl.recipe) {
       setRecipeProvider(tpl.recipe.provider || (tpl.type === 'video' ? 'google_veo' : 'gemini'));
@@ -240,29 +394,52 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     try {
       if (editingTemplate) {
         // UPDATE existing
+        const updateBody: any = {
+          title: tplTitle.trim(),
+          description: tplDescription.trim(),
+          category: tplCategory,
+          aspectRatio: tplAspectRatio,
+          isFeatured: tplIsFeatured,
+          isActive: tplIsActive,
+          badge: tplBadge || undefined,
+          tags,
+          type: tplDetectedType,
+          inputType: tplInputType,
+          workflow: recipeWorkflow,
+          model: recipeModel,
+          engine: 'AI_GENERATION',
+          recipe: recipePayload,
+          providerCostUsd: Number(tplCostUsd) || 0.25
+        };
+
+        if (tplMediaPreview.startsWith('data:')) {
+          updateBody.mediaBase64 = tplMediaPreview;
+        } else if (tplMediaPreview) {
+          updateBody.preview = tplMediaPreview;
+        }
+
+        if (tplCoverPreview.startsWith('data:')) {
+          updateBody.coverBase64 = tplCoverPreview;
+        } else if (tplCoverPreview) {
+          updateBody.cover = tplCoverPreview;
+        }
+
+        if (tplSampleResultPreview.startsWith('data:')) {
+          updateBody.sampleResultBase64 = tplSampleResultPreview;
+        } else if (tplSampleResultPreview) {
+          updateBody.sampleResult = tplSampleResultPreview;
+        }
+
+        if (recipeDrivingVideoPreview.startsWith('data:')) {
+          updateBody.drivingVideoBase64 = recipeDrivingVideoPreview;
+        } else if (recipeDrivingVideoUrl.trim()) {
+          updateBody.drivingVideoUrl = recipeDrivingVideoUrl.trim();
+        }
+
         const res = await fetch(`/api/admin/templates/${editingTemplate.id}`, {
           method: 'PUT',
           headers: getAdminHeaders(),
-          body: JSON.stringify({
-            title: tplTitle.trim(),
-            description: tplDescription.trim(),
-            category: tplCategory,
-            aspectRatio: tplAspectRatio,
-            isFeatured: tplIsFeatured,
-            isActive: tplIsActive,
-            badge: tplBadge || undefined,
-            tags,
-            type: tplDetectedType,
-            inputType: tplInputType,
-            mediaBase64: tplMediaPreview.startsWith('data:') ? tplMediaPreview : undefined,
-            drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
-            drivingVideoBase64: recipeDrivingVideoPreview.startsWith('data:') ? recipeDrivingVideoPreview : undefined,
-            workflow: recipeWorkflow,
-            model: recipeModel,
-            engine: 'AI_GENERATION',
-            recipe: recipePayload,
-            providerCostUsd: Number(tplCostUsd) || 0.25
-          })
+          body: JSON.stringify(updateBody)
         });
 
         if (res.ok) {
@@ -276,8 +453,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         }
       } else {
         // CREATE new
-        if (!tplMediaPreview) {
-          showNotification('Please select a photo or video preview from gallery', 'error');
+        if (!tplMediaPreview && !tplCoverPreview) {
+          showNotification('Please select a preview media or cover photo from phone gallery', 'error');
           setIsSubmitting(false);
           return;
         }
@@ -296,7 +473,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             tags,
             type: tplDetectedType,
             inputType: tplInputType,
-            mediaBase64: tplMediaPreview,
+            mediaBase64: tplMediaPreview || tplCoverPreview,
+            coverBase64: tplCoverPreview || undefined,
+            sampleResultBase64: tplSampleResultPreview.startsWith('data:') ? tplSampleResultPreview : undefined,
             drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
             drivingVideoBase64: recipeDrivingVideoPreview.startsWith('data:') ? recipeDrivingVideoPreview : undefined,
             workflow: recipeWorkflow,
@@ -313,8 +492,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setSubTab('list');
           setTplTitle('');
           setTplMediaPreview('');
+          setTplCoverPreview('');
+          setTplSampleResultPreview('');
           setRecipeDrivingVideoPreview('');
           setRecipeDrivingVideoUrl('');
+          setImportNotice(null);
         } else {
           const err = await res.json();
           showNotification(err.error || 'Failed to create template', 'error');
@@ -606,6 +788,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
           <button
             onClick={() => {
+              setActiveTab('catalog');
+              if (catalogItems.length === 0) fetchProviderCatalog();
+            }}
+            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+              activeTab === 'catalog'
+                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
+                : 'text-stone-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-cyan-400" />
+            <span>Provider Catalog</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab('banners');
               setSubTab('list');
             }}
@@ -782,46 +979,132 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </div>
                 </div>
 
-                {/* Step 2: Preview Demonstration Media (What customers see) */}
-                <div className="space-y-1.5 p-3 rounded-2xl bg-stone-900/90 border border-white/10">
-                  <div className="flex items-center justify-between">
+                {/* Step 2: Separate Media Assets (Independent Cover, Preview, and Sample Result) */}
+                <div className="space-y-3 p-3.5 rounded-2xl bg-stone-900/90 border border-white/10">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
                     <label className="text-xs font-bold text-white flex items-center gap-1.5">
                       <span className="w-4 h-4 rounded-full bg-[#ff9f00] text-black text-[10px] font-black flex items-center justify-center">2</span>
-                      <span>Preview Media (For Display Only)</span>
+                      <span>Media Assets (Independent Uploads)</span>
                     </label>
-                    <span className="text-[10px] text-stone-400">MP4 Video or JPG/PNG</span>
+                    <span className="text-[10px] text-stone-400">Separate Cover · Preview · Sample</span>
                   </div>
 
-                  <p className="text-[10px] text-amber-300/80 bg-amber-500/10 p-2 rounded-xl border border-amber-500/20">
-                    ℹ️ <strong>Preview ≠ Recipe:</strong> Upload the sample MP4 video or photo that visitors will see as the preview demo. The AI generation logic is defined in Step 3 below.
-                  </p>
+                  {/* 2A: Cover Photo / Poster (Card Grid Display) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Cover Photo (Card Grid View)</span>
+                      </span>
+                      <span className="text-[9px] text-stone-500">JPG, PNG, WEBP</span>
+                    </div>
 
-                  <input
-                    ref={tplFileRef}
-                    type="file"
-                    accept="image/*,video/*"
-                    onChange={handleTplFileSelect}
-                    className="hidden"
-                  />
-                  <div
-                    onClick={() => tplFileRef.current?.click()}
-                    className="relative w-full aspect-[16/9] rounded-2xl border-2 border-dashed border-white/20 hover:border-[#ff9f00] bg-black/40 flex flex-col items-center justify-center p-3 cursor-pointer overflow-hidden group"
-                  >
-                    {tplMediaPreview ? (
-                      tplDetectedType === 'video' ? (
-                        <video src={tplMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                    <input
+                      ref={coverFileRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleCoverFileSelect}
+                      className="hidden"
+                    />
+
+                    <div
+                      onClick={() => coverFileRef.current?.click()}
+                      className="relative w-full h-28 rounded-xl border border-dashed border-white/20 hover:border-[#ff9f00] bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
+                    >
+                      {tplCoverPreview ? (
+                        <img src={tplCoverPreview} alt="Cover Preview" className="w-full h-full object-cover" />
                       ) : (
-                        <img src={tplMediaPreview} alt="Preview" className="w-full h-full object-cover" />
-                      )
-                    ) : (
-                      <div className="flex flex-col items-center text-center">
-                        <Upload className="w-7 h-7 text-[#ff9f00] mb-1.5" />
-                        <span className="text-xs font-bold text-white">Tap to Choose Demo Video / Photo from Phone</span>
-                        <span className="text-[10px] text-stone-400 mt-0.5">MP4, JPG, PNG, WEBP</span>
+                        <div className="flex flex-col items-center text-center p-2">
+                          <Upload className="w-5 h-5 text-amber-400 mb-1" />
+                          <span className="text-xs font-semibold text-white">Choose Cover Photo</span>
+                          <span className="text-[9px] text-stone-500">Shows on home & gallery cards</span>
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
+                        Replace Cover Photo
                       </div>
-                    )}
-                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
-                      Tap to Replace Preview
+                    </div>
+                  </div>
+
+                  {/* 2B: Preview Demonstration Media (Demo Video or Photo for Modal View) */}
+                  <div className="space-y-1.5 pt-2 border-t border-white/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                        <VideoIcon className="w-3.5 h-3.5 text-pink-400" />
+                        <span>Preview Media (Detail Modal Demo)</span>
+                      </span>
+                      <span className="text-[9px] text-stone-500">MP4 Video or High-Res Photo</span>
+                    </div>
+
+                    <input
+                      ref={tplFileRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      onChange={handleTplFileSelect}
+                      className="hidden"
+                    />
+
+                    <div
+                      onClick={() => tplFileRef.current?.click()}
+                      className="relative w-full aspect-[16/9] rounded-xl border border-dashed border-white/20 hover:border-[#ff9f00] bg-black/40 flex flex-col items-center justify-center cursor-pointer overflow-hidden group"
+                    >
+                      {tplMediaPreview ? (
+                        tplDetectedType === 'video' ? (
+                          <video src={tplMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                        ) : (
+                          <img src={tplMediaPreview} alt="Preview" className="w-full h-full object-cover" />
+                        )
+                      ) : (
+                        <div className="flex flex-col items-center text-center p-2">
+                          <Upload className="w-6 h-6 text-[#ff9f00] mb-1" />
+                          <span className="text-xs font-semibold text-white">Choose Demo Video or Photo</span>
+                          <span className="text-[9px] text-stone-500">Visitors watch this before generating</span>
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
+                        Replace Preview Media
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 2C: Sample AI Result Output (Before/After AI Result) */}
+                  <div className="space-y-1.5 pt-2 border-t border-white/5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Sample AI Result (Transformed Output Demo)</span>
+                      </span>
+                      <span className="text-[9px] text-stone-500">Optional · Photo or Video</span>
+                    </div>
+
+                    <input
+                      ref={sampleResultFileRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      onChange={handleSampleResultFileSelect}
+                      className="hidden"
+                    />
+
+                    <div
+                      onClick={() => sampleResultFileRef.current?.click()}
+                      className="relative w-full h-24 rounded-xl border border-dashed border-white/20 hover:border-emerald-400 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
+                    >
+                      {tplSampleResultPreview ? (
+                        tplSampleResultPreview.endsWith('.mp4') || tplSampleResultPreview.startsWith('data:video/') ? (
+                          <video src={tplSampleResultPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                        ) : (
+                          <img src={tplSampleResultPreview} alt="Sample Result" className="w-full h-full object-cover" />
+                        )
+                      ) : (
+                        <div className="flex flex-col items-center text-center p-2">
+                          <Upload className="w-5 h-5 text-emerald-400 mb-1" />
+                          <span className="text-xs font-semibold text-white">Choose Sample AI Result</span>
+                          <span className="text-[9px] text-stone-500">Used for before-and-after AI transformation</span>
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
+                        Replace Sample Result
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -834,6 +1117,53 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       <span>Execution Recipe (AI Logic)</span>
                     </label>
                     <span className="text-[10px] text-stone-400">Server-Authoritative</span>
+                  </div>
+
+                  {/* Import Alert Notice (If provider model needs manual recipe setup) */}
+                  {importNotice && (
+                    <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs font-semibold flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                      <span>{importNotice}</span>
+                    </div>
+                  )}
+
+                  {/* RECIPE JSON INTEGRATION: Upload JSON or Paste JSON */}
+                  <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                        <Sliders className="w-3.5 h-3.5 text-[#ff9f00]" />
+                        <span>Recipe JSON Import</span>
+                      </span>
+                      <span className="text-[9px] text-stone-500">Direct Configuration</span>
+                    </div>
+
+                    <input
+                      ref={recipeJsonFileRef}
+                      type="file"
+                      accept=".json,application/json"
+                      onChange={handleUploadRecipeJson}
+                      className="hidden"
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => recipeJsonFileRef.current?.click()}
+                        className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-[#ff9f00]" />
+                        <span>Upload Recipe JSON</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowPasteJsonModal(true)}
+                        className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Paste Recipe JSON</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* 1-Tap Presets */}
@@ -1368,6 +1698,217 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 )}
                 <span>Publish Demo Video Live</span>
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: PROVIDER CATALOG (Higgsfield API + Google Veo + Gemini) */}
+        {activeTab === 'catalog' && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+            {/* Catalog Header & Refresh Button */}
+            <div className="p-3.5 rounded-2xl bg-stone-900/90 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-cyan-400" />
+                    <span>Official Provider Model Catalog</span>
+                  </h4>
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>{catalogSource || 'official_higgsfield_api'}</span>
+                  </span>
+                </div>
+                <p className="text-[11px] text-stone-400 mt-0.5">
+                  Live official models from Higgsfield API, Google Veo 3.1 & Gemini 2.5.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={fetchProviderCatalog}
+                disabled={catalogLoading}
+                className="px-3.5 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${catalogLoading ? 'animate-spin' : ''}`} />
+                <span>{catalogLoading ? 'Refreshing...' : 'Refresh Current Catalog'}</span>
+              </button>
+            </div>
+
+            {/* Provider Filter Tabs & Search Bar */}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar shrink-0">
+                {(['all', 'higgsfield', 'google_veo', 'gemini'] as const).map((filter) => (
+                  <button
+                    key={filter}
+                    onClick={() => setCatalogFilter(filter)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      catalogFilter === filter
+                        ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                        : 'bg-black/30 text-stone-400 hover:text-white border border-white/5'
+                    }`}
+                  >
+                    {filter === 'all'
+                      ? `All (${catalogItems.length})`
+                      : filter === 'higgsfield'
+                      ? 'Higgsfield API'
+                      : filter === 'google_veo'
+                      ? 'Google Veo'
+                      : 'Gemini'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={catalogSearch}
+                  onChange={(e) => setCatalogSearch(e.target.value)}
+                  placeholder="Search provider models or workflows..."
+                  className="w-full px-3 py-1.5 rounded-xl bg-black/50 border border-white/10 text-white text-xs placeholder-stone-500 focus:border-cyan-400 focus:outline-none"
+                />
+                {catalogSearch && (
+                  <button
+                    onClick={() => setCatalogSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-500 hover:text-white text-xs"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Catalog Items List */}
+            {catalogItems.length === 0 && !catalogLoading ? (
+              <div className="p-8 text-center rounded-2xl bg-stone-900/40 border border-white/5 space-y-2">
+                <Sparkles className="w-8 h-8 text-cyan-400 mx-auto opacity-70" />
+                <p className="text-xs text-stone-300">Click &ldquo;Refresh Current Catalog&rdquo; to fetch official models.</p>
+                <button
+                  type="button"
+                  onClick={fetchProviderCatalog}
+                  className="px-4 py-2 rounded-xl bg-cyan-500 text-black text-xs font-bold"
+                >
+                  Fetch Models Now
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {catalogItems
+                  .filter((item) => {
+                    if (catalogFilter !== 'all' && item.provider !== catalogFilter) return false;
+                    if (catalogSearch.trim()) {
+                      const q = catalogSearch.toLowerCase();
+                      return (
+                        item.name?.toLowerCase().includes(q) ||
+                        item.model?.toLowerCase().includes(q) ||
+                        item.description?.toLowerCase().includes(q)
+                      );
+                    }
+                    return true;
+                  })
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="p-3.5 rounded-2xl bg-stone-900/60 border border-white/10 hover:border-cyan-500/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+                    >
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-white/10 text-stone-200">
+                            {item.provider}
+                          </span>
+                          <h5 className="text-xs font-bold text-white truncate">{item.name}</h5>
+                          {item.manualRecipeRequired ? (
+                            <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              ⚠️ Manual Recipe Required
+                            </span>
+                          ) : (
+                            <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              ✨ Executable Recipe Ready
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-[11px] text-stone-400 line-clamp-2">
+                          {item.description}
+                        </p>
+
+                        <div className="flex items-center gap-3 text-[10px] text-stone-500 font-mono pt-0.5">
+                          <span className="text-stone-400">{item.model}</span>
+                          <span>•</span>
+                          <span>{item.inputType.replace('_', ' ')}</span>
+                          <span>•</span>
+                          <span className="text-amber-400 font-semibold">${item.providerCostUsd?.toFixed(2)} USD</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleImportCatalogItem(item)}
+                        className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all shrink-0 cursor-pointer"
+                      >
+                        <span>Import to Lumina → Review</span>
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PASTE RECIPE JSON MODAL OVERLAY */}
+        {showPasteJsonModal && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <div className="w-full max-w-lg rounded-3xl bg-[#121118] border border-cyan-500/40 p-4 sm:p-5 space-y-3 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Edit2 className="w-4 h-4 text-cyan-400" />
+                  <span>Paste Recipe JSON</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowPasteJsonModal(false)}
+                  className="p-1 rounded-lg text-stone-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <p className="text-[11px] text-stone-400">
+                Paste an executable recipe JSON object. Valid keys: provider, model, workflow, prompt, inputType, aspectRatio, providerCostUsd.
+              </p>
+
+              <textarea
+                value={pasteJsonText}
+                onChange={(e) => {
+                  setPasteJsonText(e.target.value);
+                  setPasteJsonError(null);
+                }}
+                rows={8}
+                placeholder={`{\n  "provider": "google_veo",\n  "model": "veo-3.1-lite-generate-preview",\n  "workflow": "viral-reels",\n  "prompt": "Cinematic slow-motion 60FPS video reel...",\n  "inputType": "IMAGE_OR_VIDEO"\n}`}
+                className="w-full font-mono text-xs p-3 rounded-xl bg-black border border-white/15 text-stone-200 focus:border-cyan-400 focus:outline-none"
+              />
+
+              {pasteJsonError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-800/60 text-xs text-rose-300">
+                  {pasteJsonError}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowPasteJsonModal(false)}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-stone-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyPastedJson}
+                  className="px-4 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-black shadow cursor-pointer active:scale-95 transition-all"
+                >
+                  Validate & Apply Recipe
+                </button>
+              </div>
             </div>
           </div>
         )}

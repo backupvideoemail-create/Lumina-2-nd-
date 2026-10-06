@@ -186,12 +186,30 @@ export const HomeView: React.FC = () => {
               onClick={() => handleBannerClick(activeBanner)}
               className="absolute inset-0 cursor-pointer"
             >
-              {/* Background Image */}
-              <img
-                src={activeBanner.image}
-                alt={activeBanner.title}
-                className="w-full h-full object-cover object-center"
-              />
+              {/* Background Media: Supports both Video and Image */}
+              {Boolean(
+                activeBanner.mediaType === 'video' ||
+                activeBanner.videoUrl ||
+                activeBanner.image?.endsWith('.mp4') ||
+                activeBanner.image?.endsWith('.webm') ||
+                activeBanner.image?.startsWith('data:video/')
+              ) ? (
+                <video
+                  src={activeBanner.videoUrl || activeBanner.image}
+                  poster={activeBanner.coverMedia || activeBanner.image?.endsWith('.mp4') ? undefined : activeBanner.image}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  className="w-full h-full object-cover object-center"
+                />
+              ) : (
+                <img
+                  src={activeBanner.image}
+                  alt={activeBanner.title}
+                  className="w-full h-full object-cover object-center"
+                />
+              )}
 
               {/* Multi-layer Cinematic Scrims */}
               <div
