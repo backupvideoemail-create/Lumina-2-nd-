@@ -46,6 +46,9 @@ export interface TemplateProcessParams {
   workflow: string;
   customPrompt?: string;
   ownerUserId?: string;
+  detectedInputType?: 'image' | 'video';
+  recipe?: any;
+  drivingVideoUrl?: string;
 }
 
 export interface ProviderResult {

@@ -41,13 +41,34 @@ export const TemplateDetailModal: React.FC = () => {
   const userBalance = wallet?.balance ?? 0;
   const hasCredits = userBalance >= tpl.creditCost;
 
+  const isVideoMedia = (media: string | null | undefined): boolean => {
+    if (!media) return false;
+    if (media.startsWith('data:video/')) return true;
+    const clean = media.split('?')[0].toLowerCase();
+    return clean.endsWith('.mp4') || clean.endsWith('.mov') || clean.endsWith('.webm') || clean.endsWith('.m4v');
+  };
+
+  const allowedInputType = tpl.inputType || (tpl.type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY');
+
   // Validate and handle file upload
   const processFile = (file: File) => {
     setUploadError(null);
 
-    const MAX_SIZE = 25 * 1024 * 1024;
+    const MAX_SIZE = 35 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
-      setUploadError('File size exceeds 25MB limit. Please upload a smaller file.');
+      setUploadError('File size exceeds 35MB limit. Please upload a smaller file.');
+      return;
+    }
+
+    const isVideoFile = file.type.startsWith('video');
+
+    if (allowedInputType === 'IMAGE_ONLY' && isVideoFile) {
+      setUploadError('यह टेम्पलेट केवल फोटो स्वीकार करता है। कृपया एक फोटो (JPG, PNG) अपलोड करें। / This template accepts photos only.');
+      return;
+    }
+
+    if (allowedInputType === 'VIDEO_ONLY' && !isVideoFile) {
+      setUploadError('यह टेम्पलेट केवल वीडियो स्वीकार करता है। कृपया एक वीडियो (MP4) अपलोड करें। / This template accepts videos only.');
       return;
     }
 
@@ -164,12 +185,23 @@ export const TemplateDetailModal: React.FC = () => {
                 : 'aspect-video max-h-[400px]'
             }`}
           >
-            {/* Dominant AI Result Preview */}
-            <img
-              src={displayResultMedia}
-              alt={tpl.title}
-              className="w-full h-full object-cover"
-            />
+            {/* Dominant AI Result Preview (Supports MP4 Video & Photo) */}
+            {isVideoMedia(displayResultMedia) ? (
+              <video
+                src={displayResultMedia}
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <img
+                src={displayResultMedia}
+                alt={tpl.title}
+                className="w-full h-full object-cover"
+              />
+            )}
 
             {/* Gradient Scrim */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-black/30 pointer-events-none" />
@@ -271,28 +303,49 @@ export const TemplateDetailModal: React.FC = () => {
           </div>
         </section>
 
-        {/* Step 1: Upload Your Photo / Video */}
+        {/* Step 1: Upload Your Photo / Video (Enforced by Template Input Type) */}
         <section className="space-y-2">
           <div className="flex items-center justify-between">
             <label className="text-xs font-bold uppercase tracking-wider text-stone-200 flex items-center gap-1.5">
               <span className="w-4.5 h-4.5 rounded-full bg-[#ff9f00] text-black flex items-center justify-center text-[10px] font-black">1</span>
-              <span>Upload Your {tpl.type === 'video' ? 'Photo or Video' : 'Photo'}</span>
+              <span>
+                {allowedInputType === 'IMAGE_ONLY'
+                  ? 'Upload Your Photo'
+                  : allowedInputType === 'VIDEO_ONLY'
+                  ? 'Upload Your Video'
+                  : 'Upload Photo or Video'}
+              </span>
             </label>
-            {uploadedMedia && (
-              <button
-                onClick={() => setUploadedMedia(null)}
-                className="text-xs text-amber-300 hover:underline cursor-pointer"
-              >
-                Change photo
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-amber-300">
+                {allowedInputType === 'IMAGE_ONLY'
+                  ? '📸 Photo Only'
+                  : allowedInputType === 'VIDEO_ONLY'
+                  ? '🎬 Video Only'
+                  : '✨ Photo or Video'}
+              </span>
+              {uploadedMedia && (
+                <button
+                  onClick={() => setUploadedMedia(null)}
+                  className="text-xs text-amber-300 hover:underline cursor-pointer"
+                >
+                  Change
+                </button>
+              )}
+            </div>
           </div>
 
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            accept="image/jpeg,image/png,image/webp,video/mp4"
+            accept={
+              allowedInputType === 'IMAGE_ONLY'
+                ? 'image/jpeg,image/png,image/webp'
+                : allowedInputType === 'VIDEO_ONLY'
+                ? 'video/mp4,video/quicktime,video/webm'
+                : 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime'
+            }
             className="hidden"
           />
 
@@ -315,23 +368,42 @@ export const TemplateDetailModal: React.FC = () => {
                 <Upload className="w-5 h-5" />
               </div>
               <h3 className="text-sm font-bold text-white">
-                Tap to upload {tpl.type === 'video' ? 'photo or video' : 'photo'}
+                {allowedInputType === 'IMAGE_ONLY'
+                  ? 'Tap to upload portrait photo'
+                  : allowedInputType === 'VIDEO_ONLY'
+                  ? 'Tap to upload source video'
+                  : 'Tap to upload photo or video'}
               </h3>
               <p className="text-[11px] text-stone-400 mt-1 max-w-xs mx-auto">
-                JPG, PNG, WEBP or MP4 · Maximum 25MB
+                {allowedInputType === 'IMAGE_ONLY'
+                  ? 'JPG, PNG, WEBP · Max 35MB'
+                  : allowedInputType === 'VIDEO_ONLY'
+                  ? 'MP4, MOV · Max 35MB'
+                  : 'JPG, PNG, WEBP or MP4 · Max 35MB'}
               </p>
             </div>
           ) : (
             <div className="relative rounded-2xl overflow-hidden bg-stone-900 border border-amber-500/40 p-3 flex items-center gap-3.5 shadow-md">
-              <img
-                src={uploadedMedia}
-                alt="Uploaded media"
-                className="w-14 h-14 rounded-xl object-cover border border-white/10 shrink-0"
-              />
+              {isVideoMedia(uploadedMedia) ? (
+                <video
+                  src={uploadedMedia}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="w-14 h-14 rounded-xl object-cover border border-white/10 shrink-0 bg-black"
+                />
+              ) : (
+                <img
+                  src={uploadedMedia}
+                  alt="Uploaded media"
+                  className="w-14 h-14 rounded-xl object-cover border border-white/10 shrink-0"
+                />
+              )}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400">
                   <Check className="w-4 h-4 stroke-[3]" />
-                  <span>Media Ready</span>
+                  <span>{isVideoMedia(uploadedMedia) ? 'Video Ready' : 'Photo Ready'}</span>
                 </div>
                 <p className="text-[11px] text-stone-400 mt-0.5 truncate">
                   Ready for AI synthesis with {tpl.title}
@@ -340,7 +412,7 @@ export const TemplateDetailModal: React.FC = () => {
               <button
                 onClick={() => setUploadedMedia(null)}
                 className="p-1.5 text-stone-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
-                aria-label="Remove uploaded photo"
+                aria-label="Remove uploaded media"
               >
                 <X className="w-4 h-4" />
               </button>

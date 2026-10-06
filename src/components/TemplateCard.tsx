@@ -70,15 +70,20 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
                 <UserCheck className="w-3 h-3 text-amber-400" />
                 <span className="text-amber-200">Face Swap</span>
               </>
-            ) : template.type === 'video' ? (
+            ) : template.inputType === 'IMAGE_OR_VIDEO' ? (
               <>
-                <Play className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
-                <span>Video {template.aspectRatio}</span>
+                <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                <span>Photo / Video</span>
               </>
-            ) : (
+            ) : template.inputType === 'IMAGE_ONLY' || template.type === 'photo' ? (
               <>
                 <ImageIcon className="w-2.5 h-2.5 text-stone-300" />
                 <span>Photo {template.aspectRatio}</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
+                <span>Video {template.aspectRatio}</span>
               </>
             )}
           </div>

@@ -20,6 +20,44 @@ export type AspectRatio = '9:16' | '4:5' | '1:1' | '16:9';
 
 export type TemplateEngine = 'SMART_TEMPLATE' | 'AI_GENERATION';
 
+export type TemplateInputType = 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO';
+
+export interface TemplateWorkflowConfig {
+  provider?: 'gemini' | 'google_veo' | 'higgsfield' | 'smart_canvas' | string;
+  model?: string;
+  engine?: TemplateEngine;
+  prompt?: string;
+  workflow?: string;
+  presetId?: string;
+  settings?: Record<string, any>;
+  drivingVideoUrl?: string;
+  referenceAssetUrls?: string[];
+}
+
+export interface TemplateExecutionRecipe {
+  version: string;
+  inputType: TemplateInputType;
+  provider: string;
+  model: string;
+  engine: TemplateEngine;
+  prompt: string;
+  workflow: string;
+  presetId?: string;
+  settings?: Record<string, any>;
+  aspectRatio?: AspectRatio;
+  duration?: number;
+  requiredInputs?: TemplateInputDef[];
+  referenceAssets?: string[];
+  drivingVideoUrl?: string;
+  inputRules?: {
+    minDurationSeconds?: number;
+    maxDurationSeconds?: number;
+    maxFileSizeMb?: number;
+  };
+  imageWorkflow?: TemplateWorkflowConfig;
+  videoWorkflow?: TemplateWorkflowConfig;
+}
+
 export interface TemplateInputDef {
   id: string;
   label: string;
@@ -34,8 +72,12 @@ export interface Template {
   category: TemplateCategory;
   preview: string;
   cover: string;
+  sampleResult?: string;
   description: string;
   aspectRatio: AspectRatio;
+  inputType?: TemplateInputType;
+  recipe?: TemplateExecutionRecipe;
+  drivingVideoUrl?: string;
   requiredInputs: TemplateInputDef[];
   creditCost: number;
   engine: TemplateEngine;
@@ -43,13 +85,13 @@ export interface Template {
   workflow: string;
   sortOrder: number;
   isFeatured: boolean;
+  isTrending?: boolean;
   isActive: boolean;
   tags: string[];
   musicTrack?: {
     name: string;
     author: string;
   };
-  sampleResult?: string;
   likesCount?: number;
   resolutionLabel?: string;
   isFaceSwap?: boolean;

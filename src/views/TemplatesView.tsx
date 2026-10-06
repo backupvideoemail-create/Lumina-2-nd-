@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Search, Filter, Sparkles, Film, Image as ImageIcon, SlidersHorizontal } from 'lucide-react';
+import { Search, Filter, Sparkles, Film, Image as ImageIcon, SlidersHorizontal, Plus } from 'lucide-react';
 import { TemplateCard } from '../components/TemplateCard';
 import { useApp } from '../context/AppContext';
 import { CATEGORIES } from '../data/templatesData';
@@ -18,7 +18,8 @@ export const TemplatesView: React.FC = () => {
     setFilterType,
     faceSwapScenes,
     setSelectedFaceSwapScene,
-    setFaceSwapModalOpen
+    setFaceSwapModalOpen,
+    setTemplateManagerOpen
   } = useApp();
 
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
@@ -43,7 +44,7 @@ export const TemplatesView: React.FC = () => {
     <div className="min-h-screen bg-[#08080a] pb-28 text-stone-100">
       {/* Top Header */}
       <div className="sticky top-0 z-30 bg-[#08080a]/85 backdrop-blur-xl border-b border-white/5 px-4 py-3">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-2">
           <div>
             <h2 className="text-xl font-bold font-display text-white">Template Gallery</h2>
             <p className="text-xs text-stone-400">
@@ -51,8 +52,18 @@ export const TemplatesView: React.FC = () => {
             </p>
           </div>
 
-          {/* Quick Segmented Control for Photo / Video */}
-          <div className="flex items-center p-1 rounded-xl bg-stone-900 border border-white/10">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setTemplateManagerOpen(true)}
+              className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm"
+              title="Add or Manage Templates from Phone"
+            >
+              <Plus className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">New Template</span>
+            </button>
+
+            {/* Quick Segmented Control for Photo / Video */}
+            <div className="flex items-center p-1 rounded-xl bg-stone-900 border border-white/10">
             <button
               onClick={() => setFilterType('all')}
               className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
@@ -85,6 +96,7 @@ export const TemplatesView: React.FC = () => {
             </button>
           </div>
         </div>
+      </div>
 
         {/* Search Bar */}
         <div className="max-w-4xl mx-auto mt-3">

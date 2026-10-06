@@ -47,35 +47,65 @@ export class AIRouter {
     });
   }
 
-  // 4. Unified Template Processing (Protected template prompt + user custom instructions safely combined)
+  // 4. Unified Template Processing (Executable Recipe + Input Type Detection + Driving Video)
   async processTemplate(params: TemplateProcessParams): Promise<ProviderResult> {
-    if (params.templateType === 'video') {
-      const basePrompt = `Synthesize video reel for ${params.templateTitle}. Workflow: ${params.workflow}.`;
-      const combinedPrompt =
-        params.customPrompt && params.customPrompt.trim()
-          ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
-          : basePrompt;
+    const recipe = params.recipe;
+    const isInputImage = params.detectedInputType === 'image' || (!params.detectedInputType && !params.inputMediaUrl.endsWith('.mp4'));
+    const isInputVideo = params.detectedInputType === 'video' || (!params.detectedInputType && params.inputMediaUrl.endsWith('.mp4'));
 
+    // 1. Resolve workflow configuration from Executable Recipe if attached
+    let activeWorkflowConfig = recipe?.defaultWorkflow || recipe;
+    if (recipe) {
+      if (isInputImage && recipe.imageWorkflow) {
+        activeWorkflowConfig = recipe.imageWorkflow;
+      } else if (isInputVideo && recipe.videoWorkflow) {
+        activeWorkflowConfig = recipe.videoWorkflow;
+      }
+    }
+
+    const provider = activeWorkflowConfig?.provider || (params.templateType === 'video' ? 'google_veo' : 'gemini');
+    const workflowName = activeWorkflowConfig?.workflow || params.workflow;
+    const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
+
+    // 2. Reference / Driving Video Support:
+    // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
+    if (drivingVideoUrl && isInputImage) {
+      return await this.generateFaceSwapVideo({
+        videoUrl: drivingVideoUrl,
+        imageUrls: [params.inputMediaUrl],
+        customInstructions: params.customPrompt,
+        ownerUserId: params.ownerUserId
+      });
+    }
+
+    // 3. Prompt Construction: Combine protected template prompt + optional user custom instructions
+    const basePrompt =
+      activeWorkflowConfig?.prompt ||
+      (params.templateType === 'video'
+        ? `Synthesize video reel for ${params.templateTitle}. Workflow: ${workflowName}.`
+        : `Transform image with ${params.templateTitle} aesthetic. Workflow: ${workflowName}.`);
+
+    const combinedPrompt =
+      params.customPrompt && params.customPrompt.trim()
+        ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
+        : basePrompt;
+
+    // 4. Execute according to resolved target media type & provider
+    if (provider === 'google_veo' || params.templateType === 'video' || isInputVideo) {
       return await this.generateVideo({
         prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,
         userImageUrl: params.inputMediaUrl,
-        aspectRatio: (params.aspectRatio as any) || '9:16',
-        styleWorkflow: params.workflow,
+        aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
+        styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId
       });
     } else {
-      const basePrompt = `Transform image with ${params.templateTitle} aesthetic. Workflow: ${params.workflow}.`;
-      const combinedPrompt =
-        params.customPrompt && params.customPrompt.trim()
-          ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
-          : basePrompt;
-
       return await this.generateImage({
         prompt: combinedPrompt,
         userImageUrl: params.inputMediaUrl,
-        aspectRatio: (params.aspectRatio as any) || '9:16',
-        styleWorkflow: params.workflow,
+        aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
+        styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId
       });
     }
