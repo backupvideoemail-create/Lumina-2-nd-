@@ -42,7 +42,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': localStorage.getItem('lumina_admin_key') || 'lumina_admin_secret_live_2026',
+          'x-admin-key': localStorage.getItem('lumina_admin_key') || '',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         }
       });

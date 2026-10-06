@@ -37,7 +37,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   isOpen,
   onClose
 }) => {
-  const { templates, refreshGenerations } = useApp();
+  const { templates, refreshGenerations, refreshTemplates } = useApp();
 
   const [activeTab, setActiveTab] = useState<'templates' | 'banners' | 'demo'>('templates');
   const [subTab, setSubTab] = useState<'list' | 'add' | 'edit'>('list');
@@ -267,6 +267,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
         if (res.ok) {
           showNotification('Template updated successfully!');
+          await refreshTemplates();
           setSubTab('list');
           setEditingTemplate(null);
         } else {
@@ -308,6 +309,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
         if (res.ok) {
           showNotification('Template published live to catalog!');
+          await refreshTemplates();
           setSubTab('list');
           setTplTitle('');
           setTplMediaPreview('');
@@ -334,6 +336,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       });
       if (res.ok) {
         showNotification('Template deleted permanently');
+        await refreshTemplates();
       } else {
         showNotification('Failed to delete template', 'error');
       }
@@ -351,6 +354,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         body: JSON.stringify({ isActive: newStatus })
       });
       showNotification(`Template ${newStatus ? 'activated' : 'deactivated'}`);
+      await refreshTemplates();
     } catch (err: any) {
       showNotification(err.message, 'error');
     }

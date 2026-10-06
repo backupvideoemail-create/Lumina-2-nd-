@@ -71,6 +71,7 @@ interface AppContextType {
   setFilterType: (type: 'all' | 'photo' | 'video') => void;
   likedTemplates: string[];
   toggleLikeTemplate: (templateId: string) => Promise<void>;
+  refreshTemplates: () => Promise<void>;
 
   // User & Wallet
   user: UserProfile | null;
@@ -706,6 +707,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setFilterType,
         likedTemplates,
         toggleLikeTemplate,
+        refreshTemplates: fetchTemplates,
         user,
         wallet,
         activeSubscription,

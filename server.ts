@@ -104,18 +104,18 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 // Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or authenticated user with admin role)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   const adminKey = req.headers['x-admin-key'] as string;
-  const configuredSecret = process.env.ADMIN_SECRET_KEY || 'lumina_admin_secret_live_2026';
+  const configuredSecret = process.env.ADMIN_SECRET_KEY;
 
-  if (adminKey && (adminKey === configuredSecret || adminKey === 'lumina_admin_secret_live_2026')) {
+  if (configuredSecret && adminKey && adminKey === configuredSecret) {
     return next();
   }
 
   const user = getAuthenticatedUser(req);
-  if (user && (user.role === 'admin' || user.role === 'creator')) {
+  if (user && user.role === 'admin') {
     return next();
   }
 
-  return res.status(403).json({ error: 'Forbidden: Valid admin credentials or admin account role required' });
+  return res.status(403).json({ error: 'Forbidden: Valid ADMIN_SECRET_KEY or admin account role required' });
 }
 
 // Rate Limiter
@@ -145,20 +145,27 @@ function rateLimit(windowMs: number, maxRequests: number) {
    2. SECURE MEDIA STORAGE ROUTES (USER ISOLATED)
 ========================================================================= */
 
-// Serve media safely with user isolation
-app.get('/api/media/:fileId', (req, res) => {
+// Serve media safely with user isolation directly from Cloudflare R2
+app.get('/api/media/:fileId', async (req, res) => {
   const fileId = req.params.fileId;
   const user = getAuthenticatedUser(req);
-  const authResult = mediaStorage.getAuthorizedFilePath(fileId, user?.id);
+  try {
+    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, user?.id);
+    if (authResult.error || !authResult.body) {
+      const status = authResult.error?.includes('Unauthorized') ? 403 : 404;
+      return res.status(status).json({ error: authResult.error || 'Media file not found' });
+    }
 
-  if (authResult.error || !authResult.filePath) {
-    const status = authResult.error?.includes('Unauthorized') ? 403 : 404;
-    return res.status(status).json({ error: authResult.error || 'Media file not found' });
+    res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    if (typeof authResult.body.pipe === 'function') {
+      authResult.body.pipe(res);
+    } else {
+      res.send(authResult.body);
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to retrieve media' });
   }
-
-  res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
-  res.setHeader('Cache-Control', 'private, max-age=86400');
-  res.sendFile(authResult.filePath);
 });
 
 // Get presigned URL for direct/cloud storage access with ownership validation

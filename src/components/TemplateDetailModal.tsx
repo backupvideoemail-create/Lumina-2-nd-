@@ -223,11 +223,22 @@ export const TemplateDetailModal: React.FC = () => {
             <div className="absolute bottom-16 right-3.5 z-20 flex items-center gap-2 p-2 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/20 shadow-2xl">
               {/* Source Thumbnail */}
               <div className="relative">
-                <img
-                  src={uploadedMedia || displaySourceThumb}
-                  alt="Original input"
-                  className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-white/20"
-                />
+                {isVideoMedia(uploadedMedia || displaySourceThumb) ? (
+                  <video
+                    src={uploadedMedia || displaySourceThumb}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-white/20 bg-black"
+                  />
+                ) : (
+                  <img
+                    src={uploadedMedia || displaySourceThumb}
+                    alt="Original input"
+                    className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-white/20"
+                  />
+                )}
                 <span className="absolute -bottom-1 -left-1 px-1 py-0.2 rounded bg-black/80 text-[8px] font-bold text-stone-300 border border-white/10 uppercase">
                   Source
                 </span>
@@ -241,11 +252,22 @@ export const TemplateDetailModal: React.FC = () => {
 
               {/* Inset Result Micro Thumbnail */}
               <div className="relative">
-                <img
-                  src={displayResultMedia}
-                  alt="Transformed result"
-                  className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-amber-400/80 shadow-[0_0_12px_rgba(255,159,0,0.5)]"
-                />
+                {isVideoMedia(displayResultMedia) ? (
+                  <video
+                    src={displayResultMedia}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-amber-400/80 shadow-[0_0_12px_rgba(255,159,0,0.5)] bg-black"
+                  />
+                ) : (
+                  <img
+                    src={displayResultMedia}
+                    alt="Transformed result"
+                    className="w-12 h-14 sm:w-14 sm:h-16 rounded-xl object-cover border border-amber-400/80 shadow-[0_0_12px_rgba(255,159,0,0.5)]"
+                  />
+                )}
                 <span className="absolute -bottom-1 -right-1 px-1 py-0.2 rounded bg-[#ff9f00] text-[8px] font-black text-black shadow uppercase">
                   AI
                 </span>

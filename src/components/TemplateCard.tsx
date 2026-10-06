@@ -51,12 +51,28 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
       <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
         
         {/* Full-Bleed Media Canvas - Crystal clear, zero top/center darkening */}
-        <img
-          src={template.cover}
-          alt={template.title}
-          loading="lazy"
-          className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
-        />
+        {Boolean(
+          template.cover?.endsWith('.mp4') ||
+          template.cover?.endsWith('.webm') ||
+          template.cover?.startsWith('data:video/') ||
+          (template.preview && (template.preview.endsWith('.mp4') || template.preview.startsWith('data:video/')))
+        ) ? (
+          <video
+            src={template.preview || template.cover}
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
+          />
+        ) : (
+          <img
+            src={template.cover}
+            alt={template.title}
+            loading="lazy"
+            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04]"
+          />
+        )}
 
         {/* Minimal Bottom Shadow Scrim - Only at lower 40%, leaves 60%+ fully bright & clear */}
         <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />

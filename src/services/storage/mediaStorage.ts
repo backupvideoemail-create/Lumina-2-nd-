@@ -69,14 +69,24 @@ export class MediaStorageService {
       this.r2Config.bucketName
     ) {
       try {
+        let rawAcc = this.r2Config.accountId.trim();
+        let endpoint = '';
+        if (rawAcc.startsWith('http://') || rawAcc.startsWith('https://')) {
+          endpoint = rawAcc.replace(/\/$/, '');
+        } else {
+          endpoint = `https://${rawAcc}.r2.cloudflarestorage.com`;
+        }
+
         this.s3Client = new S3Client({
           region: 'auto',
-          endpoint: `https://${this.r2Config.accountId}.r2.cloudflarestorage.com`,
+          endpoint,
           credentials: {
-            accessKeyId: this.r2Config.accessKeyId,
-            secretAccessKey: this.r2Config.secretAccessKey
-          }
+            accessKeyId: this.r2Config.accessKeyId.trim(),
+            secretAccessKey: this.r2Config.secretAccessKey.trim()
+          },
+          forcePathStyle: true
         });
+        console.log(`[MediaStorage] Connected to Cloudflare R2 on bucket '${this.r2Config.bucketName}' (Authoritative)`);
       } catch (err: any) {
         console.error('[MediaStorage] Failed to initialize R2 S3Client:', err.message);
         this.s3Client = null;
@@ -182,13 +192,13 @@ export class MediaStorageService {
     fs.writeFileSync(filePath, buffer);
 
     let publicUrl = `/api/media/${filename}`;
-    let provider: 'local' | 'cloudflare_r2' = 'local';
-    let r2Key: string | undefined = undefined;
+    let provider: 'local' | 'cloudflare_r2' = 'cloudflare_r2';
+    const scopeFolder = (isPublic || prefix.startsWith('tpl_')) ? 'public' : (ownerUserId ? `users/${ownerUserId}` : 'general');
+    const r2Key = `media/${scopeFolder}/${filename}`;
 
-    // If Cloudflare R2 is configured, upload to bucket
+    // Cloudflare R2 is authoritative storage driver
     if (this.s3Client && this.r2Config.bucketName) {
       try {
-        r2Key = `uploads/${ownerUserId || 'public'}/${filename}`;
         await this.s3Client.send(new PutObjectCommand({
           Bucket: this.r2Config.bucketName,
           Key: r2Key,
@@ -197,18 +207,20 @@ export class MediaStorageService {
           Metadata: {
             ownerUserId: ownerUserId || 'anonymous',
             originalName: customFileName || filename,
-            isPublic: String(isPublic || prefix.startsWith('tpl_'))
+            isPublic: String(Boolean(isPublic || prefix.startsWith('tpl_')))
           }
         }));
 
-        provider = 'cloudflare_r2';
         if (isPublic && this.r2Config.publicBaseUrl) {
           const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
           publicUrl = `${base}/${r2Key}`;
         }
       } catch (err: any) {
-        console.error('[MediaStorage] Failed to upload to Cloudflare R2, falling back to local storage:', err.message);
+        console.error('[MediaStorage] Critical R2 PutObject failure:', err.message);
+        throw new Error(`Production R2 media storage upload failed: ${err.message}`);
       }
+    } else {
+      throw new Error('Production Cloudflare R2 is not configured. Media cannot be stored.');
     }
 
     const metadata: StoredMediaMetadata = {
@@ -219,7 +231,7 @@ export class MediaStorageService {
       filePath,
       publicUrl,
       ownerUserId,
-      isPublic: isPublic || prefix.startsWith('tpl_'),
+      isPublic: Boolean(isPublic || prefix.startsWith('tpl_')),
       provider,
       r2Key,
       createdAt: new Date().toISOString()
@@ -262,6 +274,43 @@ export class MediaStorageService {
     }
 
     return meta.publicUrl;
+  }
+
+  /**
+   * Streams media directly from authoritative R2 storage with user isolation enforcement.
+   */
+  public async getAuthorizedObjectStream(
+    fileName: string,
+    requestingUserId?: string
+  ): Promise<{ body: any; mimeType: string; error?: string }> {
+    const safeName = path.basename(fileName);
+    const meta = this.metadataIndex[safeName];
+
+    // Enforce ownership for private files
+    if (meta && !meta.isPublic && meta.ownerUserId) {
+      if (!requestingUserId || requestingUserId !== meta.ownerUserId) {
+        return { body: null, mimeType: '', error: 'Unauthorized: Access restricted to owner.' };
+      }
+    }
+
+    if (this.s3Client && this.r2Config.bucketName && meta?.r2Key) {
+      try {
+        const getRes = await this.s3Client.send(new GetObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: meta.r2Key
+        }));
+        return { body: getRes.Body, mimeType: meta.mimeType || 'application/octet-stream' };
+      } catch (err: any) {
+        console.error('[MediaStorage] R2 GetObject error:', err.message);
+      }
+    }
+
+    const fullPath = path.join(UPLOADS_DIR, safeName);
+    if (fs.existsSync(fullPath)) {
+      return { body: fs.createReadStream(fullPath), mimeType: meta?.mimeType || 'application/octet-stream' };
+    }
+
+    return { body: null, mimeType: '', error: 'Media file not found' };
   }
 
   /**

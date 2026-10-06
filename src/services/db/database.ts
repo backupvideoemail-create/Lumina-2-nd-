@@ -52,33 +52,32 @@ try {
 }
 
 // Attempt Firebase Admin initialization if service account is provided
-(async () => {
-  try {
-    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (serviceAccountKey) {
-      const { initializeApp: initAdminApp, cert } = await import('firebase-admin/app');
-      const { getFirestore: getAdminFirestore } = await import('firebase-admin/firestore');
-      
-      let credentialObj;
-      if (serviceAccountKey.trim().startsWith('{')) {
-        credentialObj = JSON.parse(serviceAccountKey);
-      } else if (fs.existsSync(serviceAccountKey)) {
-        credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
-      }
-
-      if (credentialObj) {
-        const adminApp = initAdminApp({
-          credential: cert(credentialObj),
-          projectId: (firebaseConfig as any).projectId
-        }, 'lumina-admin-app');
-        adminFirestoreDb = getAdminFirestore(adminApp, (firebaseConfig as any).firestoreDatabaseId);
-        console.log('[Database] Firebase Admin SDK connected to Firestore with privileged credentials');
-      }
+try {
+  const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  if (serviceAccountKey) {
+    const { initializeApp: initAdminApp, cert } = require('firebase-admin/app');
+    const { getFirestore: getAdminFirestore } = require('firebase-admin/firestore');
+    
+    let credentialObj;
+    if (serviceAccountKey.trim().startsWith('{')) {
+      credentialObj = JSON.parse(serviceAccountKey);
+    } else if (fs.existsSync(serviceAccountKey)) {
+      credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
     }
-  } catch (err: any) {
-    console.warn('[Database] Firebase Admin optional initialization note:', err.message);
+
+    if (credentialObj) {
+      const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
+      const adminApp = initAdminApp({
+        credential: cert(credentialObj),
+        projectId
+      }, 'lumina-admin-app-' + Date.now());
+      adminFirestoreDb = getAdminFirestore(adminApp);
+      console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (Authoritative)`);
+    }
   }
-})();
+} catch (err: any) {
+  console.warn('[Database] Firebase Admin initialization note:', err.message);
+}
 
 export interface AuthIdentity {
   userId: string;
@@ -130,6 +129,53 @@ class ProductionDatabase {
 
   constructor() {
     this.db = this.init();
+    if (adminFirestoreDb) {
+      this.loadAuthoritativeFromFirestore().catch(() => {});
+    }
+  }
+
+  public async loadAuthoritativeFromFirestore(): Promise<void> {
+    if (!adminFirestoreDb) return;
+    try {
+      // 1. Wallets
+      const walletsSnap = await adminFirestoreDb.collection('wallets').get();
+      walletsSnap.forEach((d: any) => {
+        this.db.wallets[d.id] = d.data();
+      });
+
+      // 2. Users
+      const usersSnap = await adminFirestoreDb.collection('users').get();
+      usersSnap.forEach((d: any) => {
+        this.db.users[d.id] = d.data();
+      });
+
+      // 3. Subscriptions
+      const subsSnap = await adminFirestoreDb.collection('subscriptions').get();
+      subsSnap.forEach((d: any) => {
+        this.db.subscriptions[d.id] = d.data();
+      });
+
+      // 4. Payments
+      const paySnap = await adminFirestoreDb.collection('payments').get();
+      paySnap.forEach((d: any) => {
+        this.db.payments[d.id] = d.data();
+      });
+
+      // 5. Templates
+      const tplSnap = await adminFirestoreDb.collection('templates').get();
+      if (!tplSnap.empty) {
+        const loaded: Template[] = [];
+        tplSnap.forEach((d: any) => {
+          loaded.push(d.data() as Template);
+        });
+        if (loaded.length > 0) {
+          this.db.templates = loaded;
+        }
+      }
+      console.log('[Database] Authoritative state synchronized from Firestore');
+    } catch (err: any) {
+      console.warn('[Database] Firestore authoritative sync note:', err.message);
+    }
   }
 
   private init(): ProductionDatabaseSchema {
