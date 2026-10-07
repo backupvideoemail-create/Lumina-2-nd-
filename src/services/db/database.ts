@@ -37,6 +37,8 @@ import type {
   UserSubscription,
   PaymentRecord
 } from '../../types/index.ts';
+import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
 
@@ -56,10 +58,7 @@ try {
 try {
   const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
   if (serviceAccountKey) {
-    const { initializeApp: initAdminApp, cert } = require('firebase-admin/app');
-    const { getFirestore: getAdminFirestore } = require('firebase-admin/firestore');
-    
-    let credentialObj;
+    let credentialObj: any;
     if (serviceAccountKey.trim().startsWith('{')) {
       credentialObj = JSON.parse(serviceAccountKey);
     } else if (fs.existsSync(serviceAccountKey)) {
@@ -462,6 +461,29 @@ class ProductionDatabase {
     return (this.db.creditGrants || []).filter(g => g.userId === userId);
   }
 
+  public async getWalletAuthoritative(userId: string): Promise<CreditWallet> {
+    if (adminFirestoreDb) {
+      try {
+        const walletDoc = await adminFirestoreDb.collection('wallets').doc(userId).get();
+        if (walletDoc.exists) {
+          this.db.wallets[userId] = walletDoc.data() as CreditWallet;
+        }
+        const grantsSnap = await adminFirestoreDb.collection('credit_grants').where('userId', '==', userId).get();
+        if (!grantsSnap.empty) {
+          const userGrants: CreditGrant[] = [];
+          grantsSnap.forEach((d: any) => userGrants.push(d.data() as CreditGrant));
+          this.db.creditGrants = [
+            ...userGrants,
+            ...(this.db.creditGrants || []).filter(g => g.userId !== userId)
+          ];
+        }
+      } catch (err: any) {
+        console.warn('[Database] getWalletAuthoritative fetch note:', err.message);
+      }
+    }
+    return this.getWallet(userId);
+  }
+
   public getWallet(userId: string): CreditWallet {
     if (!this.db.wallets[userId]) {
       this.db.wallets[userId] = {
@@ -507,25 +529,129 @@ class ProductionDatabase {
   }
 
   public async reserveCredits(userId: string, amount: number, description: string, refId: string): Promise<boolean> {
+    // If Firestore Admin is available, execute inside a strict ACID Transaction
+    if (adminFirestoreDb) {
+      try {
+        const success = await adminFirestoreDb.runTransaction(async (t: any) => {
+          // 1. Idempotency check: if a transaction with refId already exists, it was already reserved
+          if (refId) {
+            const existingTxSnap = await t.get(
+              adminFirestoreDb.collection('transactions').where('referenceId', '==', refId).limit(1)
+            );
+            if (!existingTxSnap.empty) {
+              return true; // Idempotently succeed
+            }
+          }
+
+          // 2. Fetch wallet
+          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletDoc = await t.get(walletRef);
+          let walletData: CreditWallet = walletDoc.exists
+            ? (walletDoc.data() as CreditWallet)
+            : {
+                userId,
+                balance: 0,
+                expiringBalance: 0,
+                topupBalance: 0,
+                lifetimeCredits: 0,
+                spentCredits: 0,
+                grants: [],
+                updatedAt: new Date().toISOString()
+              };
+
+          // 3. Query active grants
+          const grantsSnap = await t.get(
+            adminFirestoreDb
+              .collection('credit_grants')
+              .where('userId', '==', userId)
+          );
+
+          const now = new Date();
+          const activeGrants: CreditGrant[] = [];
+          grantsSnap.forEach((d: any) => {
+            const g = d.data() as CreditGrant;
+            if (g.creditsRemaining > 0 && (!g.expiresAt || new Date(g.expiresAt) > now)) {
+              activeGrants.push(g);
+            }
+          });
+
+          // Compute total active balance
+          const totalAvailable = activeGrants.reduce((sum, g) => sum + g.creditsRemaining, 0);
+          if (totalAvailable < amount) {
+            return false;
+          }
+
+          // Sort FIFO by earliest expiring first; non-expiring last
+          activeGrants.sort((a, b) => {
+            if (a.expiresAt && b.expiresAt) {
+              return new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime();
+            }
+            if (a.expiresAt && !b.expiresAt) return -1;
+            if (!a.expiresAt && b.expiresAt) return 1;
+            return new Date(a.grantedAt).getTime() - new Date(b.grantedAt).getTime();
+          });
+
+          let needed = amount;
+          for (const grant of activeGrants) {
+            if (needed <= 0) break;
+            const take = Math.min(grant.creditsRemaining, needed);
+            grant.creditsRemaining -= take;
+            needed -= take;
+            const gRef = adminFirestoreDb.collection('credit_grants').doc(grant.id);
+            t.update(gRef, { creditsRemaining: grant.creditsRemaining });
+
+            // In-memory update
+            const memGrant = (this.db.creditGrants || []).find(cg => cg.id === grant.id);
+            if (memGrant) memGrant.creditsRemaining = grant.creditsRemaining;
+          }
+
+          walletData.spentCredits = (walletData.spentCredits || 0) + amount;
+          walletData.balance = Math.max(0, totalAvailable - amount);
+          walletData.updatedAt = new Date().toISOString();
+          t.set(walletRef, walletData, { merge: true });
+
+          const tx: CreditTransaction = {
+            id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            userId,
+            amount: -amount,
+            type: 'generation',
+            description,
+            referenceId: refId,
+            createdAt: new Date().toISOString()
+          };
+          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+          t.set(txRef, tx);
+
+          // Update memory
+          this.db.wallets[userId] = walletData;
+          this.db.transactions.unshift(tx);
+          this.save();
+          return true;
+        });
+
+        if (success !== undefined) return success;
+      } catch (err: any) {
+        console.error('[Database] Atomic Firestore reserveCredits error:', err.message);
+      }
+    }
+
+    // Local / In-Memory Fallback
     const wallet = this.getWallet(userId);
     if (wallet.balance < amount) {
       return false;
     }
 
     const now = new Date();
-    // Retrieve all active unexpired grants with remaining credits
     const activeGrants = (this.db.creditGrants || [])
       .filter(g => g.userId === userId && g.creditsRemaining > 0)
       .filter(g => !g.expiresAt || new Date(g.expiresAt) > now);
 
-    // Business rule: Generation must consume the earliest-expiring eligible plan credits first (FIFO)
-    // Non-expiring (e.g. topup) credits are consumed LAST
     activeGrants.sort((a, b) => {
       if (a.expiresAt && b.expiresAt) {
         return new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime();
       }
-      if (a.expiresAt && !b.expiresAt) return -1; // expiring first
-      if (!a.expiresAt && b.expiresAt) return 1;  // non-expiring last
+      if (a.expiresAt && !b.expiresAt) return -1;
+      if (!a.expiresAt && b.expiresAt) return 1;
       return new Date(a.grantedAt).getTime() - new Date(b.grantedAt).getTime();
     });
 
@@ -556,17 +682,90 @@ class ProductionDatabase {
     await this.syncToFirestore('wallets', userId, wallet);
     await this.syncToFirestore('transactions', tx.id, tx);
 
-    // Refresh wallet computed balance
     this.getWallet(userId);
     return true;
   }
 
   public async refundCredits(userId: string, amount: number, description: string, refId: string): Promise<void> {
+    if (adminFirestoreDb) {
+      try {
+        await adminFirestoreDb.runTransaction(async (t: any) => {
+          // Idempotency check: don't refund the same refId twice
+          if (refId) {
+            const existingRefSnap = await t.get(
+              adminFirestoreDb
+                .collection('transactions')
+                .where('referenceId', '==', refId)
+                .where('type', '==', 'refund')
+                .limit(1)
+            );
+            if (!existingRefSnap.empty) {
+              return;
+            }
+          }
+
+          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletDoc = await t.get(walletRef);
+          let walletData: CreditWallet = walletDoc.exists
+            ? (walletDoc.data() as CreditWallet)
+            : {
+                userId,
+                balance: 0,
+                expiringBalance: 0,
+                topupBalance: 0,
+                lifetimeCredits: 0,
+                spentCredits: 0,
+                grants: [],
+                updatedAt: new Date().toISOString()
+              };
+
+          walletData.spentCredits = Math.max(0, (walletData.spentCredits || 0) - amount);
+          walletData.updatedAt = new Date().toISOString();
+          t.set(walletRef, walletData, { merge: true });
+
+          const refundGrant: CreditGrant = {
+            id: `grant_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            userId,
+            source: 'refund',
+            creditsGranted: amount,
+            creditsRemaining: amount,
+            grantedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+            referenceId: refId
+          };
+          const grantRef = adminFirestoreDb.collection('credit_grants').doc(refundGrant.id);
+          t.set(grantRef, refundGrant);
+
+          const tx: CreditTransaction = {
+            id: `tx_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            userId,
+            amount,
+            type: 'refund',
+            description,
+            referenceId: refId,
+            createdAt: new Date().toISOString()
+          };
+          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+          t.set(txRef, tx);
+
+          // Update in-memory
+          if (!this.db.creditGrants) this.db.creditGrants = [];
+          this.db.creditGrants.unshift(refundGrant);
+          this.db.transactions.unshift(tx);
+          this.db.wallets[userId] = walletData;
+          this.save();
+        });
+        return;
+      } catch (err: any) {
+        console.error('[Database] Atomic Firestore refundCredits error:', err.message);
+      }
+    }
+
+    // Local fallback
     const wallet = this.getWallet(userId);
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
 
-    // Refunded credits are restored into an active grant valid for 24 hours
     const refundGrant: CreditGrant = {
       id: `grant_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
@@ -641,14 +840,6 @@ class ProductionDatabase {
       referenceId: orderId
     };
 
-    if (!this.db.creditGrants) this.db.creditGrants = [];
-    this.db.creditGrants.unshift(grant);
-    await this.syncToFirestore('credit_grants', grant.id, grant);
-
-    const wallet = this.getWallet(userId);
-    wallet.lifetimeCredits += amount;
-    wallet.updatedAt = now.toISOString();
-
     const tx: CreditTransaction = {
       id: `tx_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
       userId,
@@ -658,6 +849,92 @@ class ProductionDatabase {
       referenceId: orderId,
       createdAt: now.toISOString()
     };
+
+    // If Firestore Admin is available, run inside strict ACID Transaction to ensure zero duplicate credits under concurrency
+    if (adminFirestoreDb) {
+      try {
+        const result = await adminFirestoreDb.runTransaction(async (t: any) => {
+          // 1. Strict Idempotency Check in Transaction:
+          // Check if transaction with this referenceId already exists
+          if (orderId) {
+            const existingTxSnap = await t.get(
+              adminFirestoreDb.collection('transactions').where('referenceId', '==', orderId).limit(1)
+            );
+            if (!existingTxSnap.empty) {
+              console.warn(`[Atomic Firestore Transaction] Duplicate credit prevented for referenceId: ${orderId}`);
+              return {
+                id: 'duplicate_prevented',
+                userId,
+                source,
+                creditsGranted: 0,
+                creditsRemaining: 0,
+                grantedAt: now.toISOString(),
+                expiresAt: null
+              } as CreditGrant;
+            }
+          }
+
+          // 2. Read Wallet inside Transaction
+          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletDoc = await t.get(walletRef);
+          let walletData: CreditWallet = walletDoc.exists
+            ? (walletDoc.data() as CreditWallet)
+            : {
+                userId,
+                balance: 0,
+                expiringBalance: 0,
+                topupBalance: 0,
+                lifetimeCredits: 0,
+                spentCredits: 0,
+                grants: [],
+                updatedAt: now.toISOString()
+              };
+
+          // 3. Atomically write Grant, Transaction, and updated Wallet
+          const grantRef = adminFirestoreDb.collection('credit_grants').doc(grant.id);
+          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+
+          walletData.lifetimeCredits = (walletData.lifetimeCredits || 0) + amount;
+          walletData.balance = (walletData.balance || 0) + amount;
+          walletData.updatedAt = now.toISOString();
+
+          t.set(grantRef, grant);
+          t.set(txRef, tx);
+          t.set(walletRef, walletData, { merge: true });
+
+          // Also set idempotency token if orderId
+          if (orderId) {
+            const idempotencyRef = adminFirestoreDb.collection('processed_webhooks').doc(`credit_${orderId}`);
+            t.set(idempotencyRef, { referenceId: orderId, creditedAt: now.toISOString() }, { merge: true });
+          }
+
+          return { grant, walletData };
+        });
+
+        if (result && (result as any).grant) {
+          const res = result as { grant: CreditGrant; walletData: CreditWallet };
+          if (!this.db.creditGrants) this.db.creditGrants = [];
+          this.db.creditGrants.unshift(res.grant);
+          this.db.transactions.unshift(tx);
+          this.db.wallets[userId] = res.walletData;
+          this.save();
+          return res.grant;
+        } else if (result) {
+          return result as CreditGrant;
+        }
+      } catch (err: any) {
+        console.error('[Database] Atomic Firestore creditWallet error:', err.message);
+      }
+    }
+
+    // Local / In-memory fallback
+    if (!this.db.creditGrants) this.db.creditGrants = [];
+    this.db.creditGrants.unshift(grant);
+    await this.syncToFirestore('credit_grants', grant.id, grant);
+
+    const wallet = this.getWallet(userId);
+    wallet.lifetimeCredits += amount;
+    wallet.updatedAt = now.toISOString();
 
     this.db.transactions.unshift(tx);
     this.save();

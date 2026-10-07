@@ -35,26 +35,25 @@ service cloud.firestore {
       allow delete: if isOwner(userId) || isAdmin();
     }
 
-    // Wallets: read-only by owner, mutated via server/backend
+    // Wallets: read-only by owner, mutated via backend/admin only
     match /wallets/{userId} {
       allow get: if isOwner(userId) || isAdmin();
       allow list: if false;
-      allow write: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
     }
 
-    // Credit Grants with expiry tracking
+    // Credit Grants with expiry tracking: read-only by owner, mutated via backend/admin only
     match /credit_grants/{grantId} {
       allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow write: if isAdmin();
     }
 
-    // Transactions: user can read their own transactions
+    // Transactions: user can read their own transactions, created/mutated via backend/admin only
     match /transactions/{transactionId} {
       allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
+      allow write: if isAdmin();
     }
 
     // Generations: user can read and manage their own generations
@@ -66,18 +65,18 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
 
-    // Subscriptions: user can read their own subscription
+    // Subscriptions: user can read their own subscription, mutated via backend/admin only
     match /subscriptions/{userId} {
       allow get: if isOwner(userId) || isAdmin();
       allow list: if false;
-      allow write: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
     }
 
-    // Payments: user can read their own payment records
+    // Payments: user can read their own payment records, mutated via backend/admin only
     match /payments/{paymentId} {
       allow get: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow write: if isSignedIn() && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if isAdmin();
     }
 
     // Templates: publicly readable by all visitors

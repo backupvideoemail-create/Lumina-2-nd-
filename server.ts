@@ -1036,9 +1036,9 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   // Idempotency: Race-safe check against paymentId and orderId
   const idempotencyKey = `pay_verify_${orderId}`;
   if (
-    prodDb.isWebhookProcessed(idempotencyKey) ||
-    (paymentId && prodDb.isPaymentProcessed(paymentId)) ||
-    (paymentId && prodDb.hasTransactionForReference(paymentId))
+    (await prodDb.isWebhookProcessed(idempotencyKey)) ||
+    (paymentId && (await prodDb.isPaymentProcessed(paymentId))) ||
+    (paymentId && (await prodDb.hasTransactionForReference(paymentId)))
   ) {
     return res.json({
       success: true,
@@ -1074,11 +1074,11 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     payRec.status = 'captured';
     payRec.verificationStatus = 'verified';
     payRec.updatedAt = new Date().toISOString();
-    prodDb.recordPayment(payRec);
+    await prodDb.recordPayment(payRec);
 
     // Credit wallet atomically with dedicated Top-Up entry (type: 'topup')
-    prodDb.creditWallet(user.id, pack.credits, `Top-Up: ${pack.name} (₹${pack.price})`, paymentId || orderId, 'topup');
-    prodDb.markWebhookProcessed(idempotencyKey);
+    await prodDb.creditWallet(user.id, pack.credits, `Top-Up: ${pack.name} (₹${pack.price})`, paymentId || orderId, 'topup');
+    await prodDb.markWebhookProcessed(idempotencyKey);
 
     return res.json({
       success: true,
@@ -1157,7 +1157,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   payRec.verificationStatus = 'verified';
   payRec.subscriptionId = targetSubId || payRec.subscriptionId;
   payRec.updatedAt = new Date().toISOString();
-  prodDb.recordPayment(payRec);
+  await prodDb.recordPayment(payRec);
 
   // Activate Mandate Subscription using real Razorpay Subscription ID
   const nextCalDay = calculateNextCalendarDayStartDate();
@@ -1178,11 +1178,11 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     nextChargeAt,
     renewalAmount: plan.renewalPrice
   };
-  prodDb.setSubscription(newSubscription);
+  await prodDb.setSubscription(newSubscription);
 
   // Credit wallet exactly once (type: 'purchase')
-  prodDb.creditWallet(user.id, plan.includedCredits, `Subscription: ${plan.name} (₹${plan.price})`, paymentId || orderId, 'purchase');
-  prodDb.markWebhookProcessed(idempotencyKey);
+  await prodDb.creditWallet(user.id, plan.includedCredits, `Subscription: ${plan.name} (₹${plan.price})`, paymentId || orderId, 'purchase');
+  await prodDb.markWebhookProcessed(idempotencyKey);
 
   res.json({
     success: true,
