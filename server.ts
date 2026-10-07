@@ -142,8 +142,24 @@ function rateLimit(windowMs: number, maxRequests: number) {
 }
 
 /* =========================================================================
-   2. SECURE MEDIA STORAGE ROUTES (USER ISOLATED)
+   2. SECURE MEDIA STORAGE ROUTES (USER ISOLATED) & BRANDING
 ========================================================================= */
+
+// Official Brand Logo Route for Razorpay Checkout & External Embeds
+app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (_req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  const logoPath = path.resolve(process.cwd(), 'public', 'logo.png');
+  if (fs.existsSync(logoPath)) {
+    return res.sendFile(logoPath);
+  }
+  const altPath = path.resolve(process.cwd(), 'src', 'assets', 'images', 'ai_prime_studio_logo_1791382901426.jpg');
+  if (fs.existsSync(altPath)) {
+    return res.sendFile(altPath);
+  }
+  return res.status(404).end();
+});
 
 // Serve media safely with user isolation directly from Cloudflare R2
 app.get('/api/media/:fileId', async (req, res) => {
@@ -935,11 +951,18 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   try {
     // For autoPayEnabled plans, create actual Razorpay subscription (mandate)
     if (plan.autoPayEnabled) {
+      const isIntro = Boolean(plan.isIntro || plan.id === 'plan_intro_daily');
+      const startAt = isIntro
+        ? Math.floor(Date.now() / 1000) + Math.max(86400, (plan.validityHours || 24) * 3600)
+        : undefined;
+      const introAddonRupees = isIntro ? plan.price : 0;
+
       const subRes = await razorpayAdapter.createSubscription({
         userId: user.id,
         userEmail: user.email,
         amountInRupees: plan.renewalPrice,
-        introAddonRupees: plan.price,
+        introAddonRupees,
+        startAt,
         period: plan.renewalInterval
       });
 
@@ -952,7 +975,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
         provider: 'razorpay',
         amount: plan.price,
         currency: 'INR',
-        type: 'intro_mandate',
+        type: isIntro ? 'intro_mandate' : 'one_time',
         status: 'pending',
         isAutoPay: true,
         verificationStatus: 'unverified',
@@ -960,7 +983,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-      prodDb.recordPayment(paymentRecord);
+      await prodDb.recordPayment(paymentRecord);
 
       return res.json({
         success: true,
@@ -1146,6 +1169,11 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
           error: `Initial authorization amount mismatch: expected ₹1.00 (100 paise), received ₹${rzpPay.amount / 100}`
         });
       }
+      if (!plan.isIntro && rzpPay.amount !== Math.round(plan.price * 100)) {
+        return res.status(400).json({
+          error: `Payment amount mismatch: expected ₹${plan.price}, received ₹${rzpPay.amount / 100}`
+        });
+      }
     } catch (err: any) {
       console.warn('[Razorpay Payment Lookup Note]:', err.message);
     }
@@ -1162,9 +1190,9 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   // Activate Mandate Subscription using real Razorpay Subscription ID
   const nextCalDay = calculateNextCalendarDayStartDate();
   const nextChargeAt =
-    plan.renewalInterval === 'daily' || plan.isIntro
+    plan.isIntro
       ? nextCalDay.isoString
-      : new Date(Date.now() + plan.validityDays * 86400000).toISOString();
+      : new Date(Date.now() + (plan.validityDays || 7) * 86400000).toISOString();
 
   const newSubscription: UserSubscription = {
     id: targetSubId || payRec.orderId,

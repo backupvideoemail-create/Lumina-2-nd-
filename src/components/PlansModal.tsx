@@ -16,6 +16,7 @@ import {
   CENTRAL_SUBSCRIPTION_PLANS
 } from '../config/subscriptionConfig';
 import creatorModelImg from '../assets/images/nikhil_creator_hero_1791103631854.jpg';
+import officialStudioLogo from '../assets/images/ai_prime_studio_logo_1791382901426.jpg';
 
 export const PlansModal: React.FC = () => {
   const {
@@ -77,6 +78,8 @@ export const PlansModal: React.FC = () => {
       // 3. Open actual Razorpay Checkout Modal
       const isAutoPay = Boolean(res.subscriptionId || currentPlan.autoPayEnabled);
 
+      const logoUrl = `${window.location.origin}/logo.png`;
+
       const options: any = {
         key: configData.keyId,
         name: 'AI Prime Studio',
@@ -84,7 +87,7 @@ export const PlansModal: React.FC = () => {
           currentPlan.id === 'plan_intro_daily'
             ? 'Double Bonanza · ₹1 Intro Access + AutoPay Mandate'
             : `${currentPlan.name} AutoPay`,
-        image: creatorModelImg,
+        image: logoUrl,
         handler: async (response: any) => {
           // Send real payment & mandate verification payload to server
           const verified = await verifyPayment(

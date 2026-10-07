@@ -81,22 +81,32 @@ export class RazorpayAdapter {
       return this.cachedPlans[cacheKey];
     }
 
-    // Use confirmed live plan if matching 499
+    // Use confirmed live plans on account
     if (amountInRupees === 499 && (period === 'daily' || period === 'weekly')) {
       this.cachedPlans[cacheKey] = 'plan_TjsjORpnQrwUzl';
       return 'plan_TjsjORpnQrwUzl';
+    }
+    if (amountInRupees === 199 && period === 'weekly') {
+      this.cachedPlans[cacheKey] = 'plan_Tl03htLvt1ohPD';
+      return 'plan_Tl03htLvt1ohPD';
+    }
+    if (amountInRupees === 998 && period === 'monthly') {
+      this.cachedPlans[cacheKey] = 'plan_Tl35j58elYmOpi';
+      return 'plan_Tl35j58elYmOpi';
     }
 
     const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
     
     // First check existing plans on account
     try {
-      const listRes = await fetch('https://api.razorpay.com/v1/plans?count=10', {
+      const listRes = await fetch('https://api.razorpay.com/v1/plans?count=20', {
         headers: { 'Authorization': `Basic ${authHeader}` }
       });
       if (listRes.ok) {
         const listData = await listRes.json();
-        const existing = listData.items?.find((p: any) => p.item?.amount === Math.round(amountInRupees * 100));
+        const expectedPaise = Math.round(amountInRupees * 100);
+        const planPeriod = period === 'daily' ? 'weekly' : period;
+        const existing = listData.items?.find((p: any) => p.item?.amount === expectedPaise && p.period === planPeriod);
         if (existing) {
           this.cachedPlans[cacheKey] = existing.id;
           return existing.id;
@@ -209,7 +219,9 @@ export class RazorpayAdapter {
       }
     };
 
-    // Attach upfront ₹1 addon if requested
+    // For trial / intro subscriptions with upfront addon (e.g. Double Bonanza ₹1 intro access):
+    // Razorpay requires start_at in the future so that cycle 1 recurring charge (₹499) is deferred.
+    // If start_at is not explicitly provided, calculate start_at as 24 hours (86400s) from now.
     if (params.introAddonRupees && params.introAddonRupees > 0) {
       payload.addons = [
         {
@@ -220,9 +232,12 @@ export class RazorpayAdapter {
           }
         }
       ];
-    }
-
-    if (params.startAt && params.startAt > Math.floor(Date.now() / 1000) + 300) {
+      if (params.startAt && params.startAt > Math.floor(Date.now() / 1000) + 300) {
+        payload.start_at = params.startAt;
+      } else {
+        payload.start_at = Math.floor(Date.now() / 1000) + 86400; // 24 hours deferral
+      }
+    } else if (params.startAt && params.startAt > Math.floor(Date.now() / 1000) + 300) {
       payload.start_at = params.startAt;
     }
 

@@ -371,6 +371,18 @@ class ProductionDatabase {
         return this.db.users[userId] || null;
       }
     }
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const diskDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+        for (const [userId, identity] of Object.entries((diskDb.authIdentities || {}) as Record<string, AuthIdentity>)) {
+          if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
+            this.db.users[userId] = diskDb.users[userId];
+            this.db.authIdentities[userId] = identity;
+            return this.db.users[userId] || null;
+          }
+        }
+      } catch {}
+    }
     return null;
   }
 

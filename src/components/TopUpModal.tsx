@@ -10,6 +10,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import officialStudioLogo from '../assets/images/ai_prime_studio_logo_1791382901426.jpg';
 
 export const TopUpModal: React.FC = () => {
   const {
@@ -111,6 +112,8 @@ export const TopUpModal: React.FC = () => {
         return;
       }
 
+      const logoUrl = `${window.location.origin}/logo.png`;
+
       const options = {
         key: configData.keyId,
         order_id: orderData.orderId,
@@ -118,6 +121,7 @@ export const TopUpModal: React.FC = () => {
         currency: 'INR',
         name: 'AI Prime Studio · Top-Up',
         description: `${selectedPack.name || 'Top-Up'} · ${selectedPack.credits} Instant Credits`,
+        image: logoUrl,
         handler: async (response: any) => {
           const verified = await verifyPayment(
             response.razorpay_order_id || orderData.orderId,
