@@ -38,8 +38,8 @@ export const CreationsView: React.FC = () => {
   const handleShare = async (e: React.MouseEvent, gen: Generation) => {
     e.stopPropagation();
     const shareData = {
-      title: `${gen.templateTitle} · Lumina AI Studio`,
-      text: `Created with ${gen.templateTitle} on Lumina AI Studio`,
+      title: `${gen.templateTitle} · AI Prime Studio`,
+      text: `Created with ${gen.templateTitle} on AI Prime Studio`,
       url: window.location.href
     };
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {

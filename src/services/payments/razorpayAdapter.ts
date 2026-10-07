@@ -121,10 +121,10 @@ export class RazorpayAdapter {
         period: planPeriod,
         interval: planInterval,
         item: {
-          name: `Lumina AutoPay ${amountInRupees}`,
+          name: `AI Prime AutoPay ${amountInRupees}`,
           amount: Math.round(amountInRupees * 100),
           currency: 'INR',
-          description: `Lumina AI Studio Recurring Credits AutoPay (₹${amountInRupees})`
+          description: `AI Prime Studio Recurring Credits AutoPay (₹${amountInRupees})`
         }
       })
     });
@@ -205,7 +205,7 @@ export class RazorpayAdapter {
       customer_notify: 1,
       notes: {
         userId: params.userId,
-        product: `Lumina AutoPay (${params.period || 'daily'})`
+        product: `AI Prime AutoPay (${params.period || 'daily'})`
       }
     };
 

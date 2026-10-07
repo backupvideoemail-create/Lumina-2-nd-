@@ -12,7 +12,7 @@
 
 export const SUPPORT_CONFIG = {
   email: 'backupvideoemail@gmail.com',
-  name: 'Lumina AI Studio Support Desk',
+  name: 'AI Prime Studio Support Desk',
   responseTime: 'Within 24 hours'
 } as const;
 
@@ -42,7 +42,7 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     id: 'plan_intro_daily',
     name: 'Double Bonanza',
     cardTitle: 'Double Bonanza',
-    validityLabel: '24 Hours Trial',
+    validityLabel: '1 day validity',
     price: 1,
     periodLabel: '24 hours',
     includedCredits: 40, // 40 credits immediately unlocked for 24 hours

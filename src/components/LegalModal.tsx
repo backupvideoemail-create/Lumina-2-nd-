@@ -52,7 +52,7 @@ export const LegalModal: React.FC = () => {
           {legalModal === 'privacy' && (
             <>
               <p>
-                <strong>1. Customer Media Privacy:</strong> Photos and videos uploaded to Lumina AI Studio are processed strictly for generating your requested template output. Your personal media files are never sold, published publicly, or used to train foundation models without your explicit prior consent.
+                <strong>1. Customer Media Privacy:</strong> Photos and videos uploaded to AI Prime Studio are processed strictly for generating your requested template output. Your personal media files are never sold, published publicly, or used to train foundation models without your explicit prior consent.
               </p>
               <p>
                 <strong>2. Data Encryption:</strong> All uploads and server communications are transmitted over 256-bit TLS/SSL encryption. Media records can be permanently deleted at any time by deleting individual creations or requesting full account deletion.

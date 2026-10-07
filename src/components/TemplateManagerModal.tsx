@@ -1852,7 +1852,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         onClick={() => handleImportCatalogItem(item)}
                         className="px-3.5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black text-xs font-black flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all shrink-0 cursor-pointer"
                       >
-                        <span>Import to Lumina → Review</span>
+                        <span>Import to AI Prime → Review</span>
                       </button>
                     </div>
                   ))}

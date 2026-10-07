@@ -77,7 +77,7 @@ export const ReportModal: React.FC = () => {
         {!submitted ? (
           <form onSubmit={handleSubmit} className="space-y-3.5">
             <p className="text-xs text-stone-400 leading-relaxed">
-              Help us keep Lumina AI Studio safe. What is wrong with this AI generation?
+              Help us keep AI Prime Studio safe. What is wrong with this AI generation?
             </p>
 
             <select

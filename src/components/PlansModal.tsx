@@ -79,7 +79,7 @@ export const PlansModal: React.FC = () => {
 
       const options: any = {
         key: configData.keyId,
-        name: 'Lumina AI Studio',
+        name: 'AI Prime Studio',
         description:
           currentPlan.id === 'plan_intro_daily'
             ? 'Double Bonanza · ₹1 Intro Access + AutoPay Mandate'
@@ -174,7 +174,7 @@ export const PlansModal: React.FC = () => {
           {/* Creator Portrait - Framed with face perfectly visible in upper third */}
           <motion.img
             src={creatorModelImg}
-            alt="Lumina AI Studio Visual Hero"
+            alt="AI Prime Studio Visual Hero"
             initial={{ scale: 1.05 }}
             animate={{ scale: 1 }}
             transition={{ duration: 1.2, ease: 'easeOut' }}
@@ -207,7 +207,7 @@ export const PlansModal: React.FC = () => {
                 <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z" />
               </svg>
               <h2 className="text-base sm:text-lg font-black text-white tracking-wide leading-tight drop-shadow-md">
-                Lumina AI Studio
+                AI Prime Studio
               </h2>
               <span className="text-[10px] text-amber-200 font-semibold tracking-wide drop-shadow">
                 Photo Video Templates
@@ -238,7 +238,7 @@ export const PlansModal: React.FC = () => {
                   AI
                 </span>{' '}
                 <span className="text-amber-300 font-extrabold text-lg sm:text-xl">
-                  Lumina Studio
+                  AI Prime Studio
                 </span>
               </h1>
             </div>

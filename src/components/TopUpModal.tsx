@@ -116,7 +116,7 @@ export const TopUpModal: React.FC = () => {
         order_id: orderData.orderId,
         amount: Math.round(selectedPack.price * 100),
         currency: 'INR',
-        name: 'Lumina AI Studio · Top-Up',
+        name: 'AI Prime Studio · Top-Up',
         description: `${selectedPack.name || 'Top-Up'} · ${selectedPack.credits} Instant Credits`,
         handler: async (response: any) => {
           const verified = await verifyPayment(

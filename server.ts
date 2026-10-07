@@ -1348,7 +1348,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         await prodDb.creditWallet(
           targetUserId,
           renewalCredits,
-          `Lumina AutoPay Renewal (${sub?.planName || 'Double Bonanza'}) (₹499)`,
+          `AI Prime AutoPay Renewal (${sub?.planName || 'Double Bonanza'}) (₹499)`,
           paymentId || eventId,
           'subscription',
           sub?.planId || 'plan_intro_daily'
@@ -2148,7 +2148,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`LUMINA AI STUDIO production server running on http://0.0.0.0:${PORT}`);
+    console.log(`AI PRIME STUDIO production server running on http://0.0.0.0:${PORT}`);
   });
 }
 

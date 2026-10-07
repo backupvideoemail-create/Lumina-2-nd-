@@ -630,12 +630,21 @@ class ProductionDatabase {
         });
 
         if (success !== undefined) return success;
+        return false;
       } catch (err: any) {
-        console.error('[Database] Atomic Firestore reserveCredits error:', err.message);
+        console.error('[Database] FAIL-CLOSED: Atomic Firestore reserveCredits failed:', err.message);
+        // Fail-closed: Never fall back to local/in-memory processing on Firestore transaction failure
+        return false;
       }
     }
 
-    // Local / In-Memory Fallback
+    // Fail-closed if in production and Firestore is unavailable
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Database] FAIL-CLOSED: Authoritative Firestore is unavailable in production for reserveCredits');
+      return false;
+    }
+
+    // Local / In-Memory Fallback ONLY for non-production development without Firestore
     const wallet = this.getWallet(userId);
     if (wallet.balance < amount) {
       return false;
@@ -757,11 +766,19 @@ class ProductionDatabase {
         });
         return;
       } catch (err: any) {
-        console.error('[Database] Atomic Firestore refundCredits error:', err.message);
+        console.error('[Database] FAIL-CLOSED: Atomic Firestore refundCredits failed:', err.message);
+        // Fail-closed: Never fall back to local/in-memory processing on Firestore transaction failure
+        throw new Error(`Authoritative refund failed in Firestore: ${err.message}`);
       }
     }
 
-    // Local fallback
+    // Fail-closed if in production and Firestore is unavailable
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Database] FAIL-CLOSED: Authoritative Firestore is unavailable in production for refundCredits');
+      throw new Error('Authoritative Firestore database unavailable for refund');
+    }
+
+    // Local fallback ONLY for non-production development without Firestore
     const wallet = this.getWallet(userId);
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
@@ -922,12 +939,21 @@ class ProductionDatabase {
         } else if (result) {
           return result as CreditGrant;
         }
+        throw new Error('Transaction returned empty response');
       } catch (err: any) {
-        console.error('[Database] Atomic Firestore creditWallet error:', err.message);
+        console.error('[Database] FAIL-CLOSED: Atomic Firestore creditWallet failed:', err.message);
+        // Fail-closed: Never fall back to local/in-memory processing on Firestore transaction failure
+        throw new Error(`Authoritative credit transaction failed in Firestore: ${err.message}`);
       }
     }
 
-    // Local / In-memory fallback
+    // Fail-closed if in production and Firestore is unavailable
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Database] FAIL-CLOSED: Authoritative Firestore is unavailable in production for creditWallet');
+      throw new Error('Authoritative Firestore database unavailable for credit grant');
+    }
+
+    // Local / In-memory fallback ONLY for non-production development without Firestore
     if (!this.db.creditGrants) this.db.creditGrants = [];
     this.db.creditGrants.unshift(grant);
     await this.syncToFirestore('credit_grants', grant.id, grant);

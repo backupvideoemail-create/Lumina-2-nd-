@@ -34,7 +34,7 @@ export const BUSINESS_CONFIG = {
     renewalCreditsGrant: 400,     // 400 Credits added each verified billing cycle
     mandateMaxAmountInr: 499,
     planId: 'plan_TjsjORpnQrwUzl',
-    planName: 'Lumina AutoPay (Double Bonanza)',
+    planName: 'AI Prime AutoPay (Double Bonanza)',
     disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.'
   },
 

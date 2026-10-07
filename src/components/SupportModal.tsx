@@ -14,7 +14,7 @@ import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
 
 const FAQS = [
   {
-    q: 'How does Lumina AI Studio work?',
+    q: 'How does AI Prime Studio work?',
     a: 'Choose any cinematic template, upload your portrait, selfie, or video clip, and our neural engines analyze lighting, face geometry, and styling to synthesize an ultra-high-definition output with professional grading.'
   },
   {

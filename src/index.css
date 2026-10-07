@@ -155,7 +155,7 @@
   pointer-events: none;
 }
 
-/* Lumina AI Studio Laser Edge Glow Animations */
+/* AI Prime Studio Laser Edge Glow Animations */
 @keyframes laserBorderRotate {
   0% {
     transform: rotate(0deg);
