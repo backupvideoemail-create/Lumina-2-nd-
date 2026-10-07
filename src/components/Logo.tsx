@@ -173,14 +173,14 @@ export const Logo: React.FC<LogoProps> = ({
         </svg>
       </div>
 
-      {/* Brand Typography: "AI Prime" & "STUDIO" */}
+      {/* Brand Typography: "Lumina" & "AI STUDIO" */}
       {showText && (
         <div className="flex flex-col justify-center leading-none">
           <div className="flex items-center gap-1.5">
             <span
               className={`font-black tracking-wide font-display gold-gradient-text drop-shadow-[0_2px_10px_rgba(212,175,55,0.35)] ${textSizes[size]}`}
             >
-              AI Prime
+              Lumina
             </span>
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#f5d77f] shadow-[0_0_8px_#f5d77f] animate-pulse" />
           </div>
@@ -189,7 +189,7 @@ export const Logo: React.FC<LogoProps> = ({
             className={`font-bold uppercase text-amber-200/80 font-sans mt-0.5 flex items-center gap-1.5 ${subTextSizes[size]}`}
           >
             <span className="text-[7px] text-[#d4af37] opacity-75">✦</span>
-            <span>STUDIO</span>
+            <span>AI STUDIO</span>
             <span className="text-[7px] text-[#d4af37] opacity-75">✦</span>
           </span>
         </div>

@@ -318,7 +318,7 @@ class ProductionDatabase {
   /* =========================================================================
      FIRESTORE SYNC HELPERS
   ========================================================================= */
-  private async syncToFirestore(collectionName: string, docId: string, data: any) {
+  public async syncToFirestore(collectionName: string, docId: string, data: any): Promise<void> {
     try {
       const sanitized = JSON.parse(JSON.stringify(data));
       if (adminFirestoreDb) {
@@ -506,7 +506,7 @@ class ProductionDatabase {
     return wallet;
   }
 
-  public reserveCredits(userId: string, amount: number, description: string, refId: string): boolean {
+  public async reserveCredits(userId: string, amount: number, description: string, refId: string): Promise<boolean> {
     const wallet = this.getWallet(userId);
     if (wallet.balance < amount) {
       return false;
@@ -535,7 +535,7 @@ class ProductionDatabase {
       const take = Math.min(grant.creditsRemaining, needed);
       grant.creditsRemaining -= take;
       needed -= take;
-      this.syncToFirestore('credit_grants', grant.id, grant);
+      await this.syncToFirestore('credit_grants', grant.id, grant);
     }
 
     wallet.spentCredits += amount;
@@ -553,15 +553,15 @@ class ProductionDatabase {
 
     this.db.transactions.unshift(tx);
     this.save();
-    this.syncToFirestore('wallets', userId, wallet);
-    this.syncToFirestore('transactions', tx.id, tx);
+    await this.syncToFirestore('wallets', userId, wallet);
+    await this.syncToFirestore('transactions', tx.id, tx);
 
     // Refresh wallet computed balance
     this.getWallet(userId);
     return true;
   }
 
-  public refundCredits(userId: string, amount: number, description: string, refId: string): void {
+  public async refundCredits(userId: string, amount: number, description: string, refId: string): Promise<void> {
     const wallet = this.getWallet(userId);
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
@@ -580,7 +580,7 @@ class ProductionDatabase {
 
     if (!this.db.creditGrants) this.db.creditGrants = [];
     this.db.creditGrants.unshift(refundGrant);
-    this.syncToFirestore('credit_grants', refundGrant.id, refundGrant);
+    await this.syncToFirestore('credit_grants', refundGrant.id, refundGrant);
 
     const tx: CreditTransaction = {
       id: `tx_ref_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -594,20 +594,20 @@ class ProductionDatabase {
 
     this.db.transactions.unshift(tx);
     this.save();
-    this.syncToFirestore('wallets', userId, wallet);
-    this.syncToFirestore('transactions', tx.id, tx);
+    await this.syncToFirestore('wallets', userId, wallet);
+    await this.syncToFirestore('transactions', tx.id, tx);
 
     this.getWallet(userId);
   }
 
-  public creditWallet(
+  public async creditWallet(
     userId: string,
     amount: number,
     description: string,
     orderId: string,
     type: TransactionType = 'purchase',
     planId?: string
-  ): CreditGrant {
+  ): Promise<CreditGrant> {
     const now = new Date();
     let source: CreditGrant['source'] = 'intro';
     let expiresAt: string | null = null;
@@ -623,7 +623,7 @@ class ProductionDatabase {
       expiresAt = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(); // 30 days
     } else if (type === 'subscription' || description.toLowerCase().includes('renewal') || amount === 400) {
       source = 'renewal';
-      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // 24 hours
+      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // 7 days cycle
     } else {
       source = 'intro';
       expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // 24 hours
@@ -643,7 +643,7 @@ class ProductionDatabase {
 
     if (!this.db.creditGrants) this.db.creditGrants = [];
     this.db.creditGrants.unshift(grant);
-    this.syncToFirestore('credit_grants', grant.id, grant);
+    await this.syncToFirestore('credit_grants', grant.id, grant);
 
     const wallet = this.getWallet(userId);
     wallet.lifetimeCredits += amount;
@@ -661,25 +661,44 @@ class ProductionDatabase {
 
     this.db.transactions.unshift(tx);
     this.save();
-    this.syncToFirestore('wallets', userId, wallet);
-    this.syncToFirestore('transactions', tx.id, tx);
+    await this.syncToFirestore('wallets', userId, wallet);
+    await this.syncToFirestore('transactions', tx.id, tx);
 
     this.getWallet(userId);
     return grant;
   }
 
-  public isPaymentProcessed(paymentId: string): boolean {
+  public async isPaymentProcessed(paymentId: string): Promise<boolean> {
     if (!paymentId) return false;
     const byPayment = Object.values(this.db.payments).some(
       p => p.paymentId === paymentId && p.status === 'captured'
     );
     const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
-    return byPayment || byTx;
+    if (byPayment || byTx) return true;
+
+    if (adminFirestoreDb) {
+      try {
+        const paySnap = await adminFirestoreDb.collection('payments').where('paymentId', '==', paymentId).where('status', '==', 'captured').limit(1).get();
+        if (!paySnap.empty) return true;
+        const txSnap = await adminFirestoreDb.collection('transactions').where('referenceId', '==', paymentId).limit(1).get();
+        if (!txSnap.empty) return true;
+      } catch (err: any) {
+        console.warn('[Firestore] isPaymentProcessed lookup note:', err.message);
+      }
+    }
+    return false;
   }
 
-  public hasTransactionForReference(refId: string): boolean {
+  public async hasTransactionForReference(refId: string): Promise<boolean> {
     if (!refId) return false;
-    return this.db.transactions.some(t => t.referenceId === refId);
+    if (this.db.transactions.some(t => t.referenceId === refId)) return true;
+    if (adminFirestoreDb) {
+      try {
+        const snap = await adminFirestoreDb.collection('transactions').where('referenceId', '==', refId).limit(1).get();
+        if (!snap.empty) return true;
+      } catch {}
+    }
+    return false;
   }
 
   public getPaymentByPaymentId(paymentId: string): PaymentRecord | null {
@@ -819,36 +838,70 @@ class ProductionDatabase {
   /* =========================================================================
      PAYMENTS & SUBSCRIPTIONS
   ========================================================================= */
-  public recordPayment(record: PaymentRecord): void {
+  public async recordPayment(record: PaymentRecord): Promise<void> {
     this.db.payments[record.orderId] = record;
     this.save();
-    this.syncToFirestore('payments', record.orderId, record);
+    await this.syncToFirestore('payments', record.orderId, record);
   }
 
   public getPayment(orderId: string): PaymentRecord | null {
     return this.db.payments[orderId] || null;
   }
 
-  public setSubscription(sub: UserSubscription): void {
+  public async setSubscription(sub: UserSubscription): Promise<void> {
     this.db.subscriptions[sub.userId] = sub;
     this.save();
-    this.syncToFirestore('subscriptions', sub.userId, sub);
+    await this.syncToFirestore('subscriptions', sub.userId, sub);
   }
 
   public getSubscription(userId: string): UserSubscription | null {
     return this.db.subscriptions[userId] || null;
   }
 
-  public isWebhookProcessed(eventId: string): boolean {
-    return this.db.processedWebhooks.includes(eventId);
+  public async isWebhookProcessed(eventId: string): Promise<boolean> {
+    if (!eventId) return false;
+    if (this.db.processedWebhooks.includes(eventId)) return true;
+    if (adminFirestoreDb) {
+      try {
+        const docSnap = await adminFirestoreDb.collection('processed_webhooks').doc(eventId).get();
+        if (docSnap.exists) {
+          if (!this.db.processedWebhooks.includes(eventId)) {
+            this.db.processedWebhooks.push(eventId);
+          }
+          return true;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] isWebhookProcessed lookup note:', err.message);
+      }
+    }
+    return false;
   }
 
-  public markWebhookProcessed(eventId: string): void {
+  public async markWebhookProcessed(eventId: string): Promise<void> {
+    if (!eventId) return;
     if (!this.db.processedWebhooks.includes(eventId)) {
       this.db.processedWebhooks.push(eventId);
-      this.save();
-      this.syncToFirestore('processed_webhooks', eventId, { eventId, processedAt: new Date().toISOString() });
     }
+    this.save();
+    await this.syncToFirestore('processed_webhooks', eventId, { eventId, processedAt: new Date().toISOString() });
+  }
+
+  /* =========================================================================
+     AI SAFETY REPORTS
+  ========================================================================= */
+  public async addReport(params: { generationId: string; reason: string }): Promise<{ id: string; generationId: string; reason: string; timestamp: string }> {
+    const reportId = `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const record = {
+      id: reportId,
+      generationId: params.generationId,
+      reason: params.reason,
+      timestamp: new Date().toISOString()
+    };
+    if (!this.db.reports) this.db.reports = [];
+    this.db.reports.unshift(record);
+    this.save();
+    await this.syncToFirestore('reports', reportId, record);
+    return record;
   }
 
   /* =========================================================================

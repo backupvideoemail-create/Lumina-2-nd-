@@ -52,7 +52,7 @@ export const LegalModal: React.FC = () => {
           {legalModal === 'privacy' && (
             <>
               <p>
-                <strong>1. Customer Media Privacy:</strong> Photos and videos uploaded to AI Prime STUDIO are processed strictly for generating your requested template output. Your personal media files are never sold, published publicly, or used to train foundation models without your explicit prior consent.
+                <strong>1. Customer Media Privacy:</strong> Photos and videos uploaded to Lumina AI Studio are processed strictly for generating your requested template output. Your personal media files are never sold, published publicly, or used to train foundation models without your explicit prior consent.
               </p>
               <p>
                 <strong>2. Data Encryption:</strong> All uploads and server communications are transmitted over 256-bit TLS/SSL encryption. Media records can be permanently deleted at any time by deleting individual creations or requesting full account deletion.
@@ -69,7 +69,7 @@ export const LegalModal: React.FC = () => {
                 <strong>1. Acceptable Use:</strong> You agree not to upload copyrighted images without authorization, sexually explicit material, hate speech, or defamatory depictions of real persons.
               </p>
               <p>
-                <strong>2. Pro Pass & Autopay Mandates:</strong> Subscribing to the ₹1 Introductory Pro Pass authorizes an initial introductory payment of ₹1, followed by recurring daily subscription renewal charges of ₹499 commencing from the next calendar day until cancelled. Subscriptions may be cancelled at any time in 1-click via the User Profile screen or by contacting customer support at ai.prime.studio.pro@gmail.com.
+                <strong>2. Pro Pass & Autopay Mandates:</strong> Subscribing to the Double Bonanza plan authorizes an initial introductory payment of ₹1 for 24-hour trial access, followed by recurring weekly subscription renewal charges of ₹499 for 400 credits commencing after the trial period until cancelled. Subscriptions may be cancelled at any time in 1-click via the User Profile screen or by contacting customer support at backupvideoemail@gmail.com.
               </p>
               <p>
                 <strong>3. AI Disclosure:</strong> Media synthesized by our neural models is labelled as AI-generated in compliance with transparency standards.
@@ -83,10 +83,10 @@ export const LegalModal: React.FC = () => {
                 <strong>1. Automatic Generation Failure Refund:</strong> If a generation fails, times out, or encounters a server error, 100% of the reserved credits are automatically restored to your wallet ledger immediately.
               </p>
               <p>
-                <strong>2. Subscription Cancellation:</strong> Cancelling your daily or weekly plan stops all future recurring charges immediately. You retain full access to any unspent credits in your account.
+                <strong>2. Subscription Cancellation:</strong> Cancelling your recurring plan stops all future recurring charges immediately. You retain full access to any unspent credits in your account.
               </p>
               <p>
-                <strong>3. Support Disputes:</strong> If you experience any billing discrepancies or accidental double-charges, contact our customer support desk at <span className="text-[#d4af37]">ai.prime.studio.pro@gmail.com</span> for prompt resolution within 24 hours.
+                <strong>3. Support Disputes:</strong> If you experience any billing discrepancies or accidental double-charges, contact our customer support desk at <span className="text-[#d4af37]">backupvideoemail@gmail.com</span> for prompt resolution within 24 hours.
               </p>
             </>
           )}

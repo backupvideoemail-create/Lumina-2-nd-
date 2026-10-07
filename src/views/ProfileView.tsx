@@ -413,7 +413,7 @@ export const ProfileView: React.FC = () => {
 
         {/* Footer info */}
         <div className="text-center text-[11px] text-stone-600 pt-2 pb-6">
-          AI Prime STUDIO v2.4 · 256-Bit SSL Protected
+          Lumina AI Studio v2.4 · 256-Bit SSL Protected
         </div>
       </div>
     </div>

@@ -113,5 +113,11 @@ service cloud.firestore {
       allow list: if isAdmin();
       allow write: if isAdmin();
     }
+
+    // AI Safety Reports
+    match /reports/{reportId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
   }
 }

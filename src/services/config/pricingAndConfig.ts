@@ -29,13 +29,13 @@ export const BUSINESS_CONFIG = {
   // UPI AutoPay Production Configuration
   autoPay: {
     introPriceInr: 1,             // ₹1 introductory authorization payment
-    renewalPriceInr: 499,         // ₹499 daily recurring payment
-    renewalInterval: 'daily' as const, // Daily recurring schedule from provider config
-    dailyCreditsGrant: 500,       // 500 Credits added each billing cycle
+    renewalPriceInr: 499,         // ₹499 weekly recurring payment
+    renewalInterval: 'weekly' as const, // Weekly recurring schedule matching live gateway plan_TjsjORpnQrwUzl
+    renewalCreditsGrant: 400,     // 400 Credits added each verified billing cycle
     mandateMaxAmountInr: 499,
-    planId: 'plan_pro_autopay_daily',
-    planName: 'Lumina Pro Pass (UPI AutoPay)',
-    disclosureText: '₹1 today · then ₹499 daily until cancelled. Cancel anytime from Profile.'
+    planId: 'plan_TjsjORpnQrwUzl',
+    planName: 'Lumina AutoPay (Double Bonanza)',
+    disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.'
   },
 
   // Payment Gateways

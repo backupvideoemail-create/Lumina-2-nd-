@@ -818,10 +818,10 @@ export const INITIAL_PLANS = [
     durationHours: 24,
     includedCredits: SUBSCRIPTION_CONFIG.includedCredits, // 40
     renewalInterval: SUBSCRIPTION_CONFIG.renewalInterval,
-    renewalPrice: SUBSCRIPTION_CONFIG.renewalPrice, // ₹499 daily from next calendar day
+    renewalPrice: SUBSCRIPTION_CONFIG.renewalPrice, // ₹499 recurring renewal
     features: [
       '40 credits immediately unlocked (24 hours)',
-      '400 credits on verified daily renewal',
+      '400 credits on verified recurring renewal',
       'All AI Photo & Video templates',
       '1080p & 4K Ultra HD exports',
       'Cancel easily anytime in 1-click'

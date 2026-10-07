@@ -9,28 +9,37 @@ export const ReportModal: React.FC = () => {
   const [details, setDetails] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!reportModalGenId) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setErrorMessage(null);
     try {
-      await fetch('/api/reports', {
+      const res = await fetch('/api/reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           generationId: reportModalGenId,
-          reason: `${reason}: ${details}`
+          reason: `${reason}: ${details.trim() || 'No additional details'}`
         })
       });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to submit report. Please try again.');
+      }
+
       setSubmitted(true);
       setTimeout(() => {
         setSubmitted(false);
         setReportModalGenId(null);
       }, 1800);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error('[Report Submission Error]:', err);
+      setErrorMessage(err.message || 'Failed to submit report. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -59,10 +68,16 @@ export const ReportModal: React.FC = () => {
           </button>
         </div>
 
+        {errorMessage && (
+          <div className="p-3 bg-red-950/50 border border-red-800/60 rounded-xl text-xs text-red-300">
+            {errorMessage}
+          </div>
+        )}
+
         {!submitted ? (
           <form onSubmit={handleSubmit} className="space-y-3.5">
             <p className="text-xs text-stone-400 leading-relaxed">
-              Help us keep AI Prime STUDIO safe. What is wrong with this AI generation?
+              Help us keep Lumina AI Studio safe. What is wrong with this AI generation?
             </p>
 
             <select

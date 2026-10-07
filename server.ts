@@ -1218,40 +1218,98 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
   }
 
   const eventType = event.event;
-  const eventId = event.event_id || event.id || `evt_${eventType}_${Date.now()}`;
+  // Item 3: Never invent a webhook event ID. Require real provider event identity.
+  const eventId = event.event_id || event.id;
+  if (!eventId || typeof eventId !== 'string') {
+    return res.status(400).json({
+      error: 'Missing provider event identity',
+      message: 'Provider webhook must include valid event_id or id.'
+    });
+  }
 
   // Idempotency: Ignore duplicate webhook deliveries
-  if (prodDb.isWebhookProcessed(eventId)) {
+  if (await prodDb.isWebhookProcessed(eventId)) {
     return res.status(200).json({ status: 'ignored_duplicate', eventId });
   }
 
   try {
     if (eventType === 'payment.captured') {
       const payment = event.payload?.payment?.entity;
-      if (payment) {
-        const paymentId = payment.id;
-        const orderId = payment.order_id;
-        const userId = payment.notes?.userId;
-        const itemId = payment.notes?.itemId || payment.notes?.planId || 'plan_intro_daily';
-        const isTopUp = payment.notes?.type === 'topup' || itemId.startsWith('topup_');
+      if (!payment) {
+        return res.status(400).json({ error: 'Malformed webhook: Missing payment entity' });
+      }
 
-        // Race-safe check against duplicate crediting
-        if (
-          !prodDb.isPaymentProcessed(paymentId) &&
-          !prodDb.hasTransactionForReference(paymentId) &&
-          !prodDb.isWebhookProcessed(`pay_verify_${orderId}`)
-        ) {
-          if (userId && prodDb.getUser(userId)) {
-            if (isTopUp) {
-              const pack = getTopUpPackById(itemId) || CENTRAL_TOP_UP_PACKS[0];
-              prodDb.creditWallet(userId, pack.credits, `Top-Up Webhook: ${pack.name}`, paymentId, 'topup');
-            } else {
-              const plan = getSubscriptionPlanById(itemId);
-              prodDb.creditWallet(userId, plan.includedCredits, `Webhook Credit: ${plan.name}`, paymentId, 'purchase');
-            }
-            prodDb.markWebhookProcessed(`pay_verify_${orderId}`);
-          }
-        }
+      const paymentId = payment.id;
+      const orderId = payment.order_id;
+
+      // 1. Strict status and currency validation
+      if (payment.status !== 'captured') {
+        return res.status(400).json({ error: `Payment not captured: current status is ${payment.status}` });
+      }
+      if (payment.currency !== 'INR') {
+        return res.status(400).json({ error: `Currency mismatch: expected INR, received ${payment.currency}` });
+      }
+
+      // 2. Atomic duplicate check (zero additional credit on replay)
+      if (
+        (paymentId && (await prodDb.isPaymentProcessed(paymentId))) ||
+        (paymentId && (await prodDb.hasTransactionForReference(paymentId))) ||
+        (orderId && (await prodDb.isWebhookProcessed(`pay_verify_${orderId}`)))
+      ) {
+        return res.status(200).json({ status: 'already_processed', paymentId });
+      }
+
+      // 3. User & Order Association
+      const storedPayment = orderId ? prodDb.getPayment(orderId) : null;
+      const userId = payment.notes?.userId || storedPayment?.userId;
+      const user = userId ? prodDb.getUser(userId) : null;
+      if (!user) {
+        return res.status(400).json({ error: 'Payment user association not found or invalid' });
+      }
+
+      const itemId = payment.notes?.itemId || payment.notes?.planId || storedPayment?.subscriptionId || 'plan_intro_daily';
+      const isTopUp = payment.notes?.type === 'topup' || itemId.startsWith('topup_');
+
+      // 4. Exact expected amount check
+      let expectedPaise = 0;
+      let creditsToAdd = 0;
+      let creditDescription = '';
+      let grantType: 'topup' | 'purchase' = 'purchase';
+
+      if (isTopUp) {
+        const pack = getTopUpPackById(itemId) || CENTRAL_TOP_UP_PACKS[0];
+        expectedPaise = Math.round(pack.price * 100);
+        creditsToAdd = pack.credits;
+        creditDescription = `Top-Up Webhook: ${pack.name}`;
+        grantType = 'topup';
+      } else {
+        const plan = getSubscriptionPlanById(itemId);
+        expectedPaise = Math.round(plan.price * 100);
+        creditsToAdd = plan.includedCredits;
+        creditDescription = `Webhook Credit: ${plan.name}`;
+        grantType = 'purchase';
+      }
+
+      if (payment.amount !== expectedPaise) {
+        console.warn(`[Webhook Warning] payment.captured amount mismatch: received ${payment.amount} paise, expected ${expectedPaise} paise`);
+        return res.status(400).json({
+          error: 'Payment amount mismatch',
+          received: payment.amount,
+          expected: expectedPaise
+        });
+      }
+
+      // 5. Grant credits atomically and update payment status
+      await prodDb.creditWallet(user.id, creditsToAdd, creditDescription, paymentId || orderId, grantType, itemId);
+      if (storedPayment) {
+        storedPayment.paymentId = paymentId;
+        storedPayment.status = 'captured';
+        storedPayment.verificationStatus = 'verified';
+        storedPayment.updatedAt = new Date().toISOString();
+        await prodDb.recordPayment(storedPayment);
+      }
+      if (orderId) {
+        await prodDb.markWebhookProcessed(`pay_verify_${orderId}`);
       }
     } else if (eventType === 'subscription.charged') {
       const subEntity = event.payload?.subscription?.entity;
@@ -1261,7 +1319,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       const userId = subEntity?.notes?.userId || payment?.notes?.userId;
 
       // Race-safe check against duplicate crediting
-      if (paymentId && (prodDb.isPaymentProcessed(paymentId) || prodDb.hasTransactionForReference(paymentId))) {
+      if (paymentId && ((await prodDb.isPaymentProcessed(paymentId)) || (await prodDb.hasTransactionForReference(paymentId)))) {
         return res.status(200).json({ status: 'already_processed', paymentId });
       }
 
@@ -1285,9 +1343,9 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       }
 
       if (targetUserId && prodDb.getUser(targetUserId)) {
-        // Daily recurring credit grant (₹499 charge verified) -> 400 credits with type 'subscription'
+        // Recurring credit grant (₹499 charge verified) -> 400 credits with type 'subscription'
         const renewalCredits = sub ? (getSubscriptionPlanById(sub.planId)?.renewalCredits || 400) : 400;
-        prodDb.creditWallet(
+        await prodDb.creditWallet(
           targetUserId,
           renewalCredits,
           `Lumina AutoPay Renewal (${sub?.planName || 'Double Bonanza'}) (₹499)`,
@@ -1304,7 +1362,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
           } else {
             sub.nextChargeAt = new Date(Date.now() + 7 * 86400000).toISOString();
           }
-          prodDb.setSubscription(sub);
+          await prodDb.setSubscription(sub);
         }
       }
     } else if (eventType === 'subscription.cancelled') {
@@ -1315,11 +1373,11 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       if (sub) {
         sub.status = 'cancelled';
         sub.cancelledAt = new Date().toISOString();
-        prodDb.setSubscription(sub);
+        await prodDb.setSubscription(sub);
       }
     }
 
-    prodDb.markWebhookProcessed(eventId);
+    await prodDb.markWebhookProcessed(eventId);
     res.json({ status: 'processed', eventId });
   } catch (err: any) {
     console.error('[Webhook Processing Error]:', err);
@@ -1331,7 +1389,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
 app.post('/api/razorpay/webhook', handleRazorpayWebhook);
 app.post('/api/payments/webhook', handleRazorpayWebhook);
 
-// Subscription Cancellation Endpoint (Strictly uses real Razorpay subscription ID)
+// Subscription Cancellation Endpoint (Strict: do NOT mark cancelled if Razorpay fails)
 app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
   const sub = prodDb.getSubscription(user.id);
@@ -1342,17 +1400,37 @@ app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
 
   // Cancel on Razorpay if real subscription exists
   if (sub.mandateId && sub.mandateId.startsWith('sub_')) {
-    await razorpayAdapter.cancelSubscription(sub.mandateId);
+    const success = await razorpayAdapter.cancelSubscription(sub.mandateId);
+    if (!success) {
+      return res.status(502).json({
+        error: 'Failed to cancel subscription on Razorpay gateway. Subscription remains active on server.'
+      });
+    }
   }
 
   sub.status = 'cancelled';
   sub.cancelledAt = new Date().toISOString();
-  prodDb.setSubscription(sub);
+  await prodDb.setSubscription(sub);
 
   res.json({
     success: true,
     message: 'Subscription and recurring mandate cancelled successfully.'
   });
+});
+
+// AI Safety Reporting Endpoint
+app.post('/api/reports', async (req, res) => {
+  const { generationId, reason } = req.body;
+  if (!generationId || !reason) {
+    return res.status(400).json({ error: 'generationId and reason are required' });
+  }
+  try {
+    const report = await prodDb.addReport({ generationId, reason });
+    return res.json({ success: true, reportId: report.id });
+  } catch (err: any) {
+    console.error('[Report API Error]:', err);
+    return res.status(500).json({ error: 'Failed to persist safety report' });
+  }
 });
 
 /* =========================================================================

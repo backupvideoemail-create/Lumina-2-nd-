@@ -46,8 +46,8 @@ export const GenerationViewerModal: React.FC = () => {
 
   const handleShare = async () => {
     const shareData = {
-      title: `${gen.templateTitle} · AI Prime STUDIO`,
-      text: `Created with ${gen.templateTitle} on AI Prime STUDIO`,
+      title: `${gen.templateTitle} · Lumina AI Studio`,
+      text: `Created with ${gen.templateTitle} on Lumina AI Studio`,
       url: window.location.href
     };
 
@@ -187,7 +187,7 @@ export const GenerationViewerModal: React.FC = () => {
                 {/* AI Generated Official Badge */}
                 <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md border border-white/15 text-[11px] font-medium text-stone-200">
                   <Sparkles className="w-3 h-3 text-[#d4af37]" />
-                  <span>AI Generated · AI Prime STUDIO</span>
+                  <span>AI Generated · Lumina AI Studio</span>
                 </div>
 
                 {/* Template Aspect Ratio badge */}

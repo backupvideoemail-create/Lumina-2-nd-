@@ -14,12 +14,12 @@ import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
 
 const FAQS = [
   {
-    q: 'How does AI Prime STUDIO work?',
+    q: 'How does Lumina AI Studio work?',
     a: 'Choose any cinematic template, upload your portrait, selfie, or video clip, and our neural engines analyze lighting, face geometry, and styling to synthesize an ultra-high-definition output with professional grading.'
   },
   {
-    q: 'What is the ₹1 Pro Pass Daily Autopay?',
-    a: 'Our Pro Pass gives you instant access to 500 premium credits for an introductory payment of ₹1. The recurring daily subscription renewal of ₹499 begins from the next calendar day until cancelled. You can cancel with 1-click anytime in your Profile with zero cancellation fees.'
+    q: 'What is the Double Bonanza Autopay Plan?',
+    a: 'Our Double Bonanza plan gives you instant trial access for an introductory payment of ₹1. The recurring weekly subscription renewal of ₹499 for 400 credits begins after the trial period until cancelled. You can cancel with 1-click anytime in your Profile with zero cancellation fees.'
   },
   {
     q: 'What happens if a generation fails or times out?',
@@ -27,10 +27,10 @@ const FAQS = [
   },
   {
     q: 'How do I download or share my creations without watermarks?',
-    a: 'All generations completed under active credits or Pro Pass come completely watermark-free and can be downloaded in native 1080p or 4K resolution.'
+    a: 'All generations completed under active credits come completely watermark-free and can be downloaded in native 1080p or 4K resolution.'
   },
   {
-    q: 'How do I cancel my active daily mandate or subscription?',
+    q: 'How do I cancel my active recurring mandate or subscription?',
     a: `Simply open the Profile tab, locate your Active Subscription card, and tap "Cancel Subscription" (or email us directly at ${SUPPORT_CONFIG.email}). It will instantly cancel all future recurring renewals while allowing you to keep any unused credits.`
   }
 ];

@@ -2,7 +2,7 @@
  * Centralized Configuration for Customer Support, Subscriptions, and Recurring Mandates.
  * 
  * Rules & Plans:
- * 1. Plan 1: Double Bonanza (₹1 Intro, 500 credits, then ₹499 daily from next calendar day)
+ * 1. Plan 1: Double Bonanza (₹1 Intro, 40 credits trial, then ₹499 recurring renewal)
  * 2. Plan 2: Creator Weekly (₹199, 230 credits, 7 days validity, renews every 7 days)
  * 3. Plan 3: Creator Monthly (₹998, 1200 credits, 30 days validity, renews monthly)
  * 
@@ -101,13 +101,13 @@ export const SUBSCRIPTION_CONFIG = {
   introPrice: 1,
   renewalPrice: 499,
   renewalCredits: 400,
-  renewalInterval: 'daily' as const,
+  renewalInterval: 'weekly' as const,
   scheduleRule: 'next_calendar_day' as const,
   includedCredits: 40,
   validityHours: 24,
   timezone: 'Asia/Kolkata',
   timezoneOffsetMinutes: 330, // UTC+5:30 (Indian Standard Time for INR ₹ transactions)
-  disclosureText: '₹1 today for 24 hours · then ₹499 daily for 400 credits until cancelled.',
+  disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.',
   plans: CENTRAL_SUBSCRIPTION_PLANS
 } as const;
 
