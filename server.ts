@@ -1297,8 +1297,13 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         );
         if (sub) {
           sub.status = 'active';
-          const nextCalDay = calculateNextCalendarDayStartDate();
-          sub.nextChargeAt = nextCalDay.isoString;
+          if (subEntity?.charge_at) {
+            sub.nextChargeAt = new Date(subEntity.charge_at * 1000).toISOString();
+          } else if (subEntity?.current_end) {
+            sub.nextChargeAt = new Date(subEntity.current_end * 1000).toISOString();
+          } else {
+            sub.nextChargeAt = new Date(Date.now() + 7 * 86400000).toISOString();
+          }
           prodDb.setSubscription(sub);
         }
       }

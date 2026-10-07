@@ -18,6 +18,7 @@ import {
   DeleteObjectCommand
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { adminFirestoreDb } from '../db/database.ts';
 
 const UPLOADS_DIR = path.resolve(process.cwd(), '.data', 'uploads');
 
@@ -59,6 +60,51 @@ export class MediaStorageService {
     this.ensureDirectory();
     this.loadIndex();
     this.initR2Client();
+    this.loadMetadataFromFirestore().catch(() => {});
+  }
+
+  private async loadMetadataFromFirestore() {
+    if (!adminFirestoreDb) return;
+    try {
+      const snap = await adminFirestoreDb.collection('media_metadata').get();
+      snap.forEach((d: any) => {
+        const meta = d.data() as StoredMediaMetadata;
+        if (meta && meta.fileId) {
+          this.metadataIndex[meta.fileId] = meta;
+        }
+      });
+    } catch (err: any) {
+      console.warn('[MediaStorage] Firestore metadata load note:', err.message);
+    }
+  }
+
+  private async syncMetadataToFirestore(filename: string, metadata: StoredMediaMetadata) {
+    if (!adminFirestoreDb) return;
+    try {
+      await adminFirestoreDb.collection('media_metadata').doc(filename).set(metadata, { merge: true });
+    } catch (err: any) {
+      console.warn('[MediaStorage] Failed to sync media metadata to Firestore:', err.message);
+    }
+  }
+
+  public async getMetadata(fileName: string): Promise<StoredMediaMetadata | null> {
+    const safeName = path.basename(fileName);
+    if (this.metadataIndex[safeName]) {
+      return this.metadataIndex[safeName];
+    }
+    if (adminFirestoreDb) {
+      try {
+        const doc = await adminFirestoreDb.collection('media_metadata').doc(safeName).get();
+        if (doc.exists) {
+          const meta = doc.data() as StoredMediaMetadata;
+          this.metadataIndex[safeName] = meta;
+          return meta;
+        }
+      } catch (err: any) {
+        console.warn('[MediaStorage] Lookup error in Firestore:', err.message);
+      }
+    }
+    return null;
   }
 
   private initR2Client() {
@@ -239,6 +285,7 @@ export class MediaStorageService {
 
     this.metadataIndex[filename] = metadata;
     this.saveIndex();
+    this.syncMetadataToFirestore(filename, metadata).catch(() => {});
 
     return metadata;
   }
@@ -252,7 +299,7 @@ export class MediaStorageService {
     expiresInSeconds: number = 3600
   ): Promise<string | null> {
     const safeName = path.basename(fileName);
-    const meta = this.metadataIndex[safeName];
+    const meta = await this.getMetadata(safeName);
 
     if (!meta) return null;
 
@@ -284,7 +331,7 @@ export class MediaStorageService {
     requestingUserId?: string
   ): Promise<{ body: any; mimeType: string; error?: string }> {
     const safeName = path.basename(fileName);
-    const meta = this.metadataIndex[safeName];
+    const meta = await this.getMetadata(safeName);
 
     // Enforce ownership for private files
     if (meta && !meta.isPublic && meta.ownerUserId) {
@@ -293,15 +340,24 @@ export class MediaStorageService {
       }
     }
 
-    if (this.s3Client && this.r2Config.bucketName && meta?.r2Key) {
-      try {
-        const getRes = await this.s3Client.send(new GetObjectCommand({
-          Bucket: this.r2Config.bucketName,
-          Key: meta.r2Key
-        }));
-        return { body: getRes.Body, mimeType: meta.mimeType || 'application/octet-stream' };
-      } catch (err: any) {
-        console.error('[MediaStorage] R2 GetObject error:', err.message);
+    if (this.s3Client && this.r2Config.bucketName) {
+      const keysToTry = [
+        meta?.r2Key,
+        `media/public/${safeName}`,
+        `media/general/${safeName}`,
+        requestingUserId ? `media/users/${requestingUserId}/${safeName}` : null
+      ].filter(Boolean) as string[];
+
+      for (const candidateKey of keysToTry) {
+        try {
+          const getRes = await this.s3Client.send(new GetObjectCommand({
+            Bucket: this.r2Config.bucketName,
+            Key: candidateKey
+          }));
+          return { body: getRes.Body, mimeType: meta?.mimeType || 'application/octet-stream' };
+        } catch {
+          // try next key candidate
+        }
       }
     }
 

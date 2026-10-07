@@ -42,18 +42,18 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     id: 'plan_intro_daily',
     name: 'Double Bonanza',
     cardTitle: 'Double Bonanza',
-    validityLabel: '24 Hours Validity',
+    validityLabel: '24 Hours Trial',
     price: 1,
     periodLabel: '24 hours',
     includedCredits: 40, // 40 credits immediately unlocked for 24 hours
-    renewalPrice: 499, // ₹499 recurring daily
+    renewalPrice: 499, // ₹499 recurring renewal
     renewalCredits: 400, // 400 credits upon verified renewal
-    renewalInterval: 'daily',
+    renewalInterval: 'weekly', // Aligned with Razorpay regulatory minimum interval & live plan_TjsjORpnQrwUzl
     validityDays: 1,
     validityHours: 24,
     autoPayEnabled: true,
     scheduleRule: 'next_calendar_day',
-    disclosureText: '₹1 today for 24 hours · then ₹499 daily for 400 credits until cancelled.',
+    disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.',
     badge: 'HOT',
     isIntro: true,
     isPopular: true

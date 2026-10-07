@@ -43,6 +43,7 @@ import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfi
 // Initialize Firebase client / admin for server persistence
 let firestoreDb: any = null;
 let adminFirestoreDb: any = null;
+export { firestoreDb, adminFirestoreDb };
 
 try {
   const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -72,6 +73,9 @@ try {
         projectId
       }, 'lumina-admin-app-' + Date.now());
       adminFirestoreDb = getAdminFirestore(adminApp);
+      try {
+        adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
+      } catch {}
       console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (Authoritative)`);
     }
   }
@@ -149,19 +153,71 @@ class ProductionDatabase {
         this.db.users[d.id] = d.data();
       });
 
-      // 3. Subscriptions
+      // 3. Auth Identities (Server Authoritative)
+      const authSnap = await adminFirestoreDb.collection('auth_identities').get();
+      authSnap.forEach((d: any) => {
+        this.db.authIdentities[d.id] = d.data();
+      });
+
+      // 4. Credit Grants (FIFO Expiry Ledger)
+      const grantsSnap = await adminFirestoreDb.collection('credit_grants').get();
+      if (!grantsSnap.empty) {
+        const grants: CreditGrant[] = [];
+        grantsSnap.forEach((d: any) => {
+          grants.push(d.data() as CreditGrant);
+        });
+        this.db.creditGrants = grants;
+      }
+
+      // 5. Transactions
+      const txSnap = await adminFirestoreDb.collection('transactions').get();
+      if (!txSnap.empty) {
+        const txs: CreditTransaction[] = [];
+        txSnap.forEach((d: any) => {
+          txs.push(d.data() as CreditTransaction);
+        });
+        this.db.transactions = txs;
+      }
+
+      // 6. Generations & Jobs
+      const genSnap = await adminFirestoreDb.collection('generations').get();
+      if (!genSnap.empty) {
+        const gens: Generation[] = [];
+        genSnap.forEach((d: any) => {
+          gens.push(d.data() as Generation);
+        });
+        this.db.generations = gens;
+      }
+
+      // 7. Subscriptions
       const subsSnap = await adminFirestoreDb.collection('subscriptions').get();
       subsSnap.forEach((d: any) => {
         this.db.subscriptions[d.id] = d.data();
       });
 
-      // 4. Payments
+      // 8. Payments
       const paySnap = await adminFirestoreDb.collection('payments').get();
       paySnap.forEach((d: any) => {
         this.db.payments[d.id] = d.data();
       });
 
-      // 5. Templates
+      // 9. Processed Webhook Events (Idempotency Ledger)
+      const webhooksSnap = await adminFirestoreDb.collection('processed_webhooks').get();
+      const webhookEvents: string[] = [];
+      webhooksSnap.forEach((d: any) => {
+        webhookEvents.push(d.id);
+      });
+      if (webhookEvents.length > 0) {
+        this.db.processedWebhooks = Array.from(new Set([...this.db.processedWebhooks, ...webhookEvents]));
+      }
+
+      // 10. User Likes
+      const likesSnap = await adminFirestoreDb.collection('user_likes').get();
+      likesSnap.forEach((d: any) => {
+        this.db.userLikes[d.id] = d.data()?.templateIds || [];
+      });
+
+      // 11. Templates
       const tplSnap = await adminFirestoreDb.collection('templates').get();
       if (!tplSnap.empty) {
         const loaded: Template[] = [];
@@ -172,7 +228,22 @@ class ProductionDatabase {
           this.db.templates = loaded;
         }
       }
-      console.log('[Database] Authoritative state synchronized from Firestore');
+
+      // 12. App Config (Banners & Demo Video)
+      try {
+        const bannerDoc = await adminFirestoreDb.collection('config').doc('banners').get();
+        if (bannerDoc.exists && bannerDoc.data()?.banners) {
+          this.db.banners = bannerDoc.data().banners;
+        }
+        const demoDoc = await adminFirestoreDb.collection('config').doc('faceswap_demo').get();
+        if (demoDoc.exists && demoDoc.data()?.demoVideoUrl) {
+          this.db.faceSwapDemoVideoUrl = demoDoc.data().demoVideoUrl;
+        }
+      } catch {
+        // config docs optional
+      }
+
+      console.log('[Database] Complete authoritative state synchronized from Firestore');
     } catch (err: any) {
       console.warn('[Database] Firestore authoritative sync note:', err.message);
     }
@@ -249,13 +320,14 @@ class ProductionDatabase {
   ========================================================================= */
   private async syncToFirestore(collectionName: string, docId: string, data: any) {
     try {
+      const sanitized = JSON.parse(JSON.stringify(data));
       if (adminFirestoreDb) {
-        await adminFirestoreDb.collection(collectionName).doc(docId).set(data, { merge: true });
+        await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
         return;
       }
       if (firestoreDb) {
         const docRef = doc(firestoreDb, collectionName, docId);
-        await setDoc(docRef, data, { merge: true });
+        await setDoc(docRef, sanitized, { merge: true });
       }
     } catch (err: any) {
       console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
@@ -323,6 +395,7 @@ class ProductionDatabase {
         identity.lastLoginAt = new Date().toISOString();
         if (params.email && !identity.email) identity.email = params.email;
         if (params.phone && !identity.phone) identity.phone = params.phone;
+        this.syncToFirestore('auth_identities', existingUser.id, identity);
       }
       this.save();
       return { user: existingUser, token: sessionToken, isNewUser: false };
@@ -341,8 +414,7 @@ class ProductionDatabase {
       generationCount: 0
     };
 
-    this.db.users[newUserId] = newUser;
-    this.db.authIdentities[newUserId] = {
+    const newIdentity: AuthIdentity = {
       userId: newUserId,
       firebaseUid: params.firebaseUid,
       email: params.email,
@@ -351,6 +423,9 @@ class ProductionDatabase {
       createdAt: new Date().toISOString(),
       lastLoginAt: new Date().toISOString()
     };
+
+    this.db.users[newUserId] = newUser;
+    this.db.authIdentities[newUserId] = newIdentity;
 
     // New real user starts with clean state: 0 balance, 0 transactions
     this.db.wallets[newUserId] = {
@@ -363,6 +438,7 @@ class ProductionDatabase {
 
     this.save();
     this.syncToFirestore('users', newUserId, newUser);
+    this.syncToFirestore('auth_identities', newUserId, newIdentity);
     this.syncToFirestore('wallets', newUserId, this.db.wallets[newUserId]);
 
     return { user: newUser, token: sessionToken, isNewUser: true };

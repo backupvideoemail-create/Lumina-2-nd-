@@ -91,5 +91,27 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isAdmin();
     }
+
+    // Server-Only Collections (Direct client access blocked; backend Firebase Admin access only)
+    match /auth_identities/{userId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /processed_webhooks/{eventId} {
+      allow read, write: if isAdmin();
+    }
+
+    // User Likes
+    match /user_likes/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    // Media Metadata
+    match /media_metadata/{mediaId} {
+      allow get: if resource.data.isPublic == true || isOwner(resource.data.ownerUserId) || isAdmin();
+      allow list: if isAdmin();
+      allow write: if isAdmin();
+    }
   }
 }
