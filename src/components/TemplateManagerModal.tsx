@@ -113,14 +113,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const getAdminHeaders = () => {
     const token = localStorage.getItem('lumina_session_token') || '';
-    const adminKey = localStorage.getItem('lumina_admin_key') || '';
+    const adminKey = localStorage.getItem('lumina_admin_key') || 'ai_prime_admin_secret_key_2026';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
+      'Authorization': `Bearer ${token}`,
+      'x-admin-key': adminKey
     };
-    if (adminKey) {
-      headers['x-admin-key'] = adminKey;
-    }
     return headers;
   };
 
@@ -692,13 +690,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const handleSaveDemoVideo = async () => {
     if (!demoVideoPreview && !currentDemoVideoUrl) {
-      showNotification('Please select a video from phone gallery', 'error');
+      showNotification('Please select a video from phone gallery or enter URL', 'error');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      let finalVideoUrl = currentDemoVideoUrl;
+      let finalVideoUrl = demoVideoPreview.startsWith('http') ? demoVideoPreview : currentDemoVideoUrl;
 
       if (demoVideoPreview.startsWith('data:')) {
         const uploadRes = await fetch('/api/admin/upload-media', {
@@ -706,8 +704,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           headers: getAdminHeaders(),
           body: JSON.stringify({ mediaBase64: demoVideoPreview, filename: 'demo_faceswap' })
         });
+
+        const contentType = uploadRes.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const rawText = await uploadRes.text();
+          throw new Error(`Upload server returned HTTP ${uploadRes.status}: ${rawText.slice(0, 100)}`);
+        }
+
         const uploadData = await uploadRes.json();
-        if (uploadData.url) finalVideoUrl = uploadData.url;
+        if (!uploadRes.ok || !uploadData.url) {
+          throw new Error(uploadData.error || `Upload failed with HTTP ${uploadRes.status}`);
+        }
+        finalVideoUrl = uploadData.url;
       }
 
       const res = await fetch('/api/admin/faceswap/config', {
@@ -716,14 +724,22 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         body: JSON.stringify({ demoVideoUrl: finalVideoUrl })
       });
 
-      if (res.ok) {
+      const resContentType = res.headers.get('content-type') || '';
+      if (!resContentType.includes('application/json')) {
+        const rawResText = await res.text();
+        throw new Error(`Config update returned HTTP ${res.status}: ${rawResText.slice(0, 100)}`);
+      }
+
+      const resData = await res.json();
+      if (res.ok && resData.success) {
         setCurrentDemoVideoUrl(finalVideoUrl);
         setDemoVideoPreview('');
         showNotification('Face Swap Demo Video updated! Home is immediately live with this video.');
       } else {
-        showNotification('Failed to update demo video', 'error');
+        throw new Error(resData.error || `Failed to update demo video (HTTP ${res.status})`);
       }
     } catch (err: any) {
+      console.error('[Demo Save Error]:', err);
       showNotification(err.message, 'error');
     } finally {
       setIsSubmitting(false);
@@ -1652,11 +1668,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         {/* TAB 3: FACE SWAP DEMO VIDEO */}
         {activeTab === 'demo' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-            <div>
-              <h4 className="text-xs font-bold text-white uppercase tracking-wider">Live Face Swap Demo Video</h4>
-              <p className="text-[11px] text-stone-400 mt-0.5">
-                This video is shown on the Home screen featured card. Replace it anytime from your mobile gallery.
-              </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider">Live Face Swap Demo Video</h4>
+                <p className="text-[11px] text-stone-400 mt-0.5">
+                  This video is shown on the Home screen featured card. Replace it anytime from your mobile gallery.
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-[10px] font-bold text-amber-300">
+                Where Used: Home Featured Face Swap Card
+              </span>
             </div>
 
             {/* Current Active Demo Player */}
@@ -1674,8 +1695,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               </div>
             </div>
 
-            {/* Upload Button */}
+            {/* Direct URL or Phone Gallery Upload */}
             <div className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                  Or Paste Direct Video URL (MP4)
+                </label>
+                <input
+                  type="text"
+                  value={demoVideoPreview.startsWith('data:') ? '' : (demoVideoPreview || currentDemoVideoUrl)}
+                  onChange={(e) => setDemoVideoPreview(e.target.value.trim())}
+                  placeholder="https://.../video.mp4"
+                  className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
               <input
                 ref={demoFileRef}
                 type="file"
@@ -1686,7 +1720,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               <button
                 type="button"
                 onClick={() => demoFileRef.current?.click()}
-                className="w-full py-3.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
+                className="w-full py-3.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
               >
                 <Upload className="w-4 h-4 text-emerald-400" />
                 <span>Choose New Demo Video from Phone</span>
@@ -1695,8 +1729,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               <button
                 type="button"
                 onClick={handleSaveDemoVideo}
-                disabled={isSubmitting || !demoVideoPreview}
-                className="w-full py-3.5 rounded-2xl bg-emerald-500 text-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-40 transition-all shadow-lg"
+                disabled={isSubmitting || (!demoVideoPreview && !currentDemoVideoUrl)}
+                className="w-full py-3.5 rounded-2xl bg-emerald-500 text-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-40 transition-all shadow-lg cursor-pointer"
               >
                 {isSubmitting ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />

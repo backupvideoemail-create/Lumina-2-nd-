@@ -14,7 +14,19 @@ export type TemplateCategory =
   | 'Social'
   | 'Creative'
   | 'Professional'
-  | 'Retro 80s';
+  | 'Retro 80s'
+  | 'Royal Swag'
+  | 'Devotional'
+  | 'Daily Status'
+  | 'Birthday'
+  | 'Family Moments'
+  | 'Kids'
+  | 'Creative & Artistic'
+  | 'Sports'
+  | 'Photography'
+  | 'Greetings & Wishes'
+  | 'Couple'
+  | (string & {});
 
 export type AspectRatio = '9:16' | '4:5' | '1:1' | '16:9';
 
@@ -72,7 +84,9 @@ export interface Template {
   category: TemplateCategory;
   preview: string;
   cover: string;
+  sampleBefore?: string;
   sampleResult?: string;
+  mediaType?: 'image' | 'video';
   description: string;
   aspectRatio: AspectRatio;
   inputType?: TemplateInputType;

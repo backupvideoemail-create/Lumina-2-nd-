@@ -216,17 +216,20 @@ class ProductionDatabase {
         this.db.userLikes[d.id] = d.data()?.templateIds || [];
       });
 
-      // 11. Templates
+      // 11. Templates (Merge Firestore templates with default SEED_TEMPLATES so catalog is always rich & full)
       const tplSnap = await adminFirestoreDb.collection('templates').get();
+      const firestoreTemplates: Template[] = [];
       if (!tplSnap.empty) {
-        const loaded: Template[] = [];
         tplSnap.forEach((d: any) => {
-          loaded.push(d.data() as Template);
+          firestoreTemplates.push(d.data() as Template);
         });
-        if (loaded.length > 0) {
-          this.db.templates = loaded;
-        }
       }
+      // Merge: custom/updated Firestore templates override seed by ID, while ensuring all seed templates exist
+      const templateMap = new Map<string, Template>();
+      SEED_TEMPLATES.forEach(t => templateMap.set(t.id, t));
+      (this.db.templates || []).forEach(t => templateMap.set(t.id, t));
+      firestoreTemplates.forEach(t => templateMap.set(t.id, t));
+      this.db.templates = Array.from(templateMap.values());
 
       // 12. App Config (Banners & Demo Video)
       try {
@@ -265,7 +268,10 @@ class ProductionDatabase {
         parsed.jobs = parsed.jobs || [];
         parsed.payments = parsed.payments || {};
         parsed.subscriptions = parsed.subscriptions || {};
-        parsed.templates = (parsed.templates && parsed.templates.length > 0) ? parsed.templates : [...SEED_TEMPLATES];
+        const tplMap = new Map<string, Template>();
+        SEED_TEMPLATES.forEach(t => tplMap.set(t.id, t));
+        (parsed.templates || []).forEach((t: Template) => tplMap.set(t.id, t));
+        parsed.templates = Array.from(tplMap.values());
         parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
         parsed.faceSwapDemoVideoUrl = parsed.faceSwapDemoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4';
         parsed.userLikes = parsed.userLikes || {};

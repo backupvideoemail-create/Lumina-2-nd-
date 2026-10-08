@@ -182,6 +182,34 @@
   animation: laserPulseGlow 3.5s ease-in-out infinite;
 }
 
+/* ANTI-SCREENSHOT & CONTENT PROTECTION */
+@media print {
+  html, body {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}
+
+.protected-media {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+.protected-media img,
+.protected-media video {
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* GPU SMOOTH RENDERING FOR PREVENTING SCROLL LAG ON MOBILE */
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
 
 
 

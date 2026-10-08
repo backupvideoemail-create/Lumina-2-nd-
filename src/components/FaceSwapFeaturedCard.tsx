@@ -5,8 +5,9 @@ import { useApp } from '../context/AppContext';
 
 export const FaceSwapFeaturedCard: React.FC = () => {
   const { faceSwapScenes, setSelectedFaceSwapScene, setFaceSwapModalOpen } = useApp();
-  const [previewMode, setPreviewMode] = useState<'demo' | 'after' | 'before'>('after');
+  const [previewMode, setPreviewMode] = useState<'demo' | 'after' | 'before'>('demo');
   const [isPlayingDemo, setIsPlayingDemo] = useState(false);
+  const videoRef = React.useRef<HTMLVideoElement>(null);
 
   const topScene = faceSwapScenes[0]; // Trending Dance & Viral
   const [liveDemoVideoUrl, setLiveDemoVideoUrl] = useState<string>(topScene.demoVideoUrl || '');
@@ -26,6 +27,13 @@ export const FaceSwapFeaturedCard: React.FC = () => {
       isMounted = false;
     };
   }, []);
+
+  // Ensure video plays automatically when card mounts/in view
+  React.useEffect(() => {
+    if (previewMode === 'demo' && videoRef.current) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [previewMode, liveDemoVideoUrl]);
 
   const handleOpenFaceSwap = () => {
     setSelectedFaceSwapScene(topScene);
@@ -69,18 +77,22 @@ export const FaceSwapFeaturedCard: React.FC = () => {
           <div className="relative rounded-xl overflow-hidden aspect-[21/9] sm:aspect-[24/9] w-full bg-stone-950 border border-white/10 shadow-xl">
             {previewMode === 'demo' && (liveDemoVideoUrl || topScene.demoVideoUrl) ? (
               <video
+                ref={videoRef}
                 src={liveDemoVideoUrl || topScene.demoVideoUrl}
                 autoPlay
                 playsInline
                 loop
                 muted
-                className="w-full h-full object-cover"
+                onContextMenu={(e) => e.preventDefault()}
+                className="w-full h-full object-cover pointer-events-none select-none"
               />
             ) : (
               <img
                 src={previewMode === 'after' ? topScene.resultVideoPreview : topScene.sourceVideoPreview}
                 alt="Face Swap Cinematic Preview"
-                className="w-full h-full object-cover transition-all duration-700 ease-out group-hover:scale-102"
+                onContextMenu={(e) => e.preventDefault()}
+                draggable={false}
+                className="w-full h-full object-cover transition-all duration-700 ease-out group-hover:scale-102 pointer-events-none select-none"
               />
             )}
 

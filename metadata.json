@@ -1,5 +1,5 @@
 {
-  "name": "Lumina AI Template Studio",
+  "name": "AI Prime Studio",
   "description": "AI Prime Studio - AI Video & Photo Creator. Premium cinematic AI photo and video template studio for Instagram Reels, Stories, fashion, and luxury visuals.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

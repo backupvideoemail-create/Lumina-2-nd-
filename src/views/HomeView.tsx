@@ -88,40 +88,51 @@ export const HomeView: React.FC = () => {
     }
   };
 
-  // Filtered lists for rich rails matching user's reference
-  const trendingTemplates = templates.filter(
-    (t) =>
-      t.category === 'Trending' ||
-      t.isFeatured ||
-      t.id.includes('swag') ||
-      t.id.includes('cartoon')
+  // Dynamic Data-Driven Category Rails
+  const activeTemplates = templates.filter((t) => t.isActive !== false);
+
+  const preferredCategoryOrder = [
+    'Trending',
+    'Devotional',
+    'Retro 80s',
+    'Royal Swag',
+    'Couple',
+    'Daily Status',
+    'Birthday',
+    'Dance',
+    'Luxury',
+    'Cinematic',
+    'Fashion',
+    'Portrait',
+    'Travel',
+    'Festival',
+    'Creative',
+    'Professional'
+  ];
+
+  // Discover all distinct active categories from templates
+  const activeCategories = Array.from(
+    new Set(activeTemplates.map((t) => t.category || 'Trending'))
   );
 
-  const retro80sTemplates = templates.filter(
-    (t) =>
-      t.category === 'Retro 80s' ||
-      t.tags.some((tag) => tag.toLowerCase().includes('retro') || tag.toLowerCase().includes('80s')) ||
-      t.id.includes('1980') ||
-      t.id.includes('zindagi') ||
-      t.id.includes('vintage')
-  );
+  // Sort categories according to preferred order, keeping any custom admin categories right next
+  const sortedCategories = activeCategories.sort((a, b) => {
+    const idxA = preferredCategoryOrder.indexOf(a);
+    const idxB = preferredCategoryOrder.indexOf(b);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b);
+  });
 
-  const danceTemplates = templates.filter(
-    (t) =>
-      t.category === 'Dance' ||
-      t.tags.some((tag) => tag.toLowerCase().includes('dance'))
-  );
-
-  const weddingAndLuxuryTemplates = templates.filter(
-    (t) =>
-      t.category === 'Luxury' ||
-      t.category === 'Fashion' ||
-      t.tags.some((tag) =>
-        tag.toLowerCase().includes('wedding') ||
-        tag.toLowerCase().includes('royal') ||
-        tag.toLowerCase().includes('gold')
+  const searchResults = searchQuery.trim()
+    ? activeTemplates.filter(
+        (t) =>
+          t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          t.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (t.tags && t.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase())))
       )
-  );
+    : [];
 
   // Helper icon renderer for Quick Category Circles
   const renderQuickIcon = (type: string) => {
@@ -367,127 +378,67 @@ export const HomeView: React.FC = () => {
         <FaceSwapFeaturedCard />
       </div>
 
-      {/* 6. DENSE TEMPLATE SECTIONS & HORIZONTAL RAILS (Matching Screenshot Layout) */}
+      {/* 6. DENSE TEMPLATE SECTIONS & HORIZONTAL RAILS (Dynamic Data-Driven System) */}
       <div className="max-w-4xl mx-auto px-3.5 space-y-6 mt-4">
-        {/* Section 1: || Trending (Full Swag, Full Swag 2, Real Me Cartoon) */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[#10b981] font-mono text-base font-black tracking-tighter">
-                []
-              </span>
-              <h3 className="text-base sm:text-lg font-extrabold font-display text-white tracking-tight">
-                Trending
+        {searchQuery.trim() ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold text-white">
+                Search Results ({searchResults.length})
               </h3>
             </div>
-            <button
-              onClick={() => {
-                setSelectedCategory('Trending');
-                setActiveTab('templates');
-              }}
-              className="text-xs font-bold text-[#ff9f00] hover:text-[#fbbf24] transition-colors flex items-center gap-0.5 cursor-pointer"
-            >
-              <span>View All</span>
-              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
+            {searchResults.length === 0 ? (
+              <div className="text-center py-12 text-stone-400 text-sm">
+                No templates found matching "{searchQuery}". Try another keyword or browse categories below.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {searchResults.map((tpl) => (
+                  <TemplateCard key={tpl.id} template={tpl} size="compact" />
+                ))}
+              </div>
+            )}
           </div>
+        ) : (
+          sortedCategories.map((category) => {
+            const catTemplates = activeTemplates.filter(
+              (t) => (t.category || 'Trending') === category
+            );
+            if (catTemplates.length === 0) return null;
 
-          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-2 pt-0.5 -mx-3.5 px-3.5">
-            {trendingTemplates.slice(0, 6).map((tpl) => (
-              <TemplateCard key={tpl.id} template={tpl} size="compact" />
-            ))}
-          </div>
-        </div>
+            return (
+              <div key={category} className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center gap-0.5 text-[#10b981] font-mono text-sm font-black tracking-tighter">
+                      <span className="w-1 h-3.5 rounded-full bg-[#10b981]" />
+                      <span className="w-1 h-3.5 rounded-full bg-[#10b981]" />
+                    </span>
+                    <h3 className="text-base sm:text-lg font-extrabold font-display text-white tracking-tight">
+                      {category}
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedCategory(category);
+                      setActiveTab('templates');
+                    }}
+                    className="text-xs font-bold text-[#ff9f00] hover:text-[#fbbf24] transition-colors flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span>View All</span>
+                    <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
+                  </button>
+                </div>
 
-        {/* Section 2: || Retro 80's (1980 Model, Zindagi Ek Safar, Nostalgia) */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[#10b981] font-mono text-base font-black tracking-tighter">
-                []
-              </span>
-              <h3 className="text-base sm:text-lg font-extrabold font-display text-white tracking-tight">
-                Retro 80's
-              </h3>
-            </div>
-            <button
-              onClick={() => {
-                setSelectedCategory('Retro 80s');
-                setActiveTab('templates');
-              }}
-              className="text-xs font-bold text-[#ff9f00] hover:text-[#fbbf24] transition-colors flex items-center gap-0.5 cursor-pointer"
-            >
-              <span>View All</span>
-              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
-          </div>
-
-          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-2 pt-0.5 -mx-3.5 px-3.5">
-            {retro80sTemplates.slice(0, 6).map((tpl) => (
-              <TemplateCard key={tpl.id} template={tpl} size="compact" />
-            ))}
-          </div>
-        </div>
-
-        {/* Section 3: || Dance Video & Viral Hooksteps */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[#10b981] font-mono text-base font-black tracking-tighter">
-                []
-              </span>
-              <h3 className="text-base sm:text-lg font-extrabold font-display text-white tracking-tight">
-                Dance Reels & Beats
-              </h3>
-            </div>
-            <button
-              onClick={() => {
-                setSelectedCategory('Dance');
-                setActiveTab('templates');
-              }}
-              className="text-xs font-bold text-[#ff9f00] hover:text-[#fbbf24] transition-colors flex items-center gap-0.5 cursor-pointer"
-            >
-              <span>View All</span>
-              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
-          </div>
-
-          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-2 pt-0.5 -mx-3.5 px-3.5">
-            {danceTemplates.slice(0, 6).map((tpl) => (
-              <TemplateCard key={tpl.id} template={tpl} size="compact" />
-            ))}
-          </div>
-        </div>
-
-        {/* Section 4: || Proposal & Wedding Luxury */}
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[#10b981] font-mono text-base font-black tracking-tighter">
-                []
-              </span>
-              <h3 className="text-base sm:text-lg font-extrabold font-display text-white tracking-tight">
-                Proposal & Royal Wedding
-              </h3>
-            </div>
-            <button
-              onClick={() => {
-                setSelectedCategory('Luxury');
-                setActiveTab('templates');
-              }}
-              className="text-xs font-bold text-[#ff9f00] hover:text-[#fbbf24] transition-colors flex items-center gap-0.5 cursor-pointer"
-            >
-              <span>View All</span>
-              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
-          </div>
-
-          <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-2 pt-0.5 -mx-3.5 px-3.5">
-            {weddingAndLuxuryTemplates.slice(0, 6).map((tpl) => (
-              <TemplateCard key={tpl.id} template={tpl} size="compact" />
-            ))}
-          </div>
-        </div>
+                <div className="flex gap-2.5 sm:gap-3 overflow-x-auto no-scrollbar pb-2 pt-0.5 -mx-3.5 px-3.5">
+                  {catTemplates.slice(0, 8).map((tpl) => (
+                    <TemplateCard key={tpl.id} template={tpl} size="compact" />
+                  ))}
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
