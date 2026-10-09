@@ -201,6 +201,23 @@ export class MediaStorageService {
   ): Promise<StoredMediaMetadata> {
     this.ensureDirectory();
 
+    if (typeof payload === 'string' && (payload.startsWith('http://') || payload.startsWith('https://'))) {
+      const isVid = payload.toLowerCase().includes('.mp4') || payload.toLowerCase().includes('.mov') || payload.toLowerCase().includes('.webm');
+      return {
+        fileId: path.basename(payload.split('?')[0]) || `${prefix}_${Date.now()}`,
+        originalName: customFileName || 'remote_media',
+        mimeType: isVid ? 'video/mp4' : 'image/jpeg',
+        sizeBytes: 0,
+        filePath: '',
+        publicUrl: payload,
+        ownerUserId,
+        isPublic: true,
+        provider: 'cloudflare_r2',
+        r2Key: '',
+        createdAt: new Date().toISOString()
+      };
+    }
+
     let buffer: Buffer;
     let mimeType = 'image/jpeg';
     let ext = 'jpg';
@@ -240,8 +257,15 @@ export class MediaStorageService {
       } else {
         buffer = Buffer.from(payload, 'base64');
       }
+    } else if (typeof payload === 'string') {
+      // Raw base64 string or binary payload
+      try {
+        buffer = Buffer.from(payload, 'base64');
+      } catch {
+        buffer = Buffer.from(payload, 'utf-8');
+      }
     } else {
-      buffer = Buffer.from(payload, 'utf-8');
+      buffer = Buffer.from(payload as any);
     }
 
     const fileId = `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;

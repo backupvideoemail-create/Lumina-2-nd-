@@ -475,32 +475,49 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       isActive = true
     } = req.body;
 
-    if (!title || !description) {
-      return res.status(400).json({ error: 'Title and description are required' });
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Title is required' });
     }
+    const finalDescription = (description && description.trim()) || `Trending ${category || 'Creative'} AI Template`;
 
     let mediaUrl = 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=900&q=80';
     if (mediaBase64) {
-      const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `template_${Date.now()}`, undefined, true);
-      mediaUrl = stored.publicUrl;
+      if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://'))) {
+        mediaUrl = mediaBase64;
+      } else {
+        const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `template_${Date.now()}`, undefined, true);
+        mediaUrl = stored.publicUrl;
+      }
     }
 
     let coverUrl = mediaUrl;
     if (coverBase64) {
-      const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `cover_${Date.now()}`, undefined, true);
-      coverUrl = storedCover.publicUrl;
+      if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://'))) {
+        coverUrl = coverBase64;
+      } else {
+        const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `cover_${Date.now()}`, undefined, true);
+        coverUrl = storedCover.publicUrl;
+      }
     }
 
     let sampleResultUrl: string | undefined = undefined;
     if (sampleResultBase64) {
-      const storedSample = await mediaStorage.saveMedia(sampleResultBase64, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
-      sampleResultUrl = storedSample.publicUrl;
+      if (typeof sampleResultBase64 === 'string' && (sampleResultBase64.startsWith('http://') || sampleResultBase64.startsWith('https://'))) {
+        sampleResultUrl = sampleResultBase64;
+      } else {
+        const storedSample = await mediaStorage.saveMedia(sampleResultBase64, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
+        sampleResultUrl = storedSample.publicUrl;
+      }
     }
 
     let drivingVideoUrl = inputDrivingVideoUrl || '';
     if (drivingVideoBase64) {
-      const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `driving_${Date.now()}`, undefined, true);
-      drivingVideoUrl = storedDriving.publicUrl;
+      if (typeof drivingVideoBase64 === 'string' && (drivingVideoBase64.startsWith('http://') || drivingVideoBase64.startsWith('https://'))) {
+        drivingVideoUrl = drivingVideoBase64;
+      } else {
+        const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `driving_${Date.now()}`, undefined, true);
+        drivingVideoUrl = storedDriving.publicUrl;
+      }
     }
 
     // Dynamic cost calculated using USD + 40% Markup Rule
@@ -529,7 +546,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       cover: coverUrl,
       preview: mediaUrl,
       sampleResult: sampleResultUrl || mediaUrl,
-      description: description.trim(),
+      description: finalDescription,
       aspectRatio: (aspectRatio as AspectRatio) || '9:16',
       requiredInputs: requiredInputs || [
         {
@@ -575,57 +592,73 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
 
     // If media replacement base64 provided
     if (updates.mediaBase64) {
-      const stored = await mediaStorage.saveMedia(
-        updates.mediaBase64,
-        'tpl_asset',
-        `tpl_updated_${Date.now()}`,
-        undefined,
-        true
-      );
-      updates.preview = stored.publicUrl;
+      if (typeof updates.mediaBase64 === 'string' && (updates.mediaBase64.startsWith('http://') || updates.mediaBase64.startsWith('https://'))) {
+        updates.preview = updates.mediaBase64;
+      } else {
+        const stored = await mediaStorage.saveMedia(
+          updates.mediaBase64,
+          'tpl_asset',
+          `tpl_updated_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.preview = stored.publicUrl;
+      }
       // Only set cover to preview if no cover is explicitly provided or present
       if (!updates.cover) {
         const existing = prodDb.getTemplates().find((t) => t.id === id);
         if (!existing?.cover) {
-          updates.cover = stored.publicUrl;
+          updates.cover = updates.preview;
         }
       }
       delete updates.mediaBase64;
     }
 
     if (updates.coverBase64) {
-      const stored = await mediaStorage.saveMedia(
-        updates.coverBase64,
-        'tpl_cover',
-        `tpl_cover_${Date.now()}`,
-        undefined,
-        true
-      );
-      updates.cover = stored.publicUrl;
+      if (typeof updates.coverBase64 === 'string' && (updates.coverBase64.startsWith('http://') || updates.coverBase64.startsWith('https://'))) {
+        updates.cover = updates.coverBase64;
+      } else {
+        const stored = await mediaStorage.saveMedia(
+          updates.coverBase64,
+          'tpl_cover',
+          `tpl_cover_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.cover = stored.publicUrl;
+      }
       delete updates.coverBase64;
     }
 
     if (updates.sampleResultBase64) {
-      const storedSample = await mediaStorage.saveMedia(
-        updates.sampleResultBase64,
-        'tpl_sample',
-        `tpl_sample_${Date.now()}`,
-        undefined,
-        true
-      );
-      updates.sampleResult = storedSample.publicUrl;
+      if (typeof updates.sampleResultBase64 === 'string' && (updates.sampleResultBase64.startsWith('http://') || updates.sampleResultBase64.startsWith('https://'))) {
+        updates.sampleResult = updates.sampleResultBase64;
+      } else {
+        const storedSample = await mediaStorage.saveMedia(
+          updates.sampleResultBase64,
+          'tpl_sample',
+          `tpl_sample_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.sampleResult = storedSample.publicUrl;
+      }
       delete updates.sampleResultBase64;
     }
 
     if (updates.drivingVideoBase64) {
-      const storedDriving = await mediaStorage.saveMedia(
-        updates.drivingVideoBase64,
-        'tpl_driving',
-        `driving_${Date.now()}`,
-        undefined,
-        true
-      );
-      updates.drivingVideoUrl = storedDriving.publicUrl;
+      if (typeof updates.drivingVideoBase64 === 'string' && (updates.drivingVideoBase64.startsWith('http://') || updates.drivingVideoBase64.startsWith('https://'))) {
+        updates.drivingVideoUrl = updates.drivingVideoBase64;
+      } else {
+        const storedDriving = await mediaStorage.saveMedia(
+          updates.drivingVideoBase64,
+          'tpl_driving',
+          `driving_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.drivingVideoUrl = storedDriving.publicUrl;
+      }
       delete updates.drivingVideoBase64;
     }
 

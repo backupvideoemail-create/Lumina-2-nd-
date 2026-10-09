@@ -43,6 +43,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   onClose
 }) => {
   const {
+    user,
+    setAuthModalOpen,
     templates,
     refreshGenerations,
     refreshTemplates,
@@ -244,7 +246,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         if (data.demoVideoUrl) setCurrentDemoVideoUrl(data.demoVideoUrl);
       })
       .catch(() => {});
-  }, [isOpen]);
+  }, [isOpen, user]);
 
   if (!isOpen) return null;
 
@@ -1224,6 +1226,15 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   <span>Unlock</span>
                 </button>
               </form>
+              {!user && (
+                <button
+                  type="button"
+                  onClick={() => setAuthModalOpen(true)}
+                  className="w-full mt-1.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-medium text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <span>Or Sign In with Owner Account (backupvideoemail@gmail.com)</span>
+                </button>
+              )}
             </div>
           ) : null}
 

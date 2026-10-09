@@ -406,9 +406,22 @@ class ProductionDatabase {
 
   public getUserByToken(token: string): UserProfile | null {
     if (!token) return null;
+    const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
+      if (!u) return null;
+      const isAdminEmail = Boolean(
+        (u.email && u.email.toLowerCase() === 'backupvideoemail@gmail.com') ||
+        (process.env.ADMIN_EMAIL && u.email && u.email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
+      );
+      if (isAdminEmail && u.role !== 'admin') {
+        u.role = 'admin';
+        this.syncToFirestore('users', u.id, u);
+      }
+      return u;
+    };
+
     for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
       if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
-        return this.db.users[userId] || null;
+        return ensureAdminRole(this.db.users[userId]);
       }
     }
     if (fs.existsSync(DB_FILE)) {
@@ -418,7 +431,7 @@ class ProductionDatabase {
           if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
             this.db.users[userId] = diskDb.users[userId];
             this.db.authIdentities[userId] = identity;
-            return this.db.users[userId] || null;
+            return ensureAdminRole(this.db.users[userId]);
           }
         }
       } catch {}
