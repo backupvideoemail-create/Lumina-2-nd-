@@ -255,7 +255,13 @@ class ProductionDatabase {
           SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
           (this.db.faceSwapScenes || []).forEach(s => sceneMap.set(s.id, s));
           firestoreScenes.forEach(s => sceneMap.set(s.id, s));
-          this.db.faceSwapScenes = Array.from(sceneMap.values());
+          const syncedScenes = Array.from(sceneMap.values()).map(s => {
+            if (s.id === 'fsv_trending_dance_stage' && s.title === 'Viral Instagram Dance Sequence') {
+              return { ...s, title: 'Viral Instagram Reels Sequence' };
+            }
+            return s;
+          });
+          this.db.faceSwapScenes = syncedScenes;
         }
       } catch {
         // config docs optional
@@ -293,7 +299,12 @@ class ProductionDatabase {
         
         const sceneMap = new Map<string, FaceSwapScene>();
         SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
-        (parsed.faceSwapScenes || []).forEach((s: FaceSwapScene) => sceneMap.set(s.id, s));
+        (parsed.faceSwapScenes || []).forEach((s: FaceSwapScene) => {
+          if (s.id === 'fsv_trending_dance_stage' && s.title === 'Viral Instagram Dance Sequence') {
+            s.title = 'Viral Instagram Reels Sequence';
+          }
+          sceneMap.set(s.id, s);
+        });
         parsed.faceSwapScenes = Array.from(sceneMap.values());
 
         parsed.userLikes = parsed.userLikes || {};

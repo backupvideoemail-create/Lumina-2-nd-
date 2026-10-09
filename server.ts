@@ -1521,7 +1521,7 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         await prodDb.creditWallet(
           targetUserId,
           renewalCredits,
-          `AI Prime AutoPay Renewal (${sub?.planName || 'Double Bonanza'}) (₹499)`,
+          `AI Prime AutoPay Renewal (${sub?.planName || 'Trail Offer'}) (₹499)`,
           paymentId || eventId,
           'subscription',
           sub?.planId || 'plan_intro_daily'
@@ -2004,7 +2004,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
           itemId: 'plan_intro_daily',
           amount: 1,
           credits: 500,
-          itemTitle: 'Double Bonanza Intro',
+          itemTitle: 'Trail Offer Intro',
           isMandate: true
         });
         if (!ord.orderId) throw new Error('Razorpay order creation did not return orderId');

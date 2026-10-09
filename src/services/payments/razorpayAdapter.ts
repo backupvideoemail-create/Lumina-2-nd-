@@ -301,7 +301,7 @@ export class RazorpayAdapter {
       payload.addons = [
         {
           item: {
-            name: 'Double Bonanza 24h Intro Access',
+            name: 'Trail Offer 24h Intro Access',
             amount: Math.round(params.introAddonRupees * 100),
             currency: 'INR'
           }

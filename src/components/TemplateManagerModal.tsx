@@ -2601,7 +2601,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           type="text"
                           value={sceneTitle}
                           onChange={(e) => setSceneTitle(e.target.value)}
-                          placeholder="e.g. Viral Instagram Dance Sequence"
+                          placeholder="e.g. Viral Instagram Reels Sequence"
                           className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
                         />
                       </div>

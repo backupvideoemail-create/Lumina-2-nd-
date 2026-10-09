@@ -3,7 +3,7 @@ import type { FaceSwapScene } from '../types/index.ts';
 export const SEED_FACE_SWAP_SCENES: FaceSwapScene[] = [
   {
     id: 'fsv_trending_dance_stage',
-    title: 'Viral Instagram Dance Sequence',
+    title: 'Viral Instagram Reels Sequence',
     description: 'Electrifying neon stage choreography with fluid hip-hop footwork, viral bass drops, and dynamic spotlight sweeps. Your face seamlessly mapped onto the dancer.',
     sourceVideoPreview: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=900&q=80',
     resultVideoPreview: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=900&q=80',

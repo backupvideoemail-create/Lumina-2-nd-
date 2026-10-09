@@ -85,7 +85,7 @@ export const PlansModal: React.FC = () => {
         name: 'AI Prime Studio',
         description:
           currentPlan.id === 'plan_intro_daily'
-            ? 'Double Bonanza · ₹1 Intro Access + AutoPay Mandate'
+            ? 'Trail Offer · ₹1 Intro Access + AutoPay Mandate'
             : `${currentPlan.name} AutoPay`,
         image: logoUrl,
         handler: async (response: any) => {
@@ -120,8 +120,7 @@ export const PlansModal: React.FC = () => {
                 name: 'Pay via UPI / UPI AutoPay',
                 instruments: [
                   {
-                    method: 'upi',
-                    flows: ['intent', 'qr']
+                    method: 'upi'
                   }
                 ]
               },
@@ -422,13 +421,10 @@ export const PlansModal: React.FC = () => {
           </motion.button>
         </div>
 
-        {/* 4. POLICY TEXT: Exactly 1 to 1.5 Lines in Ultra-Clean Small Font */}
+        {/* 4. POLICY TEXT: Compact 2 lines matching screenshot */}
         <div className="text-center pt-2 px-5">
-          <p className="text-[9px] sm:text-[9.5px] text-stone-400/90 leading-tight font-normal max-w-sm mx-auto">
-            Subscription auto-renews at the same price unless cancelled 24 hrs before renewal. Cancel anytime in account settings. Subscription is optional.
-          </p>
-          <p className="text-[10.5px] text-amber-200/80 font-medium mt-1.5">
-            Need more credits? Top-up is available after plan activation.
+          <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
+            Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
           </p>
         </div>
       </motion.div>

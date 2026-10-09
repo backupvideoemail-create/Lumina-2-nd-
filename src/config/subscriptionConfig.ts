@@ -40,8 +40,8 @@ export interface CentralSubscriptionPlan {
 export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
   {
     id: 'plan_intro_daily',
-    name: 'Double Bonanza',
-    cardTitle: 'Double Bonanza',
+    name: 'Trail Offer',
+    cardTitle: 'Trail Offer',
     validityLabel: '1 day validity',
     price: 1,
     periodLabel: '24 hours',
@@ -53,7 +53,7 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     validityHours: 24,
     autoPayEnabled: true,
     scheduleRule: 'next_calendar_day',
-    disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.',
+    disclosureText: 'Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.',
     badge: 'HOT',
     isIntro: true,
     isPopular: true
@@ -73,7 +73,7 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     validityHours: 168,
     autoPayEnabled: true,
     scheduleRule: 'interval_days',
-    disclosureText: '₹199 · renews every 7 days until cancelled.',
+    disclosureText: 'Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.',
     badge: 'Weekly'
   },
   {
@@ -91,7 +91,7 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     validityHours: 720,
     autoPayEnabled: true,
     scheduleRule: 'interval_days',
-    disclosureText: '₹998 · renews monthly until cancelled.',
+    disclosureText: 'Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.',
     badge: 'Best Value'
   }
 ];
@@ -107,7 +107,7 @@ export const SUBSCRIPTION_CONFIG = {
   validityHours: 24,
   timezone: 'Asia/Kolkata',
   timezoneOffsetMinutes: 330, // UTC+5:30 (Indian Standard Time for INR ₹ transactions)
-  disclosureText: '₹1 today for 24-hr trial · then ₹499 auto-renews via UPI AutoPay for 400 credits until cancelled.',
+  disclosureText: 'Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.',
   plans: CENTRAL_SUBSCRIPTION_PLANS
 } as const;
 

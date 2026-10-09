@@ -110,10 +110,6 @@ export const FaceSwapSceneGallery: React.FC = () => {
                   <span className="px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md border border-white/15 text-[9.5px] font-bold text-stone-300">
                     {scene.category || 'Reel Scene'}
                   </span>
-
-                  <span className="px-2 py-0.5 rounded-full bg-black/80 backdrop-blur-md border border-amber-500/40 text-[9.5px] font-extrabold text-amber-300">
-                    {scene.creditCost || 45} ✦
-                  </span>
                 </div>
 
                 {/* Video Duration Indicator */}

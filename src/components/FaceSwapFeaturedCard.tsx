@@ -34,7 +34,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
   // Active scene: selected scene if available, otherwise first scene
   const activeScene = selectedFaceSwapScene || faceSwapScenes[0] || {
     id: 'fsv_trending_dance_stage',
-    title: 'Viral Instagram Dance Sequence',
+    title: 'Viral Instagram Reels Sequence',
     description: 'Electrifying neon stage choreography with fluid hip-hop footwork.',
     sourceVideoPreview: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=900&q=80',
     resultVideoPreview: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&w=900&q=80',
@@ -137,23 +137,23 @@ export const FaceSwapFeaturedCard: React.FC = () => {
         <div className="absolute top-0 inset-x-0 h-[1.5px] bg-gradient-to-r from-transparent via-[#f5d77f]/60 to-transparent pointer-events-none z-20" />
 
         {/* Top Badges & Priority Ribbon */}
-        <div className="relative z-20 px-3.5 py-2 sm:px-5 sm:py-3 flex items-center justify-between">
+        <div className="relative z-20 px-3.5 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#d4af37] text-stone-950 text-[10px] sm:text-xs font-black tracking-wider uppercase shadow-[0_0_12px_rgba(212,175,55,0.5)]">
               <Flame className="w-3 h-3 fill-stone-950" />
               <span>TOP FEATURE · AI VIDEO</span>
             </span>
 
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/10 backdrop-blur-md text-stone-300 text-[11px] font-semibold border border-white/10">
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-white/10 backdrop-blur-md text-stone-200 text-[11px] font-semibold border border-white/10">
               <Video className="w-3 h-3 text-[#d4af37]" />
-              <span>{activeScene.category || '9:16 Vertical Reel'}</span>
+              <span>{activeScene.category || 'Viral Reels'}</span>
             </span>
           </div>
 
-          {/* Credit Badge */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/60 backdrop-blur-md border border-[#d4af37]/50 text-xs font-bold text-[#f5d77f]">
-            <Sparkles className="w-3 h-3 fill-[#d4af37]" />
-            <span>{activeScene.creditCost || 45} Credits</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] sm:text-[11px] font-bold text-amber-300/90 hidden xs:inline uppercase tracking-wider">
+              {previewMode === 'demo' ? 'Live Demo' : previewMode === 'after' ? 'Swapped Face' : 'Original Video'}
+            </span>
           </div>
         </div>
 
@@ -161,36 +161,57 @@ export const FaceSwapFeaturedCard: React.FC = () => {
         <div className="relative px-3 sm:px-5">
           <div
             onClick={isCurrentVideo ? () => handleTogglePlay() : undefined}
-            className={`relative rounded-xl overflow-hidden aspect-[21/9] sm:aspect-[24/9] w-full bg-stone-950 border border-white/10 shadow-xl ${
+            className={`relative rounded-2xl overflow-hidden aspect-[16/9] sm:aspect-[18/9] w-full bg-black border border-white/10 shadow-2xl flex items-center justify-center ${
               isCurrentVideo ? 'cursor-pointer' : ''
             }`}
           >
             {isCurrentVideo ? (
-              <video
-                ref={videoRef}
-                key={`${previewMode}_${currentMediaUrl}`}
-                src={currentMediaUrl}
-                autoPlay
-                playsInline
-                loop
-                muted={isMuted}
-                onContextMenu={(e) => e.preventDefault()}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
-                className="w-full h-full object-cover select-none"
-              />
+              <div className="relative w-full h-full flex items-center justify-center bg-black overflow-hidden">
+                {/* Ambient dynamic background blur for full frame theater experience */}
+                <video
+                  src={currentMediaUrl}
+                  autoPlay
+                  playsInline
+                  loop
+                  muted
+                  aria-hidden="true"
+                  className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-30 scale-110 pointer-events-none select-none"
+                />
+                <video
+                  ref={videoRef}
+                  key={`${previewMode}_${currentMediaUrl}`}
+                  src={currentMediaUrl}
+                  autoPlay
+                  playsInline
+                  loop
+                  muted={isMuted}
+                  onContextMenu={(e) => e.preventDefault()}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  className="relative z-10 max-h-full max-w-full w-full h-full object-contain select-none"
+                />
+              </div>
             ) : (
-              <img
-                src={currentMediaUrl}
-                alt={activeScene.title}
-                onContextMenu={(e) => e.preventDefault()}
-                draggable={false}
-                className="w-full h-full object-cover transition-all duration-700 ease-out group-hover:scale-102 pointer-events-none select-none"
-              />
+              <div className="relative w-full h-full flex items-center justify-center bg-black overflow-hidden">
+                <img
+                  src={currentMediaUrl}
+                  alt={activeScene.title}
+                  aria-hidden="true"
+                  className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-30 scale-110 pointer-events-none select-none"
+                />
+                <img
+                  src={currentMediaUrl}
+                  alt={activeScene.title}
+                  onContextMenu={(e) => e.preventDefault()}
+                  draggable={false}
+                  className="relative z-10 max-h-full max-w-full w-full h-full object-contain select-none"
+                />
+              </div>
             )}
 
-            {/* Cinematic Scrim */}
-            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent pointer-events-none" />
+            {/* Subtle Top & Bottom Cinematic Edge Gradients */}
+            <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/60 to-transparent pointer-events-none z-10" />
+            <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/60 to-transparent pointer-events-none z-10" />
 
             {/* Three Dedicated Preview Modes: Demo Video vs Swapped Face vs Original */}
             <div className="absolute top-2.5 left-2.5 z-20 flex items-center p-0.5 rounded-full bg-black/80 backdrop-blur-xl border border-white/15 shadow-lg">
@@ -282,37 +303,23 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                 </button>
               </div>
             )}
-
-            {/* Face Inset Thumbnail (Source Face Reference Preview) */}
-            {activeScene.sampleFace && (
-              <div className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-2 p-1 rounded-lg bg-black/80 backdrop-blur-md border border-white/15 shadow-md">
-                <img
-                  src={activeScene.sampleFace}
-                  alt="Sample Face Reference"
-                  className="w-7 h-7 rounded-md object-cover border border-[#d4af37]/60"
-                />
-                <div className="text-left pr-1 hidden xs:block">
-                  <span className="text-[8.5px] uppercase font-bold text-[#d4af37] block leading-tight">Sample Face</span>
-                  <span className="text-[9.5px] text-stone-300 font-semibold leading-tight">Demo Reference</span>
-                </div>
-              </div>
-            )}
-
-            {/* Scene Title inside visual */}
-            <div className="absolute bottom-2.5 left-2.5 z-10 max-w-xs">
-              <span className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-[#f5d77f] drop-shadow">
-                {activeScene.title}
-              </span>
-            </div>
           </div>
         </div>
 
         {/* Bottom Headline, Subtitle and Action CTA */}
-        <div className="px-3.5 py-2.5 sm:px-5 sm:py-3 space-y-2">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div className="px-3.5 py-3 sm:px-5 space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg sm:text-xl font-black font-display text-white tracking-tight leading-snug flex items-center gap-2">
-                <span>FACE SWAP VIDEO</span>
+              {/* Scene Title Tagline (Cleanly positioned outside the video frame) */}
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <span className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-[#f5d77f] flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-[#d4af37]" />
+                  <span>
+                    {previewMode === 'demo'
+                      ? 'VIRAL INSTAGRAM REELS SEQUENCE'
+                      : (activeScene.title || 'VIRAL INSTAGRAM REELS SEQUENCE').toUpperCase()}
+                  </span>
+                </span>
                 {previewMode === 'after' && (
                   <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
                     Swapped Face Active
@@ -323,9 +330,12 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                     Original Video
                   </span>
                 )}
+              </div>
+              <h2 className="text-lg sm:text-xl font-black font-display text-white tracking-tight leading-snug">
+                FACE SWAP VIDEO
               </h2>
               <p className="text-[11px] sm:text-xs text-stone-300 mt-0.5 max-w-md">
-                Create a cinematic video with your face. Star in viral dance sequences, supercars, and red carpet epics.
+                Create a cinematic video with your face. Star in viral reels sequences, supercars, and red carpet epics.
               </p>
             </div>
 
@@ -333,7 +343,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.96 }}
               onClick={handleOpenFaceSwap}
-              className="py-2 px-5 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_18px_rgba(212,175,55,0.35)] cursor-pointer shrink-0"
+              className="py-2.5 px-5 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_18px_rgba(212,175,55,0.35)] cursor-pointer shrink-0"
             >
               <Wand2 className="w-3.5 h-3.5" />
               <span>Try Face Swap</span>
