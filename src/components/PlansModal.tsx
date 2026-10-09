@@ -110,42 +110,7 @@ export const PlansModal: React.FC = () => {
         prefill: {
           name: user?.name || 'AI Prime Creator',
           contact: user?.phone ? user.phone.replace(/[^0-9]/g, '').slice(-10) : '',
-          email: user?.email || 'ai.prime.studio.pro@gmail.com',
-          method: 'upi'
-        },
-        config: {
-          display: {
-            blocks: {
-              upi: {
-                name: 'Pay via UPI / UPI AutoPay',
-                instruments: [
-                  {
-                    method: 'upi',
-                    flows: ['intent', 'qr'],
-                    apps: ['google_pay', 'phonepe', 'paytm', 'bhim']
-                  }
-                ]
-              },
-              other: {
-                name: 'Cards & E-Mandate',
-                instruments: [
-                  {
-                    method: 'card'
-                  },
-                  {
-                    method: 'nach'
-                  },
-                  {
-                    method: 'netbanking'
-                  }
-                ]
-              }
-            },
-            sequence: ['block.upi', 'block.other'],
-            preferences: {
-              show_default_blocks: true
-            }
-          }
+          email: user?.email || 'ai.prime.studio.pro@gmail.com'
         },
         send_sms_hash: true,
         retry: {
