@@ -986,6 +986,8 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       const subRes = await razorpayAdapter.createSubscription({
         userId: user.id,
         userEmail: user.email,
+        userPhone: user.phone,
+        userName: user.name,
         amountInRupees: plan.renewalPrice,
         introAddonRupees,
         startAt,
@@ -1014,6 +1016,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       return res.json({
         success: true,
         subscriptionId: subRes.subscriptionId,
+        customerId: subRes.customerId,
         isAutoPay: true,
         planId: plan.id,
         itemTitle: plan.name,

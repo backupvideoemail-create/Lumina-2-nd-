@@ -25,6 +25,7 @@ export interface RazorpaySubscriptionConfig {
 
 export interface CreateSubscriptionResult {
   subscriptionId: string;
+  customerId?: string;
   planId: string;
   shortUrl?: string;
   status: string;
@@ -188,12 +189,71 @@ export class RazorpayAdapter {
   }
 
   /**
+   * Resolves or registers a Customer on Razorpay (required for UPI AutoPay mandate and NPCI compliance)
+   */
+  async getOrCreateCustomer(params: {
+    userId: string;
+    email?: string;
+    phone?: string;
+    name?: string;
+  }): Promise<string | undefined> {
+    const config = this.getConfig();
+    if (!config.keyId || !config.keySecret) return undefined;
+
+    const customerCacheKey = `cust_${params.userId}`;
+    if (this.cachedPlans[customerCacheKey]) {
+      return this.cachedPlans[customerCacheKey];
+    }
+
+    const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
+    try {
+      const cleanPhone = (params.phone || '').replace(/[^0-9]/g, '');
+      const contact = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : undefined;
+      const email = params.email && params.email.includes('@') ? params.email.trim() : 'ai.prime.studio.pro@gmail.com';
+      const name = (params.name || 'AI Prime Creator').trim();
+
+      const customerPayload: any = {
+        name,
+        email,
+        fail_existing: 0,
+        notes: {
+          userId: params.userId
+        }
+      };
+      if (contact) {
+        customerPayload.contact = contact;
+      }
+
+      const res = await fetch('https://api.razorpay.com/v1/customers', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${authHeader}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(customerPayload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.id) {
+          this.cachedPlans[customerCacheKey] = data.id;
+          return data.id;
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Razorpay Customer Lookup/Creation Warning]:', err.message);
+    }
+    return undefined;
+  }
+
+  /**
    * Creates a real Razorpay UPI AutoPay Subscription with ₹1 initial mandate authorization.
    */
   async createSubscription(params: {
     userId: string;
     userEmail?: string;
     userPhone?: string;
+    userName?: string;
     totalCycles?: number;
     startAt?: number;
     amountInRupees?: number;
@@ -208,6 +268,17 @@ export class RazorpayAdapter {
     const planId = await this.getOrCreateAutoPayPlan(params.amountInRupees || 499, params.period || 'daily');
     const authHeader = Buffer.from(`${config.keyId}:${config.keySecret}`).toString('base64');
 
+    // Register or resolve customer on Razorpay for UPI AutoPay mandate compliance
+    let customerId: string | undefined;
+    if (params.userEmail || params.userPhone || params.userId) {
+      customerId = await this.getOrCreateCustomer({
+        userId: params.userId,
+        email: params.userEmail,
+        phone: params.userPhone,
+        name: params.userName
+      });
+    }
+
     const payload: any = {
       plan_id: planId,
       total_count: params.totalCycles || 52,
@@ -218,6 +289,10 @@ export class RazorpayAdapter {
         product: `AI Prime AutoPay (${params.period || 'daily'})`
       }
     };
+
+    if (customerId) {
+      payload.customer_id = customerId;
+    }
 
     // For trial / intro subscriptions with upfront addon (e.g. Double Bonanza ₹1 intro access):
     // Razorpay requires start_at in the future so that cycle 1 recurring charge (₹499) is deferred.
@@ -258,6 +333,7 @@ export class RazorpayAdapter {
     const data = await res.json();
     return {
       subscriptionId: data.id,
+      customerId: data.customer_id || customerId,
       planId: data.plan_id,
       shortUrl: data.short_url,
       status: data.status,

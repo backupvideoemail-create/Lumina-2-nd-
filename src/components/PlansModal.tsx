@@ -108,8 +108,48 @@ export const PlansModal: React.FC = () => {
           }
         },
         prefill: {
+          name: user?.name || 'AI Prime Creator',
           contact: user?.phone || '',
-          email: user?.email || 'ai.prime.studio.pro@gmail.com'
+          email: user?.email || 'ai.prime.studio.pro@gmail.com',
+          method: 'upi'
+        },
+        config: {
+          display: {
+            blocks: {
+              upi: {
+                name: 'Pay via UPI / UPI AutoPay',
+                instruments: [
+                  {
+                    method: 'upi',
+                    flows: ['intent', 'qr']
+                  }
+                ]
+              },
+              other: {
+                name: 'Cards, Netbanking & E-Mandate',
+                instruments: [
+                  {
+                    method: 'card'
+                  },
+                  {
+                    method: 'netbanking'
+                  },
+                  {
+                    method: 'nach'
+                  }
+                ]
+              }
+            },
+            sequence: ['block.upi', 'block.other'],
+            preferences: {
+              show_default_blocks: true
+            }
+          }
+        },
+        send_sms_hash: true,
+        retry: {
+          enabled: true,
+          max_count: 3
         },
         notes: {
           planId: currentPlan.id,
@@ -120,15 +160,23 @@ export const PlansModal: React.FC = () => {
           color: '#ff9f00'
         },
         modal: {
+          backdropclose: false,
+          escape: true,
+          handleback: true,
+          confirm_close: true,
           ondismiss: () => {
             console.log('[Razorpay] Checkout modal dismissed by user');
           }
         }
       };
 
-      // CRITICAL: For AutoPay plans, pass subscription_id to authorize recurring mandate!
+      // CRITICAL: For AutoPay plans, pass subscription_id and recurring flag to authorize recurring mandate!
       if (res.subscriptionId) {
         options.subscription_id = res.subscriptionId;
+        options.recurring = true;
+        if (res.customerId) {
+          options.customer_id = res.customerId;
+        }
       } else {
         options.order_id = res.orderId;
         options.amount = Math.round(currentPlan.price * 100);

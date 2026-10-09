@@ -18,6 +18,7 @@ export const TopUpModal: React.FC = () => {
     setTopUpModalOpen,
     topUps,
     wallet,
+    user,
     refreshUserData,
     verifyPayment,
     hasActivePlan,
@@ -144,8 +145,10 @@ export const TopUpModal: React.FC = () => {
           }
         },
         prefill: {
-          contact: '',
-          email: 'ai.prime.studio.pro@gmail.com'
+          name: user?.name || 'AI Prime Creator',
+          contact: user?.phone || '',
+          email: user?.email || 'ai.prime.studio.pro@gmail.com',
+          method: 'upi'
         },
         notes: {
           itemId: selectedPack.id,
