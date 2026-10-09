@@ -273,14 +273,20 @@ export interface FaceSwapScene {
   id: string;
   title: string;
   description: string;
-  sourceVideoPreview: string;
-  resultVideoPreview: string;
-  sampleFace: string;
+  sourceVideoPreview: string; // Original / Before Video
+  resultVideoPreview: string; // Swapped Face / After Video
+  sampleFace: string; // Sample Face Photo
   creditCost: number;
   durationSeconds: number;
   aspectRatio: AspectRatio;
   category: string;
   tags: string[];
   demoVideoUrl?: string;
+  isActive?: boolean;
+  status?: 'published' | 'draft';
+  isFeatured?: boolean;
+  order?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 

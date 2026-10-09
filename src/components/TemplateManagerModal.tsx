@@ -25,11 +25,13 @@ import {
   AlertCircle,
   Key,
   ShieldCheck,
-  Lock
+  Lock,
+  Wand2
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { Template, TemplateInputType, TemplateExecutionRecipe } from '../types';
+import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
 import { HomeBannerItem } from '../config/homeBannersConfig';
+import { isVideoMedia } from '../utils/mediaUtils';
 
 interface TemplateManagerModalProps {
   isOpen: boolean;
@@ -40,10 +42,48 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   isOpen,
   onClose
 }) => {
-  const { templates, refreshGenerations, refreshTemplates } = useApp();
+  const {
+    templates,
+    refreshGenerations,
+    refreshTemplates,
+    faceSwapScenes,
+    refreshFaceSwapScenes
+  } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'templates' | 'catalog' | 'banners' | 'demo'>('templates');
+  const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'demo'>('templates');
   const [subTab, setSubTab] = useState<'list' | 'add' | 'edit'>('list');
+  const [faceSwapSection, setFaceSwapSection] = useState<'scenes' | 'demo'>('scenes');
+  const [faceSwapSubTab, setFaceSwapSubTab] = useState<'list' | 'add' | 'edit'>('list');
+
+  // FACE SWAP SCENES ADMIN STATE
+  const [adminFaceSwapScenes, setAdminFaceSwapScenes] = useState<FaceSwapScene[]>([]);
+  const [editingScene, setEditingScene] = useState<FaceSwapScene | null>(null);
+  const [sceneTitle, setSceneTitle] = useState('');
+  const [sceneDescription, setSceneDescription] = useState('');
+  const [sceneCategory, setSceneCategory] = useState('Viral & Trending');
+  const [sceneTags, setSceneTags] = useState('Face Swap, Viral, Reels');
+  const [sceneCreditCost, setSceneCreditCost] = useState<number>(45);
+  const [sceneDurationSeconds, setSceneDurationSeconds] = useState<number>(8);
+  const [sceneAspectRatio, setSceneAspectRatio] = useState<'9:16' | '16:9' | '1:1' | '4:5'>('9:16');
+  const [sceneIsActive, setSceneIsActive] = useState<boolean>(true);
+  const [sceneStatus, setSceneStatus] = useState<'published' | 'draft'>('published');
+  const [sceneIsFeatured, setSceneIsFeatured] = useState<boolean>(false);
+  const [sceneOrder, setSceneOrder] = useState<number>(0);
+
+  // Asset 1: Sample Face Photo
+  const [sceneSampleFace, setSceneSampleFace] = useState<string>('');
+  const [sceneSampleFaceName, setSceneSampleFaceName] = useState<string>('');
+  const sceneSampleFaceFileRef = useRef<HTMLInputElement>(null);
+
+  // Asset 2: Original / Before Video
+  const [sceneSourceVideo, setSceneSourceVideo] = useState<string>('');
+  const [sceneSourceVideoName, setSceneSourceVideoName] = useState<string>('');
+  const sceneSourceVideoFileRef = useRef<HTMLInputElement>(null);
+
+  // Asset 3: Swapped Face / After Video
+  const [sceneResultVideo, setSceneResultVideo] = useState<string>('');
+  const [sceneResultVideoName, setSceneResultVideoName] = useState<string>('');
+  const sceneResultVideoFileRef = useRef<HTMLInputElement>(null);
 
   // TEMPLATES STATE
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
@@ -834,6 +874,276 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
+  // ==========================================
+  // FACE SWAP SCENES ADMIN HANDLERS
+  // ==========================================
+  const fetchAdminFaceSwapScenes = async () => {
+    try {
+      const res = await fetch('/api/admin/faceswap/scenes', { headers: getAdminHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.scenes && Array.isArray(data.scenes)) {
+          setAdminFaceSwapScenes(data.scenes);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[Admin] Could not fetch admin scenes:', err);
+    }
+    setAdminFaceSwapScenes(faceSwapScenes);
+  };
+
+  const handleSelectSampleFace = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSceneSampleFaceName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSceneSampleFace(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSelectSourceVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSceneSourceVideoName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSceneSourceVideo(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSelectResultVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSceneResultVideoName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSceneResultVideo(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleNewScene = () => {
+    setEditingScene(null);
+    setSceneTitle('');
+    setSceneDescription('');
+    setSceneCategory('Viral & Trending');
+    setSceneTags('Face Swap, Viral, Reels');
+    setSceneCreditCost(45);
+    setSceneDurationSeconds(8);
+    setSceneAspectRatio('9:16');
+    setSceneIsActive(true);
+    setSceneStatus('published');
+    setSceneIsFeatured(false);
+    setSceneOrder(0);
+
+    setSceneSampleFace('');
+    setSceneSampleFaceName('');
+    setSceneSourceVideo('');
+    setSceneSourceVideoName('');
+    setSceneResultVideo('');
+    setSceneResultVideoName('');
+
+    setFaceSwapSubTab('add');
+  };
+
+  const handleEditScene = (scene: FaceSwapScene) => {
+    setEditingScene(scene);
+    setSceneTitle(scene.title || '');
+    setSceneDescription(scene.description || '');
+    setSceneCategory(scene.category || 'Viral & Trending');
+    setSceneTags(Array.isArray(scene.tags) ? scene.tags.join(', ') : 'Face Swap, Viral');
+    setSceneCreditCost(scene.creditCost || 45);
+    setSceneDurationSeconds(scene.durationSeconds || 8);
+    setSceneAspectRatio(scene.aspectRatio || '9:16');
+    setSceneIsActive(scene.isActive !== false);
+    setSceneStatus(scene.status || 'published');
+    setSceneIsFeatured(Boolean(scene.isFeatured));
+    setSceneOrder(scene.order || 0);
+
+    setSceneSampleFace(scene.sampleFace || '');
+    setSceneSampleFaceName(scene.sampleFace ? 'Current sample face' : '');
+    setSceneSourceVideo(scene.sourceVideoPreview || '');
+    setSceneSourceVideoName(scene.sourceVideoPreview ? 'Current original video' : '');
+    setSceneResultVideo(scene.resultVideoPreview || '');
+    setSceneResultVideoName(scene.resultVideoPreview ? 'Current swapped video' : '');
+
+    setFaceSwapSubTab('edit');
+  };
+
+  const handleToggleSceneActive = async (scene: FaceSwapScene) => {
+    try {
+      const headers = getAdminHeaders();
+      const res = await fetch(`/api/admin/faceswap/scenes/${scene.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ isActive: !scene.isActive })
+      });
+      if (res.ok) {
+        showNotification(`Scene "${scene.title}" ${!scene.isActive ? 'activated' : 'deactivated'}`);
+        await fetchAdminFaceSwapScenes();
+        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+      } else {
+        showNotification('Failed to toggle active state', 'error');
+      }
+    } catch {
+      showNotification('Failed to toggle active state', 'error');
+    }
+  };
+
+  const handleToggleSceneStatus = async (scene: FaceSwapScene) => {
+    try {
+      const headers = getAdminHeaders();
+      const nextStatus = scene.status === 'draft' ? 'published' : 'draft';
+      const res = await fetch(`/api/admin/faceswap/scenes/${scene.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ status: nextStatus })
+      });
+      if (res.ok) {
+        showNotification(`Scene "${scene.title}" set to ${nextStatus}`);
+        await fetchAdminFaceSwapScenes();
+        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+      } else {
+        showNotification('Failed to change status', 'error');
+      }
+    } catch {
+      showNotification('Failed to change status', 'error');
+    }
+  };
+
+  const handleDeleteScene = async (scene: FaceSwapScene) => {
+    if (!window.confirm(`Permanently delete Face Swap scene "${scene.title}"?`)) return;
+    try {
+      const headers = getAdminHeaders();
+      const res = await fetch(`/api/admin/faceswap/scenes/${scene.id}`, {
+        method: 'DELETE',
+        headers
+      });
+      if (res.ok) {
+        showNotification(`Scene "${scene.title}" permanently deleted`);
+        await fetchAdminFaceSwapScenes();
+        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+      } else {
+        showNotification('Failed to delete scene', 'error');
+      }
+    } catch {
+      showNotification('Failed to delete scene', 'error');
+    }
+  };
+
+  const handleSaveFaceSwapScene = async (targetStatus: 'published' | 'draft' = 'published') => {
+    if (!sceneTitle.trim()) {
+      showNotification('Scene title is required', 'error');
+      return;
+    }
+    if (!sceneSampleFace) {
+      showNotification('Sample Face Photo is required (upload from phone or paste URL)', 'error');
+      return;
+    }
+    if (!sceneSourceVideo) {
+      showNotification('Original / Before Video is required (upload from phone or paste URL)', 'error');
+      return;
+    }
+    if (!sceneResultVideo) {
+      showNotification('Swapped Face / After Video is required (upload from phone or paste URL)', 'error');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const headers = getAdminHeaders();
+
+      // Upload base64 assets if needed to ensure persistent server URLs
+      let finalSampleFace = sceneSampleFace;
+      if (sceneSampleFace.startsWith('data:')) {
+        const upRes = await fetch('/api/admin/upload-media', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ mediaBase64: sceneSampleFace, filename: 'sample_face' })
+        });
+        const upData = await upRes.json().catch(() => null);
+        if (upData?.url) finalSampleFace = upData.url;
+      }
+
+      let finalSourceVideo = sceneSourceVideo;
+      if (sceneSourceVideo.startsWith('data:')) {
+        const upRes = await fetch('/api/admin/upload-media', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ mediaBase64: sceneSourceVideo, filename: 'source_video' })
+        });
+        const upData = await upRes.json().catch(() => null);
+        if (upData?.url) finalSourceVideo = upData.url;
+      }
+
+      let finalResultVideo = sceneResultVideo;
+      if (sceneResultVideo.startsWith('data:')) {
+        const upRes = await fetch('/api/admin/upload-media', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ mediaBase64: sceneResultVideo, filename: 'result_video' })
+        });
+        const upData = await upRes.json().catch(() => null);
+        if (upData?.url) finalResultVideo = upData.url;
+      }
+
+      const payload = {
+        title: sceneTitle.trim(),
+        description: (sceneDescription || sceneTitle).trim(),
+        category: (sceneCategory || 'Viral & Trending').trim(),
+        tags: sceneTags.split(',').map((t) => t.trim()).filter(Boolean),
+        creditCost: Number(sceneCreditCost) || 45,
+        durationSeconds: Number(sceneDurationSeconds) || 8,
+        aspectRatio: sceneAspectRatio,
+        sampleFace: finalSampleFace,
+        sourceVideoPreview: finalSourceVideo,
+        resultVideoPreview: finalResultVideo,
+        isActive: sceneIsActive,
+        status: targetStatus,
+        isFeatured: sceneIsFeatured,
+        order: Number(sceneOrder) || 0
+      };
+
+      const url = editingScene
+        ? `/api/admin/faceswap/scenes/${editingScene.id}`
+        : '/api/admin/faceswap/scenes';
+      const method = editingScene ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to save Face Swap scene');
+      }
+
+      showNotification(
+        editingScene
+          ? `Face Swap scene "${sceneTitle}" updated successfully!`
+          : `Face Swap scene "${sceneTitle}" published live!`
+      );
+
+      await fetchAdminFaceSwapScenes();
+      if (refreshFaceSwapScenes) {
+        await refreshFaceSwapScenes();
+      }
+
+      setFaceSwapSubTab('list');
+      setEditingScene(null);
+    } catch (err: any) {
+      showNotification(err.message || 'Error saving scene', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/90 backdrop-blur-xl overflow-hidden">
       <motion.div
@@ -999,15 +1309,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </button>
 
           <button
-            onClick={() => setActiveTab('demo')}
+            onClick={() => {
+              setActiveTab('faceswap');
+              if (adminFaceSwapScenes.length === 0) fetchAdminFaceSwapScenes();
+            }}
             className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'demo'
+              activeTab === 'faceswap' || activeTab === 'demo'
                 ? 'bg-white/10 text-white border border-white/10 shadow-sm'
                 : 'text-stone-400 hover:text-white'
             }`}
           >
             <VideoIcon className="w-4 h-4 text-emerald-400" />
-            <span>Face Swap Demo</span>
+            <span>Face Swap ({adminFaceSwapScenes.length || faceSwapScenes.length})</span>
           </button>
         </div>
 
@@ -1824,81 +2137,705 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </div>
         )}
 
-        {/* TAB 3: FACE SWAP DEMO VIDEO */}
-        {activeTab === 'demo' && (
+        {/* TAB 3: FACE SWAP STUDIO (Scenes Manager & Global Demo Video) */}
+        {(activeTab === 'faceswap' || activeTab === 'demo') && (
           <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider">Live Face Swap Demo Video</h4>
-                <p className="text-[11px] text-stone-400 mt-0.5">
-                  This video is shown on the Home screen featured card. Replace it anytime from your mobile gallery.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-[10px] font-bold text-amber-300">
-                Where Used: Home Featured Face Swap Card
-              </span>
-            </div>
-
-            {/* Current Active Demo Player */}
-            <div className="relative rounded-2xl overflow-hidden aspect-[21/9] sm:aspect-[24/9] w-full bg-black border border-white/15 shadow-xl">
-              <video
-                src={demoVideoPreview || currentDemoVideoUrl}
-                autoPlay
-                playsInline
-                loop
-                muted
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold text-emerald-400 border border-emerald-500/30">
-                LIVE DEMO PREVIEW
-              </div>
-            </div>
-
-            {/* Direct URL or Phone Gallery Upload */}
-            <div className="space-y-3">
-              <div>
-                <label className="text-[11px] font-bold text-stone-300 block mb-1">
-                  Or Paste Direct Video URL (MP4)
-                </label>
-                <input
-                  type="text"
-                  value={demoVideoPreview.startsWith('data:') ? '' : (demoVideoPreview || currentDemoVideoUrl)}
-                  onChange={(e) => setDemoVideoPreview(e.target.value.trim())}
-                  placeholder="https://.../video.mp4"
-                  className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
-                />
-              </div>
-
-              <input
-                ref={demoFileRef}
-                type="file"
-                accept="video/*"
-                onChange={handleDemoVideoSelect}
-                className="hidden"
-              />
+            {/* Sub-navigation pills: Scenes & Templates vs Global Demo Video */}
+            <div className="flex items-center gap-2 p-1 rounded-2xl bg-black/40 border border-white/10">
               <button
                 type="button"
-                onClick={() => demoFileRef.current?.click()}
-                className="w-full py-3.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
+                onClick={() => setFaceSwapSection('scenes')}
+                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  faceSwapSection === 'scenes'
+                    ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-black shadow-md'
+                    : 'text-stone-300 hover:text-white'
+                }`}
               >
-                <Upload className="w-4 h-4 text-emerald-400" />
-                <span>Choose New Demo Video from Phone</span>
+                <Layers className="w-3.5 h-3.5" />
+                <span>Face Swap Templates / Scenes ({adminFaceSwapScenes.length || faceSwapScenes.length})</span>
               </button>
 
               <button
                 type="button"
-                onClick={handleSaveDemoVideo}
-                disabled={isSubmitting || (!demoVideoPreview && !currentDemoVideoUrl)}
-                className="w-full py-3.5 rounded-2xl bg-emerald-500 text-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-40 transition-all shadow-lg cursor-pointer"
+                onClick={() => setFaceSwapSection('demo')}
+                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  faceSwapSection === 'demo'
+                    ? 'bg-gradient-to-r from-emerald-400 to-teal-500 text-stone-950 font-black shadow-md'
+                    : 'text-stone-300 hover:text-white'
+                }`}
               >
-                {isSubmitting ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
+                <VideoIcon className="w-3.5 h-3.5" />
+                <span>Global Featured Demo Video</span>
+              </button>
+            </div>
+
+            {/* SECTION A: INDIVIDUAL FACE SWAP SCENES MANAGER */}
+            {faceSwapSection === 'scenes' && (
+              <div className="space-y-4">
+                {faceSwapSubTab === 'list' ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          Active & Draft Face Swap Scenes
+                        </h4>
+                        <p className="text-[11px] text-stone-400">
+                          Manage each scene's Sample Face, Before Video, and Swapped After Video.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleNewScene}
+                        className="px-3.5 py-1.5 rounded-xl bg-[#ff9f00] text-black text-xs font-black flex items-center gap-1.5 shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>New Scene</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {(adminFaceSwapScenes.length > 0 ? adminFaceSwapScenes : faceSwapScenes).map((scene) => (
+                        <div
+                          key={scene.id}
+                          className="p-3 rounded-2xl bg-stone-900/70 border border-white/10 hover:border-white/20 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          {/* 3 Asset Thumbnails */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {/* 1. Sample Face */}
+                            <div className="relative w-12 h-14 rounded-xl overflow-hidden bg-black border border-white/10">
+                              <img
+                                src={scene.sampleFace}
+                                alt="Sample Face"
+                                className="w-full h-full object-cover"
+                              />
+                              <span className="absolute bottom-0 inset-x-0 bg-black/80 text-[7.5px] font-bold text-amber-300 text-center uppercase py-0.5">
+                                Face
+                              </span>
+                            </div>
+
+                            {/* 2. Before / Original Video */}
+                            <div className="relative w-12 h-14 rounded-xl overflow-hidden bg-black border border-white/10">
+                              {isVideoMedia(scene.sourceVideoPreview) ? (
+                                <video
+                                  src={scene.sourceVideoPreview}
+                                  muted
+                                  playsInline
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <img
+                                  src={scene.sourceVideoPreview}
+                                  alt="Original"
+                                  className="w-full h-full object-cover"
+                                />
+                              )}
+                              <span className="absolute bottom-0 inset-x-0 bg-black/80 text-[7.5px] font-bold text-stone-300 text-center uppercase py-0.5">
+                                Before
+                              </span>
+                            </div>
+
+                            {/* 3. After / Swapped Video */}
+                            <div className="relative w-12 h-14 rounded-xl overflow-hidden bg-black border border-amber-500/40 shadow-sm">
+                              {isVideoMedia(scene.resultVideoPreview) ? (
+                                <video
+                                  src={scene.resultVideoPreview}
+                                  muted
+                                  playsInline
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <img
+                                  src={scene.resultVideoPreview}
+                                  alt="Swapped"
+                                  className="w-full h-full object-cover"
+                                />
+                              )}
+                              <span className="absolute bottom-0 inset-x-0 bg-amber-500/90 text-[7.5px] font-black text-stone-950 text-center uppercase py-0.5">
+                                Swapped
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Scene Meta */}
+                          <div className="flex-1 min-w-0 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="text-xs font-bold text-white truncate max-w-[220px]">
+                                {scene.title}
+                              </h4>
+                              <span className="px-2 py-0.5 rounded-full bg-white/10 text-[9.5px] font-semibold text-stone-300">
+                                {scene.category || 'General'}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-[9.5px] font-bold text-amber-300 border border-amber-500/30">
+                                {scene.creditCost || 45} Credits
+                              </span>
+                            </div>
+
+                            <p className="text-[10px] text-stone-400 line-clamp-1">
+                              {scene.description || 'No description provided'}
+                            </p>
+
+                            <div className="flex items-center gap-2 pt-0.5 text-[10px]">
+                              <span
+                                className={`px-2 py-0.5 rounded-md font-bold uppercase tracking-wider ${
+                                  scene.status === 'draft'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                }`}
+                              >
+                                {scene.status === 'draft' ? 'Draft' : 'Published'}
+                              </span>
+
+                              <span
+                                className={`px-2 py-0.5 rounded-md font-bold uppercase tracking-wider ${
+                                  scene.isActive !== false
+                                    ? 'bg-blue-500/20 text-blue-300'
+                                    : 'bg-stone-700 text-stone-400'
+                                }`}
+                              >
+                                {scene.isActive !== false ? 'Active ON' : 'Active OFF'}
+                              </span>
+
+                              <span className="text-stone-500 font-mono text-[9px]">
+                                {scene.durationSeconds || 8}s · {scene.aspectRatio || '9:16'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Quick Mobile Actions */}
+                          <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                            {/* Active ON/OFF Toggle */}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSceneActive(scene)}
+                              title={scene.isActive !== false ? 'Deactivate scene' : 'Activate scene'}
+                              className={`p-2 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer ${
+                                scene.isActive !== false
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30'
+                                  : 'bg-white/5 text-stone-400 hover:text-white'
+                              }`}
+                            >
+                              {scene.isActive !== false ? (
+                                <Eye className="w-3.5 h-3.5" />
+                              ) : (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+
+                            {/* Status Draft/Publish Toggle */}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSceneStatus(scene)}
+                              title="Toggle Draft/Publish"
+                              className="px-2 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 hover:text-white text-[10px] font-bold border border-white/10 transition-colors cursor-pointer"
+                            >
+                              {scene.status === 'draft' ? 'Publish' : 'Draft'}
+                            </button>
+
+                            {/* Edit Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleEditScene(scene)}
+                              className="p-2 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/40 text-xs font-bold transition-colors cursor-pointer"
+                              title="Edit Scene"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Delete Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteScene(scene)}
+                              className="p-2 rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/40 text-xs font-bold transition-colors cursor-pointer"
+                              title="Delete Scene"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 ) : (
-                  <Check className="w-4 h-4" />
+                  /* SCENE EDIT / ADD FORM */
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                      <div>
+                        <h4 className="text-sm font-extrabold text-white flex items-center gap-1.5">
+                          <Wand2 className="w-4 h-4 text-amber-400" />
+                          <span>
+                            {faceSwapSubTab === 'add' ? 'Create New Face Swap Scene' : `Edit Scene: ${sceneTitle || 'Scene'}`}
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-stone-400">
+                          Upload all 3 required demonstration assets and configure costs.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFaceSwapSubTab('list');
+                          setEditingScene(null);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-stone-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        ← Back to Scenes
+                      </button>
+                    </div>
+
+                    {/* THREE DEDICATED ASSET SLOTS */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {/* ASSET 1: SAMPLE FACE PHOTO */}
+                      <div className="p-3 rounded-2xl bg-black/40 border border-white/10 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-black text-amber-300 uppercase tracking-wider flex items-center gap-1">
+                            <span>1. Sample Face Photo</span>
+                          </label>
+                          <span className="text-[9px] text-stone-400">image/*</span>
+                        </div>
+                        <p className="text-[10px] text-stone-400">
+                          Portrait photo of an example person. Used for reference thumbnail only.
+                        </p>
+
+                        <div className="relative aspect-[3/4] w-full rounded-xl overflow-hidden bg-stone-950 border border-white/10 flex items-center justify-center">
+                          {sceneSampleFace ? (
+                            <img
+                              src={sceneSampleFace}
+                              alt="Sample Face Preview"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="text-center p-3 text-stone-500">
+                              <ImageIcon className="w-8 h-8 mx-auto mb-1 opacity-50" />
+                              <span className="text-[10px] block font-semibold">No face photo selected</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {sceneSampleFaceName && (
+                          <span className="text-[10px] text-stone-400 block truncate font-mono">
+                            File: {sceneSampleFaceName}
+                          </span>
+                        )}
+
+                        <input
+                          ref={sceneSampleFaceFileRef}
+                          type="file"
+                          accept="image/*"
+                          onChange={handleSelectSampleFace}
+                          className="hidden"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => sceneSampleFaceFileRef.current?.click()}
+                          className="w-full py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-amber-400" />
+                          <span>{sceneSampleFace ? 'Replace Photo' : 'Choose Photo from Gallery'}</span>
+                        </button>
+
+                        <input
+                          type="text"
+                          value={sceneSampleFace.startsWith('data:') ? '' : sceneSampleFace}
+                          onChange={(e) => {
+                            setSceneSampleFace(e.target.value.trim());
+                            setSceneSampleFaceName('Direct URL');
+                          }}
+                          placeholder="Or paste direct Image URL"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-[11px] text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      {/* ASSET 2: ORIGINAL / BEFORE VIDEO */}
+                      <div className="p-3 rounded-2xl bg-black/40 border border-white/10 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-black text-cyan-300 uppercase tracking-wider flex items-center gap-1">
+                            <span>2. Original / Before Video</span>
+                          </label>
+                          <span className="text-[9px] text-stone-400">video/*</span>
+                        </div>
+                        <p className="text-[10px] text-stone-400">
+                          Original driving video of the scene. Displayed on the "Original" preview tab.
+                        </p>
+
+                        <div className="relative aspect-[3/4] w-full rounded-xl overflow-hidden bg-stone-950 border border-white/10 flex items-center justify-center">
+                          {sceneSourceVideo ? (
+                            isVideoMedia(sceneSourceVideo) ? (
+                              <video
+                                src={sceneSourceVideo}
+                                controls
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <img
+                                src={sceneSourceVideo}
+                                alt="Original Preview"
+                                className="w-full h-full object-cover"
+                              />
+                            )
+                          ) : (
+                            <div className="text-center p-3 text-stone-500">
+                              <VideoIcon className="w-8 h-8 mx-auto mb-1 opacity-50" />
+                              <span className="text-[10px] block font-semibold">No original video selected</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {sceneSourceVideoName && (
+                          <span className="text-[10px] text-stone-400 block truncate font-mono">
+                            File: {sceneSourceVideoName}
+                          </span>
+                        )}
+
+                        <input
+                          ref={sceneSourceVideoFileRef}
+                          type="file"
+                          accept="video/*"
+                          onChange={handleSelectSourceVideo}
+                          className="hidden"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => sceneSourceVideoFileRef.current?.click()}
+                          className="w-full py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>{sceneSourceVideo ? 'Replace Video' : 'Choose Video from Phone'}</span>
+                        </button>
+
+                        <input
+                          type="text"
+                          value={sceneSourceVideo.startsWith('data:') ? '' : sceneSourceVideo}
+                          onChange={(e) => {
+                            setSceneSourceVideo(e.target.value.trim());
+                            setSceneSourceVideoName('Direct URL');
+                          }}
+                          placeholder="Or paste direct Video URL (MP4)"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-[11px] text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      {/* ASSET 3: SWAPPED FACE / AFTER VIDEO */}
+                      <div className="p-3 rounded-2xl bg-black/40 border border-amber-500/30 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-black text-emerald-300 uppercase tracking-wider flex items-center gap-1">
+                            <span>3. Swapped / After Video</span>
+                          </label>
+                          <span className="text-[9px] text-stone-400">video/*</span>
+                        </div>
+                        <p className="text-[10px] text-stone-400">
+                          Final face-swapped result video. Default preview shown when opening this scene.
+                        </p>
+
+                        <div className="relative aspect-[3/4] w-full rounded-xl overflow-hidden bg-stone-950 border border-white/10 flex items-center justify-center">
+                          {sceneResultVideo ? (
+                            isVideoMedia(sceneResultVideo) ? (
+                              <video
+                                src={sceneResultVideo}
+                                controls
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <img
+                                src={sceneResultVideo}
+                                alt="Swapped Preview"
+                                className="w-full h-full object-cover"
+                              />
+                            )
+                          ) : (
+                            <div className="text-center p-3 text-stone-500">
+                              <Sparkles className="w-8 h-8 mx-auto mb-1 opacity-50" />
+                              <span className="text-[10px] block font-semibold">No swapped video selected</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {sceneResultVideoName && (
+                          <span className="text-[10px] text-stone-400 block truncate font-mono">
+                            File: {sceneResultVideoName}
+                          </span>
+                        )}
+
+                        <input
+                          ref={sceneResultVideoFileRef}
+                          type="file"
+                          accept="video/*"
+                          onChange={handleSelectResultVideo}
+                          className="hidden"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={() => sceneResultVideoFileRef.current?.click()}
+                          className="w-full py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>{sceneResultVideo ? 'Replace Video' : 'Choose Video from Phone'}</span>
+                        </button>
+
+                        <input
+                          type="text"
+                          value={sceneResultVideo.startsWith('data:') ? '' : sceneResultVideo}
+                          onChange={(e) => {
+                            setSceneResultVideo(e.target.value.trim());
+                            setSceneResultVideoName('Direct URL');
+                          }}
+                          placeholder="Or paste direct Video URL (MP4)"
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-[11px] text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                    </div>
+
+                    {/* METADATA FORM */}
+                    <div className="space-y-3 p-4 rounded-2xl bg-black/40 border border-white/10">
+                      <div>
+                        <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                          Scene Title *
+                        </label>
+                        <input
+                          type="text"
+                          value={sceneTitle}
+                          onChange={(e) => setSceneTitle(e.target.value)}
+                          placeholder="e.g. Viral Instagram Dance Sequence"
+                          className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                          Scene Description
+                        </label>
+                        <textarea
+                          value={sceneDescription}
+                          onChange={(e) => setSceneDescription(e.target.value)}
+                          placeholder="e.g. Electrifying neon stage choreography with fluid hip-hop footwork..."
+                          rows={2}
+                          className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 resize-none leading-relaxed"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                            Category
+                          </label>
+                          <input
+                            type="text"
+                            value={sceneCategory}
+                            onChange={(e) => setSceneCategory(e.target.value)}
+                            placeholder="e.g. Dance & Viral"
+                            className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                            Credit Cost (✦)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={500}
+                            value={sceneCreditCost}
+                            onChange={(e) => setSceneCreditCost(Number(e.target.value) || 45)}
+                            className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                            Duration (seconds)
+                          </label>
+                          <input
+                            type="number"
+                            min={4}
+                            max={15}
+                            value={sceneDurationSeconds}
+                            onChange={(e) => setSceneDurationSeconds(Number(e.target.value) || 8)}
+                            className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                          Tags (comma-separated)
+                        </label>
+                        <input
+                          type="text"
+                          value={sceneTags}
+                          onChange={(e) => setSceneTags(e.target.value)}
+                          placeholder="Face Swap, Dance, Viral, Reels"
+                          className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      {/* Toggles: Active, Featured, Aspect Ratio */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                        <label className="flex items-center gap-2 p-2 rounded-xl bg-stone-900/60 border border-white/10 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sceneIsActive}
+                            onChange={(e) => setSceneIsActive(e.target.checked)}
+                            className="rounded accent-amber-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span className="text-xs font-bold text-stone-300">Active ON</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 p-2 rounded-xl bg-stone-900/60 border border-white/10 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sceneIsFeatured}
+                            onChange={(e) => setSceneIsFeatured(e.target.checked)}
+                            className="rounded accent-amber-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span className="text-xs font-bold text-stone-300">Featured</span>
+                        </label>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-stone-400 block mb-0.5">
+                            Aspect Ratio
+                          </label>
+                          <select
+                            value={sceneAspectRatio}
+                            onChange={(e) => setSceneAspectRatio(e.target.value as any)}
+                            className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="9:16">9:16 (Vertical Reel)</option>
+                            <option value="16:9">16:9 (Landscape)</option>
+                            <option value="1:1">1:1 (Square)</option>
+                            <option value="4:5">4:5 (Portrait Feed)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-stone-400 block mb-0.5">
+                            Display Order
+                          </label>
+                          <input
+                            type="number"
+                            value={sceneOrder}
+                            onChange={(e) => setSceneOrder(Number(e.target.value) || 0)}
+                            className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons: Save Draft vs Publish Live */}
+                    <div className="flex flex-col sm:flex-row items-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveFaceSwapScene('draft')}
+                        disabled={isSubmitting}
+                        className="w-full sm:flex-1 py-3 rounded-2xl bg-stone-800 hover:bg-stone-700 text-stone-200 font-bold text-xs flex items-center justify-center gap-2 border border-white/10 active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                      >
+                        <span>Save as Draft</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSaveFaceSwapScene('published')}
+                        disabled={isSubmitting}
+                        className="w-full sm:flex-1 py-3 rounded-2xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                      >
+                        {isSubmitting ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Check className="w-4 h-4 stroke-[3]" />
+                        )}
+                        <span>{editingScene ? 'Update & Publish Scene' : 'Publish Scene Live'}</span>
+                      </button>
+                    </div>
+                  </div>
                 )}
-                <span>Publish Demo Video Live</span>
-              </button>
-            </div>
+              </div>
+            )}
+
+            {/* SECTION B: GLOBAL FEATURED DEMO VIDEO */}
+            {faceSwapSection === 'demo' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Home Featured Demo Video
+                    </h4>
+                    <p className="text-[11px] text-stone-400 mt-0.5">
+                      This is the marketing demo video played by default on the Home screen card.
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-[10px] font-bold text-amber-300">
+                    Home Card Hero
+                  </span>
+                </div>
+
+                {/* Current Active Demo Player */}
+                <div className="relative rounded-2xl overflow-hidden aspect-[21/9] sm:aspect-[24/9] w-full bg-black border border-white/15 shadow-xl">
+                  <video
+                    src={demoVideoPreview || currentDemoVideoUrl}
+                    autoPlay
+                    playsInline
+                    loop
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold text-emerald-400 border border-emerald-500/30">
+                    LIVE DEMO PREVIEW
+                  </div>
+                </div>
+
+                {/* Direct URL or Phone Gallery Upload */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                      Or Paste Direct Video URL (MP4)
+                    </label>
+                    <input
+                      type="text"
+                      value={demoVideoPreview.startsWith('data:') ? '' : (demoVideoPreview || currentDemoVideoUrl)}
+                      onChange={(e) => setDemoVideoPreview(e.target.value.trim())}
+                      placeholder="https://.../video.mp4"
+                      className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+
+                  <input
+                    ref={demoFileRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={handleDemoVideoSelect}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => demoFileRef.current?.click()}
+                    className="w-full py-3.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4 text-emerald-400" />
+                    <span>Choose New Demo Video from Phone</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveDemoVideo}
+                    disabled={isSubmitting || (!demoVideoPreview && !currentDemoVideoUrl)}
+                    className="w-full py-3.5 rounded-2xl bg-emerald-500 text-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-40 transition-all shadow-lg cursor-pointer"
+                  >
+                    {isSubmitting ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4" />
+                    )}
+                    <span>Publish Demo Video Live</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

@@ -44,7 +44,15 @@ export const FaceSwapModal: React.FC = () => {
   const [videoSourceMode, setVideoSourceMode] = useState<'upload' | 'preset'>('upload');
   const [sourceVideoFile, setSourceVideoFile] = useState<File | null>(null);
   const [sourceVideoBase64, setSourceVideoBase64] = useState<string | null>(null);
-  const [selectedPresetVideo, setSelectedPresetVideo] = useState<string>(activeScene?.resultVideoPreview || '');
+  const [selectedPresetVideo, setSelectedPresetVideo] = useState<string>(
+    activeScene?.sourceVideoPreview || activeScene?.resultVideoPreview || ''
+  );
+
+  useEffect(() => {
+    if (activeScene) {
+      setSelectedPresetVideo(activeScene.sourceVideoPreview || activeScene.resultVideoPreview || '');
+    }
+  }, [activeScene]);
 
   // 2. Video Duration Trimmer (Clamped between 4 and 15 seconds)
   const [durationSeconds, setDurationSeconds] = useState<number>(5);

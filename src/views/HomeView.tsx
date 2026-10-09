@@ -20,6 +20,7 @@ import {
 import { Logo } from '../components/Logo';
 import { TemplateCard } from '../components/TemplateCard';
 import { FaceSwapFeaturedCard } from '../components/FaceSwapFeaturedCard';
+import { FaceSwapSceneGallery } from '../components/FaceSwapSceneGallery';
 import { useApp } from '../context/AppContext';
 import {
   HOME_HERO_BANNERS,
@@ -376,6 +377,11 @@ export const HomeView: React.FC = () => {
       {/* PRIORITY 1: TOP FEATURED FACE SWAP VIDEO */}
       <div className="px-3.5 pt-1">
         <FaceSwapFeaturedCard />
+      </div>
+
+      {/* PRIORITY 1.5: DYNAMIC FACE SWAP SCENE GALLERY */}
+      <div className="px-3.5 pt-3">
+        <FaceSwapSceneGallery />
       </div>
 
       {/* 6. DENSE TEMPLATE SECTIONS & HORIZONTAL RAILS (Dynamic Data-Driven System) */}

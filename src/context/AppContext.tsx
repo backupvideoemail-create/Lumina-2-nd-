@@ -40,6 +40,8 @@ interface AppContextType {
 
   // Face Swap Video
   faceSwapScenes: FaceSwapScene[];
+  setFaceSwapScenes: React.Dispatch<React.SetStateAction<FaceSwapScene[]>>;
+  refreshFaceSwapScenes: () => Promise<void>;
   selectedFaceSwapScene: FaceSwapScene | null;
   setSelectedFaceSwapScene: (scene: FaceSwapScene | null) => void;
   faceSwapModalOpen: boolean;
@@ -237,6 +239,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     fetchTemplates();
   }, [fetchTemplates]);
+
+  // Fetch Face Swap Scenes (Dynamic from server)
+  const fetchFaceSwapScenes = useCallback(async () => {
+    try {
+      const res = await fetch('/api/faceswap/scenes');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.scenes && Array.isArray(data.scenes) && data.scenes.length > 0) {
+          setFaceSwapScenes(data.scenes);
+        }
+      }
+    } catch (err) {
+      console.warn('[AppContext] Could not fetch face swap scenes:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchFaceSwapScenes();
+  }, [fetchFaceSwapScenes]);
 
   // Fetch User & Wallet (Only if session token exists)
   const refreshUserData = useCallback(async () => {
@@ -691,6 +712,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeTab,
         setActiveTab,
         faceSwapScenes,
+        setFaceSwapScenes,
+        refreshFaceSwapScenes: fetchFaceSwapScenes,
         selectedFaceSwapScene,
         setSelectedFaceSwapScene,
         faceSwapModalOpen,

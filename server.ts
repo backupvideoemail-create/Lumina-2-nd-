@@ -861,6 +861,122 @@ const handleFaceSwapConfig = (req: express.Request, res: express.Response) => {
 app.put('/api/admin/faceswap/config', requireAdmin, handleFaceSwapConfig);
 app.post('/api/admin/faceswap/config', requireAdmin, handleFaceSwapConfig);
 
+// Face Swap Individual Scenes API
+app.get('/api/faceswap/scenes', (req, res) => {
+  const includeAll = req.query.all === 'true';
+  const scenes = prodDb.getFaceSwapScenes(includeAll);
+  res.json({ success: true, scenes });
+});
+
+app.get('/api/admin/faceswap/scenes', requireAdmin, (_req, res) => {
+  const scenes = prodDb.getFaceSwapScenes(true);
+  res.json({ success: true, scenes });
+});
+
+app.post('/api/admin/faceswap/scenes', requireAdmin, (req, res) => {
+  try {
+    const {
+      title,
+      description = '',
+      sampleFace,
+      sourceVideoPreview,
+      resultVideoPreview,
+      creditCost = 45,
+      durationSeconds = 8,
+      aspectRatio = '9:16',
+      category = 'Viral & Trending',
+      tags = ['Face Swap', 'Viral'],
+      isActive = true,
+      status = 'published',
+      isFeatured = false,
+      order = 0
+    } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Scene title is required' });
+    }
+    if (!sampleFace) {
+      return res.status(400).json({ error: 'Sample Face Photo is required' });
+    }
+    if (!sourceVideoPreview) {
+      return res.status(400).json({ error: 'Original / Before Video is required' });
+    }
+    if (!resultVideoPreview) {
+      return res.status(400).json({ error: 'Swapped Face / After Video is required' });
+    }
+
+    const scene = prodDb.createFaceSwapScene({
+      id: `fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      title: title.trim(),
+      description: (description || title).trim(),
+      sampleFace: sampleFace.trim(),
+      sourceVideoPreview: sourceVideoPreview.trim(),
+      resultVideoPreview: resultVideoPreview.trim(),
+      creditCost: Number(creditCost) || 45,
+      durationSeconds: Number(durationSeconds) || 8,
+      aspectRatio: aspectRatio as any,
+      category: (category || 'Viral & Trending').trim(),
+      tags: Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean),
+      isActive: Boolean(isActive),
+      status: status === 'draft' ? 'draft' : 'published',
+      isFeatured: Boolean(isFeatured),
+      order: Number(order) || 0
+    });
+
+    res.json({ success: true, scene });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to create Face Swap scene' });
+  }
+});
+
+app.put('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = prodDb.getFaceSwapScene(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Face Swap scene not found' });
+    }
+
+    const updates: any = {};
+    if (req.body.title !== undefined) updates.title = String(req.body.title).trim();
+    if (req.body.description !== undefined) updates.description = String(req.body.description).trim();
+    if (req.body.sampleFace !== undefined) updates.sampleFace = String(req.body.sampleFace).trim();
+    if (req.body.sourceVideoPreview !== undefined) updates.sourceVideoPreview = String(req.body.sourceVideoPreview).trim();
+    if (req.body.resultVideoPreview !== undefined) updates.resultVideoPreview = String(req.body.resultVideoPreview).trim();
+    if (req.body.creditCost !== undefined) updates.creditCost = Number(req.body.creditCost) || 45;
+    if (req.body.durationSeconds !== undefined) updates.durationSeconds = Number(req.body.durationSeconds) || 8;
+    if (req.body.aspectRatio !== undefined) updates.aspectRatio = req.body.aspectRatio;
+    if (req.body.category !== undefined) updates.category = String(req.body.category).trim();
+    if (req.body.tags !== undefined) {
+      updates.tags = Array.isArray(req.body.tags)
+        ? req.body.tags
+        : String(req.body.tags).split(',').map((t: string) => t.trim()).filter(Boolean);
+    }
+    if (req.body.isActive !== undefined) updates.isActive = Boolean(req.body.isActive);
+    if (req.body.status !== undefined) updates.status = req.body.status === 'draft' ? 'draft' : 'published';
+    if (req.body.isFeatured !== undefined) updates.isFeatured = Boolean(req.body.isFeatured);
+    if (req.body.order !== undefined) updates.order = Number(req.body.order) || 0;
+
+    const updated = prodDb.updateFaceSwapScene(id, updates);
+    res.json({ success: true, scene: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update Face Swap scene' });
+  }
+});
+
+app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = prodDb.deleteFaceSwapScene(id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Face Swap scene not found' });
+    }
+    res.json({ success: true, deletedId: id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete Face Swap scene' });
+  }
+});
+
 // Admin Universal Media Upload (for banners, demo videos, thumbnails)
 app.post('/api/admin/upload-media', requireAdmin, async (req, res) => {
   try {

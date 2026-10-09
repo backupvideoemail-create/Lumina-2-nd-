@@ -35,12 +35,14 @@ import type {
   TransactionType,
   Generation,
   UserSubscription,
-  PaymentRecord
+  PaymentRecord,
+  FaceSwapScene
 } from '../../types/index.ts';
 import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
+import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
 
 // Initialize Firebase client / admin for server persistence
 let firestoreDb: any = null;
@@ -119,6 +121,7 @@ export interface ProductionDatabaseSchema {
   templates: Template[];
   banners: HomeBannerItem[];
   faceSwapDemoVideoUrl: string;
+  faceSwapScenes: FaceSwapScene[];
   userLikes: Record<string, string[]>; // userId -> templateId[]
   processedWebhooks: string[];
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
@@ -235,7 +238,7 @@ class ProductionDatabase {
       firestoreTemplates.forEach(t => templateMap.set(t.id, t));
       this.db.templates = Array.from(templateMap.values());
 
-      // 12. App Config (Banners & Demo Video)
+      // 12. App Config (Banners, Demo Video, Face Swap Scenes)
       try {
         const bannerDoc = await adminFirestoreDb.collection('config').doc('banners').get();
         if (bannerDoc.exists && bannerDoc.data()?.banners) {
@@ -244,6 +247,15 @@ class ProductionDatabase {
         const demoDoc = await adminFirestoreDb.collection('config').doc('faceswap_demo').get();
         if (demoDoc.exists && demoDoc.data()?.demoVideoUrl) {
           this.db.faceSwapDemoVideoUrl = demoDoc.data().demoVideoUrl;
+        }
+        const scenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+        if (scenesDoc.exists && scenesDoc.data()?.scenes) {
+          const firestoreScenes: FaceSwapScene[] = scenesDoc.data().scenes;
+          const sceneMap = new Map<string, FaceSwapScene>();
+          SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
+          (this.db.faceSwapScenes || []).forEach(s => sceneMap.set(s.id, s));
+          firestoreScenes.forEach(s => sceneMap.set(s.id, s));
+          this.db.faceSwapScenes = Array.from(sceneMap.values());
         }
       } catch {
         // config docs optional
@@ -278,6 +290,12 @@ class ProductionDatabase {
         parsed.templates = Array.from(tplMap.values());
         parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
         parsed.faceSwapDemoVideoUrl = parsed.faceSwapDemoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4';
+        
+        const sceneMap = new Map<string, FaceSwapScene>();
+        SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
+        (parsed.faceSwapScenes || []).forEach((s: FaceSwapScene) => sceneMap.set(s.id, s));
+        parsed.faceSwapScenes = Array.from(sceneMap.values());
+
         parsed.userLikes = parsed.userLikes || {};
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
@@ -301,6 +319,7 @@ class ProductionDatabase {
       templates: [...SEED_TEMPLATES],
       banners: [...HOME_HERO_BANNERS],
       faceSwapDemoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4',
+      faceSwapScenes: SEED_FACE_SWAP_SCENES.map(s => ({ ...s, isActive: true, status: 'published' })),
       userLikes: {},
       processedWebhooks: [],
       reports: []
@@ -1135,6 +1154,72 @@ class ProductionDatabase {
     this.db.faceSwapDemoVideoUrl = url;
     this.save();
     this.syncToFirestore('config', 'faceswap_demo', { demoVideoUrl: url, updatedAt: new Date().toISOString() });
+  }
+
+  /* =========================================================================
+     FACE SWAP SCENES (Individual Scene / Template Management)
+  ========================================================================= */
+  public getFaceSwapScenes(includeInactive = false): FaceSwapScene[] {
+    const scenes = this.db.faceSwapScenes || [];
+    if (includeInactive) {
+      return [...scenes];
+    }
+    return scenes.filter(s => s.isActive !== false && s.status !== 'draft');
+  }
+
+  public getFaceSwapScene(id: string): FaceSwapScene | null {
+    const scenes = this.db.faceSwapScenes || [];
+    return scenes.find(s => s.id === id) || null;
+  }
+
+  public createFaceSwapScene(sceneData: FaceSwapScene): FaceSwapScene {
+    if (!this.db.faceSwapScenes) {
+      this.db.faceSwapScenes = [];
+    }
+    const newScene: FaceSwapScene = {
+      ...sceneData,
+      id: sceneData.id || `fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      isActive: sceneData.isActive !== false,
+      status: sceneData.status || 'published',
+      createdAt: sceneData.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.db.faceSwapScenes.unshift(newScene);
+    this.save();
+    this.syncToFirestore('config', 'faceswap_scenes', {
+      scenes: this.db.faceSwapScenes,
+      updatedAt: new Date().toISOString()
+    });
+    return newScene;
+  }
+
+  public updateFaceSwapScene(id: string, updates: Partial<FaceSwapScene>): FaceSwapScene | null {
+    if (!this.db.faceSwapScenes) return null;
+    const scene = this.db.faceSwapScenes.find(s => s.id === id);
+    if (!scene) return null;
+
+    Object.assign(scene, updates, { updatedAt: new Date().toISOString() });
+    this.save();
+    this.syncToFirestore('config', 'faceswap_scenes', {
+      scenes: this.db.faceSwapScenes,
+      updatedAt: new Date().toISOString()
+    });
+    return scene;
+  }
+
+  public deleteFaceSwapScene(id: string): boolean {
+    if (!this.db.faceSwapScenes) return false;
+    const index = this.db.faceSwapScenes.findIndex(s => s.id === id);
+    if (index !== -1) {
+      this.db.faceSwapScenes.splice(index, 1);
+      this.save();
+      this.syncToFirestore('config', 'faceswap_scenes', {
+        scenes: this.db.faceSwapScenes,
+        updatedAt: new Date().toISOString()
+      });
+      return true;
+    }
+    return false;
   }
 
   /**
