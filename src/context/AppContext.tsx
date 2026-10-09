@@ -99,7 +99,7 @@ interface AppContextType {
   topUps: TopUpOption[];
   hasActivePlan: boolean;
   isPaying: boolean;
-  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; isAutoPay?: boolean; error?: string }>;
+  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
   verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<boolean>;
   cancelSubscription: () => Promise<boolean>;
 
@@ -607,7 +607,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     type: 'plan' | 'topup',
     itemId: string,
     provider: 'razorpay' | 'cashfree' = 'razorpay'
-  ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; isAutoPay?: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }> => {
     if (!user) {
       setPendingAction({ type: 'buy_plan', planId: itemId });
       setAuthModalOpen(true);
@@ -633,6 +633,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           orderId: data.orderId,
           subscriptionId: data.subscriptionId,
           customerId: data.customerId,
+          shortUrl: data.shortUrl,
           isAutoPay: Boolean(data.isAutoPay || data.subscriptionId)
         };
       } else {

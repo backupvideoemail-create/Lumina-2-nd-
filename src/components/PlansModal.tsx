@@ -109,7 +109,7 @@ export const PlansModal: React.FC = () => {
         },
         prefill: {
           name: user?.name || 'AI Prime Creator',
-          contact: user?.phone || '',
+          contact: user?.phone ? user.phone.replace(/[^0-9]/g, '').slice(-10) : '',
           email: user?.email || 'ai.prime.studio.pro@gmail.com',
           method: 'upi'
         },
@@ -120,21 +120,23 @@ export const PlansModal: React.FC = () => {
                 name: 'Pay via UPI / UPI AutoPay',
                 instruments: [
                   {
-                    method: 'upi'
+                    method: 'upi',
+                    flows: ['intent', 'qr'],
+                    apps: ['google_pay', 'phonepe', 'paytm', 'bhim']
                   }
                 ]
               },
               other: {
-                name: 'Cards, Netbanking & E-Mandate',
+                name: 'Cards & E-Mandate',
                 instruments: [
                   {
                     method: 'card'
                   },
                   {
-                    method: 'netbanking'
+                    method: 'nach'
                   },
                   {
-                    method: 'nach'
+                    method: 'netbanking'
                   }
                 ]
               }
@@ -169,10 +171,10 @@ export const PlansModal: React.FC = () => {
         }
       };
 
-      // CRITICAL: For AutoPay plans, pass subscription_id and recurring flag to authorize recurring mandate!
+      // In Razorpay Subscriptions SDK, subscription_id is the primary mandate identifier.
+      // Do NOT set options.recurring = true here as that forces card tokenization mode.
       if (res.subscriptionId) {
         options.subscription_id = res.subscriptionId;
-        options.recurring = true;
         if (res.customerId) {
           options.customer_id = res.customerId;
         }

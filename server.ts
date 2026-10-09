@@ -1166,6 +1166,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
         success: true,
         subscriptionId: subRes.subscriptionId,
         customerId: subRes.customerId,
+        shortUrl: subRes.shortUrl,
         isAutoPay: true,
         planId: plan.id,
         itemTitle: plan.name,
