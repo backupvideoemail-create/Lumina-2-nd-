@@ -101,31 +101,24 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY, studio key, or authenticated admin)
+// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or authenticated user with verified admin role)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const adminKey = req.headers['x-admin-key'] as string;
-  const configuredSecret = process.env.ADMIN_SECRET_KEY;
+  const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim();
+  const configuredSecret = process.env.ADMIN_SECRET_KEY?.trim();
 
+  // 1. Valid ADMIN_SECRET_KEY -> allow
   if (configuredSecret && adminKey && adminKey === configuredSecret) {
     return next();
   }
 
-  // Content Studio default admin key for self-service dashboard management
-  if (adminKey === 'ai_prime_admin_secret_key_2026' || adminKey === 'lumina_admin_secret_key_2026') {
-    return next();
-  }
-
+  // 2. Authenticated user with verified admin role -> allow
   const user = getAuthenticatedUser(req);
-  if (user && (user.role === 'admin' || user.email === 'backupvideoemail@gmail.com')) {
+  if (user && (user.role === 'admin' || user.email?.toLowerCase() === 'backupvideoemail@gmail.com' || (process.env.ADMIN_EMAIL && user.email?.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()))) {
     return next();
   }
 
-  // If no ADMIN_SECRET_KEY configured in environment, allow self-service admin
-  if (!configuredSecret) {
-    return next();
-  }
-
-  return res.status(403).json({ error: 'Forbidden: Valid ADMIN_SECRET_KEY or admin account role required' });
+  // 3. Otherwise -> 403 Forbidden
+  return res.status(403).json({ error: 'Forbidden: Valid ADMIN_SECRET_KEY or verified admin account required' });
 }
 
 // Rate Limiter
@@ -171,11 +164,21 @@ app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (_req, res) => {
   return res.status(404).end();
 });
 
-// Serve media safely with user isolation directly from Cloudflare R2
+// Serve media safely with user isolation directly from Cloudflare R2 or local cache
 app.get('/api/media/:fileId', async (req, res) => {
-  const fileId = req.params.fileId;
+  const fileId = path.basename(req.params.fileId);
   const user = getAuthenticatedUser(req);
   try {
+    const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
+    if (fs.existsSync(localPath)) {
+      const meta = await mediaStorage.getMetadata(fileId);
+      if (meta && !meta.isPublic && meta.ownerUserId && (!user || user.id !== meta.ownerUserId)) {
+        return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
+      }
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(localPath, { acceptRanges: true });
+    }
+
     const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, user?.id);
     if (authResult.error || !authResult.body) {
       const status = authResult.error?.includes('Unauthorized') ? 403 : 404;
@@ -183,7 +186,8 @@ app.get('/api/media/:fileId', async (req, res) => {
     }
 
     res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
-    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
     if (typeof authResult.body.pipe === 'function') {
       authResult.body.pipe(res);
     } else {
@@ -432,6 +436,15 @@ app.post('/api/templates/:id/like', requireAuth, (req, res) => {
     templateId: req.params.id,
     isLiked: result.isLiked,
     likesCount: result.totalLikes
+  });
+});
+
+// Admin Verification Route (Allows Content Studio to verify admin access state)
+app.get('/api/admin/verify', requireAdmin, (req, res) => {
+  const user = getAuthenticatedUser(req);
+  res.json({
+    authorized: true,
+    user: user ? { id: user.id, email: user.email, role: user.role } : null
   });
 });
 

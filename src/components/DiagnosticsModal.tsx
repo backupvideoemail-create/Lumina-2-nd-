@@ -46,9 +46,11 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         }
       });
-      const data = await res.json();
-      if (data.results) {
+      const data = await res.json().catch(() => null);
+      if (data?.results) {
         setResults(data.results);
+      } else if (res.status === 403) {
+        alert('Admin authorization required. Please set ADMIN_SECRET_KEY in Content Studio.');
       }
     } catch (err: any) {
       console.error('[Diagnostics Error]:', err);

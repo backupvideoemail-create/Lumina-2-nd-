@@ -149,7 +149,11 @@ class ProductionDatabase {
       // 2. Users
       const usersSnap = await adminFirestoreDb.collection('users').get();
       usersSnap.forEach((d: any) => {
-        this.db.users[d.id] = d.data();
+        const u = d.data() as UserProfile;
+        if (u && (u.email?.toLowerCase() === 'backupvideoemail@gmail.com' || (process.env.ADMIN_EMAIL && u.email?.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()))) {
+          u.role = 'admin';
+        }
+        this.db.users[d.id] = u;
       });
 
       // 3. Auth Identities (Server Authoritative)
@@ -405,7 +409,16 @@ class ProductionDatabase {
     let existingUser = this.getUserByFirebaseUid(params.firebaseUid);
     const sessionToken = `session_${crypto.randomBytes(24).toString('hex')}`;
 
+    const isAdminEmail = Boolean(
+      (params.email && params.email.toLowerCase() === 'backupvideoemail@gmail.com') ||
+      (process.env.ADMIN_EMAIL && params.email && params.email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
+    );
+
     if (existingUser) {
+      if (isAdminEmail && existingUser.role !== 'admin') {
+        existingUser.role = 'admin';
+        this.syncToFirestore('users', existingUser.id, existingUser);
+      }
       const identity = this.db.authIdentities[existingUser.id];
       if (identity) {
         identity.sessionTokens.push(sessionToken);
@@ -426,7 +439,7 @@ class ProductionDatabase {
       email: params.email || '',
       avatar: params.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
       onboarded: true,
-      role: 'creator',
+      role: isAdminEmail ? 'admin' : 'creator',
       createdAt: new Date().toISOString(),
       generationCount: 0
     };

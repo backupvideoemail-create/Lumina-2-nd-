@@ -212,19 +212,33 @@ export class MediaStorageService {
         ext = 'mp4';
       }
     } else if (typeof payload === 'string' && payload.startsWith('data:')) {
-      const matches = payload.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        mimeType = matches[1];
-        buffer = Buffer.from(matches[2], 'base64');
-        if (mimeType.includes('video') || mimeType.includes('mp4')) {
+      const commaIdx = payload.indexOf(',');
+      if (commaIdx !== -1) {
+        const metaPart = payload.substring(0, commaIdx);
+        const rawBase64 = payload.substring(commaIdx + 1);
+        const mimeMatch = metaPart.match(/data:([^;]+)/);
+        if (mimeMatch) {
+          mimeType = mimeMatch[1].trim();
+        }
+        buffer = Buffer.from(rawBase64, 'base64');
+        if (mimeType.includes('video') || mimeType.includes('mp4') || mimeType.includes('quicktime') || mimeType.includes('webm')) {
           ext = 'mp4';
+          mimeType = 'video/mp4';
         } else if (mimeType.includes('png')) {
           ext = 'png';
+          mimeType = 'image/png';
         } else if (mimeType.includes('webp')) {
           ext = 'webp';
+          mimeType = 'image/webp';
+        } else if (mimeType.includes('gif')) {
+          ext = 'gif';
+          mimeType = 'image/gif';
+        } else {
+          ext = 'jpg';
+          mimeType = 'image/jpeg';
         }
       } else {
-        buffer = Buffer.from(payload, 'utf-8');
+        buffer = Buffer.from(payload, 'base64');
       }
     } else {
       buffer = Buffer.from(payload, 'utf-8');
