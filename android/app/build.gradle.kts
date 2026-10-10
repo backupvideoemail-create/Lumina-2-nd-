@@ -46,12 +46,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Use production release signing configuration if keystore is present, otherwise debug
+            // Production release signing configuration: strictly use release keystore (never sign production AAB with debug key)
             val releaseConfig = signingConfigs.findByName("release")
-            signingConfig = if (releaseConfig?.storeFile?.exists() == true) {
-                releaseConfig
-            } else {
-                signingConfigs.getByName("debug")
+            if (releaseConfig?.storeFile?.exists() == true) {
+                signingConfig = releaseConfig
             }
         }
         debug {

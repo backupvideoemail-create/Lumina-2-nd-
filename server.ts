@@ -24,6 +24,7 @@ import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import { prodDb } from './src/services/db/database.ts';
+import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import {
   processTemplate,
   generateFaceSwapVideo,
@@ -1062,26 +1063,29 @@ app.get('/api/payments/razorpay/capabilities', async (_req, res) => {
 
   const authHeader = Buffer.from(`${keyId}:${keySecret}`).toString('base64');
   try {
-    const rzpRes = await fetch('https://api.razorpay.com/v1/methods', {
+    // 1. Authenticate credentials against official server-side Razorpay API
+    const authTestRes = await fetch('https://api.razorpay.com/v1/orders?count=1', {
       headers: { Authorization: `Basic ${authHeader}` }
     });
 
-    if (!rzpRes.ok) {
-      const errText = await rzpRes.text();
+    if (!authTestRes.ok) {
+      const errText = await authTestRes.text();
       return res.json({
         configured: true,
-        httpStatus: rzpRes.status,
+        httpStatus: authTestRes.status,
         keyId,
         authSuccess: false,
         error: errText,
         diagnostic:
-          rzpRes.status === 401
+          authTestRes.status === 401
             ? 'Authentication failed (401). Ensure RAZORPAY_KEY_SECRET matches the live key ID.'
-            : `Razorpay API responded with HTTP ${rzpRes.status}`
+            : `Razorpay API responded with HTTP ${authTestRes.status}`
       });
     }
 
-    const data = await rzpRes.json();
+    // 2. Fetch merchant payment methods & recurring capabilities
+    const rzpRes = await fetch(`https://api.razorpay.com/v1/methods?key_id=${encodeURIComponent(keyId)}`);
+    const data = rzpRes.ok ? await rzpRes.json() : {};
     const recurringUpi = Boolean(data.recurring?.upi);
     const recurringUpiAutopay = data.recurring?.upi_autopay || { collect: false, intent: false };
     const hasUpiAutopay = Boolean(recurringUpi || recurringUpiAutopay.intent || recurringUpiAutopay.collect);
@@ -1541,20 +1545,22 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     });
   }
 
-  // Google Play Developer API verification (if service account configured in server environment)
-  const serviceAccountKey = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
-  let devApiVerified = false;
-  if (serviceAccountKey) {
-    try {
-      devApiVerified = true;
-    } catch (apiErr: any) {
-      console.error('[Google Play API Verification Error]:', apiErr.message);
-      return res.status(400).json({ error: 'Failed to verify purchase token with Google Play Developer API' });
-    }
+  // Authoritatively verify purchase token with official Google Play Developer API
+  const playVerification = await googlePlayService.verifyPurchase(
+    EXPECTED_PACKAGE_NAME,
+    productId,
+    purchaseToken,
+    isSubscription
+  );
+
+  if (!playVerification.verified) {
+    return res.status(400).json({
+      error: `Google Play purchase verification failed: ${playVerification.error || 'Invalid or unacknowledged purchase token'}`
+    });
   }
 
   // Record payment in unified database
-  const effectiveOrderId = orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const effectiveOrderId = playVerification.orderId || orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const paymentRecord: PaymentRecord = {
     id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     orderId: effectiveOrderId,
@@ -1610,7 +1616,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     wallet: prodDb.getWallet(user.id),
     subscription: newSub || prodDb.getSubscription(user.id),
     profile: prodDb.getUser(user.id),
-    developerApiVerified: devApiVerified
+    developerApiVerified: playVerification.verified,
+    orderId: effectiveOrderId
   });
 });
 
