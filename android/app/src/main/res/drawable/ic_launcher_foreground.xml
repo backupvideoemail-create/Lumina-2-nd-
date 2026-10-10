@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Starburst Glow AI Emblem -->
+    <path
+        android:pathData="M54,24 L58,46 L80,50 L58,54 L54,76 L50,54 L28,50 L50,46 Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#F59E0B">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="80"
+                android:endY="76"
+                android:startX="28"
+                android:startY="24"
+                android:type="linear">
+                <item android:color="#FBBF24" android:offset="0.0" />
+                <item android:color="#D97706" android:offset="0.5" />
+                <item android:color="#B45309" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Secondary sparkle -->
+    <path
+        android:fillColor="#FDE68A"
+        android:pathData="M72,32 L73.5,40 L81.5,41.5 L73.5,43 L72,51 L70.5,43 L62.5,41.5 L70.5,40 Z" />
+    <path
+        android:fillColor="#FDE68A"
+        android:pathData="M36,66 L37.2,72 L43.2,73.2 L37.2,74.4 L36,80.4 L34.8,74.4 L28.8,73.2 L34.8,72 Z" />
+</vector>

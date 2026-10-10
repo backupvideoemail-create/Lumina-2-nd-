@@ -19,7 +19,7 @@ class BillingManager(
 
     private val billingClient = BillingClient.newBuilder(context)
         .setListener(this)
-        .enablePendingPurchases()
+        .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
         .build()
 
     private val _isReady = MutableStateFlow(false)

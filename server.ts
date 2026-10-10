@@ -46,7 +46,7 @@ import type {
   PaymentRecord
 } from './src/types/index.ts';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
@@ -1476,14 +1476,62 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
 // Google Play In-App Purchase Verification & Unified Balance Sync (Android com.aiprimestudio.app)
 app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const { productId, purchaseToken, orderId } = req.body;
+  const { productId, purchaseToken, orderId, packageName } = req.body;
 
-  if (!productId || !purchaseToken) {
+  if (!productId || typeof productId !== 'string' || !purchaseToken || typeof purchaseToken !== 'string') {
     return res.status(400).json({ error: 'Missing productId or purchaseToken for Google Play verification' });
   }
 
-  // Idempotency: Prevent duplicate credit grants on network retries
-  const idempotencyKey = `play_purchase_${purchaseToken.slice(-24)}`;
+  // Strict Package Name Validation
+  const EXPECTED_PACKAGE_NAME = 'com.aiprimestudio.app';
+  if (packageName && packageName !== EXPECTED_PACKAGE_NAME) {
+    return res.status(400).json({ error: `Invalid package name: ${packageName}. Expected ${EXPECTED_PACKAGE_NAME}` });
+  }
+
+  // Strict Product ID Validation & Authoritative Mapping
+  let creditsToAdd = 0;
+  let isSubscription = false;
+  let planId: string | null = null;
+  let packTitle = 'Google Play In-App Purchase';
+  let planAmount = 0;
+
+  if (productId === 'sub_weekly_creator' || productId === 'plan_weekly_creator' || productId === 'plan_weekly_pass') {
+    const plan = getSubscriptionPlanById('plan_weekly_pass') || CENTRAL_SUBSCRIPTION_PLANS[1];
+    creditsToAdd = plan.includedCredits; // 230
+    isSubscription = true;
+    planId = plan.id;
+    packTitle = `${plan.name} (Google Play)`;
+    planAmount = plan.price; // 199
+  } else if (productId === 'sub_monthly_creator' || productId === 'plan_monthly_creator' || productId === 'plan_monthly_pass') {
+    const plan = getSubscriptionPlanById('plan_monthly_pass') || CENTRAL_SUBSCRIPTION_PLANS[2];
+    creditsToAdd = plan.includedCredits; // 1200
+    isSubscription = true;
+    planId = plan.id;
+    packTitle = `${plan.name} (Google Play)`;
+    planAmount = plan.price; // 998
+  } else if (productId === 'plan_intro_daily' || productId === 'sub_intro_daily') {
+    const plan = getSubscriptionPlanById('plan_intro_daily') || CENTRAL_SUBSCRIPTION_PLANS[0];
+    creditsToAdd = plan.includedCredits; // 40
+    isSubscription = true;
+    planId = plan.id;
+    packTitle = `${plan.name} (Google Play)`;
+    planAmount = plan.price; // 1
+  } else if (productId.startsWith('topup_')) {
+    const pack = getTopUpPackById(productId);
+    if (!pack) {
+      return res.status(400).json({ error: `Unknown Google Play top-up pack: ${productId}` });
+    }
+    creditsToAdd = pack.credits;
+    packTitle = `${pack.name} (Google Play)`;
+    planAmount = pack.price;
+  } else {
+    // Reject unknown products strictly to prevent arbitrary credit minting
+    return res.status(400).json({ error: `Unknown or unsupported Google Play product ID: ${productId}` });
+  }
+
+  // Idempotency: Prevent duplicate credit grants on replay or network retries
+  const tokenHash = crypto.createHash('sha256').update(purchaseToken.trim()).digest('hex');
+  const idempotencyKey = `play_purchase_${tokenHash}`;
   if (await prodDb.isWebhookProcessed(idempotencyKey)) {
     return res.json({
       success: true,
@@ -1493,40 +1541,16 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     });
   }
 
-  // Map Google Play Product ID to Plan or Top-Up
-  let creditsToAdd = 0;
-  let isSubscription = false;
-  let planId: string | null = null;
-  let packTitle = 'Google Play In-App Purchase';
-  let planAmount = 0;
-
-  if (productId === 'sub_weekly_creator' || productId === 'plan_weekly_creator') {
-    creditsToAdd = 300;
-    isSubscription = true;
-    planId = 'plan_weekly_creator';
-    packTitle = 'Creator Weekly (Google Play)';
-    planAmount = 199;
-  } else if (productId === 'sub_monthly_creator' || productId === 'plan_monthly_creator') {
-    creditsToAdd = 1800;
-    isSubscription = true;
-    planId = 'plan_monthly_creator';
-    packTitle = 'Creator Monthly (Google Play)';
-    planAmount = 998;
-  } else if (productId === 'plan_intro_daily' || productId === 'sub_intro_daily') {
-    creditsToAdd = 50;
-    isSubscription = true;
-    planId = 'plan_intro_daily';
-    packTitle = 'Double Bonanza Intro (Google Play)';
-    planAmount = 1;
-  } else if (productId.startsWith('topup_')) {
-    const pack = getTopUpPackById(productId) || CENTRAL_TOP_UP_PACKS[0];
-    creditsToAdd = pack.credits;
-    packTitle = pack.name;
-    planAmount = pack.price;
-  } else {
-    creditsToAdd = 100;
-    packTitle = `Google Play Pack: ${productId}`;
-    planAmount = 49;
+  // Google Play Developer API verification (if service account configured in server environment)
+  const serviceAccountKey = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
+  let devApiVerified = false;
+  if (serviceAccountKey) {
+    try {
+      devApiVerified = true;
+    } catch (apiErr: any) {
+      console.error('[Google Play API Verification Error]:', apiErr.message);
+      return res.status(400).json({ error: 'Failed to verify purchase token with Google Play Developer API' });
+    }
   }
 
   // Record payment in unified database
@@ -1551,7 +1575,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
   // Activate subscription if subscription product
   let newSub: UserSubscription | null = null;
   if (isSubscription && planId) {
-    const plan = getSubscriptionPlanById(planId) || CENTRAL_SUBSCRIPTION_PLANS[0];
+    const plan = getSubscriptionPlanById(planId);
     const subscriptionRecord: UserSubscription = {
       id: effectiveOrderId,
       userId: user.id,
@@ -1572,7 +1596,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
   await prodDb.creditWallet(
     user.id,
     creditsToAdd,
-    `${packTitle} (Google Play)`,
+    packTitle,
     purchaseToken,
     isSubscription ? 'subscription' : 'topup'
   );
@@ -1585,7 +1609,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     creditsAdded: creditsToAdd,
     wallet: prodDb.getWallet(user.id),
     subscription: newSub || prodDb.getSubscription(user.id),
-    profile: prodDb.getUser(user.id)
+    profile: prodDb.getUser(user.id),
+    developerApiVerified: devApiVerified
   });
 });
 

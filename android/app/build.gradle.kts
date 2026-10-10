@@ -1,23 +1,40 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    // id("com.google.gms.google-services") // Uncomment after adding google-services.json from Firebase Console
+}
+
+// Automatically activate Google Services plugin if real google-services.json exists
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
     namespace = "com.aiprimestudio.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.aiprimestudio.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("KEYSTORE_FILE") ?: "release.keystore"
+            val keystoreFile = file(keystorePath)
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            }
         }
     }
 
@@ -29,7 +46,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug") // Replace with release signing config before production upload
+            // Use production release signing configuration if keystore is present, otherwise debug
+            val releaseConfig = signingConfigs.findByName("release")
+            signingConfig = if (releaseConfig?.storeFile?.exists() == true) {
+                releaseConfig
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -48,6 +71,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -81,8 +105,8 @@ dependencies {
     // Image loading with Coil
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // Google Play Billing Library (v7.0.0)
-    implementation("com.android.billingclient:billing-ktx:7.0.0")
+    // Google Play Billing Library (v7.1.1 - latest supported)
+    implementation("com.android.billingclient:billing-ktx:7.1.1")
 
     // Google Sign-In & Credential Manager
     implementation("androidx.credentials:credentials:1.3.0")

@@ -36,7 +36,11 @@ interface ApiService {
 
         fun create(): ApiService {
             val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BODY
+                level = if (com.aiprimestudio.app.BuildConfig.DEBUG) {
+                    HttpLoggingInterceptor.Level.BASIC
+                } else {
+                    HttpLoggingInterceptor.Level.NONE
+                }
             }
 
             val client = OkHttpClient.Builder()
