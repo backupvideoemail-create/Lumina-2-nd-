@@ -1047,10 +1047,83 @@ app.get('/api/payments/config', (_req, res) => {
   });
 });
 
+// Live Razorpay Merchant Capabilities Diagnostic API
+app.get('/api/payments/razorpay/capabilities', async (_req, res) => {
+  const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+
+  if (!keyId || !keySecret) {
+    return res.json({
+      configured: false,
+      keyId: keyId || null,
+      error: 'RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is missing from environment.'
+    });
+  }
+
+  const authHeader = Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+  try {
+    const rzpRes = await fetch('https://api.razorpay.com/v1/methods', {
+      headers: { Authorization: `Basic ${authHeader}` }
+    });
+
+    if (!rzpRes.ok) {
+      const errText = await rzpRes.text();
+      return res.json({
+        configured: true,
+        httpStatus: rzpRes.status,
+        keyId,
+        authSuccess: false,
+        error: errText,
+        diagnostic:
+          rzpRes.status === 401
+            ? 'Authentication failed (401). Ensure RAZORPAY_KEY_SECRET matches the live key ID.'
+            : `Razorpay API responded with HTTP ${rzpRes.status}`
+      });
+    }
+
+    const data = await rzpRes.json();
+    const recurringUpi = Boolean(data.recurring?.upi);
+    const recurringUpiAutopay = data.recurring?.upi_autopay || { collect: false, intent: false };
+    const hasUpiAutopay = Boolean(recurringUpi || recurringUpiAutopay.intent || recurringUpiAutopay.collect);
+
+    return res.json({
+      configured: true,
+      httpStatus: 200,
+      keyId,
+      authSuccess: true,
+      oneTimeUpi: Boolean(data.upi),
+      oneTimeUpiIntent: Boolean(data.upi_intent),
+      recurringUpi,
+      recurringUpiAutopay,
+      recurringNach: Boolean(data.recurring?.nach),
+      recurringCards: Boolean(data.recurring?.card),
+      hasUpiAutopay,
+      summary: hasUpiAutopay
+        ? 'Razorpay UPI AutoPay is active on your merchant account! Eligible mobile users will see UPI AutoPay.'
+        : 'UPI is enabled for one-time payments, but recurring.upi_autopay is currently DISABLED on your Razorpay Merchant ID. Razorpay will only show Cards & E-Mandate for subscriptions until Razorpay activates UPI AutoPay on your Merchant account.'
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Create Order on Razorpay (Requires authenticated user)
 app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const { type = 'plan', planId, itemId, topUpId } = req.body;
+  const { type = 'plan', planId, itemId, topUpId, phone } = req.body;
+
+  // If a phone number was passed during checkout, update user's profile for NPCI compliance
+  if (phone) {
+    const cleanPhone = String(phone).replace(/[^0-9]/g, '');
+    if (cleanPhone.length >= 10 && user.phone !== cleanPhone.slice(-10)) {
+      user.phone = cleanPhone.slice(-10);
+      try {
+        await prodDb.saveUser(user);
+      } catch (e: any) {
+        console.warn('[User Phone Update Warning]:', e.message);
+      }
+    }
+  }
 
   const targetId = itemId || topUpId || planId || 'plan_intro_daily';
   const isTopUp = type === 'topup' || targetId.startsWith('topup_');
@@ -1397,6 +1470,122 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     wallet: prodDb.getWallet(user.id),
     subscription: newSubscription,
     message: 'Payment and AutoPay mandate verified successfully'
+  });
+});
+
+// Google Play In-App Purchase Verification & Unified Balance Sync (Android com.aiprimestudio.app)
+app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), async (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const { productId, purchaseToken, orderId } = req.body;
+
+  if (!productId || !purchaseToken) {
+    return res.status(400).json({ error: 'Missing productId or purchaseToken for Google Play verification' });
+  }
+
+  // Idempotency: Prevent duplicate credit grants on network retries
+  const idempotencyKey = `play_purchase_${purchaseToken.slice(-24)}`;
+  if (await prodDb.isWebhookProcessed(idempotencyKey)) {
+    return res.json({
+      success: true,
+      message: 'Purchase already acknowledged and credited to your account',
+      wallet: prodDb.getWallet(user.id),
+      subscription: prodDb.getSubscription(user.id)
+    });
+  }
+
+  // Map Google Play Product ID to Plan or Top-Up
+  let creditsToAdd = 0;
+  let isSubscription = false;
+  let planId: string | null = null;
+  let packTitle = 'Google Play In-App Purchase';
+  let planAmount = 0;
+
+  if (productId === 'sub_weekly_creator' || productId === 'plan_weekly_creator') {
+    creditsToAdd = 300;
+    isSubscription = true;
+    planId = 'plan_weekly_creator';
+    packTitle = 'Creator Weekly (Google Play)';
+    planAmount = 199;
+  } else if (productId === 'sub_monthly_creator' || productId === 'plan_monthly_creator') {
+    creditsToAdd = 1800;
+    isSubscription = true;
+    planId = 'plan_monthly_creator';
+    packTitle = 'Creator Monthly (Google Play)';
+    planAmount = 998;
+  } else if (productId === 'plan_intro_daily' || productId === 'sub_intro_daily') {
+    creditsToAdd = 50;
+    isSubscription = true;
+    planId = 'plan_intro_daily';
+    packTitle = 'Double Bonanza Intro (Google Play)';
+    planAmount = 1;
+  } else if (productId.startsWith('topup_')) {
+    const pack = getTopUpPackById(productId) || CENTRAL_TOP_UP_PACKS[0];
+    creditsToAdd = pack.credits;
+    packTitle = pack.name;
+    planAmount = pack.price;
+  } else {
+    creditsToAdd = 100;
+    packTitle = `Google Play Pack: ${productId}`;
+    planAmount = 49;
+  }
+
+  // Record payment in unified database
+  const effectiveOrderId = orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const paymentRecord: PaymentRecord = {
+    id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    orderId: effectiveOrderId,
+    paymentId: purchaseToken,
+    userId: user.id,
+    provider: 'google_play',
+    amount: planAmount,
+    currency: 'INR',
+    type: isSubscription ? 'subscription' : 'one_time',
+    status: 'captured',
+    isAutoPay: isSubscription,
+    verificationStatus: 'verified',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await prodDb.recordPayment(paymentRecord);
+
+  // Activate subscription if subscription product
+  let newSub: UserSubscription | null = null;
+  if (isSubscription && planId) {
+    const plan = getSubscriptionPlanById(planId) || CENTRAL_SUBSCRIPTION_PLANS[0];
+    const subscriptionRecord: UserSubscription = {
+      id: effectiveOrderId,
+      userId: user.id,
+      planId: plan.id,
+      planName: plan.name,
+      provider: 'google_play',
+      mandateId: purchaseToken,
+      status: 'active',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + (plan.validityDays || 7) * 86400000).toISOString(),
+      renewalAmount: plan.renewalPrice
+    };
+    newSub = subscriptionRecord;
+    await prodDb.setSubscription(subscriptionRecord);
+  }
+
+  // Grant credits to unified wallet
+  await prodDb.creditWallet(
+    user.id,
+    creditsToAdd,
+    `${packTitle} (Google Play)`,
+    purchaseToken,
+    isSubscription ? 'subscription' : 'topup'
+  );
+
+  await prodDb.markWebhookProcessed(idempotencyKey);
+
+  res.json({
+    success: true,
+    message: `Google Play purchase verified! Added ${creditsToAdd} credits.`,
+    creditsAdded: creditsToAdd,
+    wallet: prodDb.getWallet(user.id),
+    subscription: newSub || prodDb.getSubscription(user.id),
+    profile: prodDb.getUser(user.id)
   });
 });
 

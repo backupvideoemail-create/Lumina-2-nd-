@@ -33,6 +33,7 @@ export const PlansModal: React.FC = () => {
 
   // Default selection is "Double Bonanza" (₹1)
   const [selectedPlanId, setSelectedPlanId] = useState<string>('plan_intro_daily');
+  const [phoneInput, setPhoneInput] = useState<string>(user?.phone || '');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!plansModalOpen) return null;
@@ -53,8 +54,10 @@ export const PlansModal: React.FC = () => {
       return;
     }
 
-    // 1. Request real order or subscription mandate from server
-    const res = await initiateCheckout('plan', currentPlan.id, 'razorpay');
+    const cleanPhone = (phoneInput || user?.phone || '').replace(/[^0-9]/g, '');
+
+    // 1. Request real order or subscription mandate from server with phone
+    const res = await initiateCheckout('plan', currentPlan.id, 'razorpay', cleanPhone);
     if (!res.success || (!res.orderId && !res.subscriptionId)) {
       setErrorMessage(res.error || 'Failed to initiate checkout order with payment server. Please try again.');
       return;
@@ -109,7 +112,7 @@ export const PlansModal: React.FC = () => {
         },
         prefill: {
           name: user?.name || 'AI Prime Creator',
-          contact: user?.phone ? user.phone.replace(/[^0-9]/g, '').slice(-10) : '',
+          contact: cleanPhone.length >= 10 ? cleanPhone.slice(-10) : (user?.phone ? user.phone.replace(/[^0-9]/g, '').slice(-10) : ''),
           email: user?.email || 'ai.prime.studio.pro@gmail.com'
         },
         send_sms_hash: true,
@@ -358,6 +361,23 @@ export const PlansModal: React.FC = () => {
             );
           })}
         </div>
+
+        {/* UPI AutoPay Mobile Mandate Input (NPCI requirement for UPI AutoPay) */}
+        {!user?.phone && (
+          <div className="mx-3.5 mt-2.5 p-2 rounded-xl bg-white/[0.04] border border-amber-500/20 flex items-center gap-2">
+            <span className="text-[11px] font-black text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-md border border-amber-500/30 shrink-0">
+              +91
+            </span>
+            <input
+              type="tel"
+              maxLength={10}
+              placeholder="10-digit mobile (for UPI AutoPay)"
+              value={phoneInput}
+              onChange={(e) => setPhoneInput(e.target.value.replace(/[^0-9]/g, ''))}
+              className="bg-transparent text-xs text-white placeholder-stone-500 outline-none w-full font-mono tracking-wider"
+            />
+          </div>
+        )}
 
         {/* Error notification if checkout fails */}
         {errorMessage && (

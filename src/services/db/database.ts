@@ -517,6 +517,12 @@ class ProductionDatabase {
     return { user: newUser, token: sessionToken, isNewUser: true };
   }
 
+  public async saveUser(user: UserProfile): Promise<void> {
+    this.db.users[user.id] = user;
+    this.save();
+    this.syncToFirestore('users', user.id, user);
+  }
+
   public revokeToken(token: string): boolean {
     for (const identity of Object.values(this.db.authIdentities)) {
       if (identity.sessionTokens && identity.sessionTokens.includes(token)) {

@@ -210,7 +210,7 @@ export interface UserSubscription {
   userId: string;
   planId: string;
   planName: string;
-  provider: 'cashfree' | 'razorpay' | 'mandate_gateway';
+  provider: 'cashfree' | 'razorpay' | 'mandate_gateway' | 'google_play';
   mandateId: string;
   subscriptionId?: string;
   status: SubscriptionStatus;
@@ -231,10 +231,10 @@ export interface PaymentRecord {
   subscriptionId?: string;
   mandateId?: string;
   userId: string;
-  provider: 'razorpay' | 'cashfree';
+  provider: 'razorpay' | 'cashfree' | 'google_play';
   amount: number; // in INR
   currency: string;
-  type: 'intro_mandate' | 'recurring_renewal' | 'one_time';
+  type: 'intro_mandate' | 'recurring_renewal' | 'one_time' | 'subscription';
   status: 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
   isAutoPay: boolean;
   verificationStatus: 'verified' | 'unverified' | 'failed';

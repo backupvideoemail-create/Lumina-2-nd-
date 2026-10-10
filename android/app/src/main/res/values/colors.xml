@@ -1,0 +1,10 @@
+<resources>
+    <color name="obsidian_background">#07060B</color>
+    <color name="card_surface">#121118</color>
+    <color name="amber_primary">#FF9F00</color>
+    <color name="amber_gold">#FFB703</color>
+    <color name="neon_violet">#A855F7</color>
+    <color name="neon_cyan">#00DFD8</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#9CA3AF</color>
+</resources>

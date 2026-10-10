@@ -99,7 +99,7 @@ interface AppContextType {
   topUps: TopUpOption[];
   hasActivePlan: boolean;
   isPaying: boolean;
-  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay') => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
+  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay', phone?: string) => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
   verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<boolean>;
   cancelSubscription: () => Promise<boolean>;
 
@@ -606,7 +606,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const initiateCheckout = async (
     type: 'plan' | 'topup',
     itemId: string,
-    provider: 'razorpay' | 'cashfree' = 'razorpay'
+    provider: 'razorpay' | 'cashfree' = 'razorpay',
+    phone?: string
   ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }> => {
     if (!user) {
       setPendingAction({ type: 'buy_plan', planId: itemId });
@@ -622,7 +623,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'Content-Type': 'application/json',
           ...getAuthHeaders()
         },
-        body: JSON.stringify({ type, planId: itemId, topUpId: itemId, itemId, provider })
+        body: JSON.stringify({ type, planId: itemId, topUpId: itemId, itemId, provider, phone })
       });
       const data = await res.json();
       setIsPaying(false);

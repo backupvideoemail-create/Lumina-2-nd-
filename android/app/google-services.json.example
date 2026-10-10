@@ -1,0 +1,34 @@
+{
+  "project_info": {
+    "project_number": "221269328833",
+    "project_id": "gen-lang-client-0525281130",
+    "storage_bucket": "gen-lang-client-0525281130.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:221269328833:android:REPLACE_WITH_YOUR_FIREBASE_ANDROID_APP_ID",
+        "android_client_info": {
+          "package_name": "com.aiprimestudio.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "221269328833-s3a664qbbk8ppggmup39jb15u4fo8qjl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCMNy9FUJywPhmT2q3aNhI-EuegCbJ18E4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
