@@ -1083,11 +1083,34 @@ app.get('/api/payments/razorpay/capabilities', async (_req, res) => {
       });
     }
 
-    // 2. Fetch merchant payment methods & recurring capabilities
+    // 2. Separately verify Subscriptions API access (Recurring Mandates API permission)
+    const subsRes = await fetch('https://api.razorpay.com/v1/subscriptions?count=1', {
+      headers: { Authorization: `Basic ${authHeader}` }
+    });
+    const subsData = subsRes.ok ? await subsRes.json() : null;
+    const subscriptionsApiActive = subsRes.ok;
+    const latestSubId = subsData?.items?.[0]?.id || null;
+
+    // 3. Fetch account-level payment methods & recurring capabilities
     const rzpRes = await fetch(`https://api.razorpay.com/v1/methods?key_id=${encodeURIComponent(keyId)}`);
     const data = rzpRes.ok ? await rzpRes.json() : {};
-    const recurringUpi = Boolean(data.recurring?.upi);
-    const recurringUpiAutopay = data.recurring?.upi_autopay || { collect: false, intent: false };
+
+    // 4. If a sample subscription exists, check methods directly against that subscription
+    let subMethodsData: any = null;
+    if (latestSubId) {
+      try {
+        const subMethodsRes = await fetch(`https://api.razorpay.com/v1/methods?key_id=${encodeURIComponent(keyId)}&subscription_id=${latestSubId}`);
+        if (subMethodsRes.ok) {
+          subMethodsData = await subMethodsRes.json();
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    const recurringObj = subMethodsData?.recurring || data.recurring || {};
+    const recurringUpi = Boolean(recurringObj.upi);
+    const recurringUpiAutopay = recurringObj.upi_autopay || { collect: false, intent: false };
     const hasUpiAutopay = Boolean(recurringUpi || recurringUpiAutopay.intent || recurringUpiAutopay.collect);
 
     return res.json({
@@ -1095,13 +1118,23 @@ app.get('/api/payments/razorpay/capabilities', async (_req, res) => {
       httpStatus: 200,
       keyId,
       authSuccess: true,
+      subscriptionsApiActive,
+      checkoutConfig: {
+        upiCollectMigration: 'applied',
+        hiddenFlows: ['collect'],
+        targetFlows: {
+          mobile: 'upi_intent',
+          desktop: 'upi_qr'
+        }
+      },
       oneTimeUpi: Boolean(data.upi),
       oneTimeUpiIntent: Boolean(data.upi_intent),
       recurringUpi,
       recurringUpiAutopay,
-      recurringNach: Boolean(data.recurring?.nach),
-      recurringCards: Boolean(data.recurring?.card),
+      recurringNach: Boolean(recurringObj.nach),
+      recurringCards: Boolean(recurringObj.card),
       hasUpiAutopay,
+      latestSubscriptionTested: latestSubId,
       summary: hasUpiAutopay
         ? 'Razorpay UPI AutoPay is active on your merchant account! Eligible mobile users will see UPI AutoPay.'
         : 'UPI is enabled for one-time payments, but recurring.upi_autopay is currently DISABLED on your Razorpay Merchant ID. Razorpay will only show Cards & E-Mandate for subscriptions until Razorpay activates UPI AutoPay on your Merchant account.'

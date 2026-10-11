@@ -123,6 +123,16 @@ export const TopUpModal: React.FC = () => {
         name: 'AI Prime Studio · Top-Up',
         description: `${selectedPack.name || 'Top-Up'} · ${selectedPack.credits} Instant Credits`,
         image: logoUrl,
+        config: {
+          display: {
+            hide: [
+              {
+                method: 'upi',
+                flows: ['collect']
+              }
+            ]
+          }
+        },
         handler: async (response: any) => {
           const verified = await verifyPayment(
             response.razorpay_order_id || orderData.orderId,

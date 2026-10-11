@@ -9,7 +9,9 @@ import {
   Ban,
   ArrowRight,
   Tv,
-  AlertCircle
+  AlertCircle,
+  ShieldCheck,
+  Lock
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import {
@@ -33,7 +35,9 @@ export const PlansModal: React.FC = () => {
 
   // Default selection is "Double Bonanza" (₹1)
   const [selectedPlanId, setSelectedPlanId] = useState<string>('plan_intro_daily');
+  const [showPhoneStep, setShowPhoneStep] = useState<boolean>(false);
   const [phoneInput, setPhoneInput] = useState<string>(user?.phone || '');
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!plansModalOpen) return null;
@@ -42,22 +46,12 @@ export const PlansModal: React.FC = () => {
     CENTRAL_SUBSCRIPTION_PLANS.find((p) => p.id === selectedPlanId) ||
     CENTRAL_SUBSCRIPTION_PLANS[0];
 
-  const handleStartRealPayment = async () => {
+  const proceedWithRazorpayCheckout = async (phoneToUse: string) => {
     setErrorMessage(null);
-
-    // Gate with high-intent authentication
-    if (!user) {
-      triggerHighIntentAction({
-        type: 'buy_plan',
-        planId: currentPlan.id
-      });
-      return;
-    }
-
-    const cleanPhone = (phoneInput || user?.phone || '').replace(/[^0-9]/g, '');
+    setPhoneError(null);
 
     // 1. Request real order or subscription mandate from server with phone
-    const res = await initiateCheckout('plan', currentPlan.id, 'razorpay', cleanPhone);
+    const res = await initiateCheckout('plan', currentPlan.id, 'razorpay', phoneToUse);
     if (!res.success || (!res.orderId && !res.subscriptionId)) {
       setErrorMessage(res.error || 'Failed to initiate checkout order with payment server. Please try again.');
       return;
@@ -80,7 +74,6 @@ export const PlansModal: React.FC = () => {
 
       // 3. Open actual Razorpay Checkout Modal
       const isAutoPay = Boolean(res.subscriptionId || currentPlan.autoPayEnabled);
-
       const logoUrl = `${window.location.origin}/logo.png`;
 
       const options: any = {
@@ -91,8 +84,17 @@ export const PlansModal: React.FC = () => {
             ? 'Trail Offer · ₹1 Intro Access + AutoPay Mandate'
             : `${currentPlan.name} AutoPay`,
         image: logoUrl,
+        config: {
+          display: {
+            hide: [
+              {
+                method: 'upi',
+                flows: ['collect']
+              }
+            ]
+          }
+        },
         handler: async (response: any) => {
-          // Send real payment & mandate verification payload to server
           const verified = await verifyPayment(
             response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || '',
             'plan',
@@ -112,7 +114,7 @@ export const PlansModal: React.FC = () => {
         },
         prefill: {
           name: user?.name || 'AI Prime Creator',
-          contact: cleanPhone.length >= 10 ? cleanPhone.slice(-10) : (user?.phone ? user.phone.replace(/[^0-9]/g, '').slice(-10) : ''),
+          contact: phoneToUse,
           email: user?.email || 'ai.prime.studio.pro@gmail.com'
         },
         send_sms_hash: true,
@@ -139,8 +141,6 @@ export const PlansModal: React.FC = () => {
         }
       };
 
-      // In Razorpay Subscriptions SDK, subscription_id is the primary mandate identifier.
-      // Do NOT set options.recurring = true here as that forces card tokenization mode.
       if (res.subscriptionId) {
         options.subscription_id = res.subscriptionId;
         if (res.customerId) {
@@ -160,6 +160,36 @@ export const PlansModal: React.FC = () => {
       rzp.open();
     } catch (err: any) {
       setErrorMessage(err.message || 'Could not launch Razorpay checkout.');
+    }
+  };
+
+  const handleStartRealPayment = async () => {
+    setErrorMessage(null);
+
+    // Gate with high-intent authentication
+    if (!user) {
+      triggerHighIntentAction({
+        type: 'buy_plan',
+        planId: currentPlan.id
+      });
+      return;
+    }
+
+    const clean = (phoneInput || user?.phone || '').replace(/[^0-9]/g, '');
+    if (clean.length < 10) {
+      setShowPhoneStep(true);
+      return;
+    }
+
+    await proceedWithRazorpayCheckout(clean.slice(-10));
+  };
+
+  const handleConfirmPhoneAndPay = async () => {
+    setPhoneError(null);
+    const clean = phoneInput.replace(/[^0-9]/g, '');
+    if (clean.length < 10) {
+      setPhoneError('Please enter a valid 10-digit mobile number');
+      return;
     }
   };
 
@@ -290,130 +320,211 @@ export const PlansModal: React.FC = () => {
           </div>
         </div>
 
-        {/* 2. THREE VIBRANT, ANIMATED iPHONE-STYLE PLAN CARDS */}
-        <div className="px-3.5 pt-2 space-y-2.5 relative z-20">
-          {CENTRAL_SUBSCRIPTION_PLANS.map((plan, index) => {
-            const isSelected = selectedPlanId === plan.id;
-            const isFirst = index === 0;
-            const isSecond = index === 1;
+        {showPhoneStep ? (
+          /* DEDICATED MOBILE VERIFICATION STEP (NPCI & RAZORPAY RECEIPT) */
+          <div className="px-4 pt-3 pb-2 space-y-3.5 relative z-20">
+            <button
+              onClick={() => {
+                setShowPhoneStep(false);
+                setPhoneError(null);
+              }}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-stone-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Back to Plan Selection</span>
+            </button>
 
-            return (
-              <motion.div
-                key={plan.id}
-                whileTap={{ scale: 0.985 }}
-                onClick={() => {
-                  setSelectedPlanId(plan.id);
-                  setErrorMessage(null);
-                }}
-                className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
-                  // Plan 1: Glowing Golden-Amber Card
-                  isFirst
-                    ? isSelected
-                      ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
-                      : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/25 hover:border-amber-500/40'
-                    // Plan 2: Royal Violet Card
-                    : isSecond
-                    ? isSelected
-                      ? 'bg-gradient-to-r from-[#261942]/95 via-[#171230]/95 to-[#24173e]/95 border-2 border-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.45)]'
-                      : 'bg-gradient-to-r from-[#18122c]/80 via-[#120e24]/80 to-[#1a1432]/80 border border-purple-500/25 hover:border-purple-400/45 shadow-[0_4px_20px_rgba(168,85,247,0.12)]'
-                    // Plan 3: Ocean Cyan Card
-                    : isSelected
-                    ? 'bg-gradient-to-r from-[#0f2538]/95 via-[#0b1c28]/95 to-[#0e2938]/95 border-2 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.45)]'
-                    : 'bg-gradient-to-r from-[#0d1f2d]/80 via-[#0a1822]/80 to-[#0d222e]/80 border border-cyan-500/25 hover:border-cyan-400/45 shadow-[0_4px_20px_rgba(6,182,212,0.12)]'
-                }`}
-              >
-                {/* Left Side: Title + Badge + Subtitle */}
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[15px] font-bold text-white tracking-wide">
-                      {plan.cardTitle}
-                    </span>
-                    {plan.badge && isSelected && (
-                      <span className="px-1.5 py-0.5 rounded-md bg-[#ff9f00] text-black text-[9px] font-black uppercase tracking-wider shadow-sm animate-pulse">
-                        {plan.badge}
-                      </span>
-                    )}
-                  </div>
-                  {/* Plan 1 shows 'Exclusive Intro Offer Plan', Plan 2 shows '7 days validity', Plan 3 shows '30 days validity' */}
-                  <p className="text-[11px] font-medium text-stone-300">
-                    {plan.validityLabel}
-                  </p>
+            {/* Plan summary mini-banner */}
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-amber-500/15 to-orange-500/10 border border-amber-500/25 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-300 shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
                 </div>
+                <div>
+                  <div className="text-xs font-bold text-white">
+                    {currentPlan.cardTitle}
+                  </div>
+                  <div className="text-[10.5px] text-stone-300">
+                    {currentPlan.validityLabel} · {currentPlan.periodLabel}
+                  </div>
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-xl font-black text-amber-300 font-display">
+                  ₹{currentPlan.price}
+                </span>
+              </div>
+            </div>
 
-                {/* Right Side: Price + Period Label */}
-                <div className="text-right shrink-0 pl-3">
-                  <div
-                    className={`text-2xl sm:text-3xl font-black font-display leading-none ${
+            {/* Mobile number input container */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-stone-200 block">
+                Mobile Number for Payment & Invoice <span className="text-amber-400">*</span>
+              </label>
+              <div className="flex items-center gap-2 p-3 rounded-xl bg-white/[0.05] border border-white/15 focus-within:border-amber-400 focus-within:bg-white/[0.08] transition-all">
+                <span className="text-xs font-black text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-md border border-amber-500/30 shrink-0">
+                  +91
+                </span>
+                <input
+                  type="tel"
+                  maxLength={10}
+                  autoFocus
+                  placeholder="Enter 10-digit mobile number"
+                  value={phoneInput}
+                  onChange={(e) => {
+                    setPhoneInput(e.target.value.replace(/[^0-9]/g, ''));
+                    setPhoneError(null);
+                  }}
+                  className="bg-transparent text-sm text-white placeholder-stone-500 outline-none w-full font-mono tracking-wider"
+                />
+              </div>
+
+              {phoneError && (
+                <div className="flex items-center gap-1.5 text-[11px] text-rose-400 font-medium pt-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{phoneError}</span>
+                </div>
+              )}
+
+              <p className="text-[10px] text-stone-400 leading-normal pt-1">
+                Required by NPCI and Razorpay to deliver your payment receipt, SMS confirmation, and link UPI payment methods.
+              </p>
+            </div>
+
+            {errorMessage && (
+              <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
+            {/* Confirm CTA */}
+            <div className="pt-1">
+              <motion.button
+                whileTap={{ scale: 0.98 }}
+                onClick={handleConfirmPhoneAndPay}
+                disabled={isPaying}
+                className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 relative overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
+                <span className="relative z-10">
+                  {isPaying ? 'Connecting to Razorpay...' : `Proceed to Secure Checkout · ₹${currentPlan.price}`}
+                </span>
+                <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
+              </motion.button>
+            </div>
+
+            <div className="flex items-center justify-center gap-1.5 text-[10px] text-stone-400 pt-1">
+              <Lock className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Official 256-bit Encrypted Checkout via Razorpay</span>
+            </div>
+          </div>
+        ) : (
+          /* CLEAN PLAN SELECTION VIEW (ZERO VISIBLE PHONE INPUT UNDER CARDS) */
+          <>
+            <div className="px-3.5 pt-2 space-y-2.5 relative z-20">
+              {CENTRAL_SUBSCRIPTION_PLANS.map((plan, index) => {
+                const isSelected = selectedPlanId === plan.id;
+                const isFirst = index === 0;
+                const isSecond = index === 1;
+
+                return (
+                  <motion.div
+                    key={plan.id}
+                    whileTap={{ scale: 0.985 }}
+                    onClick={() => {
+                      setSelectedPlanId(plan.id);
+                      setErrorMessage(null);
+                    }}
+                    className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
                       isFirst
-                        ? isSelected ? 'text-[#ffb703]' : 'text-amber-200'
+                        ? isSelected
+                          ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
+                          : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/25 hover:border-amber-500/40'
                         : isSecond
-                        ? isSelected ? 'text-purple-300' : 'text-white'
-                        : isSelected ? 'text-cyan-300' : 'text-white'
+                        ? isSelected
+                          ? 'bg-gradient-to-r from-[#261942]/95 via-[#171230]/95 to-[#24173e]/95 border-2 border-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.45)]'
+                          : 'bg-gradient-to-r from-[#18122c]/80 via-[#120e24]/80 to-[#1a1432]/80 border border-purple-500/25 hover:border-purple-400/45 shadow-[0_4px_20px_rgba(168,85,247,0.12)]'
+                        : isSelected
+                        ? 'bg-gradient-to-r from-[#0f2538]/95 via-[#0b1c28]/95 to-[#0e2938]/95 border-2 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.45)]'
+                        : 'bg-gradient-to-r from-[#0d1f2d]/80 via-[#0a1822]/80 to-[#0d222e]/80 border border-cyan-500/25 hover:border-cyan-400/45 shadow-[0_4px_20px_rgba(6,182,212,0.12)]'
                     }`}
                   >
-                    ₹{plan.price}
-                  </div>
-                  <div className="text-[10px] text-stone-400 font-semibold mt-1">
-                    {plan.periodLabel}
-                  </div>
-                </div>
-              </motion.div>
-            );
-          })}
-        </div>
+                    {/* Left Side: Title + Badge + Subtitle */}
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[15px] font-bold text-white tracking-wide">
+                          {plan.cardTitle}
+                        </span>
+                        {plan.badge && isSelected && (
+                          <span className="px-1.5 py-0.5 rounded-md bg-[#ff9f00] text-black text-[9px] font-black uppercase tracking-wider shadow-sm animate-pulse">
+                            {plan.badge}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] font-medium text-stone-300">
+                        {plan.validityLabel}
+                      </p>
+                    </div>
 
-        {/* UPI AutoPay Mobile Mandate Input (NPCI requirement for UPI AutoPay) */}
-        {!user?.phone && (
-          <div className="mx-3.5 mt-2.5 p-2 rounded-xl bg-white/[0.04] border border-amber-500/20 flex items-center gap-2">
-            <span className="text-[11px] font-black text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded-md border border-amber-500/30 shrink-0">
-              +91
-            </span>
-            <input
-              type="tel"
-              maxLength={10}
-              placeholder="10-digit mobile (for UPI AutoPay)"
-              value={phoneInput}
-              onChange={(e) => setPhoneInput(e.target.value.replace(/[^0-9]/g, ''))}
-              className="bg-transparent text-xs text-white placeholder-stone-500 outline-none w-full font-mono tracking-wider"
-            />
-          </div>
+                    {/* Right Side: Price + Period Label */}
+                    <div className="text-right shrink-0 pl-3">
+                      <div
+                        className={`text-2xl sm:text-3xl font-black font-display leading-none ${
+                          isFirst
+                            ? isSelected ? 'text-[#ffb703]' : 'text-amber-200'
+                            : isSecond
+                            ? isSelected ? 'text-purple-300' : 'text-white'
+                            : isSelected ? 'text-cyan-300' : 'text-white'
+                        }`}
+                      >
+                        ₹{plan.price}
+                      </div>
+                      <div className="text-[10px] text-stone-400 font-semibold mt-1">
+                        {plan.periodLabel}
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+
+            {/* Error notification if checkout fails */}
+            {errorMessage && (
+              <div className="mx-3.5 mt-3 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
+            {/* PRIMARY CTA BUTTON: High-Impact Gold-to-Electric-Blue Gradient with Sheen */}
+            <div className="px-3.5 pt-3">
+              <motion.button
+                whileTap={{ scale: 0.98 }}
+                onClick={handleStartRealPayment}
+                disabled={isPaying}
+                className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
+                <span className="relative z-10">
+                  {isPaying
+                    ? 'Connecting to Razorpay...'
+                    : selectedPlanId === 'plan_intro_daily'
+                    ? 'Continue & Pay ₹1'
+                    : `Continue & Pay ₹${currentPlan.price}`}
+                </span>
+                <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
+              </motion.button>
+            </div>
+
+            {/* POLICY TEXT: Compact 2 lines matching design */}
+            <div className="text-center pt-2 px-5">
+              <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
+                Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
+              </p>
+            </div>
+          </>
         )}
-
-        {/* Error notification if checkout fails */}
-        {errorMessage && (
-          <div className="mx-3.5 mt-3 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMessage}</span>
-          </div>
-        )}
-
-        {/* 3. PRIMARY CTA BUTTON: High-Impact Gold-to-Electric-Blue Gradient with Sheen */}
-        <div className="px-3.5 pt-3">
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            onClick={handleStartRealPayment}
-            disabled={isPaying}
-            className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
-          >
-            {/* Shimmer laser sheen across button */}
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
-            <span className="relative z-10">
-              {isPaying
-                ? 'Connecting to Razorpay...'
-                : selectedPlanId === 'plan_intro_daily'
-                ? 'Continue & Pay ₹1'
-                : `Continue & Pay ₹${currentPlan.price}`}
-            </span>
-            <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
-          </motion.button>
-        </div>
-
-        {/* 4. POLICY TEXT: Compact 2 lines matching screenshot */}
-        <div className="text-center pt-2 px-5">
-          <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
-            Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
-          </p>
-        </div>
       </motion.div>
     </div>
   );
