@@ -10,8 +10,11 @@ export interface GooglePlayVerificationResult {
   orderId?: string;
   purchaseState?: number;
   acknowledgementState?: number;
+  consumptionState?: number;
   rawDetails?: any;
   error?: string;
+  serverAcknowledged?: boolean;
+  serverConsumed?: boolean;
 }
 
 class GooglePlayService {
@@ -78,8 +81,53 @@ class GooglePlayService {
   }
 
   /**
+   * Server-side acknowledgement of a subscription purchase.
+   * Google Play will cancel and auto-refund unacknowledged subscriptions after 3 days.
+   */
+  async acknowledgeSubscription(packageName: string, subscriptionId: string, purchaseToken: string, accessToken: string): Promise<boolean> {
+    try {
+      const url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/subscriptions/${subscriptionId}/tokens/${encodeURIComponent(purchaseToken)}:acknowledge`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ developerPayload: `ack_sub_${Date.now()}` })
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Server-side consumption of a one-time product (e.g. top-ups, intro pass).
+   * Consuming allows the user to purchase the one-time item again and marks it consumed.
+   */
+  async consumeProduct(packageName: string, productId: string, purchaseToken: string, accessToken: string): Promise<boolean> {
+    try {
+      const url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/products/${productId}/tokens/${encodeURIComponent(purchaseToken)}:consume`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Authoritatively verifies an in-app product or subscription purchase token
    * directly against the official Google Play Developer API (androidpublisher.googleapis.com).
+   * Strictly enforces:
+   * 1. Package name match
+   * 2. Active status (rejects canceled, pending, or expired tokens)
+   * 3. Server-side acknowledgement of subscriptions and consumption of one-time items
+   * 4. Safe failure on verification errors
    */
   async verifyPurchase(
     packageName: string,
@@ -89,7 +137,6 @@ class GooglePlayService {
   ): Promise<GooglePlayVerificationResult> {
     const creds = this.getCredentials();
     if (!creds) {
-      // In development mode, check if explicitly bypassed with mock or require strict config
       if (process.env.NODE_ENV === 'development' && process.env.BYPASS_PLAY_VERIFY === 'true') {
         return {
           verified: true,
@@ -108,7 +155,7 @@ class GooglePlayService {
       const accessToken = await this.getAccessToken(creds);
 
       if (isSubscription) {
-        // First try Subscriptions v2 API
+        // 1. Try Subscriptions v2 API
         const urlV2 = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/subscriptionsv2/tokens/${encodeURIComponent(purchaseToken)}`;
         const resV2 = await fetch(urlV2, {
           headers: { Authorization: `Bearer ${accessToken}` }
@@ -126,14 +173,22 @@ class GooglePlayService {
               error: `Subscription is not active. State: ${state}`
             };
           }
+
+          // Acknowledge subscription server-side if not already acknowledged
+          let serverAck = false;
+          if (subData.acknowledgementState === 0 || subData.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_PENDING') {
+            serverAck = await this.acknowledgeSubscription(packageName, productId, purchaseToken, accessToken);
+          }
+
           return {
             verified: true,
             orderId: subData.latestOrderId,
-            rawDetails: subData
+            rawDetails: subData,
+            serverAcknowledged: serverAck
           };
         }
 
-        // Fallback to Subscriptions v1 API
+        // 2. Fallback to Subscriptions v1 API
         const urlV1 = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/subscriptions/${productId}/tokens/${encodeURIComponent(purchaseToken)}`;
         const resV1 = await fetch(urlV1, {
           headers: { Authorization: `Bearer ${accessToken}` }
@@ -158,13 +213,19 @@ class GooglePlayService {
           };
         }
 
+        let serverAck = false;
+        if (dataV1.acknowledgementState === 0) {
+          serverAck = await this.acknowledgeSubscription(packageName, productId, purchaseToken, accessToken);
+        }
+
         return {
           verified: true,
           orderId: dataV1.orderId,
-          rawDetails: dataV1
+          rawDetails: dataV1,
+          serverAcknowledged: serverAck
         };
       } else {
-        // Standard In-App One-Time Product
+        // Standard In-App One-Time Product (e.g. plan_intro_daily, topup_*)
         const urlProduct = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/products/${productId}/tokens/${encodeURIComponent(purchaseToken)}`;
         const resProd = await fetch(urlProduct, {
           headers: { Authorization: `Bearer ${accessToken}` }
@@ -188,12 +249,20 @@ class GooglePlayService {
           };
         }
 
+        // Server-side consumption for consumable one-time products (top-ups and 24h intro pass)
+        let serverConsumed = false;
+        if (prodData.consumptionState === 0) {
+          serverConsumed = await this.consumeProduct(packageName, productId, purchaseToken, accessToken);
+        }
+
         return {
           verified: true,
           orderId: prodData.orderId,
           purchaseState: prodData.purchaseState,
           acknowledgementState: prodData.acknowledgementState,
-          rawDetails: prodData
+          consumptionState: prodData.consumptionState,
+          rawDetails: prodData,
+          serverConsumed
         };
       }
     } catch (err: any) {

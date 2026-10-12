@@ -1,11 +1,11 @@
 # AI Prime Studio — Android App & Google Play Store Release Guide
-## Package: `com.aiprimestudio.app` | Target SDK: API 36 | Play Billing: v7.1.1
+## Package: `com.aiprimestudio.app` | Target SDK: API 36 | Play Billing: v9.1.0
 
 ---
 
 ## 🇮🇳 हिंदी में पूरी गाइड (Step-by-Step)
 
-मेरे भाई, आपकी ऐप का पूरा **Native Kotlin + Jetpack Compose** कोड `android/` फोल्डर में Google Play Store की नवीनतम आवश्यकताओं (Target SDK 36, Google Play Billing 7.1.1) के साथ पूरी तरह तैयार है।
+मेरे भाई, आपकी ऐप का पूरा **Native Kotlin + Jetpack Compose** कोड `android/` फोल्डर में Google Play Store की नवीनतम आवश्यकताओं (Target SDK 36, Google Play Billing 9.1.0) के साथ पूरी तरह तैयार है।
 
 ### 1. Google Play Console अकाउंट (दूसरी Gmail से बनाना)
 > **सवाल:** क्या Google Play Console अकाउंट दूसरी Gmail ID से बना सकते हैं?  
@@ -40,18 +40,20 @@
 
 ---
 
-### 4. Google Play Console में Subscriptions और In-App Products
-Play Console के **Monetize > Subscriptions & In-App Products** में ये प्रोडक्ट्स जोड़ें:
+### 4. Google Play Console में In-App Products और Subscriptions
+Play Console के **Monetize > In-app products & Subscriptions** में ये प्रोडक्ट्स जोड़ें:
 
-| Product Type | Product ID | नाम | प्राइस | क्रेडिट्स |
+| Product Type | Product ID | नाम | प्राइस | क्रेडिट्स / प्रकार |
 | :--- | :--- | :--- | :--- | :--- |
-| Subscription | `plan_intro_daily` | Trail Offer | ₹1 / 24h | 40 Credits |
-| Subscription | `sub_weekly_creator` | Creator Weekly | ₹199 / Week | 230 Credits |
-| Subscription | `sub_monthly_creator` | Creator Monthly | ₹998 / Month | 1,200 Credits |
-| In-App Product | `topup_49` | Starter Top-Up | ₹49 | 45 Credits |
-| In-App Product | `topup_99` | Creator Top-Up | ₹99 | 95 Credits |
-| In-App Product | `topup_199` | Power Top-Up | ₹199 | 200 Credits |
-| In-App Product | `topup_399` | Studio Top-Up | ₹399 | 420 Credits |
+| **In-App Product (One-Time)** | `plan_intro_daily` | Trail Offer (24h Pass) | ₹1 | 40 Credits (24 घंटे का वन-टाइम इंट्रो पास) |
+| **Subscription (Recurring)** | `sub_weekly_creator` | Creator Weekly | ₹199 / Week | 230 Credits (वीकली ऑटो-रिन्यूअल) |
+| **Subscription (Recurring)** | `sub_monthly_creator` | Creator Monthly | ₹998 / Month | 1,200 Credits (मंथली ऑटो-रिन्यूअल) |
+| **In-App Product** | `topup_49` | Starter Top-Up | ₹49 | 45 Credits |
+| **In-App Product** | `topup_99` | Creator Top-Up | ₹99 | 95 Credits |
+| **In-App Product** | `topup_199` | Power Top-Up | ₹199 | 200 Credits |
+| **In-App Product** | `topup_399` | Studio Top-Up | ₹399 | 420 Credits |
+
+*नोट:* `plan_intro_daily` एक वन-टाइम ₹1 / 24-घंटे का इंट्रो पास है, इसलिए इसे Play Console में **In-App Products** (One-Time Product) में बनाएं।
 
 बैकएंड रूट `/api/billing/googleplay/verify` अब:
 - पैकेज नेम `com.aiprimestudio.app` की सख्त जांच करता है
@@ -75,7 +77,7 @@ Play Console के **Monetize > Subscriptions & In-App Products** में य
 - **Target SDK**: API 36 (Android 16 compatible)
 - **Min SDK**: API 26 (Android 8.0+)
 - **Framework**: Native Android Kotlin + Jetpack Compose Material 3
-- **Billing**: Google Play Billing Library v7.1.1 (`BillingManager.kt`) with `PendingPurchasesParams`
+- **Billing**: Google Play Billing Library v9.1.0 (`BillingManager.kt`) with `PendingPurchasesParams` & auto-reconnect
 - **Logging**: Level.NONE in release builds (zero leakage of bearer or purchase tokens)
 - **Signing**: Safe Release Signing config reading from environment / keystore file
 - **Icons**: Adaptive vector launcher icons included in `res/mipmap-anydpi-v26`

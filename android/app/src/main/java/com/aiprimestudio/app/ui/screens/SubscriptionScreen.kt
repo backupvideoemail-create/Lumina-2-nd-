@@ -240,7 +240,7 @@ fun SubscriptionScreen(
                     tint = Color.Black
                 )
                 Text(
-                    text = if (selectedPlanId == "plan_intro_daily") "Subscribe on Google Play (₹1)" else "Subscribe on Google Play",
+                    text = if (selectedPlanId == "plan_intro_daily") "Unlock 24-Hour Pass (₹1)" else "Subscribe on Google Play",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Black,
                     color = Color.Black

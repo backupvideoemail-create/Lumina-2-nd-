@@ -1537,28 +1537,30 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     creditsToAdd = plan.includedCredits; // 230
     isSubscription = true;
     planId = plan.id;
-    packTitle = `${plan.name} (Google Play)`;
+    packTitle = `${plan.name} (Google Play Subscription)`;
     planAmount = plan.price; // 199
   } else if (productId === 'sub_monthly_creator' || productId === 'plan_monthly_creator' || productId === 'plan_monthly_pass') {
     const plan = getSubscriptionPlanById('plan_monthly_pass') || CENTRAL_SUBSCRIPTION_PLANS[2];
     creditsToAdd = plan.includedCredits; // 1200
     isSubscription = true;
     planId = plan.id;
-    packTitle = `${plan.name} (Google Play)`;
+    packTitle = `${plan.name} (Google Play Subscription)`;
     planAmount = plan.price; // 998
   } else if (productId === 'plan_intro_daily' || productId === 'sub_intro_daily') {
+    // LOCKED BUSINESS RULE: One-Time ₹1 / 24-hour Intro Pass (NOT an unintended recurring daily subscription!)
     const plan = getSubscriptionPlanById('plan_intro_daily') || CENTRAL_SUBSCRIPTION_PLANS[0];
     creditsToAdd = plan.includedCredits; // 40
-    isSubscription = true;
+    isSubscription = false; // Strictly a one-time In-App Product
     planId = plan.id;
-    packTitle = `${plan.name} (Google Play)`;
-    planAmount = plan.price; // 1
+    packTitle = `${plan.name} (One-Time 24h Pass)`;
+    planAmount = plan.price; // ₹1
   } else if (productId.startsWith('topup_')) {
     const pack = getTopUpPackById(productId);
     if (!pack) {
       return res.status(400).json({ error: `Unknown Google Play top-up pack: ${productId}` });
     }
     creditsToAdd = pack.credits;
+    isSubscription = false;
     packTitle = `${pack.name} (Google Play)`;
     planAmount = pack.price;
   } else {
@@ -1566,13 +1568,27 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     return res.status(400).json({ error: `Unknown or unsupported Google Play product ID: ${productId}` });
   }
 
-  // Idempotency: Prevent duplicate credit grants on replay or network retries
+  // Check if this token was already verified and credited
+  const existingPayment = prodDb.getPaymentByPaymentId(purchaseToken);
+  if (existingPayment) {
+    if (existingPayment.userId !== user.id) {
+      return res.status(403).json({ error: 'This purchase token has already been claimed by another account' });
+    }
+    return res.json({
+      success: true,
+      message: 'Purchase already verified and credited to your account',
+      wallet: prodDb.getWallet(user.id),
+      subscription: prodDb.getSubscription(user.id)
+    });
+  }
+
+  // Idempotency key for in-flight protection
   const tokenHash = crypto.createHash('sha256').update(purchaseToken.trim()).digest('hex');
   const idempotencyKey = `play_purchase_${tokenHash}`;
   if (await prodDb.isWebhookProcessed(idempotencyKey)) {
     return res.json({
       success: true,
-      message: 'Purchase already acknowledged and credited to your account',
+      message: 'Purchase already processed and credited',
       wallet: prodDb.getWallet(user.id),
       subscription: prodDb.getSubscription(user.id)
     });
@@ -1588,7 +1604,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
 
   if (!playVerification.verified) {
     return res.status(400).json({
-      error: `Google Play purchase verification failed: ${playVerification.error || 'Invalid or unacknowledged purchase token'}`
+      error: `Google Play purchase verification failed: ${playVerification.error || 'Invalid, pending, or unacknowledged purchase token'}`
     });
   }
 
@@ -1611,7 +1627,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
   };
   await prodDb.recordPayment(paymentRecord);
 
-  // Activate subscription if subscription product
+  // Activate subscription or 24-hour Intro Pass
   let newSub: UserSubscription | null = null;
   if (isSubscription && planId) {
     const plan = getSubscriptionPlanById(planId);
@@ -1629,9 +1645,25 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     };
     newSub = subscriptionRecord;
     await prodDb.setSubscription(subscriptionRecord);
+  } else if (productId === 'plan_intro_daily') {
+    // 24-hour Intro Pass expiry logic: 24 hours from purchase time, NO recurring mandate
+    const introPassRecord: UserSubscription = {
+      id: effectiveOrderId,
+      userId: user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer (24h Intro Pass)',
+      provider: 'google_play',
+      mandateId: purchaseToken,
+      status: 'trial',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(), // Exactly 24 hours
+      renewalAmount: 0 // Non-recurring
+    };
+    newSub = introPassRecord;
+    await prodDb.setSubscription(introPassRecord);
   }
 
-  // Grant credits to unified wallet
+  // Grant credits to unified wallet exactly once
   await prodDb.creditWallet(
     user.id,
     creditsToAdd,
@@ -1640,6 +1672,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     isSubscription ? 'subscription' : 'topup'
   );
 
+  // Mark token hash processed
   await prodDb.markWebhookProcessed(idempotencyKey);
 
   res.json({
@@ -1650,6 +1683,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     subscription: newSub || prodDb.getSubscription(user.id),
     profile: prodDb.getUser(user.id),
     developerApiVerified: playVerification.verified,
+    serverAcknowledged: playVerification.serverAcknowledged,
+    serverConsumed: playVerification.serverConsumed,
     orderId: effectiveOrderId
   });
 });

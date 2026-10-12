@@ -11,6 +11,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * Google Play Billing Manager (PBL 9.1.0 compliant)
+ * Handles both:
+ * 1. One-time In-App Products (e.g. plan_intro_daily - 24-hour Intro Pass, top-up packs)
+ * 2. Recurring Subscriptions (e.g. sub_weekly_creator, sub_monthly_creator)
+ */
 class BillingManager(
     private val context: Context,
     private val repository: AppRepository,
@@ -20,6 +26,7 @@ class BillingManager(
     private val billingClient = BillingClient.newBuilder(context)
         .setListener(this)
         .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
+        .enableAutoServiceReconnection()
         .build()
 
     private val _isReady = MutableStateFlow(false)
@@ -42,7 +49,7 @@ class BillingManager(
     override fun onBillingSetupFinished(billingResult: BillingResult) {
         if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
             _isReady.value = true
-            querySubscriptions()
+            queryAllProducts()
         }
     }
 
@@ -50,44 +57,91 @@ class BillingManager(
         _isReady.value = false
     }
 
-    private fun querySubscriptions() {
-        val productList = listOf(
+    /**
+     * Query both Subscriptions and One-Time Products using PBL 9 QueryProductDetailsResult
+     */
+    private fun queryAllProducts() {
+        val allFetched = mutableListOf<ProductDetails>()
+
+        // 1. One-Time In-App Products:
+        // - "plan_intro_daily": Locked Business Rule: One-time ₹1 / 24-hour Intro Pass (NOT a recurring subscription!)
+        // - Top-up credit packs
+        val inAppProducts = listOf(
             QueryProductDetailsParams.Product.newBuilder()
                 .setProductId("plan_intro_daily")
-                .setProductType(BillingClient.ProductType.SUBS)
+                .setProductType(BillingClient.ProductType.INAPP)
                 .build(),
             QueryProductDetailsParams.Product.newBuilder()
-                .setProductId("sub_weekly_creator")
-                .setProductType(BillingClient.ProductType.SUBS)
+                .setProductId("topup_49")
+                .setProductType(BillingClient.ProductType.INAPP)
                 .build(),
             QueryProductDetailsParams.Product.newBuilder()
-                .setProductId("sub_monthly_creator")
-                .setProductType(BillingClient.ProductType.SUBS)
+                .setProductId("topup_99")
+                .setProductType(BillingClient.ProductType.INAPP)
+                .build(),
+            QueryProductDetailsParams.Product.newBuilder()
+                .setProductId("topup_199")
+                .setProductType(BillingClient.ProductType.INAPP)
+                .build(),
+            QueryProductDetailsParams.Product.newBuilder()
+                .setProductId("topup_399")
+                .setProductType(BillingClient.ProductType.INAPP)
                 .build()
         )
 
-        val params = QueryProductDetailsParams.newBuilder()
-            .setProductList(productList)
+        val inAppParams = QueryProductDetailsParams.newBuilder()
+            .setProductList(inAppProducts)
             .build()
 
-        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
-            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                _productDetailsList.value = productDetailsResult
+        billingClient.queryProductDetailsAsync(inAppParams) { inAppResult, queryResult ->
+            if (inAppResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                allFetched.addAll(queryResult.productDetailsList)
+            }
+
+            // 2. Subscriptions: Weekly and Monthly recurring plans
+            val subProducts = listOf(
+                QueryProductDetailsParams.Product.newBuilder()
+                    .setProductId("sub_weekly_creator")
+                    .setProductType(BillingClient.ProductType.SUBS)
+                    .build(),
+                QueryProductDetailsParams.Product.newBuilder()
+                    .setProductId("sub_monthly_creator")
+                    .setProductType(BillingClient.ProductType.SUBS)
+                    .build()
+            )
+
+            val subParams = QueryProductDetailsParams.newBuilder()
+                .setProductList(subProducts)
+                .build()
+
+            billingClient.queryProductDetailsAsync(subParams) { subResult, subQueryResult ->
+                if (subResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    allFetched.addAll(subQueryResult.productDetailsList)
+                }
+                _productDetailsList.value = allFetched.toList()
             }
         }
     }
 
+    /**
+     * Launch purchase flow for either a Subscription or a One-Time Product
+     */
     fun launchBillingFlow(activity: Activity, productDetails: ProductDetails) {
-        val offerToken = productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken ?: ""
-        val productDetailsParamsList = listOf(
-            BillingFlowParams.ProductDetailsParams.newBuilder()
-                .setProductDetails(productDetails)
-                .setOfferToken(offerToken)
-                .build()
-        )
+        val offerToken = if (productDetails.productType == BillingClient.ProductType.SUBS) {
+            productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+        } else {
+            productDetails.oneTimePurchaseOfferDetailsList?.firstOrNull()?.offerToken
+        }
+
+        val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
+            .setProductDetails(productDetails)
+
+        if (!offerToken.isNullOrEmpty()) {
+            productDetailsParamsBuilder.setOfferToken(offerToken)
+        }
 
         val billingFlowParams = BillingFlowParams.newBuilder()
-            .setProductDetailsParamsList(productDetailsParamsList)
+            .setProductDetailsParamsList(listOf(productDetailsParamsBuilder.build()))
             .build()
 
         billingClient.launchBillingFlow(activity, billingFlowParams)
@@ -101,7 +155,7 @@ class BillingManager(
         } else if (billingResult.responseCode == BillingClient.BillingResponseCode.USER_CANCELED) {
             _purchaseStatus.value = "Purchase cancelled"
         } else {
-            _purchaseStatus.value = "Error: ${billingResult.debugMessage}"
+            _purchaseStatus.value = "Billing response (${billingResult.responseCode}): ${billingResult.debugMessage}"
         }
     }
 
@@ -120,19 +174,34 @@ class BillingManager(
                 if (result.isSuccess) {
                     _purchaseStatus.value = "Success! Credits synced."
 
-                    // Acknowledge the purchase with Google Play
-                    if (!purchase.isAcknowledged) {
-                        val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
+                    // Determine if the product is a consumable one-time purchase or a subscription
+                    val isOneTime = productId == "plan_intro_daily" || productId.startsWith("topup_")
+
+                    if (isOneTime) {
+                        // Consume one-time purchase so user can purchase again if needed
+                        val consumeParams = ConsumeParams.newBuilder()
                             .setPurchaseToken(purchase.purchaseToken)
                             .build()
-                        billingClient.acknowledgePurchase(acknowledgePurchaseParams) { ackResult ->
-                            // Acknowledged
+                        billingClient.consumeAsync(consumeParams) { consumeResult, _ ->
+                            // One-time item consumed on Google Play
+                        }
+                    } else {
+                        // Acknowledge subscription purchase with Google Play
+                        if (!purchase.isAcknowledged) {
+                            val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
+                                .setPurchaseToken(purchase.purchaseToken)
+                                .build()
+                            billingClient.acknowledgePurchase(acknowledgePurchaseParams) { ackResult ->
+                                // Subscription acknowledged
+                            }
                         }
                     }
                 } else {
-                    _purchaseStatus.value = "Sync error: ${result.exceptionOrNull()?.message}"
+                    _purchaseStatus.value = "Verification error: ${result.exceptionOrNull()?.message}"
                 }
             }
+        } else if (purchase.purchaseState == Purchase.PurchaseState.PENDING) {
+            _purchaseStatus.value = "Payment is pending Google Play processing. Credits will activate once confirmed."
         }
     }
 }
