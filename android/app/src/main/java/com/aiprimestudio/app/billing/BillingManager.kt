@@ -126,8 +126,22 @@ class BillingManager(
     }
 
     /**
+     * Checks if the ₹1 introductory offer is eligible and available on Google Play for this user account.
+     */
+    fun isIntroOfferAvailable(productDetails: ProductDetails): Boolean {
+        if (productDetails.productId != "sub_double_bonanza_weekly") return true
+        return productDetails.subscriptionOfferDetails?.any { offer ->
+            offer.pricingPhases.pricingPhaseList.any { phase ->
+                phase.priceAmountMicros == 1_000_000L &&
+                (phase.billingCycleCount == 1 || phase.billingPeriod == "P1D")
+            }
+        } ?: false
+    }
+
+    /**
      * Launch purchase flow for either a Subscription or a One-Time Product.
-     * For Double Bonanza, specifically selects the verified ₹1 (1,000,000 micros) introductory offer token.
+     * For Double Bonanza: strictly requires the verified ₹1 (1,000,000 micros) introductory offer token.
+     * Never silently falls back to ₹499 base plan token if the user clicked ₹1 intro pass.
      */
     fun launchBillingFlow(activity: Activity, productDetails: ProductDetails) {
         val offerToken = if (productDetails.productType == BillingClient.ProductType.SUBS) {
@@ -139,7 +153,11 @@ class BillingManager(
                         (phase.billingCycleCount == 1 || phase.billingPeriod == "P1D")
                     }
                 }
-                introOffer?.offerToken ?: productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+                if (introOffer == null) {
+                    _purchaseStatus.value = "Introductory offer (₹1) is not eligible or unavailable for this Google account. Cannot charge full base price without user consent."
+                    return
+                }
+                introOffer.offerToken
             } else {
                 productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
             }
@@ -147,12 +165,14 @@ class BillingManager(
             productDetails.oneTimePurchaseOfferDetailsList?.firstOrNull()?.offerToken
         }
 
+        if (offerToken.isNullOrEmpty()) {
+            _purchaseStatus.value = "No valid offer available for this product on Google Play."
+            return
+        }
+
         val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
             .setProductDetails(productDetails)
-
-        if (!offerToken.isNullOrEmpty()) {
-            productDetailsParamsBuilder.setOfferToken(offerToken)
-        }
+            .setOfferToken(offerToken)
 
         val billingFlowParams = BillingFlowParams.newBuilder()
             .setProductDetailsParamsList(listOf(productDetailsParamsBuilder.build()))

@@ -146,7 +146,11 @@ export const TopUpModal: React.FC = () => {
         },
         prefill: {
           name: user?.name || 'AI Prime Creator',
-          contact: user?.phone || '',
+          contact: user?.phone
+            ? (user.phone.startsWith('+91')
+                ? user.phone
+                : `+91${user.phone.replace(/[^0-9]/g, '').slice(-10)}`)
+            : '',
           email: user?.email || 'ai.prime.studio.pro@gmail.com',
           method: 'upi'
         },

@@ -1647,18 +1647,35 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     });
   }
 
+  // Update intro vs renewal status authoritatively from Google Play verified resource (lineItems / offer details / duration)
+  if (isSubscription && (productId === 'sub_double_bonanza_weekly' || productId === 'plan_intro_daily' || productId === 'sub_intro_daily')) {
+    if (playVerification.isIntroOffer !== undefined) {
+      isIntroPhase = playVerification.isIntroOffer;
+    }
+    if (isIntroPhase) {
+      creditsToAdd = 40;
+      planAmount = 1;
+      packTitle = 'Double Bonanza Trail Offer (Google Play)';
+    } else {
+      creditsToAdd = 400;
+      planAmount = 499;
+      packTitle = 'Double Bonanza Weekly Renewal (Google Play)';
+    }
+  }
+
   // Determine effective order ID
   const effectiveOrderId = playVerification.orderId || orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-  // Double check if effectiveOrderId was already recorded (e.g. from developer API response)
+  // Double check if effectiveOrderId was already recorded (e.g. from developer API response or transaction ledger)
   const existingEffective = prodDb.getPayment(effectiveOrderId);
-  if (existingEffective) {
-    if (existingEffective.userId !== user.id) {
+  const alreadyCredited = await prodDb.hasTransactionForReference(effectiveOrderId);
+  if (existingEffective || alreadyCredited) {
+    if (existingEffective && existingEffective.userId !== user.id) {
       return res.status(403).json({ error: 'This purchase order has already been claimed by another account' });
     }
     return res.json({
       success: true,
-      message: 'Purchase already verified and credited to your account',
+      message: 'This billing cycle order was already verified and credited to your account',
       wallet: prodDb.getWallet(user.id),
       subscription: prodDb.getSubscription(user.id)
     });
@@ -1687,6 +1704,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
   if (isSubscription && planId) {
     const isDoubleBonanza = planId === 'plan_intro_daily' || productId === 'sub_double_bonanza_weekly';
     const nextIntervalDays = isDoubleBonanza && isIntroPhase ? 1 : (planId === 'plan_monthly_pass' ? 30 : 7);
+    const nextChargeAt = playVerification.expiryTime || new Date(Date.now() + nextIntervalDays * 86400000).toISOString();
 
     const subscriptionRecord: UserSubscription = {
       id: effectiveOrderId,
@@ -1697,7 +1715,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
       mandateId: purchaseToken,
       status: isDoubleBonanza && isIntroPhase ? 'trial' : 'active',
       startAt: new Date().toISOString(),
-      nextChargeAt: new Date(Date.now() + nextIntervalDays * 86400000).toISOString(),
+      nextChargeAt,
       renewalAmount: isDoubleBonanza ? 499 : (planAmount || 199)
     };
     newSub = subscriptionRecord;
@@ -1730,6 +1748,109 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     serverConsumed: playVerification.serverConsumed,
     orderId: effectiveOrderId
   });
+});
+
+// Real-Time Developer Notifications (RTDN) Endpoint for Google Cloud Pub/Sub
+app.post('/api/billing/googleplay/rtdn', async (req, res) => {
+  try {
+    const pubsubMessage = req.body?.message;
+    if (!pubsubMessage || !pubsubMessage.data) {
+      return res.status(400).json({ error: 'Missing Pub/Sub message data' });
+    }
+
+    const messageId = pubsubMessage.messageId;
+    if (messageId && await prodDb.isWebhookProcessed(`rtdn_${messageId}`)) {
+      return res.status(200).json({ status: 'already_processed', messageId });
+    }
+
+    const decodedStr = Buffer.from(pubsubMessage.data, 'base64').toString('utf8');
+    const rtdnPayload = JSON.parse(decodedStr);
+
+    const { packageName, subscriptionNotification } = rtdnPayload;
+    if (packageName && packageName !== 'com.aiprimestudio.app') {
+      return res.status(400).json({ error: 'Package name mismatch' });
+    }
+
+    if (!subscriptionNotification) {
+      if (messageId) await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
+      return res.status(200).json({ status: 'acknowledged', type: 'non_subscription' });
+    }
+
+    const { notificationType, purchaseToken, subscriptionId } = subscriptionNotification;
+    console.log(`[Google Play RTDN] Event notificationType: ${notificationType} for ${subscriptionId}`);
+
+    const sub = prodDb.getSubscriptionByMandateOrId(purchaseToken);
+    if (sub) {
+      const userId = sub.userId;
+
+      // notificationType 2 = SUBSCRIPTION_RENEWED
+      if (notificationType === 2) {
+        const verifyResult = await googlePlayService.verifyPurchase(
+          'com.aiprimestudio.app',
+          subscriptionId || sub.planId,
+          purchaseToken,
+          true
+        );
+
+        if (verifyResult.verified) {
+          const latestOrderId = verifyResult.orderId || `gplay_renew_${Date.now()}`;
+          const isAlreadyCredited = await prodDb.hasTransactionForReference(latestOrderId);
+
+          if (!isAlreadyCredited) {
+            const isDoubleBonanza = subscriptionId === 'sub_double_bonanza_weekly' || sub.planId === 'plan_intro_daily';
+            const renewalCredits = isDoubleBonanza ? 400 : (subscriptionId === 'sub_monthly_creator' ? 1200 : 230);
+            const renewalAmount = isDoubleBonanza ? 499 : (subscriptionId === 'sub_monthly_creator' ? 998 : 199);
+
+            await prodDb.creditWallet(
+              userId,
+              renewalCredits,
+              `${sub.planName} Verified Weekly Renewal`,
+              latestOrderId,
+              'subscription',
+              sub.planId
+            );
+
+            sub.status = 'active';
+            sub.nextChargeAt = verifyResult.expiryTime || new Date(Date.now() + 7 * 86400000).toISOString();
+            await prodDb.setSubscription(sub);
+
+            await prodDb.recordPayment({
+              id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+              orderId: latestOrderId,
+              paymentId: purchaseToken,
+              userId,
+              provider: 'google_play',
+              amount: renewalAmount,
+              currency: 'INR',
+              type: 'subscription',
+              status: 'captured',
+              isAutoPay: true,
+              verificationStatus: 'verified',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      } else if (notificationType === 3) {
+        // SUBSCRIPTION_CANCELED: User cancelled auto-renewal. Access continues until nextChargeAt.
+        sub.cancelledAt = new Date().toISOString();
+        await prodDb.setSubscription(sub);
+      } else if (notificationType === 13) {
+        // SUBSCRIPTION_EXPIRED: Access ends
+        sub.status = 'expired';
+        await prodDb.setSubscription(sub);
+      }
+    }
+
+    if (messageId) {
+      await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
+    }
+
+    return res.status(200).json({ status: 'success', notificationType });
+  } catch (err: any) {
+    console.error('[Google Play RTDN Error]:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // Production Razorpay Webhook Handler

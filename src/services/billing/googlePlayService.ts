@@ -204,7 +204,7 @@ class GooglePlayService {
 
           return {
             verified: true,
-            orderId: subData.latestOrderId,
+            orderId: lineItem?.latestSuccessfulOrderId || subData.latestOrderId,
             rawDetails: subData,
             serverAcknowledged: serverAck,
             isIntroOffer,

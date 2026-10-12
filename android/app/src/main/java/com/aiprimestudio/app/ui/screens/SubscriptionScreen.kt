@@ -252,6 +252,10 @@ fun SubscriptionScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        val isIntroEligible = if (selectedPlanId == "sub_double_bonanza_weekly" && matchingProduct != null) {
+            billingManager.isIntroOfferAvailable(matchingProduct)
+        } else true
+
         // Google Play Purchase CTA
         Button(
             onClick = {
@@ -259,7 +263,7 @@ fun SubscriptionScreen(
                     billingManager.launchBillingFlow(activity, matchingProduct)
                 }
             },
-            enabled = matchingProduct != null,
+            enabled = matchingProduct != null && isIntroEligible,
             colors = ButtonDefaults.buttonColors(
                 containerColor = AmberGold,
                 disabledContainerColor = CardSurface
@@ -276,11 +280,13 @@ fun SubscriptionScreen(
                 Icon(
                     imageVector = Icons.Default.Lock,
                     contentDescription = null,
-                    tint = if (matchingProduct != null) Color.Black else TextMuted
+                    tint = if (matchingProduct != null && isIntroEligible) Color.Black else TextMuted
                 )
                 Text(
                     text = if (matchingProduct == null) {
                         "Connecting to Google Play..."
+                    } else if (selectedPlanId == "sub_double_bonanza_weekly" && !isIntroEligible) {
+                        "Intro Offer Already Claimed"
                     } else when (selectedPlanId) {
                         "sub_double_bonanza_weekly" -> "Subscribe · ₹1 Today (then ₹499/week)"
                         "sub_weekly_creator" -> "Subscribe · ₹199/week"
@@ -289,7 +295,7 @@ fun SubscriptionScreen(
                     },
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Black,
-                    color = if (matchingProduct != null) Color.Black else TextMuted
+                    color = if (matchingProduct != null && isIntroEligible) Color.Black else TextMuted
                 )
             }
         }
