@@ -69,15 +69,18 @@ try {
 
     if (credentialObj) {
       const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
+      const targetDatabaseId = (firebaseConfig as any).firestoreDatabaseId;
       const adminApp = initAdminApp({
         credential: cert(credentialObj),
         projectId
       }, 'lumina-admin-app-' + Date.now());
-      adminFirestoreDb = getAdminFirestore(adminApp);
+      adminFirestoreDb = targetDatabaseId
+        ? getAdminFirestore(adminApp, targetDatabaseId)
+        : getAdminFirestore(adminApp);
       try {
         adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
       } catch {}
-      console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (Authoritative)`);
+      console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
     }
   }
 } catch (err: any) {
@@ -908,21 +911,24 @@ class ProductionDatabase {
     let source: CreditGrant['source'] = 'intro';
     let expiresAt: string | null = null;
 
-    if (type === 'topup' || description.toLowerCase().includes('top-up') || (planId && planId.startsWith('topup_'))) {
+    if (type === 'topup' || (planId && planId.startsWith('topup_')) || description.toLowerCase().includes('top-up')) {
       source = 'topup';
       expiresAt = null; // Top-Up credits NEVER expire
-    } else if (planId === 'plan_weekly_pass' || description.toLowerCase().includes('weekly')) {
-      source = 'weekly';
-      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // 7 days
-    } else if (planId === 'plan_monthly_pass' || description.toLowerCase().includes('monthly')) {
-      source = 'monthly';
-      expiresAt = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(); // 30 days
-    } else if (type === 'subscription' || description.toLowerCase().includes('renewal') || amount === 400) {
+    } else if (amount === 400 || description.toLowerCase().includes('renewal')) {
       source = 'renewal';
-      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // 7 days cycle
+      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // Exactly 7 days (400 renewal credits)
+    } else if (planId === 'plan_weekly_pass' || planId === 'sub_weekly_creator' || amount === 230) {
+      source = 'weekly';
+      expiresAt = new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString(); // Exactly 7 days (Creator Weekly)
+    } else if (planId === 'plan_monthly_pass' || planId === 'sub_monthly_creator' || amount === 1200) {
+      source = 'monthly';
+      expiresAt = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(); // Exactly 30 days (Creator Monthly)
+    } else if (amount === 40 || planId === 'plan_intro_daily' || description.toLowerCase().includes('intro') || description.toLowerCase().includes('trail offer')) {
+      source = 'intro';
+      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // Exactly 24 hours (Double Bonanza intro)
     } else {
       source = 'intro';
-      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // 24 hours
+      expiresAt = new Date(now.getTime() + 24 * 3600 * 1000).toISOString(); // Default fallback: 24 hours
     }
 
     const grant: CreditGrant = {

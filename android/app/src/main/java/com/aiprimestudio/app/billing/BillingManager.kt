@@ -13,9 +13,13 @@ import kotlinx.coroutines.launch
 
 /**
  * Google Play Billing Manager (PBL 9.1.0 compliant)
- * Handles both:
- * 1. One-time In-App Products (e.g. plan_intro_daily - 24-hour Intro Pass, top-up packs)
- * 2. Recurring Subscriptions (e.g. sub_weekly_creator, sub_monthly_creator)
+ * Handles:
+ * 1. Subscriptions:
+ *    - sub_double_bonanza_weekly: Weekly recurring subscription with verified ₹1 24h introductory offer
+ *    - sub_weekly_creator: Weekly recurring subscription (₹199 / 230 credits)
+ *    - sub_monthly_creator: Monthly recurring subscription (₹998 / 1200 credits)
+ * 2. In-App Consumable Products:
+ *    - topup_49, topup_99, topup_199, topup_399 (Credits never expire)
  */
 class BillingManager(
     private val context: Context,
@@ -63,14 +67,8 @@ class BillingManager(
     private fun queryAllProducts() {
         val allFetched = mutableListOf<ProductDetails>()
 
-        // 1. One-Time In-App Products:
-        // - "plan_intro_daily": Locked Business Rule: One-time ₹1 / 24-hour Intro Pass (NOT a recurring subscription!)
-        // - Top-up credit packs
+        // 1. In-App Consumable Products (Top-Ups only)
         val inAppProducts = listOf(
-            QueryProductDetailsParams.Product.newBuilder()
-                .setProductId("plan_intro_daily")
-                .setProductType(BillingClient.ProductType.INAPP)
-                .build(),
             QueryProductDetailsParams.Product.newBuilder()
                 .setProductId("topup_49")
                 .setProductType(BillingClient.ProductType.INAPP)
@@ -98,8 +96,12 @@ class BillingManager(
                 allFetched.addAll(queryResult.productDetailsList)
             }
 
-            // 2. Subscriptions: Weekly and Monthly recurring plans
+            // 2. Subscriptions: Double Bonanza Weekly + Creator Weekly + Creator Monthly
             val subProducts = listOf(
+                QueryProductDetailsParams.Product.newBuilder()
+                    .setProductId("sub_double_bonanza_weekly")
+                    .setProductType(BillingClient.ProductType.SUBS)
+                    .build(),
                 QueryProductDetailsParams.Product.newBuilder()
                     .setProductId("sub_weekly_creator")
                     .setProductType(BillingClient.ProductType.SUBS)
@@ -124,11 +126,23 @@ class BillingManager(
     }
 
     /**
-     * Launch purchase flow for either a Subscription or a One-Time Product
+     * Launch purchase flow for either a Subscription or a One-Time Product.
+     * For Double Bonanza, specifically selects the verified ₹1 (1,000,000 micros) introductory offer token.
      */
     fun launchBillingFlow(activity: Activity, productDetails: ProductDetails) {
         val offerToken = if (productDetails.productType == BillingClient.ProductType.SUBS) {
-            productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+            if (productDetails.productId == "sub_double_bonanza_weekly") {
+                // Strict check: exactly 1 INR (1,000,000 micros) introductory phase
+                val introOffer = productDetails.subscriptionOfferDetails?.find { offer ->
+                    offer.pricingPhases.pricingPhaseList.any { phase ->
+                        phase.priceAmountMicros == 1_000_000L &&
+                        (phase.billingCycleCount == 1 || phase.billingPeriod == "P1D")
+                    }
+                }
+                introOffer?.offerToken ?: productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+            } else {
+                productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+            }
         } else {
             productDetails.oneTimePurchaseOfferDetailsList?.firstOrNull()?.offerToken
         }
@@ -161,7 +175,7 @@ class BillingManager(
 
     private fun handlePurchase(purchase: Purchase) {
         if (purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
-            val productId = purchase.products.firstOrNull() ?: "plan_intro_daily"
+            val productId = purchase.products.firstOrNull() ?: "sub_double_bonanza_weekly"
 
             scope.launch(Dispatchers.IO) {
                 _purchaseStatus.value = "Verifying purchase with server..."
@@ -174,25 +188,24 @@ class BillingManager(
                 if (result.isSuccess) {
                     _purchaseStatus.value = "Success! Credits synced."
 
-                    // Determine if the product is a consumable one-time purchase or a subscription
-                    val isOneTime = productId == "plan_intro_daily" || productId.startsWith("topup_")
+                    val isTopUp = productId.startsWith("topup_")
 
-                    if (isOneTime) {
-                        // Consume one-time purchase so user can purchase again if needed
+                    if (isTopUp) {
+                        // Consumable top-up: consume so it can be bought again
                         val consumeParams = ConsumeParams.newBuilder()
                             .setPurchaseToken(purchase.purchaseToken)
                             .build()
-                        billingClient.consumeAsync(consumeParams) { consumeResult, _ ->
-                            // One-time item consumed on Google Play
+                        billingClient.consumeAsync(consumeParams) { _, _ ->
+                            // Consumed on Google Play
                         }
                     } else {
-                        // Acknowledge subscription purchase with Google Play
+                        // Auto-renewing subscriptions: acknowledge within 3 days
                         if (!purchase.isAcknowledged) {
                             val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
                                 .setPurchaseToken(purchase.purchaseToken)
                                 .build()
-                            billingClient.acknowledgePurchase(acknowledgePurchaseParams) { ackResult ->
-                                // Subscription acknowledged
+                            billingClient.acknowledgePurchase(acknowledgePurchaseParams) { _ ->
+                                // Subscription acknowledged on Google Play
                             }
                         }
                     }

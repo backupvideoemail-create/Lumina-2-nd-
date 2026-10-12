@@ -12,5 +12,9 @@ coverage/
 *.keystore
 *.jks
 keystore.properties
-google-services.json
+*service-account*.json
+*service_account*.json
+
+# Firebase client config: Explicitly track android/app/google-services.json
+!android/app/google-services.json
 !google-services.json.example

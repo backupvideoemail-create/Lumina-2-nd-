@@ -81,19 +81,9 @@ export const PlansModal: React.FC = () => {
         name: 'AI Prime Studio',
         description:
           currentPlan.id === 'plan_intro_daily'
-            ? 'Trail Offer · ₹1 Intro Access + AutoPay Mandate'
+            ? 'Trail Offer · ₹1 Intro (24h) + ₹499 Weekly AutoPay'
             : `${currentPlan.name} AutoPay`,
         image: logoUrl,
-        config: {
-          display: {
-            hide: [
-              {
-                method: 'upi',
-                flows: ['collect']
-              }
-            ]
-          }
-        },
         handler: async (response: any) => {
           const verified = await verifyPayment(
             response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || '',
@@ -114,7 +104,7 @@ export const PlansModal: React.FC = () => {
         },
         prefill: {
           name: user?.name || 'AI Prime Creator',
-          contact: phoneToUse,
+          contact: phoneToUse.startsWith('+91') ? phoneToUse : `+91${phoneToUse.slice(-10)}`,
           email: user?.email || 'ai.prime.studio.pro@gmail.com'
         },
         send_sms_hash: true,
@@ -191,6 +181,8 @@ export const PlansModal: React.FC = () => {
       setPhoneError('Please enter a valid 10-digit mobile number');
       return;
     }
+    setShowPhoneStep(false);
+    await proceedWithRazorpayCheckout(clean.slice(-10));
   };
 
   // 6 Clean, high-impact floating feature chips with colorful icons
@@ -387,7 +379,7 @@ export const PlansModal: React.FC = () => {
               )}
 
               <p className="text-[10px] text-stone-400 leading-normal pt-1">
-                Required by NPCI and Razorpay to deliver your payment receipt, SMS confirmation, and link UPI payment methods.
+                Used to deliver your payment confirmation receipt and link supported UPI payment methods.
               </p>
             </div>
 

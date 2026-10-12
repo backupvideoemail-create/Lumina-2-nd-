@@ -15,6 +15,10 @@ export interface GooglePlayVerificationResult {
   error?: string;
   serverAcknowledged?: boolean;
   serverConsumed?: boolean;
+  isIntroOffer?: boolean;
+  basePlanId?: string;
+  expiryTime?: string;
+  lineItems?: any[];
 }
 
 class GooglePlayService {
@@ -180,11 +184,33 @@ class GooglePlayService {
             serverAck = await this.acknowledgeSubscription(packageName, productId, purchaseToken, accessToken);
           }
 
+          const lineItem = subData.lineItems?.[0];
+          const offerDetails = lineItem?.offerDetails;
+          const basePlanId = offerDetails?.basePlanId;
+          const offerId = offerDetails?.offerId;
+          const offerTags = offerDetails?.offerTags || [];
+          const expiryTime = subData.expiryTime || lineItem?.expiryTime;
+          const startTime = subData.startTime;
+
+          // Determine intro offer status authoritatively from duration and offer tags
+          const durationHours = (startTime && expiryTime)
+            ? (new Date(expiryTime).getTime() - new Date(startTime).getTime()) / (3600 * 1000)
+            : 0;
+          const isIntroOffer = Boolean(
+            (offerId && String(offerId).toLowerCase().includes('intro')) ||
+            offerTags.includes('intro') ||
+            (durationHours > 0 && durationHours <= 36)
+          );
+
           return {
             verified: true,
             orderId: subData.latestOrderId,
             rawDetails: subData,
-            serverAcknowledged: serverAck
+            serverAcknowledged: serverAck,
+            isIntroOffer,
+            basePlanId,
+            expiryTime,
+            lineItems: subData.lineItems
           };
         }
 

@@ -40,26 +40,29 @@
 
 ---
 
-### 4. Google Play Console में In-App Products और Subscriptions
-Play Console के **Monetize > In-app products & Subscriptions** में ये प्रोडक्ट्स जोड़ें:
+### 4. Google Play Console में Subscriptions और In-App Products
+Play Console के **Monetize > Subscriptions** और **In-app products** में ये प्रोडक्ट्स जोड़ें:
 
-| Product Type | Product ID | नाम | प्राइस | क्रेडिट्स / प्रकार |
+#### A. Subscriptions (Monetize > Subscriptions)
+| Product ID | नाम | Base Plan | Offers | क्रेडिट्स व नियम |
 | :--- | :--- | :--- | :--- | :--- |
-| **In-App Product (One-Time)** | `plan_intro_daily` | Trail Offer (24h Pass) | ₹1 | 40 Credits (24 घंटे का वन-टाइम इंट्रो पास) |
-| **Subscription (Recurring)** | `sub_weekly_creator` | Creator Weekly | ₹199 / Week | 230 Credits (वीकली ऑटो-रिन्यूअल) |
-| **Subscription (Recurring)** | `sub_monthly_creator` | Creator Monthly | ₹998 / Month | 1,200 Credits (मंथली ऑटो-रिन्यूअल) |
-| **In-App Product** | `topup_49` | Starter Top-Up | ₹49 | 45 Credits |
-| **In-App Product** | `topup_99` | Creator Top-Up | ₹99 | 95 Credits |
-| **In-App Product** | `topup_199` | Power Top-Up | ₹199 | 200 Credits |
-| **In-App Product** | `topup_399` | Studio Top-Up | ₹399 | 420 Credits |
+| `sub_double_bonanza_weekly` | Double Bonanza | **Weekly** (Auto-renewing: ₹499/week) | **Introductory Offer**: ₹1 for 1 Day (24 घंटे) | Intro phase में 40 Credits (24 घंटे वैध); हर verified weekly renewal पर 400 Credits (7 दिन वैध) |
+| `sub_weekly_creator` | Creator Weekly | **Weekly** (Auto-renewing: ₹199/week) | — | 230 Credits per cycle (7 दिन वैध) |
+| `sub_monthly_creator` | Creator Monthly | **Monthly** (Auto-renewing: ₹998/month) | — | 1,200 Credits per cycle (30 दिन वैध) |
 
-*नोट:* `plan_intro_daily` एक वन-टाइम ₹1 / 24-घंटे का इंट्रो पास है, इसलिए इसे Play Console में **In-App Products** (One-Time Product) में बनाएं।
+#### B. In-App Products / Top-Ups (Monetize > In-app products)
+| Product ID | नाम | प्राइस | क्रेडिट्स (Lifetime / Never Expire) |
+| :--- | :--- | :--- | :--- |
+| `topup_49` | Starter Top-Up | ₹49 | 45 Credits (No expiry) |
+| `topup_99` | Creator Top-Up | ₹99 | 95 Credits (No expiry) |
+| `topup_199` | Power Top-Up | ₹199 | 200 Credits (No expiry) |
+| `topup_399` | Studio Top-Up | ₹399 | 420 Credits (No expiry) |
 
-बैकएंड रूट `/api/billing/googleplay/verify` अब:
-- पैकेज नेम `com.aiprimestudio.app` की सख्त जांच करता है
-- किसी भी अज्ञात प्रोडक्ट को तुरंत रिजेक्ट करता है
-- SHA-256 डुप्लीकेट प्रिवेंशन से एक ही टोकन से दोबारा क्रेडिट देने से रोकता है
-- और यूज़र के वॉलेट व सब्सक्रिप्शन को तुरंत वेब और ऐप दोनों जगह सिंक करता है!
+*Google Play Console सेटअप गाइड:*
+1. `sub_double_bonanza_weekly` बनाने के लिए **Create subscription** पर जाएँ, ID में `sub_double_bonanza_weekly` डालें।
+2. **Base Plan** में **Auto-renewing**, Billing period: **1 week**, Price: **₹499** सेट करें।
+3. उसी Base Plan पर **Add offer** क्लिक करें > **Introductory price** चुनें > Duration: **1 day** (या single payment) > Price: **₹1** सेट करें। Eligibility: New customer acquisition.
+4. बैकएंड सर्वर और ऐप दोनों `sub_double_bonanza_weekly` और `plan_intro_daily` दोनों mappings को सपोर्ट करते हैं।
 
 ---
 

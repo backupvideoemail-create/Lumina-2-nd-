@@ -9,15 +9,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -35,8 +32,10 @@ data class PlayPlan(
     val priceValue: Int,
     val period: String,
     val credits: Int,
+    val creditSubtitle: String,
     val badge: String?,
-    val isPopular: Boolean = false
+    val isPopular: Boolean = false,
+    val disclosureText: String
 )
 
 @Composable
@@ -50,18 +49,20 @@ fun SubscriptionScreen(
     val productDetailsList by billingManager.productDetailsList.collectAsState()
     val purchaseStatus by billingManager.purchaseStatus.collectAsState()
 
-    var selectedPlanId by remember { mutableStateOf("plan_intro_daily") }
+    var selectedPlanId by remember { mutableStateOf("sub_double_bonanza_weekly") }
 
     val plans = listOf(
         PlayPlan(
-            id = "plan_intro_daily",
+            id = "sub_double_bonanza_weekly",
             title = "Double Bonanza",
             price = "₹1",
             priceValue = 1,
-            period = "24 Hours Intro",
-            credits = 50,
+            period = "24h Intro, then ₹499/week",
+            credits = 40,
+            creditSubtitle = "40 credits for 24h, then 400 credits / 7 days",
             badge = "TRAIL OFFER",
-            isPopular = true
+            isPopular = true,
+            disclosureText = "₹1 for the first 24 hours, then ₹499 every 7 days until cancelled. Auto-renews. Intro credits expire after 24 hours; each verified renewal grants 400 credits valid for 7 days."
         ),
         PlayPlan(
             id = "sub_weekly_creator",
@@ -69,8 +70,10 @@ fun SubscriptionScreen(
             price = "₹199",
             priceValue = 199,
             period = "7 Days Recurring",
-            credits = 300,
-            badge = null
+            credits = 230,
+            creditSubtitle = "230 credits per paid cycle, valid for 7 days",
+            badge = "WEEKLY",
+            disclosureText = "₹199 every 7 days. 230 credits per paid cycle, valid for 7 days. Auto-renews until cancelled."
         ),
         PlayPlan(
             id = "sub_monthly_creator",
@@ -78,10 +81,15 @@ fun SubscriptionScreen(
             price = "₹998",
             priceValue = 998,
             period = "30 Days Recurring",
-            credits = 1800,
-            badge = "SAVE 40%"
+            credits = 1200,
+            creditSubtitle = "1,200 credits per paid cycle, valid for 30 days",
+            badge = "BEST VALUE",
+            disclosureText = "₹998 per month. 1,200 credits per paid cycle, valid for 30 days. Auto-renews until cancelled."
         )
     )
+
+    val currentSelectedPlan = plans.find { it.id == selectedPlanId } ?: plans[0]
+    val matchingProduct = productDetailsList.find { it.productId == selectedPlanId }
 
     Column(
         modifier = Modifier
@@ -172,11 +180,8 @@ fun SubscriptionScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = plan.title,
                                 fontSize = 16.sp,
@@ -184,19 +189,31 @@ fun SubscriptionScreen(
                                 color = TextPrimary
                             )
                             if (plan.badge != null) {
-                                Text(
-                                    text = plan.badge,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = Color.Black,
-                                    modifier = Modifier
-                                        .background(AmberGold, RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 4.dp, vertical = 1.dp)
-                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    color = AmberGold,
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = plan.badge,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color.Black,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                         }
+
                         Text(
-                            text = "${plan.credits} AI Generation Credits • ${plan.period}",
+                            text = plan.creditSubtitle,
+                            fontSize = 12.sp,
+                            color = EmeraldSuccess,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Text(
+                            text = plan.period,
                             fontSize = 11.sp,
                             color = TextSecondary
                         )
@@ -212,19 +229,41 @@ fun SubscriptionScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Prominent Google Play Billing Disclosure Box
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = CardSurface.copy(alpha = 0.8f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                .padding(10.dp)
+        ) {
+            Text(
+                text = currentSelectedPlan.disclosureText,
+                fontSize = 11.sp,
+                color = TextSecondary,
+                textAlign = TextAlign.Center,
+                lineHeight = 15.sp,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Google Play Purchase CTA
         Button(
             onClick = {
-                val matchingProduct = productDetailsList.find { it.productId == selectedPlanId }
                 if (activity != null && matchingProduct != null) {
                     billingManager.launchBillingFlow(activity, matchingProduct)
-                } else {
-                    // Fallback or demo simulation if Google Play account / catalog is still syncing
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = AmberGold),
+            enabled = matchingProduct != null,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AmberGold,
+                disabledContainerColor = CardSurface
+            ),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -237,13 +276,20 @@ fun SubscriptionScreen(
                 Icon(
                     imageVector = Icons.Default.Lock,
                     contentDescription = null,
-                    tint = Color.Black
+                    tint = if (matchingProduct != null) Color.Black else TextMuted
                 )
                 Text(
-                    text = if (selectedPlanId == "plan_intro_daily") "Unlock 24-Hour Pass (₹1)" else "Subscribe on Google Play",
-                    fontSize = 16.sp,
+                    text = if (matchingProduct == null) {
+                        "Connecting to Google Play..."
+                    } else when (selectedPlanId) {
+                        "sub_double_bonanza_weekly" -> "Subscribe · ₹1 Today (then ₹499/week)"
+                        "sub_weekly_creator" -> "Subscribe · ₹199/week"
+                        "sub_monthly_creator" -> "Subscribe · ₹998/month"
+                        else -> "Subscribe on Google Play"
+                    },
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Black,
-                    color = Color.Black
+                    color = if (matchingProduct != null) Color.Black else TextMuted
                 )
             }
         }
@@ -258,10 +304,10 @@ fun SubscriptionScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         Text(
-            text = "Google Play Subscriptions auto-renew unless cancelled at least 24 hours prior to the cycle end in your Google Play Subscriptions center. Unified credits sync instantly with your website account.",
+            text = "Google Play Subscriptions auto-renew unless cancelled at least 24 hours prior to renewal in your Google Play account (Settings > Payments & Subscriptions). Unused subscription credits do not rollover.",
             fontSize = 10.sp,
             color = TextMuted,
             textAlign = TextAlign.Center,

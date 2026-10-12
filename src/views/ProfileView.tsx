@@ -53,7 +53,7 @@ export const ProfileView: React.FC = () => {
   };
 
   const handleCancelSubscription = async () => {
-    if (confirm('Are you sure you want to cancel your daily Pro Pass renewal (₹499/day)? You will retain all your current credits.')) {
+    if (confirm('Are you sure you want to cancel your Double Bonanza subscription (₹499/week)? You will retain all your current unexpired credits.')) {
       setCancellingSub(true);
       await cancelSubscription();
       setCancellingSub(false);
@@ -254,7 +254,7 @@ export const ProfileView: React.FC = () => {
             <div className="flex items-center justify-between pt-1">
               <div>
                 <p className="text-xs text-stone-300 font-medium">Free Tier</p>
-                <p className="text-[11px] text-stone-400">Unlock Pro Pass for ₹1 intro payment (then ₹499/day from next calendar day)</p>
+                <p className="text-[11px] text-stone-400">Unlock Pro Pass for ₹1 intro payment (40 credits / 24h, then ₹499/week for 400 credits)</p>
               </div>
               <button
                 onClick={() => setPlansModalOpen(true)}
