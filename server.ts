@@ -25,6 +25,7 @@ import { mediaStorage } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import { prodDb } from './src/services/db/database.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
+import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
 import {
   processTemplate,
   generateFaceSwapVideo,
@@ -1753,6 +1754,14 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
 // Real-Time Developer Notifications (RTDN) Endpoint for Google Cloud Pub/Sub
 app.post('/api/billing/googleplay/rtdn', async (req, res) => {
   try {
+    // 1. Authenticate Google-signed OIDC JWT from Google Cloud Pub/Sub Push Subscription
+    const authHeader = req.headers.authorization;
+    const authResult = await verifyPubSubOidcToken(authHeader);
+    if (!authResult.valid) {
+      console.warn('[Google Play RTDN] Pub/Sub push authentication failed:', authResult.error);
+      return res.status(401).json({ error: authResult.error || 'Unauthorized Google Cloud Pub/Sub push request' });
+    }
+
     const pubsubMessage = req.body?.message;
     if (!pubsubMessage || !pubsubMessage.data) {
       return res.status(400).json({ error: 'Missing Pub/Sub message data' });
@@ -2530,7 +2539,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
     // 6. AutoPay Mandate Lifecycle
     {
       id: 'autopay_mandate_lifecycle',
-      name: 'UPI AutoPay Mandate Lifecycle & Next Calendar Day Scheduling',
+      name: 'UPI AutoPay Mandate Lifecycle & Weekly Renewal Scheduling',
       category: 'Payments & Mandates' as const,
       fn: () => {
         const nextCalDay = calculateNextCalendarDayStartDate();
@@ -2538,7 +2547,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         if (plan.renewalPrice !== 499 || plan.price !== 1) {
           throw new Error('Mandate renewal pricing mismatch');
         }
-        return `Mandate schedule validated: ₹1 Intro today -> ₹499 Daily from ${nextCalDay.dateString}`;
+        return `Mandate schedule validated: ₹1 Intro today -> ₹499 Weekly from ${nextCalDay.dateString}`;
       }
     },
     // 7. Webhook Signature Verification
