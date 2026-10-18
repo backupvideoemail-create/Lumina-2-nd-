@@ -95,7 +95,7 @@ export class GeminiAdapter {
           }
         });
       } catch (err: any) {
-        console.warn('[GeminiAdapter] User image resolve note:', err.message);
+        throw new Error(`Failed to resolve supplied user photo: ${err.message}`);
       }
     }
 
@@ -112,7 +112,7 @@ export class GeminiAdapter {
         });
         hasReferenceImage = true;
       } catch (err: any) {
-        console.warn('[GeminiAdapter] Reference image resolve note:', err.message);
+        throw new Error(`Failed to resolve template style reference image: ${err.message}`);
       }
     }
 

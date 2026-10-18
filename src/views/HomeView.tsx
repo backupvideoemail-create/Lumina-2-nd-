@@ -350,16 +350,16 @@ export const HomeView: React.FC = () => {
         </div>
       </section>
 
-      {/* 5. QUICK PILL TAGS UNDER SEARCH BAR (Matching Reference Screenshot) */}
+      {/* 5. QUICK PILL TAGS UNDER SEARCH BAR (Only Active Categories) */}
       <section className="px-3.5 pt-1.5 pb-2 max-w-4xl mx-auto">
         <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-          {QUICK_PILL_TAGS.map((tag, idx) => {
-            const isSelected = selectedCategory === tag.filter;
+          {sortedCategories.map((cat) => {
+            const isSelected = selectedCategory === cat;
             return (
               <button
-                key={idx}
+                key={cat}
                 onClick={() => {
-                  setSelectedCategory(tag.filter);
+                  setSelectedCategory(cat);
                 }}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all shrink-0 cursor-pointer ${
                   isSelected
@@ -367,7 +367,7 @@ export const HomeView: React.FC = () => {
                     : 'bg-[#14131c] text-stone-300 hover:bg-[#1d1b29] hover:text-white border border-white/10'
                 }`}
               >
-                {tag.label}
+                {cat}
               </button>
             );
           })}

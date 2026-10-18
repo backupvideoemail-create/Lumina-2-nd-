@@ -204,7 +204,13 @@ export const TemplateDetailModal: React.FC = () => {
     )
     .slice(0, 8);
 
-  const displayResult = tpl.sampleResult || tpl.preview || tpl.cover;
+  const hasActualSample = Boolean(
+    tpl.sampleResult &&
+    tpl.sampleResult !== tpl.referenceImageUrl &&
+    tpl.sampleResult !== tpl.cover &&
+    tpl.sampleResult !== tpl.preview
+  );
+  const displayResult = hasActualSample ? tpl.sampleResult! : (tpl.referenceImageUrl || tpl.preview || tpl.cover);
   const sampleBeforeThumb = tpl.sampleBefore || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80';
 
   return (
@@ -314,26 +320,41 @@ export const TemplateDetailModal: React.FC = () => {
           <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
           <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/95 via-black/40 to-transparent pointer-events-none z-10" />
 
-          {/* FLOATING "BEFORE" SAMPLE THUMBNAIL WITH TRANSFORMATION ARROW */}
-          <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/20 shadow-2xl">
-            <div className="flex flex-col items-center">
-              <span className="text-[8px] uppercase font-black text-amber-300 tracking-wider mb-0.5">
-                Before
-              </span>
-              <img
-                src={sampleBeforeThumb}
-                alt="Sample input before transformation"
-                draggable={false}
-                className="w-12 h-14 rounded-xl object-cover border border-white/25 shadow-md pointer-events-none select-none"
-              />
-            </div>
-            <div className="text-amber-400 flex flex-col items-center justify-center pr-1">
-              <ArrowRight className="w-4 h-4 stroke-[3]" />
-              <span className="text-[7.5px] uppercase font-black text-amber-300 tracking-tighter">
-                Transform
-              </span>
-            </div>
+          {/* Top Badge: Distinguish Real Generated Output vs Style Reference Preview */}
+          <div className="absolute top-4 left-4 z-20 pointer-events-none">
+            <span className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-md ${
+              isVideo
+                ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
+                : hasActualSample
+                ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                : 'bg-stone-900/80 border-white/20 text-stone-300'
+            }`}>
+              {isVideo ? 'Video Preview' : hasActualSample ? 'AI Sample Result' : 'Style Reference Preview'}
+            </span>
           </div>
+
+          {/* FLOATING "BEFORE" SAMPLE THUMBNAIL WITH TRANSFORMATION ARROW (Shown only when genuine sample exists) */}
+          {hasActualSample && (
+            <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/20 shadow-2xl">
+              <div className="flex flex-col items-center">
+                <span className="text-[8px] uppercase font-black text-amber-300 tracking-wider mb-0.5">
+                  Before
+                </span>
+                <img
+                  src={sampleBeforeThumb}
+                  alt="Sample input before transformation"
+                  draggable={false}
+                  className="w-12 h-14 rounded-xl object-cover border border-white/25 shadow-md pointer-events-none select-none"
+                />
+              </div>
+              <div className="text-amber-400 flex flex-col items-center justify-center pr-1">
+                <ArrowRight className="w-4 h-4 stroke-[3]" />
+                <span className="text-[7.5px] uppercase font-black text-amber-300 tracking-tighter">
+                  Transform
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Bottom Title & Specs inside preview */}
           <div className="absolute bottom-4 left-4 z-20 max-w-[200px] pointer-events-none">

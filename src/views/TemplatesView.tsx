@@ -25,6 +25,36 @@ export const TemplatesView: React.FC = () => {
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
   const [sortBy, setSortBy] = useState<'trending' | 'cost_asc' | 'cost_desc'>('trending');
 
+  // Active published categories (predefined + custom) that have at least 1 active template
+  const activeCategories = React.useMemo(() => {
+    const activeTpls = templates.filter((t) => t.isActive !== false);
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    // Predefined categories first (if active)
+    for (const cat of CATEGORIES) {
+      if (activeTpls.some((t) => t.category === cat)) {
+        seen.add(cat);
+        result.push(cat);
+      }
+    }
+    // Custom categories with active templates
+    for (const t of activeTpls) {
+      if (t.category && !seen.has(t.category)) {
+        seen.add(t.category);
+        result.push(t.category);
+      }
+    }
+    return result;
+  }, [templates]);
+
+  // If current category has no active templates, default to first available active category
+  React.useEffect(() => {
+    if (activeCategories.length > 0 && !activeCategories.includes(selectedCategory)) {
+      setSelectedCategory(activeCategories[0]);
+    }
+  }, [activeCategories, selectedCategory, setSelectedCategory]);
+
   // Filter templates
   let displayList = templates.filter((tpl) => {
     if (aspectFilter !== 'all' && tpl.aspectRatio !== aspectFilter) return false;
@@ -120,15 +150,15 @@ export const TemplatesView: React.FC = () => {
           </div>
         </div>
 
-        {/* Horizontally scrollable Category Chips */}
+        {/* Horizontally scrollable Category Chips (Only categories with active templates) */}
         <div className="max-w-4xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar pt-3">
-          {CATEGORIES.map((cat) => {
+          {activeCategories.map((cat) => {
             const isSelected = selectedCategory === cat;
             return (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
                   isSelected
                     ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
                     : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'

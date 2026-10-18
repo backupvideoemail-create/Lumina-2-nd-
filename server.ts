@@ -685,7 +685,7 @@ app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
           cover: refUrl,
           preview: refUrl,
           referenceImageUrl: refUrl,
-          sampleResult: refUrl,
+          sampleResult: item.sampleResult || undefined,
           description: item.description || `${cleanCategory} AI Photo Style Template`,
           aspectRatio: (aspectRatio as AspectRatio) || '9:16',
           requiredInputs: [

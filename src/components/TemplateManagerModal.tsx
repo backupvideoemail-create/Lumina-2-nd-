@@ -139,6 +139,15 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; successCount: number; failCount: number }>({ current: 0, total: 0, successCount: 0, failCount: 0 });
   const [bulkSummary, setBulkSummary] = useState<{ completed: boolean; total: number; successCount: number; failCount: number } | null>(null);
 
+  // Unified list of all known categories (predefined + any custom categories in templates or prompt map)
+  const allKnownCategories = Array.from(
+    new Set([
+      ...CATEGORIES,
+      ...templates.map((t) => t.category).filter(Boolean),
+      ...Object.keys(categoryPromptsMap)
+    ])
+  );
+
   // Execution Recipe (Separated from display preview MP4/Photo)
   const [recipePreset, setRecipePreset] = useState<'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom'>('veo_video');
   const [recipeProvider, setRecipeProvider] = useState<string>('google_veo');
@@ -825,14 +834,23 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
     const headers = getAdminHeaders();
 
-    // 1. First persist the shared category prompt centrally on the server
+    // 1. First persist the shared category prompt centrally on the server. Stop if it fails!
     try {
-      await fetch('/api/admin/categories/prompts', {
+      const promptRes = await fetch('/api/admin/categories/prompts', {
         method: 'PUT',
         headers,
         body: JSON.stringify({ category: effectiveCat, prompt: bulkMasterPrompt })
       });
-    } catch {}
+      if (!promptRes.ok) {
+        const errJson = await promptRes.json().catch(() => null);
+        throw new Error(errJson?.error || `Server responded with HTTP ${promptRes.status}`);
+      }
+      setCategoryPromptsMap((prev) => ({ ...prev, [effectiveCat]: bulkMasterPrompt.trim() }));
+    } catch (saveErr: any) {
+      setIsBulkUploading(false);
+      showNotification(`Category prompt failed to save: ${saveErr.message}. Bulk publication stopped.`, 'error');
+      return;
+    }
 
     // 2. Process each item sequentially (persisting media to storage & creating template record)
     for (let i = 0; i < bulkItems.length; i++) {
@@ -1675,16 +1693,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   >
                     All ({templates.length})
                   </button>
-                  {CATEGORIES.map((cat) => {
+                  {allKnownCategories.map((cat) => {
                     const count = templates.filter((t) => t.category === cat).length;
+                    const isEmpty = count === 0;
                     return (
                       <button
                         key={cat}
-                        onClick={() => setListCategoryFilter(cat)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer ${
+                        disabled={isEmpty}
+                        onClick={() => !isEmpty && setListCategoryFilter(cat)}
+                        title={isEmpty ? `${cat} (0 templates - empty)` : `${cat} (${count} templates)`}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1 ${
                           listCategoryFilter === cat
                             ? 'bg-amber-400 text-stone-950 font-bold'
-                            : 'bg-white/5 text-stone-400 hover:text-white'
+                            : isEmpty
+                            ? 'opacity-35 cursor-not-allowed bg-white/[0.02] text-stone-600 border border-white/5'
+                            : 'bg-white/5 text-stone-400 hover:text-white cursor-pointer'
                         }`}
                       >
                         <span>{cat}</span>
@@ -1802,7 +1825,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         onChange={(e) => handleBulkCategoryChange(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-black border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 cursor-pointer"
                       >
-                        {CATEGORIES.map((cat) => (
+                        {allKnownCategories.map((cat) => (
                           <option key={cat} value={cat}>
                             {cat} {cat === 'Devotional' ? '(भक्ति - Hanuman Ji, Mahadev)' : ''}
                           </option>
@@ -2592,14 +2615,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         onChange={(e) => setTplCategory(e.target.value)}
                         className="w-full mt-1.5 px-3 py-2.5 rounded-xl bg-stone-900 border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       >
-                        <option value="Trending">Trending</option>
-                        <option value="Retro 80s">Retro 80s</option>
-                        <option value="Dance">Dance</option>
-                        <option value="Luxury">Luxury</option>
-                        <option value="Fashion">Fashion</option>
-                        <option value="Birthday">Birthday</option>
-                        <option value="Couples">Couples</option>
-                        <option value="Festival">Festival</option>
+                        {allKnownCategories.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
