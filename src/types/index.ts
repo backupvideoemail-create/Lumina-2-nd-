@@ -44,6 +44,7 @@ export interface TemplateWorkflowConfig {
   settings?: Record<string, any>;
   drivingVideoUrl?: string;
   referenceAssetUrls?: string[];
+  referenceImageUrl?: string;
 }
 
 export interface TemplateExecutionRecipe {
@@ -60,6 +61,7 @@ export interface TemplateExecutionRecipe {
   duration?: number;
   requiredInputs?: TemplateInputDef[];
   referenceAssets?: string[];
+  referenceImageUrl?: string;
   drivingVideoUrl?: string;
   inputRules?: {
     minDurationSeconds?: number;
@@ -84,6 +86,7 @@ export interface Template {
   category: TemplateCategory;
   preview: string;
   cover: string;
+  referenceImageUrl?: string;
   sampleBefore?: string;
   sampleResult?: string;
   mediaType?: 'image' | 'video';

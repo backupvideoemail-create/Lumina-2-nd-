@@ -462,6 +462,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       mediaBase64,
       coverBase64,
       sampleResultBase64,
+      referenceImageBase64,
+      referenceImageUrl: inputReferenceImageUrl,
       drivingVideoBase64,
       drivingVideoUrl: inputDrivingVideoUrl,
       type = 'video',
@@ -484,7 +486,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     let mediaUrl = 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=900&q=80';
     if (mediaBase64) {
-      if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://'))) {
+      if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/'))) {
         mediaUrl = mediaBase64;
       } else {
         const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `template_${Date.now()}`, undefined, true);
@@ -494,7 +496,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     let coverUrl = mediaUrl;
     if (coverBase64) {
-      if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://'))) {
+      if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://') || coverBase64.startsWith('/api/media/'))) {
         coverUrl = coverBase64;
       } else {
         const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `cover_${Date.now()}`, undefined, true);
@@ -502,9 +504,22 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       }
     }
 
+    // Persist style-reference image for photo templates (can be identical to initial cover or separately provided)
+    let referenceImageUrl = inputReferenceImageUrl || '';
+    if (referenceImageBase64) {
+      if (typeof referenceImageBase64 === 'string' && (referenceImageBase64.startsWith('http://') || referenceImageBase64.startsWith('https://') || referenceImageBase64.startsWith('/api/media/'))) {
+        referenceImageUrl = referenceImageBase64;
+      } else {
+        const storedRef = await mediaStorage.saveMedia(referenceImageBase64, 'tpl_ref', `ref_${Date.now()}`, undefined, true);
+        referenceImageUrl = storedRef.publicUrl;
+      }
+    } else if (type === 'photo' && coverUrl) {
+      referenceImageUrl = coverUrl;
+    }
+
     let sampleResultUrl: string | undefined = undefined;
     if (sampleResultBase64) {
-      if (typeof sampleResultBase64 === 'string' && (sampleResultBase64.startsWith('http://') || sampleResultBase64.startsWith('https://'))) {
+      if (typeof sampleResultBase64 === 'string' && (sampleResultBase64.startsWith('http://') || sampleResultBase64.startsWith('https://') || sampleResultBase64.startsWith('/api/media/'))) {
         sampleResultUrl = sampleResultBase64;
       } else {
         const storedSample = await mediaStorage.saveMedia(sampleResultBase64, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
@@ -514,7 +529,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     let drivingVideoUrl = inputDrivingVideoUrl || '';
     if (drivingVideoBase64) {
-      if (typeof drivingVideoBase64 === 'string' && (drivingVideoBase64.startsWith('http://') || drivingVideoBase64.startsWith('https://'))) {
+      if (typeof drivingVideoBase64 === 'string' && (drivingVideoBase64.startsWith('http://') || drivingVideoBase64.startsWith('https://') || drivingVideoBase64.startsWith('/api/media/'))) {
         drivingVideoUrl = drivingVideoBase64;
       } else {
         const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `driving_${Date.now()}`, undefined, true);
@@ -526,17 +541,20 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     const calculatedCredits = calculateCreditsFromUsd(Number(providerCostUsd) || 0.25);
 
     // Build Execution Recipe
+    const categoryPrompt = prodDb.getCategoryPrompt(category);
     const resolvedRecipe: TemplateExecutionRecipe = recipe || {
       version: '1.0',
       inputType: inputType as TemplateInputType,
       provider: type === 'video' ? 'google_veo' : 'gemini',
       model: model || (type === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image'),
       engine: engine as TemplateEngine,
-      prompt: `${title}. Style: ${workflow}. High aesthetic production quality.`,
+      prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
       workflow: workflow,
       aspectRatio: aspectRatio as AspectRatio,
       duration: type === 'video' ? 5 : undefined,
-      drivingVideoUrl: drivingVideoUrl || undefined
+      drivingVideoUrl: drivingVideoUrl || undefined,
+      referenceAssets: referenceImageUrl ? [referenceImageUrl] : undefined,
+      referenceImageUrl: referenceImageUrl || undefined
     };
 
     const newTemplate: Template = {
@@ -547,6 +565,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       category: category.trim() as TemplateCategory,
       cover: coverUrl,
       preview: mediaUrl,
+      referenceImageUrl: referenceImageUrl || (type === 'photo' ? coverUrl : undefined),
       sampleResult: sampleResultUrl || mediaUrl,
       description: finalDescription,
       aspectRatio: (aspectRatio as AspectRatio) || '9:16',
@@ -579,6 +598,155 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to add template' });
   }
+});
+
+// Admin Bulk Import Photo Templates into Category
+app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
+  try {
+    const {
+      category = 'Devotional',
+      prompt: inputCategoryPrompt,
+      aspectRatio = '9:16',
+      tags = ['Devotional', 'Bhakti'],
+      providerCostUsd = 0.08,
+      isFeatured = true,
+      isActive = true,
+      templates = []
+    } = req.body;
+
+    if (!Array.isArray(templates) || templates.length === 0) {
+      return res.status(400).json({ error: 'Expected non-empty templates array' });
+    }
+
+    const cleanCategory = String(category).trim();
+    if (!cleanCategory) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
+
+    // Centrally update or retrieve the category-level prompt
+    let categoryPrompt = inputCategoryPrompt && String(inputCategoryPrompt).trim()
+      ? String(inputCategoryPrompt).trim()
+      : prodDb.getCategoryPrompt(cleanCategory);
+    if (inputCategoryPrompt && String(inputCategoryPrompt).trim()) {
+      prodDb.setCategoryPrompt(cleanCategory, categoryPrompt);
+    }
+
+    const calculatedCredits = calculateCreditsFromUsd(Number(providerCostUsd) || 0.08);
+    const savedTemplates: Template[] = [];
+    const errors: Array<{ index: number; title: string; error: string }> = [];
+
+    for (let i = 0; i < templates.length; i++) {
+      const item = templates[i];
+      try {
+        const itemTitle = (item.title || `${cleanCategory} Style ${i + 1}`).trim();
+        let refUrl = item.referenceImageUrl || item.coverUrl || item.mediaUrl || '';
+
+        // If mediaBase64 / coverBase64 passed, persist to media storage
+        const rawMedia = item.mediaBase64 || item.coverBase64 || item.referenceImageBase64;
+        if (rawMedia && typeof rawMedia === 'string') {
+          if (rawMedia.startsWith('http://') || rawMedia.startsWith('https://') || rawMedia.startsWith('/api/media/')) {
+            refUrl = rawMedia;
+          } else {
+            const stored = await mediaStorage.saveMedia(
+              rawMedia,
+              'tpl_ref',
+              `bulk_${cleanCategory.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}_${i}`,
+              undefined,
+              true
+            );
+            refUrl = stored.publicUrl;
+          }
+        }
+
+        if (!refUrl) {
+          errors.push({ index: i, title: itemTitle, error: 'Missing reference image media' });
+          continue;
+        }
+
+        const tplRecipe: TemplateExecutionRecipe = {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'gemini',
+          model: 'gemini-3.1-flash-image',
+          engine: 'AI_GENERATION',
+          prompt: categoryPrompt,
+          workflow: 'gemini-photo-style',
+          aspectRatio: (aspectRatio as AspectRatio) || '9:16',
+          referenceAssets: [refUrl],
+          referenceImageUrl: refUrl
+        };
+
+        const newTemplate: Template = {
+          id: `tpl_${Date.now()}_${crypto.randomBytes(3).toString('hex')}_${i}`,
+          title: itemTitle,
+          type: 'photo',
+          inputType: 'IMAGE_ONLY',
+          category: cleanCategory as TemplateCategory,
+          cover: refUrl,
+          preview: refUrl,
+          referenceImageUrl: refUrl,
+          sampleResult: refUrl,
+          description: item.description || `${cleanCategory} AI Photo Style Template`,
+          aspectRatio: (aspectRatio as AspectRatio) || '9:16',
+          requiredInputs: [
+            {
+              id: 'user_photo',
+              label: 'Upload Your Photo',
+              type: 'image',
+              description: 'Clear front-facing portrait photo'
+            }
+          ],
+          creditCost: calculatedCredits,
+          providerCostUsd: Number(providerCostUsd) || 0.08,
+          engine: 'AI_GENERATION',
+          model: 'gemini-3.1-flash-image',
+          workflow: 'gemini-photo-style',
+          recipe: tplRecipe,
+          badge: item.badge || undefined,
+          sortOrder: i,
+          isFeatured: Boolean(isFeatured),
+          isActive: isActive !== false,
+          tags: Array.isArray(tags) ? tags : [cleanCategory, 'Photo Template'],
+          likesCount: 0,
+          resolutionLabel: '4K Ultra HD'
+        };
+
+        const saved = prodDb.addTemplate(newTemplate);
+        savedTemplates.push(saved);
+      } catch (err: any) {
+        errors.push({ index: i, title: item.title || `Item ${i}`, error: err.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      category: cleanCategory,
+      categoryPrompt,
+      totalReceived: templates.length,
+      savedCount: savedTemplates.length,
+      templates: savedTemplates,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Bulk template import failed' });
+  }
+});
+
+// Category-Level Prompts API
+app.get('/api/categories/prompts', (_req, res) => {
+  res.json({ success: true, prompts: prodDb.getCategoryPrompts() });
+});
+
+app.put('/api/admin/categories/prompts', requireAdmin, (req, res) => {
+  const { prompts, category, prompt } = req.body;
+  if (category && typeof prompt === 'string') {
+    prodDb.setCategoryPrompt(String(category).trim(), prompt.trim());
+  } else if (prompts && typeof prompts === 'object') {
+    prodDb.setCategoryPrompts(prompts);
+  } else {
+    return res.status(400).json({ error: 'Expected category and prompt, or prompts object' });
+  }
+  res.json({ success: true, prompts: prodDb.getCategoryPrompts() });
 });
 
 // Admin Get All Templates (Including Inactive)
@@ -649,7 +817,7 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
     }
 
     if (updates.drivingVideoBase64) {
-      if (typeof updates.drivingVideoBase64 === 'string' && (updates.drivingVideoBase64.startsWith('http://') || updates.drivingVideoBase64.startsWith('https://'))) {
+      if (typeof updates.drivingVideoBase64 === 'string' && (updates.drivingVideoBase64.startsWith('http://') || updates.drivingVideoBase64.startsWith('https://') || updates.drivingVideoBase64.startsWith('/api/media/'))) {
         updates.drivingVideoUrl = updates.drivingVideoBase64;
       } else {
         const storedDriving = await mediaStorage.saveMedia(
@@ -662,6 +830,22 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         updates.drivingVideoUrl = storedDriving.publicUrl;
       }
       delete updates.drivingVideoBase64;
+    }
+
+    if (updates.referenceImageBase64) {
+      if (typeof updates.referenceImageBase64 === 'string' && (updates.referenceImageBase64.startsWith('http://') || updates.referenceImageBase64.startsWith('https://') || updates.referenceImageBase64.startsWith('/api/media/'))) {
+        updates.referenceImageUrl = updates.referenceImageBase64;
+      } else {
+        const storedRef = await mediaStorage.saveMedia(
+          updates.referenceImageBase64,
+          'tpl_ref',
+          `tpl_ref_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.referenceImageUrl = storedRef.publicUrl;
+      }
+      delete updates.referenceImageBase64;
     }
 
     if (updates.providerCostUsd && Number(updates.providerCostUsd) > 0) {
@@ -2192,6 +2376,36 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   // 3. Asynchronous execution with 100% exact refund on any failure
   (async () => {
     try {
+      const resolvedRefImage =
+        template.referenceImageUrl ||
+        (template.recipe as any)?.referenceImageUrl ||
+        template.recipe?.referenceAssets?.[0] ||
+        (template.type === 'photo' ? template.cover : undefined);
+
+      // Central Category Prompt + Template Nuance + Customer Instruction
+      const categoryPrompt = prodDb.getCategoryPrompt(template.category);
+      const recipePrompt = template.recipe?.prompt?.trim();
+      let effectivePrompt = categoryPrompt;
+      if (recipePrompt && recipePrompt !== categoryPrompt && !recipePrompt.startsWith('Cinematic slow-motion')) {
+        effectivePrompt = `${categoryPrompt}\nStyle Guidance: ${recipePrompt}`;
+      }
+
+      const effectiveRecipe = template.recipe ? {
+        ...template.recipe,
+        prompt: effectivePrompt,
+        referenceImageUrl: resolvedRefImage
+      } : {
+        version: '1.0',
+        inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
+        provider: template.type === 'photo' ? 'gemini' : 'google_veo',
+        model: template.model || (template.type === 'photo' ? 'gemini-3.1-flash-image' : 'veo-3.1-lite-generate-preview'),
+        engine: template.engine || 'AI_GENERATION',
+        prompt: effectivePrompt,
+        workflow: template.workflow,
+        aspectRatio: template.aspectRatio,
+        referenceImageUrl: resolvedRefImage
+      };
+
       const result = await processTemplate({
         templateId: template.id,
         templateTitle: template.title,
@@ -2199,10 +2413,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         engine: template.engine,
         workflow: template.workflow,
         inputMediaUrl,
+        referenceImageUrl: resolvedRefImage,
         aspectRatio: template.aspectRatio,
         customPrompt,
         ownerUserId: user.id,
-        recipe: template.recipe,
+        recipe: effectiveRecipe,
         detectedInputType,
         drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl
       });

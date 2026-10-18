@@ -101,9 +101,17 @@ export class AIRouter {
         ownerUserId: params.ownerUserId
       });
     } else {
+      const referenceImageUrl =
+        params.referenceImageUrl ||
+        activeWorkflowConfig?.referenceImageUrl ||
+        activeWorkflowConfig?.referenceAssetUrls?.[0] ||
+        recipe?.referenceImageUrl ||
+        recipe?.referenceAssets?.[0];
+
       return await this.generateImage({
         prompt: combinedPrompt,
         userImageUrl: params.inputMediaUrl,
+        referenceImageUrl,
         aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
         styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId

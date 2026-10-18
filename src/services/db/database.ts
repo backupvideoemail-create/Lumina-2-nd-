@@ -43,6 +43,7 @@ import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
 import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
+import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts';
 
 // Initialize Firebase client / admin for server persistence
 let firestoreDb: any = null;
@@ -128,6 +129,7 @@ export interface ProductionDatabaseSchema {
   userLikes: Record<string, string[]>; // userId -> templateId[]
   processedWebhooks: string[];
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
+  categoryPrompts?: Record<string, string>;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -266,6 +268,14 @@ class ProductionDatabase {
           });
           this.db.faceSwapScenes = syncedScenes;
         }
+
+        const promptsDoc = await adminFirestoreDb.collection('config').doc('category_prompts').get();
+        if (promptsDoc.exists && promptsDoc.data()?.prompts) {
+          this.db.categoryPrompts = {
+            ...DEFAULT_CATEGORY_PROMPTS,
+            ...promptsDoc.data().prompts
+          };
+        }
       } catch {
         // config docs optional
       }
@@ -313,6 +323,7 @@ class ProductionDatabase {
         parsed.userLikes = parsed.userLikes || {};
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
+        parsed.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS, ...(parsed.categoryPrompts || {}) };
         return parsed;
       }
     } catch (err) {
@@ -336,7 +347,8 @@ class ProductionDatabase {
       faceSwapScenes: SEED_FACE_SWAP_SCENES.map(s => ({ ...s, isActive: true, status: 'published' })),
       userLikes: {},
       processedWebhooks: [],
-      reports: []
+      reports: [],
+      categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS }
     };
   }
 
@@ -1357,6 +1369,47 @@ class ProductionDatabase {
     this.save();
     await this.syncToFirestore('reports', reportId, record);
     return record;
+  }
+
+  /* =========================================================================
+     CATEGORY-LEVEL PROMPTS (SERVER-AUTHORITATIVE & EDITABLE BY ADMIN)
+  ========================================================================= */
+  public getCategoryPrompts(): Record<string, string> {
+    if (!this.db.categoryPrompts) {
+      this.db.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS };
+    }
+    return { ...DEFAULT_CATEGORY_PROMPTS, ...this.db.categoryPrompts };
+  }
+
+  public getCategoryPrompt(category: string): string {
+    const prompts = this.getCategoryPrompts();
+    return prompts[category] || prompts['Trending'] || DEFAULT_CATEGORY_PROMPTS['Trending'];
+  }
+
+  public setCategoryPrompts(prompts: Record<string, string>): Record<string, string> {
+    this.db.categoryPrompts = {
+      ...this.getCategoryPrompts(),
+      ...prompts
+    };
+    this.save();
+    this.syncToFirestore('config', 'category_prompts', {
+      prompts: this.db.categoryPrompts,
+      updatedAt: new Date().toISOString()
+    });
+    return this.db.categoryPrompts;
+  }
+
+  public setCategoryPrompt(category: string, prompt: string): string {
+    if (!this.db.categoryPrompts) {
+      this.db.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS };
+    }
+    this.db.categoryPrompts[category] = prompt.trim();
+    this.save();
+    this.syncToFirestore('config', 'category_prompts', {
+      prompts: this.db.categoryPrompts,
+      updatedAt: new Date().toISOString()
+    });
+    return prompt.trim();
   }
 
   /* =========================================================================

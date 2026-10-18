@@ -84,7 +84,7 @@ export class GeminiAdapter {
     // Build parts array
     const parts: any[] = [];
 
-    // Attach user media if provided
+    // 1. Attach user image (determines subject identity)
     if (params.userImageUrl) {
       try {
         const imagePayload = await this.resolveImagePayload(params.userImageUrl);
@@ -95,12 +95,45 @@ export class GeminiAdapter {
           }
         });
       } catch (err: any) {
-        console.warn('[GeminiAdapter] Source image resolve note:', err.message);
+        console.warn('[GeminiAdapter] User image resolve note:', err.message);
       }
     }
 
-    // Comprehensive professional prompt
-    const promptText = `High-end cinematic photography: ${params.prompt}. Workflow style: ${params.styleWorkflow || 'cinematic portrait'}. Maintain pristine subject identity, realistic facial geometry, 8k resolution, studio lighting, sharp focus, aesthetic color grading. Aspect ratio: ${params.aspectRatio || '9:16'}.`;
+    // 2. Attach template style reference image (guides visual look/aesthetic) if provided
+    let hasReferenceImage = false;
+    if (params.referenceImageUrl) {
+      try {
+        const refPayload = await this.resolveImagePayload(params.referenceImageUrl);
+        parts.push({
+          inlineData: {
+            mimeType: refPayload.mimeType,
+            data: refPayload.data
+          }
+        });
+        hasReferenceImage = true;
+      } catch (err: any) {
+        console.warn('[GeminiAdapter] Reference image resolve note:', err.message);
+      }
+    }
+
+    // 3. Construct prompt:
+    // If a reference image is provided, enforce shared server-side master prompt
+    // where user photo determines identity and reference image guides style.
+    // If no reference image is provided, preserve existing single-image / custom-edit path.
+    let promptText: string;
+    if (hasReferenceImage) {
+      const promptSegments = [
+        `High-end photographic transformation:`,
+        `- Image 1 is the subject's portrait photo: preserve this person's facial features, identity, facial geometry, and likeness accurately.`,
+        `- Image 2 is the style-reference image: replicate its artistic visual style, aesthetic look, color grading, lighting setup, wardrobe/outfit theme, mood, and background atmosphere.`,
+        `- Synthesize a new photorealistic, 8k ultra-sharp master photograph depicting the exact person from Image 1 seamlessly integrated into the style and aesthetic of Image 2.`,
+        params.prompt && params.prompt.trim() ? `Additional template style instructions: ${params.prompt.trim()}.` : '',
+        `Aspect ratio: ${params.aspectRatio || '9:16'}.`
+      ];
+      promptText = promptSegments.filter(Boolean).join('\n');
+    } else {
+      promptText = `High-end cinematic photography: ${params.prompt}. Workflow style: ${params.styleWorkflow || 'cinematic portrait'}. Maintain pristine subject identity, realistic facial geometry, 8k resolution, studio lighting, sharp focus, aesthetic color grading. Aspect ratio: ${params.aspectRatio || '9:16'}.`;
+    }
     parts.push({ text: promptText });
 
     // Allowed aspect ratios for Gemini Image: "1:1", "3:4", "4:3", "9:16", "16:9"

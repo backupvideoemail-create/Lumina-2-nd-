@@ -32,11 +32,25 @@ import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
 import { HomeBannerItem } from '../config/homeBannersConfig';
 import { isVideoMedia } from '../utils/mediaUtils';
+import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
+import { CATEGORIES } from '../data/templatesData';
 
 interface TemplateManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+export interface BulkTemplateItem {
+  id: string;
+  file: File;
+  previewUrl: string;
+  title: string;
+  status: 'pending' | 'uploading' | 'success' | 'failed';
+  error?: string;
+  createdTemplateId?: string;
+}
+
+export const CATEGORY_PROMPT_PRESETS: Record<string, string> = DEFAULT_CATEGORY_PROMPTS;
 
 export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   isOpen,
@@ -53,7 +67,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'demo'>('templates');
-  const [subTab, setSubTab] = useState<'list' | 'add' | 'edit'>('list');
+  const [subTab, setSubTab] = useState<'list' | 'add' | 'edit' | 'bulk'>('list');
   const [faceSwapSection, setFaceSwapSection] = useState<'scenes' | 'demo'>('scenes');
   const [faceSwapSubTab, setFaceSwapSubTab] = useState<'list' | 'add' | 'edit'>('list');
 
@@ -100,11 +114,30 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplCostUsd, setTplCostUsd] = useState<number>(0.25);
   const [tplMediaPreview, setTplMediaPreview] = useState<string>('');
   const [tplCoverPreview, setTplCoverPreview] = useState<string>('');
+  const [tplReferenceImagePreview, setTplReferenceImagePreview] = useState<string>('');
   const [tplSampleResultPreview, setTplSampleResultPreview] = useState<string>('');
   const [tplDetectedType, setTplDetectedType] = useState<'photo' | 'video'>('video');
 
   // Input Type Enforcement: 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO'
   const [tplInputType, setTplInputType] = useState<TemplateInputType>('IMAGE_OR_VIDEO');
+
+  // BULK PHOTO IMPORT & CATEGORY-LEVEL PROMPTS STATE
+  const [categoryPromptsMap, setCategoryPromptsMap] = useState<Record<string, string>>(DEFAULT_CATEGORY_PROMPTS);
+  const [listCategoryFilter, setListCategoryFilter] = useState<string>('all');
+  const [bulkItems, setBulkItems] = useState<BulkTemplateItem[]>([]);
+  const [bulkCategory, setBulkCategory] = useState<string>('Devotional');
+  const [bulkCategoryCustom, setBulkCategoryCustom] = useState<string>('');
+  const [bulkMasterPrompt, setBulkMasterPrompt] = useState<string>(
+    DEFAULT_CATEGORY_PROMPTS['Devotional']
+  );
+  const [bulkAspectRatio, setBulkAspectRatio] = useState<'9:16' | '4:5' | '1:1' | '16:9'>('9:16');
+  const [bulkTags, setBulkTags] = useState<string>('Devotional, Bhakti, AI Photo, Spiritual');
+  const [bulkCostUsd, setBulkCostUsd] = useState<number>(0.08);
+  const [bulkIsActive, setBulkIsActive] = useState<boolean>(true);
+  const [bulkIsFeatured, setBulkIsFeatured] = useState<boolean>(true);
+  const [isBulkUploading, setIsBulkUploading] = useState<boolean>(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; successCount: number; failCount: number }>({ current: 0, total: 0, successCount: 0, failCount: 0 });
+  const [bulkSummary, setBulkSummary] = useState<{ completed: boolean; total: number; successCount: number; failCount: number } | null>(null);
 
   // Execution Recipe (Separated from display preview MP4/Photo)
   const [recipePreset, setRecipePreset] = useState<'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom'>('veo_video');
@@ -164,6 +197,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const tplFileRef = useRef<HTMLInputElement>(null);
   const coverFileRef = useRef<HTMLInputElement>(null);
+  const referenceImageFileRef = useRef<HTMLInputElement>(null);
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
   const sampleResultFileRef = useRef<HTMLInputElement>(null);
   const recipeJsonFileRef = useRef<HTMLInputElement>(null);
   const drivingFileRef = useRef<HTMLInputElement>(null);
@@ -244,6 +279,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       .then((res) => res.json())
       .then((data) => {
         if (data.demoVideoUrl) setCurrentDemoVideoUrl(data.demoVideoUrl);
+      })
+      .catch(() => {});
+
+    fetch('/api/categories/prompts')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.prompts) {
+          setCategoryPromptsMap(data.prompts);
+          if (data.prompts[bulkCategory]) {
+            setBulkMasterPrompt(data.prompts[bulkCategory]);
+          }
+        }
       })
       .catch(() => {});
   }, [isOpen, user]);
@@ -662,6 +709,249 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       await refreshTemplates();
     } catch (err: any) {
       showNotification(err.message, 'error');
+    }
+  };
+
+  // --- BULK PHOTO TEMPLATE HANDLERS ---
+  const handleBulkCategoryChange = (cat: string) => {
+    setBulkCategory(cat);
+    const effectivePrompt = categoryPromptsMap[cat] || DEFAULT_CATEGORY_PROMPTS[cat] || DEFAULT_CATEGORY_PROMPTS['Trending'];
+    setBulkMasterPrompt(effectivePrompt);
+
+    if (cat === 'Devotional') setBulkTags('Devotional, Bhakti, AI Photo, Spiritual');
+    else if (cat === 'Trending') setBulkTags('Trending, Viral, AI Photo, Portrait');
+    else if (cat === 'Royal Swag') setBulkTags('Royal, Swag, Maharaja, AI Photo');
+    else if (cat === 'Couple') setBulkTags('Couple, Romance, Photoshoot, AI Photo');
+    else if (cat === 'Retro 80s') setBulkTags('Retro, 80s, Vintage, Bollywood, AI Photo');
+    else setBulkTags(`${cat}, AI Photo, Style Reference`);
+  };
+
+  const handleSaveCategoryPrompt = async () => {
+    const effectiveCat = (bulkCategory === 'Custom' ? bulkCategoryCustom.trim() : bulkCategory) || 'Devotional';
+    if (!effectiveCat) {
+      showNotification('Please specify a category', 'error');
+      return;
+    }
+    if (!bulkMasterPrompt.trim()) {
+      showNotification('Prompt cannot be empty', 'error');
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/categories/prompts', {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ category: effectiveCat, prompt: bulkMasterPrompt })
+      });
+      if (res.ok) {
+        setCategoryPromptsMap((prev) => ({ ...prev, [effectiveCat]: bulkMasterPrompt.trim() }));
+        showNotification(`Shared Front Message saved for category "${effectiveCat}"!`);
+      } else {
+        showNotification('Failed to update category prompt', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Failed to update category prompt', 'error');
+    }
+  };
+
+  const handleBulkFilesSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const newItems: BulkTemplateItem[] = files
+      .filter((f) => f.type.startsWith('image/'))
+      .map((f, idx) => {
+        const cleanName = f.name
+          .replace(/\.[^/.]+$/, '')
+          .replace(/[_-]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const formattedTitle = cleanName
+          ? cleanName.charAt(0).toUpperCase() + cleanName.slice(1)
+          : `${bulkCategory} Style ${bulkItems.length + idx + 1}`;
+
+        return {
+          id: `bulk_${Date.now()}_${Math.random().toString(36).substr(2, 6)}_${idx}`,
+          file: f,
+          previewUrl: URL.createObjectURL(f),
+          title: formattedTitle,
+          status: 'pending'
+        };
+      });
+
+    setBulkItems((prev) => [...prev, ...newItems]);
+    setBulkSummary(null);
+    e.target.value = '';
+  };
+
+  const handleUpdateBulkTitle = (id: string, newTitle: string) => {
+    setBulkItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, title: newTitle } : item))
+    );
+  };
+
+  const handleRemoveBulkItem = (id: string) => {
+    setBulkItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleClearBulkItems = () => {
+    setBulkItems([]);
+    setBulkSummary(null);
+  };
+
+  const handleExecuteBulkUpload = async () => {
+    const pendingItems = bulkItems.filter((i) => i.status !== 'success');
+    if (pendingItems.length === 0) {
+      showNotification('No pending templates to upload', 'error');
+      return;
+    }
+
+    const effectiveCat = (bulkCategory === 'Custom' ? bulkCategoryCustom.trim() : bulkCategory) || 'Devotional';
+    if (!effectiveCat) {
+      showNotification('Please specify a category', 'error');
+      return;
+    }
+
+    setIsBulkUploading(true);
+    let successCount = bulkItems.filter((i) => i.status === 'success').length;
+    let failCount = 0;
+    const totalCount = bulkItems.length;
+
+    setBulkProgress({
+      current: successCount,
+      total: totalCount,
+      successCount,
+      failCount: 0
+    });
+
+    const headers = getAdminHeaders();
+
+    // 1. First persist the shared category prompt centrally on the server
+    try {
+      await fetch('/api/admin/categories/prompts', {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ category: effectiveCat, prompt: bulkMasterPrompt })
+      });
+    } catch {}
+
+    // 2. Process each item sequentially (persisting media to storage & creating template record)
+    for (let i = 0; i < bulkItems.length; i++) {
+      const item = bulkItems[i];
+      if (item.status === 'success') continue;
+
+      setBulkItems((prev) =>
+        prev.map((it) => (it.id === item.id ? { ...it, status: 'uploading', error: undefined } : it))
+      );
+
+      try {
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(item.file);
+        });
+
+        // Upload media to storage for persistent URL (never store large raw base64 permanently)
+        const upRes = await fetch('/api/admin/upload-media', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            mediaBase64: base64Data,
+            filename: `tpl_${effectiveCat.toLowerCase().replace(/[^a-z0-9]/g, '_')}`
+          })
+        });
+
+        const upData = await upRes.json().catch(() => null);
+        if (!upRes.ok || !upData?.url) {
+          throw new Error(upData?.error || `Upload media failed (HTTP ${upRes.status})`);
+        }
+        const persistentUrl = upData.url;
+
+        // Post template with the category's shared prompt & reference image URL
+        const tplPayload = {
+          title: item.title.trim() || `${effectiveCat} Style ${i + 1}`,
+          description: `${effectiveCat} AI Photo Style Template`,
+          category: effectiveCat,
+          aspectRatio: bulkAspectRatio,
+          isFeatured: bulkIsFeatured,
+          isActive: bulkIsActive,
+          tags: bulkTags.split(',').map((t) => t.trim()).filter(Boolean),
+          type: 'photo',
+          inputType: 'IMAGE_ONLY',
+          mediaBase64: persistentUrl,
+          coverBase64: persistentUrl,
+          referenceImageUrl: persistentUrl,
+          referenceImageBase64: persistentUrl,
+          workflow: 'gemini-photo-style',
+          model: 'gemini-3.1-flash-image',
+          engine: 'AI_GENERATION',
+          providerCostUsd: Number(bulkCostUsd) || 0.08,
+          recipe: {
+            version: '1.0',
+            inputType: 'IMAGE_ONLY',
+            provider: 'gemini',
+            model: 'gemini-3.1-flash-image',
+            engine: 'AI_GENERATION',
+            prompt: bulkMasterPrompt.trim(),
+            workflow: 'gemini-photo-style',
+            aspectRatio: bulkAspectRatio,
+            referenceAssets: [persistentUrl],
+            referenceImageUrl: persistentUrl
+          }
+        };
+
+        const createRes = await fetch('/api/admin/templates', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(tplPayload)
+        });
+
+        const createData = await createRes.json().catch(() => null);
+        if (!createRes.ok || !createData?.template) {
+          throw new Error(createData?.error || `Failed to create template (HTTP ${createRes.status})`);
+        }
+
+        successCount++;
+        setBulkItems((prev) =>
+          prev.map((it) =>
+            it.id === item.id
+              ? { ...it, status: 'success', createdTemplateId: createData.template.id }
+              : it
+          )
+        );
+      } catch (err: any) {
+        failCount++;
+        setBulkItems((prev) =>
+          prev.map((it) =>
+            it.id === item.id ? { ...it, status: 'failed', error: err.message || 'Failed' } : it
+          )
+        );
+      }
+
+      setBulkProgress({
+        current: successCount + failCount,
+        total: totalCount,
+        successCount,
+        failCount
+      });
+    }
+
+    setIsBulkUploading(false);
+    setBulkSummary({
+      completed: true,
+      total: totalCount,
+      successCount,
+      failCount
+    });
+
+    await refreshTemplates();
+    if (failCount === 0) {
+      showNotification(`All ${successCount} photo templates published successfully to ${effectiveCat}!`);
+    } else {
+      showNotification(
+        `${successCount} published, ${failCount} failed. You can retry failed items.`,
+        'error'
+      );
     }
   };
 
@@ -1338,85 +1628,509 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         {/* TAB 1: TEMPLATES MANAGEMENT */}
         {activeTab === 'templates' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-            {subTab === 'list' ? (
+            {subTab === 'list' && (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-stone-400">Total Live Catalog: {templates.length}</span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-stone-400">
+                      Catalog: {templates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter).length} / {templates.length}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setSubTab('bulk');
+                        setBulkSummary(null);
+                      }}
+                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 text-xs font-black flex items-center gap-1.5 shadow-md hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                      title="Bulk add multiple photo templates into a category with a shared prompt"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Bulk Add Photo Templates</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingTemplate(null);
+                        setTplTitle('');
+                        setTplMediaPreview('');
+                        setSubTab('add');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Single</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Category Filter Chips for Live Catalog Inspection */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
                   <button
-                    onClick={() => {
-                      setEditingTemplate(null);
-                      setTplTitle('');
-                      setTplMediaPreview('');
-                      setSubTab('add');
-                    }}
-                    className="px-3.5 py-1.5 rounded-xl bg-[#ff9f00] text-black text-xs font-black flex items-center gap-1.5 shadow-md hover:brightness-110 active:scale-95 transition-all"
+                    onClick={() => setListCategoryFilter('all')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                      listCategoryFilter === 'all'
+                        ? 'bg-amber-400 text-stone-950 font-bold'
+                        : 'bg-white/5 text-stone-400 hover:text-white'
+                    }`}
                   >
-                    <Plus className="w-4 h-4" />
-                    <span>Upload Template</span>
+                    All ({templates.length})
                   </button>
+                  {CATEGORIES.map((cat) => {
+                    const count = templates.filter((t) => t.category === cat).length;
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setListCategoryFilter(cat)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer ${
+                          listCategoryFilter === cat
+                            ? 'bg-amber-400 text-stone-950 font-bold'
+                            : 'bg-white/5 text-stone-400 hover:text-white'
+                        }`}
+                      >
+                        <span>{cat}</span>
+                        <span className="text-[10px] opacity-75">({count})</span>
+                      </button>
+                    );
+                  })}
                 </div>
 
                 <div className="space-y-2">
-                  {templates.map((tpl) => (
-                    <div
-                      key={tpl.id}
-                      className="p-3 rounded-2xl bg-stone-900/60 border border-white/10 flex items-center justify-between gap-3"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <img
-                          src={tpl.cover}
-                          alt={tpl.title}
-                          className="w-12 h-14 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0"
+                  {templates
+                    .filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter)
+                    .map((tpl) => (
+                      <div
+                        key={tpl.id}
+                        className="p-3 rounded-2xl bg-stone-900/60 border border-white/10 flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <img
+                            src={tpl.cover}
+                            alt={tpl.title}
+                            className="w-12 h-14 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-xs font-bold text-white truncate">{tpl.title}</h4>
+                              {tpl.badge && (
+                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  {tpl.badge}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-stone-400">
+                              <span className="text-amber-300/80 font-medium">{tpl.category}</span>
+                              <span>•</span>
+                              <span>{tpl.type.toUpperCase()}</span>
+                              <span>•</span>
+                              <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleToggleActive(tpl)}
+                            title={tpl.isActive !== false ? 'Deactivate' : 'Activate'}
+                            className={`p-2 rounded-xl border text-xs cursor-pointer ${
+                              tpl.isActive !== false
+                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                                : 'bg-stone-800 text-stone-500 border-stone-700'
+                            }`}
+                          >
+                            {tpl.isActive !== false ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => startEditTemplate(tpl)}
+                            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 border border-white/10 text-xs cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteTemplate(tpl.id)}
+                            className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* SUBTAB: BULK PHOTO TEMPLATES STUDIO */}
+            {subTab === 'bulk' && (
+              <div className="space-y-4">
+                {/* Header with Back button */}
+                <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                  <div>
+                    <h4 className="text-sm font-extrabold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <span>Bulk Add Photo Templates (थोक फोटो टेम्पलेट्स)</span>
+                    </h4>
+                    <p className="text-[11px] text-stone-400 mt-0.5">
+                      Select multiple photos from phone gallery, set the category front message, and publish live in 1-click.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSubTab('list')}
+                    className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-stone-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    ← Back to Catalog
+                  </button>
+                </div>
+
+                {/* STEP 1: CATEGORY & SHARED FRONT MESSAGE */}
+                <div className="p-3.5 rounded-2xl bg-[#14121a] border border-amber-500/30 space-y-3 shadow-lg">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <label className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded-full bg-[#ff9f00] text-black text-[10px] font-black flex items-center justify-center">1</span>
+                      <span>Target Category & Front Message (साझा AI प्रॉम्ट)</span>
+                    </label>
+                    <span className="text-[10px] text-emerald-400 font-semibold">Gemini 3.1 Flash Photo</span>
+                  </div>
+
+                  {/* Category Selection */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                        Select Category (कैटेगरी चुनें) *
+                      </label>
+                      <select
+                        value={bulkCategory}
+                        onChange={(e) => handleBulkCategoryChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-black border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 cursor-pointer"
+                      >
+                        {CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat} {cat === 'Devotional' ? '(भक्ति - Hanuman Ji, Mahadev)' : ''}
+                          </option>
+                        ))}
+                        <option value="Custom">+ Custom Category (अन्य नई कैटेगरी)</option>
+                      </select>
+                    </div>
+
+                    {bulkCategory === 'Custom' ? (
+                      <div>
+                        <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                          Custom Category Name *
+                        </label>
+                        <input
+                          type="text"
+                          value={bulkCategoryCustom}
+                          onChange={(e) => setBulkCategoryCustom(e.target.value)}
+                          placeholder="e.g. Mahadev Bhakti, Bollywood Retro"
+                          className="w-full px-3 py-2 rounded-xl bg-black border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400"
                         />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <h4 className="text-xs font-bold text-white truncate">{tpl.title}</h4>
-                            {tpl.badge && (
-                              <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                {tpl.badge}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-stone-400">
-                            <span>{tpl.category}</span>
-                            <span>•</span>
-                            <span>{tpl.type.toUpperCase()}</span>
-                            <span>•</span>
-                            <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
-                          </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                          Aspect Ratio (एस्पेक्ट रेशियो)
+                        </label>
+                        <select
+                          value={bulkAspectRatio}
+                          onChange={(e) => setBulkAspectRatio(e.target.value as any)}
+                          className="w-full px-3 py-2 rounded-xl bg-black border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 font-mono cursor-pointer"
+                        >
+                          <option value="9:16">9:16 (Vertical Reel / Story)</option>
+                          <option value="1:1">1:1 (Square Feed)</option>
+                          <option value="4:5">4:5 (Portrait Feed)</option>
+                          <option value="16:9">16:9 (Landscape)</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Front Message (Shared AI Prompt) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <label className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                        <Wand2 className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Category Front Message (इस कैटेगरी का साझा AI प्रॉम्ट)</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleSaveCategoryPrompt}
+                        className="text-[10px] font-bold text-amber-400 hover:text-amber-300 underline cursor-pointer"
+                        title="Persist this prompt centrally for this category"
+                      >
+                        Save as Central Category Prompt
+                      </button>
+                    </div>
+                    <textarea
+                      value={bulkMasterPrompt}
+                      onChange={(e) => setBulkMasterPrompt(e.target.value)}
+                      rows={3}
+                      placeholder="Enter the category's master style instruction..."
+                      className="w-full p-2.5 rounded-xl bg-black/60 border border-white/15 text-xs text-stone-200 focus:outline-none focus:border-amber-400 font-sans"
+                    />
+                    <p className="text-[10px] text-stone-400">
+                      ℹ️ इस कैटेगरी के सभी टेम्पलेट्स इसी फ्रंट मैसेज के साथ चलेंगे। जेमिनी AI यूजर की फोटो से चेहरा लेगा और टेम्पलेट की रेफरेंस फोटो से स्टाइल व बैकग्राउंड लेगा।
+                    </p>
+                  </div>
+
+                  {/* Settings Bar */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                    <div>
+                      <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Tags</label>
+                      <input
+                        type="text"
+                        value={bulkTags}
+                        onChange={(e) => setBulkTags(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-black border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Cost USD</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={bulkCostUsd}
+                        onChange={(e) => setBulkCostUsd(parseFloat(e.target.value) || 0.08)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-black border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                      />
+                    </div>
+
+                    <label className="flex items-center gap-2 p-2 rounded-xl bg-black/40 border border-white/10 cursor-pointer self-end">
+                      <input
+                        type="checkbox"
+                        checked={bulkIsActive}
+                        onChange={(e) => setBulkIsActive(e.target.checked)}
+                        className="rounded accent-emerald-500 w-4 h-4 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-stone-300">Active Live</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 p-2 rounded-xl bg-black/40 border border-white/10 cursor-pointer self-end">
+                      <input
+                        type="checkbox"
+                        checked={bulkIsFeatured}
+                        onChange={(e) => setBulkIsFeatured(e.target.checked)}
+                        className="rounded accent-amber-500 w-4 h-4 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-stone-300">Featured</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* STEP 2: SELECT REFERENCE PHOTOS FROM PHONE */}
+                <div className="space-y-3 p-3.5 rounded-2xl bg-black/40 border border-white/10">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <label className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded-full bg-[#ff9f00] text-black text-[10px] font-black flex items-center justify-center">2</span>
+                      <span>Select Style Reference Photos (गैलरी से फोटो चुनें)</span>
+                    </label>
+                    <span className="text-[10px] text-stone-400">Multi-File Upload</span>
+                  </div>
+
+                  <input
+                    ref={bulkFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleBulkFilesSelect}
+                    className="hidden"
+                  />
+
+                  {/* Big Tap Area */}
+                  <div
+                    onClick={() => bulkFileInputRef.current?.click()}
+                    className="relative w-full p-6 rounded-2xl border-2 border-dashed border-white/20 hover:border-[#ff9f00] bg-stone-900/40 hover:bg-stone-900/60 flex flex-col items-center justify-center cursor-pointer transition-all group"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 mb-2 group-hover:scale-105 transition-transform">
+                      <Upload className="w-6 h-6" />
+                    </div>
+                    <span className="text-sm font-bold text-white text-center">
+                      Tap to Choose Multiple Photos from Gallery
+                    </span>
+                    <span className="text-xs text-stone-400 text-center mt-1">
+                      (उदाहरण: हनुमान जी, राम जी, या रॉयल स्वैग की 5-20 अलग-अलग फोटो एक साथ चुनें)
+                    </span>
+                    <span className="text-[10px] text-amber-300/80 font-mono mt-1">
+                      Each photo becomes an individual style template under "{bulkCategory}"
+                    </span>
+                  </div>
+
+                  {/* Selected Photos List */}
+                  {bulkItems.length > 0 && (
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-stone-300">
+                          Selected Photos ({bulkItems.length}):
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => bulkFileInputRef.current?.click()}
+                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-stone-200 text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            + Add More
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearBulkItems}
+                            className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Clear All
+                          </button>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => handleToggleActive(tpl)}
-                          title={tpl.isActive !== false ? 'Deactivate' : 'Activate'}
-                          className={`p-2 rounded-xl border text-xs ${
-                            tpl.isActive !== false
-                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                              : 'bg-stone-800 text-stone-500 border-stone-700'
-                          }`}
-                        >
-                          {tpl.isActive !== false ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
-                          onClick={() => startEditTemplate(tpl)}
-                          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 border border-white/10 text-xs"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteTemplate(tpl.id)}
-                          className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                      <div className="max-h-64 overflow-y-auto space-y-2 pr-1 no-scrollbar">
+                        {bulkItems.map((item, idx) => (
+                          <div
+                            key={item.id}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
+                              item.status === 'success'
+                                ? 'bg-emerald-500/10 border-emerald-500/30'
+                                : item.status === 'failed'
+                                ? 'bg-rose-500/10 border-rose-500/30'
+                                : item.status === 'uploading'
+                                ? 'bg-amber-500/10 border-amber-500/30 animate-pulse'
+                                : 'bg-stone-900/70 border-white/10'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              <img
+                                src={item.previewUrl}
+                                alt="Thumb"
+                                className="w-10 h-12 rounded-lg object-cover bg-black border border-white/10 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <input
+                                  type="text"
+                                  value={item.title}
+                                  onChange={(e) => handleUpdateBulkTitle(item.id, e.target.value)}
+                                  disabled={item.status === 'uploading' || item.status === 'success'}
+                                  placeholder={`Template Title ${idx + 1}`}
+                                  className="w-full px-2 py-1 rounded-md bg-black/60 border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400"
+                                />
+                                {item.error && (
+                                  <span className="text-[10px] text-rose-400 block truncate mt-0.5">
+                                    Error: {item.error}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {item.status === 'pending' && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/10 text-stone-300 font-semibold">
+                                  Ready
+                                </span>
+                              )}
+                              {item.status === 'uploading' && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold flex items-center gap-1">
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                  <span>Saving...</span>
+                                </span>
+                              )}
+                              {item.status === 'success' && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 font-bold flex items-center gap-1">
+                                  <Check className="w-3 h-3" />
+                                  <span>Live</span>
+                                </span>
+                              )}
+                              {item.status === 'failed' && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-bold">
+                                  Failed
+                                </span>
+                              )}
+
+                              {item.status !== 'uploading' && item.status !== 'success' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveBulkItem(item.id)}
+                                  className="p-1.5 rounded-lg text-stone-400 hover:text-red-400 hover:bg-white/5 cursor-pointer"
+                                  title="Remove this photo"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  )}
                 </div>
+
+                {/* Progress Bar & Summary */}
+                {isBulkUploading && (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs font-bold text-amber-300">
+                      <span>Publishing templates to catalog...</span>
+                      <span>{bulkProgress.current} / {bulkProgress.total}</span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-black/60 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-400 to-[#d4af37] transition-all duration-300"
+                        style={{ width: `${(bulkProgress.current / Math.max(1, bulkProgress.total)) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {bulkSummary && (
+                  <div
+                    className={`p-3 rounded-xl border flex items-center justify-between text-xs font-semibold ${
+                      bulkSummary.failCount === 0
+                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                        : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                    }`}
+                  >
+                    <span>
+                      {bulkSummary.failCount === 0
+                        ? `🎉 All ${bulkSummary.successCount} photo templates are live in "${bulkCategory}"!`
+                        : `⚠️ ${bulkSummary.successCount} templates published, ${bulkSummary.failCount} failed. You can retry failed items.`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSubTab('list');
+                        setListCategoryFilter(bulkCategory);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-black/40 hover:bg-black/60 text-white font-bold text-[11px] underline cursor-pointer"
+                    >
+                      View in Catalog →
+                    </button>
+                  </div>
+                )}
+
+                {/* Submit 1-Tap Action Button */}
+                <button
+                  type="button"
+                  onClick={handleExecuteBulkUpload}
+                  disabled={isBulkUploading || bulkItems.length === 0 || bulkItems.every((i) => i.status === 'success')}
+                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg hover:brightness-110 active:scale-95 disabled:opacity-40 transition-all cursor-pointer"
+                >
+                  {isBulkUploading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Publishing ({bulkProgress.current} / {bulkProgress.total})...</span>
+                    </>
+                  ) : bulkItems.every((i) => i.status === 'success') && bulkItems.length > 0 ? (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>All Templates Live · Done</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      <span>
+                        Publish {bulkItems.filter((i) => i.status !== 'success').length} Templates to "{bulkCategory}" (लाइव पब्लिश करें)
+                      </span>
+                    </>
+                  )}
+                </button>
               </div>
-            ) : (
+            )}
+
+            {/* SUBTAB: ADD OR EDIT SINGLE TEMPLATE */}
+            {(subTab === 'add' || subTab === 'edit') && (
               // ADD / EDIT TEMPLATE FORM
               <form onSubmit={handleSaveTemplate} className="space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">

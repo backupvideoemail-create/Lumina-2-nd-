@@ -4,6 +4,7 @@ export interface ImageGenerationParams {
   prompt: string;
   sourceImageUrl?: string;
   userImageUrl?: string;
+  referenceImageUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
@@ -42,6 +43,7 @@ export interface TemplateProcessParams {
   templateType: 'photo' | 'video';
   engine: 'SMART_TEMPLATE' | 'AI_GENERATION';
   inputMediaUrl: string;
+  referenceImageUrl?: string;
   aspectRatio: string;
   workflow: string;
   customPrompt?: string;
