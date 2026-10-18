@@ -15,7 +15,9 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
-  DeleteObjectCommand
+  DeleteObjectCommand,
+  HeadBucketCommand,
+  ListObjectsV2Command
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { adminFirestoreDb } from '../db/database.ts';
@@ -34,14 +36,25 @@ export interface StoredMediaMetadata {
   provider: 'local' | 'cloudflare_r2';
   r2Key?: string;
   createdAt: string;
+  r2UploadError?: string;
 }
 
 export interface StorageProviderStatus {
   activeDriver: 'local' | 'cloudflare_r2';
   r2Configured: boolean;
+  r2LiveAuthenticated?: boolean;
+  r2Error?: string;
   message: string;
   bucket?: string;
+  publicBaseUrl?: string;
   requiredEnvVars: string[];
+  missingEnvVars: string[];
+  localStats: {
+    directory: string;
+    fileCount: number;
+    totalSizeBytes: number;
+    totalSizeFormatted: string;
+  };
 }
 
 export class MediaStorageService {
@@ -166,27 +179,88 @@ export class MediaStorageService {
     }
   }
 
+  private getLocalDiskStats() {
+    let fileCount = 0;
+    let totalSizeBytes = 0;
+    try {
+      if (fs.existsSync(UPLOADS_DIR)) {
+        const files = fs.readdirSync(UPLOADS_DIR);
+        fileCount = files.length;
+        for (const f of files) {
+          try {
+            const stat = fs.statSync(path.join(UPLOADS_DIR, f));
+            totalSizeBytes += stat.size;
+          } catch {}
+        }
+      }
+    } catch {}
+
+    const formatBytes = (bytes: number) => {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    };
+
+    return {
+      directory: UPLOADS_DIR,
+      fileCount,
+      totalSizeBytes,
+      totalSizeFormatted: formatBytes(totalSizeBytes)
+    };
+  }
+
   public getStatus(): StorageProviderStatus {
+    const missing: string[] = [];
+    if (!this.r2Config.accountId) missing.push('R2_ACCOUNT_ID');
+    if (!this.r2Config.accessKeyId) missing.push('R2_ACCESS_KEY_ID');
+    if (!this.r2Config.secretAccessKey) missing.push('R2_SECRET_ACCESS_KEY');
+    if (!this.r2Config.bucketName) missing.push('R2_BUCKET_NAME');
+
     const isR2Ready = Boolean(
       this.s3Client &&
-      this.r2Config.bucketName
+      this.r2Config.bucketName &&
+      missing.length === 0
     );
 
     return {
       activeDriver: isR2Ready ? 'cloudflare_r2' : 'local',
       r2Configured: isR2Ready,
       bucket: this.r2Config.bucketName || undefined,
+      publicBaseUrl: this.r2Config.publicBaseUrl || undefined,
       message: isR2Ready
         ? `Cloudflare R2 active on bucket '${this.r2Config.bucketName}' with authenticated presigned URLs & user isolation.`
-        : 'Cloudflare R2 adapter initialized. Operating in local secure isolated storage until R2 credentials are provided.',
+        : 'Cloudflare R2 driver pending credentials. Operating in local secure isolated storage.',
       requiredEnvVars: [
         'R2_ACCOUNT_ID',
         'R2_ACCESS_KEY_ID',
         'R2_SECRET_ACCESS_KEY',
         'R2_BUCKET_NAME',
         'R2_PUBLIC_BASE_URL (Optional)'
-      ]
+      ],
+      missingEnvVars: missing,
+      localStats: this.getLocalDiskStats()
     };
+  }
+
+  /**
+   * Performs an actual live authenticated check against the Cloudflare R2 bucket.
+   */
+  public async testR2Connection(): Promise<StorageProviderStatus> {
+    const status = this.getStatus();
+    if (!this.s3Client || !this.r2Config.bucketName) {
+      status.r2LiveAuthenticated = false;
+      return status;
+    }
+
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.r2Config.bucketName }));
+      status.r2LiveAuthenticated = true;
+      return status;
+    } catch (err: any) {
+      status.r2LiveAuthenticated = false;
+      status.r2Error = `R2 authentication probe failed: ${err.message}`;
+      return status;
+    }
   }
 
   /**
@@ -279,6 +353,7 @@ export class MediaStorageService {
     let provider: 'local' | 'cloudflare_r2' = 'cloudflare_r2';
     const scopeFolder = (isPublic || prefix.startsWith('tpl_')) ? 'public' : (ownerUserId ? `users/${ownerUserId}` : 'general');
     const r2Key = `media/${scopeFolder}/${filename}`;
+    let r2UploadError: string | undefined = undefined;
 
     // Cloudflare R2 is authoritative storage driver when configured
     if (this.s3Client && this.r2Config.bucketName) {
@@ -294,14 +369,17 @@ export class MediaStorageService {
             isPublic: String(Boolean(isPublic || prefix.startsWith('tpl_')))
           }
         }));
-
         if (isPublic && this.r2Config.publicBaseUrl) {
           const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
           publicUrl = `${base}/${r2Key}`;
         }
+        provider = 'cloudflare_r2';
       } catch (err: any) {
         console.error('[MediaStorage] R2 PutObject warning:', err.message);
+        r2UploadError = err.message;
         provider = 'local';
+        // Requirement: Do not silently disguise failed R2 upload as success
+        throw new Error(`Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}': ${err.message}`);
       }
     } else {
       provider = 'local';
@@ -318,6 +396,7 @@ export class MediaStorageService {
       isPublic: Boolean(isPublic || prefix.startsWith('tpl_')),
       provider,
       r2Key,
+      r2UploadError,
       createdAt: new Date().toISOString()
     };
 

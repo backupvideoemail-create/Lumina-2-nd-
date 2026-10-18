@@ -26,7 +26,11 @@ import {
   Key,
   ShieldCheck,
   Lock,
-  Wand2
+  Wand2,
+  AlertTriangle,
+  HardDrive,
+  Cloud,
+  Info
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
@@ -100,6 +104,35 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [sceneResultVideo, setSceneResultVideo] = useState<string>('');
   const [sceneResultVideoName, setSceneResultVideoName] = useState<string>('');
   const sceneResultVideoFileRef = useRef<HTMLInputElement>(null);
+
+  // Asset File Metadata for diagnostics & validation
+  const [sceneSampleFaceFile, setSceneSampleFaceFile] = useState<{ name: string; size: number; type: string } | null>(null);
+  const [sceneSourceVideoFile, setSceneSourceVideoFile] = useState<{ name: string; size: number; type: string; duration?: number } | null>(null);
+  const [sceneResultVideoFile, setSceneResultVideoFile] = useState<{ name: string; size: number; type: string; duration?: number } | null>(null);
+
+  // Granular Diagnostic Error & Stage Reporting
+  const [detailedError, setDetailedError] = useState<{
+    stage: 'Photo Upload' | 'Original Video Upload' | 'Result Video Upload' | 'Save Scene' | 'Media Validation';
+    stepNumber: string;
+    httpStatus?: number;
+    serverError?: string;
+    errorCode?: string;
+    fileName?: string;
+    fileType?: string;
+    fileSizeFormatted?: string;
+    probableCause: string;
+    nextStep: string;
+  } | null>(null);
+
+  const [uploadStageInfo, setUploadStageInfo] = useState<{
+    step: string;
+    message: string;
+    provider?: string;
+  } | null>(null);
+
+  const [storageStatus, setStorageStatus] = useState<any>(null);
+  const [showStorageDiagnostics, setShowStorageDiagnostics] = useState<boolean>(false);
+  const [isTestingStorage, setIsTestingStorage] = useState<boolean>(false);
 
   // TEMPLATES STATE
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
@@ -305,6 +338,30 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   }, [isOpen, user]);
 
   if (!isOpen) return null;
+
+  const formatBytes = (bytes: number): string => {
+    if (!bytes || isNaN(bytes)) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const fetchStorageStatus = async () => {
+    setIsTestingStorage(true);
+    try {
+      const res = await fetch('/api/admin/storage/status', {
+        headers: getAdminHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStorageStatus(data);
+      }
+    } catch {
+      // optional
+    } finally {
+      setIsTestingStorage(false);
+    }
+  };
 
   const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
     setFeedback({ message, type });
@@ -1206,34 +1263,168 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const handleSelectSampleFace = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setDetailedError(null);
+
+    // 1. MIME Type check
+    const validImageTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const hasImageExt = Boolean(file.name.match(/\.(jpe?g|png|webp)$/i));
+    if (!file.type.startsWith('image/') && !hasImageExt) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 1: Sample Face Photo',
+        fileName: file.name,
+        fileType: file.type || 'unknown',
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: 'Selected file is not an image (JPEG, PNG, or WEBP).',
+        nextStep: 'Please select a clear portrait image in JPG, PNG, or WEBP format.'
+      });
+      e.target.value = '';
+      return;
+    }
+
+    // 2. File size check (15MB limit)
+    const MAX_PHOTO_BYTES = 15 * 1024 * 1024;
+    if (file.size > MAX_PHOTO_BYTES) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 1: Sample Face Photo',
+        fileName: file.name,
+        fileType: file.type,
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: `Image size (${formatBytes(file.size)}) exceeds the maximum allowed 15MB limit.`,
+        nextStep: 'Please compress the photo or choose an image under 15MB.'
+      });
+      e.target.value = '';
+      return;
+    }
+
     setSceneSampleFaceName(file.name);
+    setSceneSampleFaceFile({ name: file.name, size: file.size, type: file.type || 'image/jpeg' });
     const reader = new FileReader();
     reader.onload = () => {
       setSceneSampleFace(reader.result as string);
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleSelectSourceVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setDetailedError(null);
+
+    // 1. MIME type validation
+    const hasVideoExt = Boolean(file.name.match(/\.(mp4|mov|webm)$/i));
+    if (!file.type.startsWith('video/') && !hasVideoExt) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 2: Original Video',
+        fileName: file.name,
+        fileType: file.type || 'unknown',
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: 'Selected file is not a supported video format.',
+        nextStep: 'Please select an MP4, MOV, or WEBM video file.'
+      });
+      e.target.value = '';
+      return;
+    }
+
+    // 2. File size validation (50MB limit)
+    const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+    if (file.size > MAX_VIDEO_BYTES) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 2: Original Video',
+        fileName: file.name,
+        fileType: file.type || 'video/*',
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: `Video size (${formatBytes(file.size)}) exceeds the 50MB upload limit.`,
+        nextStep: 'Please compress the video or trim it to a short 5-15 second clip.'
+      });
+      e.target.value = '';
+      return;
+    }
+
+    // 3. Duration check
+    try {
+      const vidObj = document.createElement('video');
+      vidObj.preload = 'metadata';
+      const objUrl = URL.createObjectURL(file);
+      vidObj.onloadedmetadata = () => {
+        URL.revokeObjectURL(objUrl);
+        const dur = Math.round(vidObj.duration);
+        if (dur > 60) {
+          setDetailedError({
+            stage: 'Media Validation',
+            stepNumber: 'Asset 2: Original Video',
+            fileName: file.name,
+            fileType: file.type,
+            fileSizeFormatted: formatBytes(file.size),
+            probableCause: `Video duration (${dur}s) is longer than 60s. Template scenes should be short loops (5-15s).`,
+            nextStep: 'Please trim your driving video to a short 5-15 second reel loop.'
+          });
+        } else {
+          setSceneDurationSeconds(Math.min(15, Math.max(4, dur)));
+        }
+      };
+      vidObj.src = objUrl;
+    } catch {}
+
     setSceneSourceVideoName(file.name);
+    setSceneSourceVideoFile({ name: file.name, size: file.size, type: file.type || 'video/mp4' });
     const reader = new FileReader();
     reader.onload = () => {
       setSceneSourceVideo(reader.result as string);
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleSelectResultVideo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setDetailedError(null);
+
+    // 1. MIME type validation
+    const hasVideoExt = Boolean(file.name.match(/\.(mp4|mov|webm)$/i));
+    if (!file.type.startsWith('video/') && !hasVideoExt) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 3: Swapped Video',
+        fileName: file.name,
+        fileType: file.type || 'unknown',
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: 'Selected file is not an MP4, MOV, or WEBM video.',
+        nextStep: 'Please select an MP4, MOV, or WEBM video file.'
+      });
+      e.target.value = '';
+      return;
+    }
+
+    // 2. File size validation (50MB limit)
+    const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+    if (file.size > MAX_VIDEO_BYTES) {
+      setDetailedError({
+        stage: 'Media Validation',
+        stepNumber: 'Asset 3: Swapped Video',
+        fileName: file.name,
+        fileType: file.type || 'video/*',
+        fileSizeFormatted: formatBytes(file.size),
+        probableCause: `Video size (${formatBytes(file.size)}) exceeds the 50MB upload limit.`,
+        nextStep: 'Please compress the result video or trim it to 5-15 seconds.'
+      });
+      e.target.value = '';
+      return;
+    }
+
     setSceneResultVideoName(file.name);
+    setSceneResultVideoFile({ name: file.name, size: file.size, type: file.type || 'video/mp4' });
     const reader = new FileReader();
     reader.onload = () => {
       setSceneResultVideo(reader.result as string);
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleNewScene = () => {
@@ -1346,6 +1537,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   };
 
   const handleSaveFaceSwapScene = async (targetStatus: 'published' | 'draft' = 'published') => {
+    setDetailedError(null);
+    setUploadStageInfo(null);
+
     if (!sceneTitle.trim()) {
       showNotification('Scene title is required', 'error');
       return;
@@ -1364,43 +1558,183 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
 
     setIsSubmitting(true);
+    let finalSampleFace = sceneSampleFace;
+    let finalSourceVideo = sceneSourceVideo;
+    let finalResultVideo = sceneResultVideo;
+    let lastStorageProvider = 'local';
+
     try {
       const headers = getAdminHeaders();
 
-      // Upload base64 assets if needed to ensure persistent server URLs
-      let finalSampleFace = sceneSampleFace;
+      // ========================================================
+      // STAGE 1: SAMPLE FACE PHOTO UPLOAD
+      // ========================================================
       if (sceneSampleFace.startsWith('data:')) {
-        const upRes = await fetch('/api/admin/upload-media', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ mediaBase64: sceneSampleFace, filename: 'sample_face' })
-        });
+        setUploadStageInfo({ step: 'Step 1 of 4', message: 'Uploading Sample Face Photo...' });
+        let upRes: Response;
+        try {
+          upRes = await fetch('/api/admin/upload-media', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ mediaBase64: sceneSampleFace, filename: 'sample_face' })
+          });
+        } catch (netErr: any) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Photo Upload',
+            stepNumber: 'Step 1 of 4',
+            errorCode: 'NETWORK_ERROR',
+            serverError: netErr.message || 'Connection lost during photo upload',
+            fileName: sceneSampleFaceFile?.name || sceneSampleFaceName || 'sample_face.jpg',
+            fileType: sceneSampleFaceFile?.type || 'image/jpeg',
+            fileSizeFormatted: sceneSampleFaceFile ? formatBytes(sceneSampleFaceFile.size) : 'Unknown size',
+            probableCause: 'Network disconnect or server connection timeout.',
+            nextStep: 'Check internet connectivity and retry uploading.'
+          });
+          return;
+        }
+
         const upData = await upRes.json().catch(() => null);
-        if (upData?.url) finalSampleFace = upData.url;
+        if (!upRes.ok || !upData?.url) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Photo Upload',
+            stepNumber: 'Step 1 of 4',
+            httpStatus: upRes.status,
+            errorCode: upData?.code || `HTTP_${upRes.status}`,
+            serverError: upData?.error || upRes.statusText || 'Server rejected photo upload',
+            fileName: sceneSampleFaceFile?.name || sceneSampleFaceName || 'sample_face.jpg',
+            fileType: sceneSampleFaceFile?.type || 'image/jpeg',
+            fileSizeFormatted: sceneSampleFaceFile ? formatBytes(sceneSampleFaceFile.size) : 'Unknown size',
+            probableCause: upRes.status === 413
+              ? 'Photo payload exceeded server limit.'
+              : upRes.status === 403
+                ? 'Admin secret key authorization failed or expired.'
+                : 'Server storage driver error.',
+            nextStep: upRes.status === 403
+              ? 'Please re-enter your ADMIN_SECRET_KEY in the top right.'
+              : 'Try compressing the photo or selecting another image.'
+          });
+          return; // ABORT: Do not proceed to subsequent uploads
+        }
+        finalSampleFace = upData.url;
+        lastStorageProvider = upData.provider || 'local';
       }
 
-      let finalSourceVideo = sceneSourceVideo;
+      // ========================================================
+      // STAGE 2: ORIGINAL / BEFORE VIDEO UPLOAD
+      // ========================================================
       if (sceneSourceVideo.startsWith('data:')) {
-        const upRes = await fetch('/api/admin/upload-media', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ mediaBase64: sceneSourceVideo, filename: 'source_video' })
-        });
+        setUploadStageInfo({ step: 'Step 2 of 4', message: 'Uploading Original / Before Video...' });
+        let upRes: Response;
+        try {
+          upRes = await fetch('/api/admin/upload-media', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ mediaBase64: sceneSourceVideo, filename: 'source_video' })
+          });
+        } catch (netErr: any) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Original Video Upload',
+            stepNumber: 'Step 2 of 4',
+            errorCode: 'NETWORK_ERROR',
+            serverError: netErr.message || 'Connection lost during original video upload',
+            fileName: sceneSourceVideoFile?.name || sceneSourceVideoName || 'source_video.mp4',
+            fileType: sceneSourceVideoFile?.type || 'video/mp4',
+            fileSizeFormatted: sceneSourceVideoFile ? formatBytes(sceneSourceVideoFile.size) : 'Unknown size',
+            probableCause: 'Network connection broke or timed out during large video payload transfer.',
+            nextStep: 'Ensure stable internet connection and consider compressing the video clip.'
+          });
+          return;
+        }
+
         const upData = await upRes.json().catch(() => null);
-        if (upData?.url) finalSourceVideo = upData.url;
+        if (!upRes.ok || !upData?.url) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Original Video Upload',
+            stepNumber: 'Step 2 of 4',
+            httpStatus: upRes.status,
+            errorCode: upData?.code || `HTTP_${upRes.status}`,
+            serverError: upData?.error || upRes.statusText || 'Server rejected original video upload',
+            fileName: sceneSourceVideoFile?.name || sceneSourceVideoName || 'source_video.mp4',
+            fileType: sceneSourceVideoFile?.type || 'video/mp4',
+            fileSizeFormatted: sceneSourceVideoFile ? formatBytes(sceneSourceVideoFile.size) : 'Unknown size',
+            probableCause: upRes.status === 413
+              ? 'Original video file size exceeds the server request body limit.'
+              : upRes.status === 502
+                ? 'Storage driver failed to commit video object to storage.'
+                : 'Server processing error or upload timeout.',
+            nextStep: 'Please compress the video or trim it to 5-15 seconds before uploading.'
+          });
+          return; // ABORT: Do not proceed to next upload
+        }
+        finalSourceVideo = upData.url;
+        lastStorageProvider = upData.provider || lastStorageProvider;
       }
 
-      let finalResultVideo = sceneResultVideo;
+      // ========================================================
+      // STAGE 3: SWAPPED FACE / AFTER VIDEO UPLOAD
+      // ========================================================
       if (sceneResultVideo.startsWith('data:')) {
-        const upRes = await fetch('/api/admin/upload-media', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ mediaBase64: sceneResultVideo, filename: 'result_video' })
-        });
+        setUploadStageInfo({ step: 'Step 3 of 4', message: 'Uploading Swapped Face / After Video...' });
+        let upRes: Response;
+        try {
+          upRes = await fetch('/api/admin/upload-media', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ mediaBase64: sceneResultVideo, filename: 'result_video' })
+          });
+        } catch (netErr: any) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Result Video Upload',
+            stepNumber: 'Step 3 of 4',
+            errorCode: 'NETWORK_ERROR',
+            serverError: netErr.message || 'Connection lost during result video upload',
+            fileName: sceneResultVideoFile?.name || sceneResultVideoName || 'result_video.mp4',
+            fileType: sceneResultVideoFile?.type || 'video/mp4',
+            fileSizeFormatted: sceneResultVideoFile ? formatBytes(sceneResultVideoFile.size) : 'Unknown size',
+            probableCause: 'Network dropped during result video upload.',
+            nextStep: 'Check internet connection and try uploading again.'
+          });
+          return;
+        }
+
         const upData = await upRes.json().catch(() => null);
-        if (upData?.url) finalResultVideo = upData.url;
+        if (!upRes.ok || !upData?.url) {
+          setIsSubmitting(false);
+          setUploadStageInfo(null);
+          setDetailedError({
+            stage: 'Result Video Upload',
+            stepNumber: 'Step 3 of 4',
+            httpStatus: upRes.status,
+            errorCode: upData?.code || `HTTP_${upRes.status}`,
+            serverError: upData?.error || upRes.statusText || 'Server rejected swapped video upload',
+            fileName: sceneResultVideoFile?.name || sceneResultVideoName || 'result_video.mp4',
+            fileType: sceneResultVideoFile?.type || 'video/mp4',
+            fileSizeFormatted: sceneResultVideoFile ? formatBytes(sceneResultVideoFile.size) : 'Unknown size',
+            probableCause: upRes.status === 413
+              ? 'Result video file size exceeds the server request limit.'
+              : 'Storage driver or file encoding error.',
+            nextStep: 'Compress the result video clip or convert to MP4 format.'
+          });
+          return; // ABORT: Do not proceed to save
+        }
+        finalResultVideo = upData.url;
+        lastStorageProvider = upData.provider || lastStorageProvider;
       }
 
+      // ========================================================
+      // STAGE 4: SAVE SCENE RECORD (DATABASE METADATA)
+      // ========================================================
+      setUploadStageInfo({ step: 'Step 4 of 4', message: 'Saving Face Swap Scene record to database...' });
       const payload = {
         title: sceneTitle.trim(),
         description: (sceneDescription || sceneTitle).trim(),
@@ -1431,26 +1765,48 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to save Face Swap scene');
+        setIsSubmitting(false);
+        setUploadStageInfo(null);
+        setDetailedError({
+          stage: 'Save Scene',
+          stepNumber: 'Step 4 of 4',
+          httpStatus: res.status,
+          errorCode: errData?.code || `HTTP_${res.status}`,
+          serverError: errData?.error || res.statusText || 'Failed to save Face Swap scene',
+          probableCause: res.status === 400
+            ? 'Invalid payload format or missing required scene properties.'
+            : 'Server database write failure.',
+          nextStep: 'Verify all metadata inputs and click save again.'
+        });
+        return;
       }
 
       showNotification(
         editingScene
-          ? `Face Swap scene "${sceneTitle}" updated successfully!`
-          : `Face Swap scene "${sceneTitle}" published live!`
+          ? `Face Swap scene "${sceneTitle}" updated! [Stored: ${lastStorageProvider === 'cloudflare_r2' ? 'Cloudflare R2' : 'Local Disk'}]`
+          : `Face Swap scene "${sceneTitle}" published live! [Stored: ${lastStorageProvider === 'cloudflare_r2' ? 'Cloudflare R2' : 'Local Disk'}]`
       );
 
       await fetchAdminFaceSwapScenes();
       if (refreshFaceSwapScenes) {
         await refreshFaceSwapScenes();
       }
-
       setFaceSwapSubTab('list');
       setEditingScene(null);
+      setSceneSampleFaceFile(null);
+      setSceneSourceVideoFile(null);
+      setSceneResultVideoFile(null);
     } catch (err: any) {
-      showNotification(err.message || 'Error saving scene', 'error');
+      setDetailedError({
+        stage: 'Save Scene',
+        stepNumber: 'Unexpected Error',
+        serverError: err.message || 'An unexpected failure occurred while processing the scene',
+        probableCause: 'Client runtime or unhandled network exception.',
+        nextStep: 'Check console logs and verify network connection.'
+      });
     } finally {
       setIsSubmitting(false);
+      setUploadStageInfo(null);
     }
   };
 
@@ -2919,16 +3275,43 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               <div className="space-y-4">
                 {faceSwapSubTab === 'list' ? (
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                          Active & Draft Face Swap Scenes
-                        </h4>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                            Active & Draft Face Swap Scenes
+                          </h4>
+                          {/* Live Storage Engine Status Badge */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              fetchStorageStatus();
+                              setShowStorageDiagnostics(true);
+                            }}
+                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 border transition-all cursor-pointer ${
+                              storageStatus?.activeDriver === 'cloudflare_r2' && storageStatus?.r2LiveAuthenticated
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
+                            }`}
+                            title="Inspect live storage driver (Cloudflare R2 vs Local Fallback)"
+                          >
+                            {storageStatus?.activeDriver === 'cloudflare_r2' && storageStatus?.r2LiveAuthenticated ? (
+                              <>
+                                <Cloud className="w-3 h-3 text-emerald-400" />
+                                <span>Storage: Cloudflare R2 (Active)</span>
+                              </>
+                            ) : (
+                              <>
+                                <HardDrive className="w-3 h-3 text-amber-400" />
+                                <span>Storage: Local Fallback (R2 Pending)</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                         <p className="text-[11px] text-stone-400">
                           Manage each scene's Sample Face, Before Video, and Swapped After Video.
                         </p>
                       </div>
-
                       <button
                         type="button"
                         onClick={handleNewScene}
@@ -3128,6 +3511,85 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         ← Back to Scenes
                       </button>
                     </div>
+
+                    {/* UPLOAD PROGRESS BANNER */}
+                    {uploadStageInfo && (
+                      <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center gap-3 animate-pulse">
+                        <RefreshCw className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                        <div className="min-w-0">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-amber-300 block">
+                            {uploadStageInfo.step}
+                          </span>
+                          <p className="text-xs font-bold text-white truncate">
+                            {uploadStageInfo.message}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* DETAILED DIAGNOSTIC ERROR DISPLAY */}
+                    {detailedError && (
+                      <div className="p-4 rounded-2xl bg-red-950/50 border border-red-500/40 text-stone-200 space-y-3 shadow-xl">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 shrink-0">
+                              <AlertTriangle className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <span className="px-2 py-0.5 rounded-md bg-red-500/20 text-red-300 border border-red-500/30 text-[9.5px] font-black uppercase tracking-wider">
+                                {detailedError.stepNumber} · {detailedError.stage}
+                              </span>
+                              <h4 className="text-xs font-black text-white mt-1">
+                                Operation Failed: {detailedError.stage}
+                              </h4>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDetailedError(null)}
+                            className="text-stone-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Technical Error Details */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] bg-black/60 p-2.5 rounded-xl border border-white/5 font-mono">
+                          <div>
+                            <span className="text-stone-500 block text-[9.5px]">Server Error:</span>
+                            <span className="text-red-300 font-semibold break-words">
+                              {detailedError.serverError || 'No error message returned from server'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-stone-500 block text-[9.5px]">Status & Code:</span>
+                            <span className="text-amber-300 font-semibold">
+                              {detailedError.httpStatus ? `HTTP ${detailedError.httpStatus}` : 'Validation Error'} ({detailedError.errorCode || 'FAILED'})
+                            </span>
+                          </div>
+                          {detailedError.fileName && (
+                            <div className="sm:col-span-2 pt-1 border-t border-white/5">
+                              <span className="text-stone-500 block text-[9.5px]">Target Media Asset:</span>
+                              <span className="text-stone-300 truncate block">
+                                {detailedError.fileName} · {detailedError.fileType || 'unknown format'} · {detailedError.fileSizeFormatted || 'unknown size'}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Actionable Guidance */}
+                        <div className="space-y-1.5 text-xs bg-black/30 p-2.5 rounded-xl border border-white/5">
+                          <div className="flex items-start gap-1.5 text-stone-300">
+                            <span className="font-bold text-amber-300 shrink-0">Probable Cause:</span>
+                            <span className="leading-relaxed">{detailedError.probableCause}</span>
+                          </div>
+                          <div className="flex items-start gap-1.5 text-stone-300">
+                            <span className="font-bold text-emerald-400 shrink-0">Next Step:</span>
+                            <span className="leading-relaxed">{detailedError.nextStep}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* THREE DEDICATED ASSET SLOTS */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -3789,6 +4251,129 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   className="px-4 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-black text-xs font-black shadow cursor-pointer active:scale-95 transition-all"
                 >
                   Validate & Apply Recipe
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STORAGE DIAGNOSTICS MODAL OVERLAY */}
+        {showStorageDiagnostics && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <div className="w-full max-w-lg rounded-3xl bg-[#121118] border border-amber-500/40 p-4 sm:p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    <HardDrive className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Media Storage Engine Diagnostics</h4>
+                    <span className="text-[10px] text-stone-400">Live authoritative check of R2 & Local fallback drivers</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowStorageDiagnostics(false)}
+                  className="p-1 rounded-lg text-stone-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Driver Status Card */}
+              <div className="p-3.5 rounded-2xl bg-black/60 border border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-stone-300">Active Storage Driver:</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-black uppercase ${
+                    storageStatus?.activeDriver === 'cloudflare_r2' && storageStatus?.r2LiveAuthenticated
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}>
+                    {storageStatus?.activeDriver === 'cloudflare_r2' && storageStatus?.r2LiveAuthenticated
+                      ? 'Cloudflare R2 (Active & Verified)'
+                      : 'Local Isolated Disk Storage (Fallback Active)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-stone-400">R2 Authenticated Probe:</span>
+                  <span className={`font-mono font-bold ${
+                    storageStatus?.r2LiveAuthenticated ? 'text-emerald-400' : 'text-amber-400'
+                  }`}>
+                    {storageStatus?.r2LiveAuthenticated ? 'CONNECTED' : (storageStatus?.r2Configured ? 'AUTH PROBE FAILED' : 'NOT CONFIGURED (PENDING KEYS)')}
+                  </span>
+                </div>
+
+                {storageStatus?.bucket && (
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-stone-400">R2 Bucket:</span>
+                    <span className="font-mono text-stone-200">{storageStatus.bucket}</span>
+                  </div>
+                )}
+
+                {storageStatus?.r2Error && (
+                  <div className="p-2 rounded-xl bg-red-950/40 border border-red-500/30 text-[11px] text-red-300">
+                    <span className="font-bold block">Probe Error:</span>
+                    {storageStatus.r2Error}
+                  </div>
+                )}
+              </div>
+
+              {/* Missing Env Vars */}
+              {storageStatus?.missingEnvVars && storageStatus.missingEnvVars.length > 0 && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Missing R2 Environment Variables for Cloudflare R2 Activation:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {storageStatus.missingEnvVars.map((v: string) => (
+                      <span key={v} className="px-2 py-0.5 rounded-md bg-stone-900 border border-amber-500/40 text-[10px] font-mono font-bold text-amber-200">
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] text-stone-400 leading-relaxed">
+                    Until these environment variables are provided in production Cloud Run, all uploaded media is safely stored and served from secure local disk storage (<code className="text-stone-300">.data/uploads</code>).
+                  </p>
+                </div>
+              )}
+
+              {/* Local Storage Stats */}
+              {storageStatus?.localStats && (
+                <div className="p-3 rounded-2xl bg-stone-900/60 border border-white/10 text-xs space-y-1">
+                  <span className="font-bold text-stone-300 block">Local Disk Fallback Usage:</span>
+                  <div className="flex items-center justify-between text-stone-400 text-[11px]">
+                    <span>Directory:</span>
+                    <span className="font-mono text-stone-300 truncate max-w-[240px]">{storageStatus.localStats.directory}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-stone-400 text-[11px]">
+                    <span>Files Stored:</span>
+                    <span className="font-mono text-white font-bold">{storageStatus.localStats.fileCount} items</span>
+                  </div>
+                  <div className="flex items-center justify-between text-stone-400 text-[11px]">
+                    <span>Total Size:</span>
+                    <span className="font-mono text-emerald-400 font-bold">{storageStatus.localStats.totalSizeFormatted}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={fetchStorageStatus}
+                  disabled={isTestingStorage}
+                  className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isTestingStorage ? 'animate-spin' : ''}`} />
+                  <span>Run Live Storage Probe</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowStorageDiagnostics(false)}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 text-xs font-black cursor-pointer shadow active:scale-95"
+                >
+                  Close
                 </button>
               </div>
             </div>

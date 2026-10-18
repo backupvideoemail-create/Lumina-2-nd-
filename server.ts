@@ -1092,7 +1092,7 @@ app.get('/api/admin/faceswap/scenes', requireAdmin, (_req, res) => {
   res.json({ success: true, scenes });
 });
 
-app.post('/api/admin/faceswap/scenes', requireAdmin, (req, res) => {
+app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
   try {
     const {
       title,
@@ -1112,25 +1112,44 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, (req, res) => {
     } = req.body;
 
     if (!title || !title.trim()) {
-      return res.status(400).json({ error: 'Scene title is required' });
+      return res.status(400).json({ error: 'Scene title is required', code: 'MISSING_TITLE' });
     }
     if (!sampleFace) {
-      return res.status(400).json({ error: 'Sample Face Photo is required' });
+      return res.status(400).json({ error: 'Sample Face Photo is required', code: 'MISSING_SAMPLE_FACE' });
     }
     if (!sourceVideoPreview) {
-      return res.status(400).json({ error: 'Original / Before Video is required' });
+      return res.status(400).json({ error: 'Original / Before Video is required', code: 'MISSING_SOURCE_VIDEO' });
     }
     if (!resultVideoPreview) {
-      return res.status(400).json({ error: 'Swapped Face / After Video is required' });
+      return res.status(400).json({ error: 'Swapped Face / After Video is required', code: 'MISSING_RESULT_VIDEO' });
+    }
+
+    // Defensive check: Ensure database NEVER stores raw base64 data URIs
+    let cleanSampleFace = sampleFace.trim();
+    if (cleanSampleFace.startsWith('data:')) {
+      const stored = await mediaStorage.saveMedia(cleanSampleFace, 'fsv_face', `face_${Date.now()}`, undefined, true);
+      cleanSampleFace = stored.publicUrl;
+    }
+
+    let cleanSourceVideo = sourceVideoPreview.trim();
+    if (cleanSourceVideo.startsWith('data:')) {
+      const stored = await mediaStorage.saveMedia(cleanSourceVideo, 'fsv_source', `source_${Date.now()}`, undefined, true);
+      cleanSourceVideo = stored.publicUrl;
+    }
+
+    let cleanResultVideo = resultVideoPreview.trim();
+    if (cleanResultVideo.startsWith('data:')) {
+      const stored = await mediaStorage.saveMedia(cleanResultVideo, 'fsv_result', `result_${Date.now()}`, undefined, true);
+      cleanResultVideo = stored.publicUrl;
     }
 
     const scene = prodDb.createFaceSwapScene({
       id: `fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       title: title.trim(),
       description: (description || title).trim(),
-      sampleFace: sampleFace.trim(),
-      sourceVideoPreview: sourceVideoPreview.trim(),
-      resultVideoPreview: resultVideoPreview.trim(),
+      sampleFace: cleanSampleFace,
+      sourceVideoPreview: cleanSourceVideo,
+      resultVideoPreview: cleanResultVideo,
       creditCost: Number(creditCost) || 45,
       durationSeconds: Number(durationSeconds) || 8,
       aspectRatio: aspectRatio as any,
@@ -1144,24 +1163,49 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, (req, res) => {
 
     res.json({ success: true, scene });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to create Face Swap scene' });
+    res.status(500).json({ error: err.message || 'Failed to create Face Swap scene', code: 'SAVE_FAILED' });
   }
 });
 
-app.put('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
+app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const existing = prodDb.getFaceSwapScene(id);
     if (!existing) {
-      return res.status(404).json({ error: 'Face Swap scene not found' });
+      return res.status(404).json({ error: 'Face Swap scene not found', code: 'NOT_FOUND' });
     }
 
     const updates: any = {};
     if (req.body.title !== undefined) updates.title = String(req.body.title).trim();
     if (req.body.description !== undefined) updates.description = String(req.body.description).trim();
-    if (req.body.sampleFace !== undefined) updates.sampleFace = String(req.body.sampleFace).trim();
-    if (req.body.sourceVideoPreview !== undefined) updates.sourceVideoPreview = String(req.body.sourceVideoPreview).trim();
-    if (req.body.resultVideoPreview !== undefined) updates.resultVideoPreview = String(req.body.resultVideoPreview).trim();
+    
+    if (req.body.sampleFace !== undefined) {
+      let face = String(req.body.sampleFace).trim();
+      if (face.startsWith('data:')) {
+        const stored = await mediaStorage.saveMedia(face, 'fsv_face', `face_${Date.now()}`, undefined, true);
+        face = stored.publicUrl;
+      }
+      updates.sampleFace = face;
+    }
+
+    if (req.body.sourceVideoPreview !== undefined) {
+      let src = String(req.body.sourceVideoPreview).trim();
+      if (src.startsWith('data:')) {
+        const stored = await mediaStorage.saveMedia(src, 'fsv_source', `source_${Date.now()}`, undefined, true);
+        src = stored.publicUrl;
+      }
+      updates.sourceVideoPreview = src;
+    }
+
+    if (req.body.resultVideoPreview !== undefined) {
+      let resVid = String(req.body.resultVideoPreview).trim();
+      if (resVid.startsWith('data:')) {
+        const stored = await mediaStorage.saveMedia(resVid, 'fsv_result', `result_${Date.now()}`, undefined, true);
+        resVid = stored.publicUrl;
+      }
+      updates.resultVideoPreview = resVid;
+    }
+
     if (req.body.creditCost !== undefined) updates.creditCost = Number(req.body.creditCost) || 45;
     if (req.body.durationSeconds !== undefined) updates.durationSeconds = Number(req.body.durationSeconds) || 8;
     if (req.body.aspectRatio !== undefined) updates.aspectRatio = req.body.aspectRatio;
@@ -1179,7 +1223,7 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
     const updated = prodDb.updateFaceSwapScene(id, updates);
     res.json({ success: true, scene: updated });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to update Face Swap scene' });
+    res.status(500).json({ error: err.message || 'Failed to update Face Swap scene', code: 'UPDATE_FAILED' });
   }
 });
 
@@ -1196,13 +1240,32 @@ app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
   }
 });
 
-// Admin Universal Media Upload (for banners, demo videos, thumbnails)
+// Admin Universal Media Upload (for banners, demo videos, thumbnails, Face Swap scenes)
 app.post('/api/admin/upload-media', requireAdmin, async (req, res) => {
   try {
     const { mediaBase64, filename = 'asset' } = req.body;
     if (!mediaBase64) {
-      return res.status(400).json({ error: 'Missing mediaBase64 payload' });
+      return res.status(400).json({ error: 'Missing mediaBase64 payload', code: 'MISSING_PAYLOAD' });
     }
+
+    // Format validation
+    let detectedMime = 'application/octet-stream';
+    if (typeof mediaBase64 === 'string' && mediaBase64.startsWith('data:')) {
+      const mimeMatch = mediaBase64.substring(0, 50).match(/^data:([^;]+);base64,/);
+      if (mimeMatch) {
+        detectedMime = mimeMatch[1].toLowerCase();
+        const isAllowedImage = detectedMime.startsWith('image/') && ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(detectedMime);
+        const isAllowedVideo = detectedMime.startsWith('video/') && ['video/mp4', 'video/quicktime', 'video/webm'].includes(detectedMime);
+        if (!isAllowedImage && !isAllowedVideo) {
+          return res.status(400).json({
+            error: `Unsupported media format "${detectedMime}". Supported formats: JPG, PNG, WEBP, MP4, MOV, WEBM.`,
+            code: 'UNSUPPORTED_MEDIA_FORMAT',
+            detectedMime
+          });
+        }
+      }
+    }
+
     const stored = await mediaStorage.saveMedia(
       mediaBase64,
       'admin_upload',
@@ -1210,9 +1273,32 @@ app.post('/api/admin/upload-media', requireAdmin, async (req, res) => {
       undefined,
       true
     );
-    res.json({ success: true, url: stored.publicUrl, fileId: stored.fileId });
+
+    res.json({
+      success: true,
+      url: stored.publicUrl,
+      fileId: stored.fileId,
+      provider: stored.provider, // 'cloudflare_r2' | 'local'
+      sizeBytes: stored.sizeBytes,
+      mimeType: stored.mimeType,
+      isR2: stored.provider === 'cloudflare_r2'
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Media upload failed' });
+    console.error('[Admin Upload Media Error]:', err.message);
+    res.status(500).json({
+      error: err.message || 'Media upload failed',
+      code: 'UPLOAD_FAILED'
+    });
+  }
+});
+
+// Admin Storage Provider Status & Live R2 Diagnostics
+app.get('/api/admin/storage/status', requireAdmin, async (_req, res) => {
+  try {
+    const status = await mediaStorage.testR2Connection();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to inspect storage status' });
   }
 });
 

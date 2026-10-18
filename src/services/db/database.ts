@@ -15,17 +15,6 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  getDoc,
-  collection,
-  getDocs,
-  deleteDoc
-} from 'firebase/firestore';
-import firebaseConfig from '../../../firebase-applet-config.json';
 import type {
   Template,
   UserProfile,
@@ -40,22 +29,15 @@ import type {
 } from '../../types/index.ts';
 import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from '../../../firebase-applet-config.json';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
 import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
 import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts';
 
-// Initialize Firebase client / admin for server persistence
-let firestoreDb: any = null;
+// Authoritative Firebase Admin instance for server persistence
 let adminFirestoreDb: any = null;
-export { firestoreDb, adminFirestoreDb };
-
-try {
-  const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-  firestoreDb = getFirestore(firebaseApp, (firebaseConfig as any).firestoreDatabaseId);
-} catch (err: any) {
-  console.warn('[Database] Firebase client initialization note:', err.message);
-}
+export { adminFirestoreDb };
 
 // Attempt Firebase Admin initialization if service account is provided
 try {
@@ -373,31 +355,19 @@ class ProductionDatabase {
      FIRESTORE SYNC HELPERS
   ========================================================================= */
   public async syncToFirestore(collectionName: string, docId: string, data: any): Promise<void> {
+    if (!adminFirestoreDb) return;
     try {
       const sanitized = JSON.parse(JSON.stringify(data));
-      if (adminFirestoreDb) {
-        await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
-        return;
-      }
-      if (firestoreDb) {
-        const docRef = doc(firestoreDb, collectionName, docId);
-        await setDoc(docRef, sanitized, { merge: true });
-      }
+      await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
     } catch (err: any) {
       console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
     }
   }
 
-  private async deleteFromFirestore(collectionName: string, docId: string) {
+  private async deleteFromFirestore(collectionName: string, docId: string): Promise<void> {
+    if (!adminFirestoreDb) return;
     try {
-      if (adminFirestoreDb) {
-        await adminFirestoreDb.collection(collectionName).doc(docId).delete();
-        return;
-      }
-      if (firestoreDb) {
-        const docRef = doc(firestoreDb, collectionName, docId);
-        await deleteDoc(docRef);
-      }
+      await adminFirestoreDb.collection(collectionName).doc(docId).delete();
     } catch (err: any) {
       console.warn(`[Firestore Delete] ${collectionName}/${docId}:`, err.message);
     }
