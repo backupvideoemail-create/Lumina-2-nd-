@@ -52,7 +52,8 @@ try {
 
     if (credentialObj) {
       const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
-      const targetDatabaseId = (firebaseConfig as any).firestoreDatabaseId;
+      const isConfigProject = projectId === (firebaseConfig as any).projectId;
+      const targetDatabaseId = isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined;
       const adminApp = initAdminApp({
         credential: cert(credentialObj),
         projectId
