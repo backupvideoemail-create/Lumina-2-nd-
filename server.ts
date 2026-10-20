@@ -104,7 +104,19 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or authenticated user with verified admin role)
+// Server-side verified admin identity check (verifies authenticated user profile from verified token)
+function isServerVerifiedAdmin(user: UserProfile | null): boolean {
+  if (!user || !user.email) return false;
+  const email = user.email.toLowerCase().trim();
+  return (
+    user.role === 'admin' ||
+    email === 'ai.prime.studio.pro@gmail.com' ||
+    email === 'backupvideoemail@gmail.com' ||
+    (Boolean(process.env.ADMIN_EMAIL) && email === process.env.ADMIN_EMAIL!.toLowerCase().trim())
+  );
+}
+
+// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or server-verified admin account)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim();
   const configuredSecret = process.env.ADMIN_SECRET_KEY?.trim();
@@ -114,9 +126,9 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
     return next();
   }
 
-  // 2. Authenticated user with verified admin role -> allow
+  // 2. Authenticated user with server-verified admin identity -> allow
   const user = getAuthenticatedUser(req);
-  if (user && (user.role === 'admin' || user.email?.toLowerCase() === 'backupvideoemail@gmail.com' || (process.env.ADMIN_EMAIL && user.email?.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()))) {
+  if (isServerVerifiedAdmin(user)) {
     return next();
   }
 
@@ -979,6 +991,24 @@ app.post('/api/admin/templates/recover-r2', requireAdmin, async (_req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to scan and recover R2 templates' });
   }
+});
+
+// Admin View Unassigned Recovery Inventory (Assets without reliable template IDs)
+app.get('/api/admin/templates/unassigned-r2', requireAdmin, (_req, res) => {
+  res.json({
+    success: true,
+    unassignedAssets: prodDb.getUnassignedRecoveryAssets()
+  });
+});
+
+// Admin View Server-Verified Test Generation Runs and Provider Costs
+app.get('/api/admin/test-runs', requireAdmin, (_req, res) => {
+  const runs = prodDb.getAdminTestRuns(100);
+  res.json({
+    success: true,
+    count: runs.length,
+    runs
+  });
 });
 
 // Official Dynamic Provider Catalog (Higgsfield API + Google Veo + Gemini Imagen)
@@ -2560,11 +2590,13 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
+  const isAuthorizedAdmin = isServerVerifiedAdmin(user);
+
   // Server-Authoritative Cost Calculation (40% Markup Rule)
   const requiredCredits = calculateAuthoritativeTemplateCost(template);
   const wallet = prodDb.getWallet(user.id);
 
-  if (wallet.balance < requiredCredits) {
+  if (!isAuthorizedAdmin && wallet.balance < requiredCredits) {
     return res.status(402).json({
       error: 'Insufficient credits',
       requiredCredits,
@@ -2574,10 +2606,22 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const genId = `gen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-  // 1. Atomic credit reservation upfront
-  const reserved = prodDb.reserveCredits(user.id, requiredCredits, `Created: ${template.title}`, genId);
-  if (!reserved) {
-    return res.status(402).json({ error: 'Failed to reserve credits' });
+  // 1. Credit reservation (Bypassed strictly for server-verified admin in live test mode)
+  if (!isAuthorizedAdmin) {
+    const reserved = prodDb.reserveCredits(user.id, requiredCredits, `Created: ${template.title}`, genId);
+    if (!reserved) {
+      return res.status(402).json({ error: 'Failed to reserve credits' });
+    }
+  } else {
+    console.log(`[Admin Test Generation] Authorized Admin '${user.email}' executing zero-credit test for template '${template.title}' (genId: ${genId}). Actual API costs logged.`);
+    prodDb.recordAdminTestRun({
+      genId,
+      adminEmail: user.email || 'admin',
+      templateId: template.id,
+      templateTitle: template.title,
+      model: template.model,
+      providerCostUsd: Number(template.providerCostUsd) || 0.25
+    });
   }
 
   // 2. Record generation record
@@ -2589,7 +2633,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     templateType: template.type,
     aspectRatio: template.aspectRatio,
     status: 'processing',
-    creditCost: requiredCredits,
+    creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
     inputMediaUrl,
     engine: 'AI_GENERATION',
     model: template.model,
@@ -2597,6 +2641,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     createdAt: new Date().toISOString(),
     isAiGenerated: true
   };
+
   prodDb.addGeneration(generation);
 
   res.json({
@@ -2685,8 +2730,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         status: 'failed',
         error: err.message || 'Generation failed'
       });
-      // 100% Exact Automatic Credit Refund
-      prodDb.refundCredits(user.id, requiredCredits, `Refund: Failed generation (${template.title})`, genId);
+      // 100% Exact Automatic Credit Refund for customers (bypassed for zero-credit admin testing)
+      if (!isAuthorizedAdmin) {
+        prodDb.refundCredits(user.id, requiredCredits, `Refund: Failed generation (${template.title})`, genId);
+      }
     }
   })();
 });

@@ -41,23 +41,6 @@ export const PlansModal: React.FC = () => {
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Urgency countdown timer for ₹1 Intro Offer (matches screenshot IMG_20261019_162226.png)
-  const [countdown, setCountdown] = useState<number>(3598); // 00:59:58
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdown((prev) => (prev > 1 ? prev - 1 : 3598));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatCountdown = (totalSec: number) => {
-    const hrs = Math.floor(totalSec / 3600);
-    const mins = Math.floor((totalSec % 3600) / 60);
-    const secs = totalSec % 60;
-    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  };
-
   if (!plansModalOpen) return null;
 
   const currentPlan =
@@ -438,7 +421,7 @@ export const PlansModal: React.FC = () => {
                 const isFirst = index === 0;
                 const isSecond = index === 1;
 
-                // SPECIAL HIGH-CONVERTING DESIGN FOR ₹1 INTRO OFFER (Matching IMG_20261019_162226.png)
+                // SPECIAL HIGH-CONVERTING DESIGN FOR ₹1 INTRO OFFER (Verified Terms)
                 if (isFirst) {
                   return (
                     <motion.div
@@ -454,55 +437,38 @@ export const PlansModal: React.FC = () => {
                           : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/35 hover:border-amber-500/50'
                       }`}
                     >
-                      {/* Left Side: INTRO OFFER Badge, 1 day validity, ₹1 and crossed out ₹499 */}
+                      {/* Left Side: TRIAL OFFER Badge, 1 day validity, ₹1 */}
                       <div className="space-y-1">
-                        {/* Red Pill Badge with Fire Icon */}
                         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-gradient-to-r from-[#ff334b] to-[#ea1c38] text-white text-[11px] sm:text-xs font-black tracking-wide shadow-sm select-none">
                           <span className="text-xs">🔥</span>
-                          <span>INTRO OFFER</span>
+                          <span>TRIAL OFFER</span>
                         </div>
 
-                        {/* Subtitle */}
                         <p className="text-[11px] sm:text-xs font-medium text-stone-300 pt-0.5">
-                          1 day validity
+                          1 day access · 40 Credits included
                         </p>
 
-                        {/* Price Row: ₹1 + Crossed out ₹499 */}
-                        <div className="flex items-baseline gap-2.5 sm:gap-3 pt-0.5">
+                        <div className="flex items-baseline gap-2 pt-0.5">
                           <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
                             ₹1
                           </span>
-                          <span className="relative inline-flex items-center text-stone-300 font-extrabold text-2xl sm:text-3xl tracking-tight select-none">
-                            ₹499
-                            {/* Bright Red Diagonal Strike Line */}
-                            <span className="absolute -inset-x-1.5 top-1/2 h-[3px] bg-[#ff334b] rounded-full -rotate-[14deg] transform -translate-y-1/2 shadow-sm pointer-events-none" />
+                          <span className="text-stone-400 font-semibold text-xs sm:text-sm">
+                            first day
                           </span>
                         </div>
                       </div>
 
-                      {/* Right Side: Yellow LIMITED TIME OFFER Sticker + Countdown Timer Box */}
-                      <div className="flex flex-col items-end justify-between self-stretch shrink-0 pl-2">
-                        {/* Top Right: Yellow Limited Time Offer Badge with sunburst accents */}
-                        <div className="relative inline-flex items-center">
-                          {/* Radiating Accent Lines */}
-                          <div className="mr-1 flex flex-col items-end justify-center gap-[3px]">
-                            <span className="w-1.5 h-[2px] bg-[#ffd000] rotate-[-28deg] rounded-full" />
-                            <span className="w-2.5 h-[2px] bg-[#ffd000] rounded-full" />
-                            <span className="w-1.5 h-[2px] bg-[#ffd000] rotate-[28deg] rounded-full" />
-                          </div>
-                          <div className="bg-[#ffd000] text-black font-black text-[9px] sm:text-[10px] uppercase tracking-wider px-2 sm:px-2.5 py-1 rounded-lg text-center leading-tight shadow-md select-none">
-                            LIMITED<br />TIME OFFER
-                          </div>
-                        </div>
-
-                        {/* Bottom Right: Dark Rounded Box with Reddish Border & Live Ticking Countdown */}
-                        <div className="mt-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-black/65 border border-red-500/70 flex flex-col items-center justify-center min-w-[105px] sm:min-w-[115px] shadow-sm">
-                          <div className="flex items-center gap-1.5 text-white font-mono font-bold text-xs sm:text-sm tracking-wider">
-                            <Clock className="w-3.5 h-3.5 text-[#ff334b] stroke-[2.5] shrink-0" />
-                            <span>{formatCountdown(countdown)}</span>
-                          </div>
-                          <span className="text-[9.5px] sm:text-[10px] text-stone-400 font-medium">
-                            Offer ends in
+                      {/* Right Side: Verified Renewal Terms Box */}
+                      <div className="flex flex-col items-end justify-center self-stretch shrink-0 pl-2">
+                        <div className="px-2.5 sm:px-3 py-2 rounded-xl bg-black/65 border border-amber-500/40 flex flex-col items-end justify-center shadow-sm text-right">
+                          <span className="text-[11px] sm:text-xs font-bold text-amber-300">
+                            Renews at ₹499/week
+                          </span>
+                          <span className="text-[9px] sm:text-[10px] text-stone-300 font-medium">
+                            400 credits/cycle
+                          </span>
+                          <span className="text-[8.5px] text-stone-400 font-normal mt-0.5">
+                            Cancel anytime in Settings
                           </span>
                         </div>
                       </div>
@@ -596,7 +562,7 @@ export const PlansModal: React.FC = () => {
             {/* POLICY TEXT: Compact 2 lines matching design */}
             <div className="text-center pt-2 px-5">
               <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
-                Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
+                ₹1 Intro Offer for 24 hours (40 credits), then renews at ₹499/week (400 credits/cycle). AutoPay can be managed or cancelled anytime in Account & Wallet Settings.
               </p>
             </div>
           </>

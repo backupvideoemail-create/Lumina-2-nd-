@@ -1,17 +1,53 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Sparkles, ArrowUpRight, ArrowDownLeft, RotateCcw, Gift, Shield } from 'lucide-react';
+import { X, Sparkles, ArrowUpRight, ArrowDownLeft, RotateCcw, Gift, Shield, CreditCard, AlertCircle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export const TransactionLedgerModal: React.FC = () => {
-  const { transactionsModalOpen, setTransactionsModalOpen, transactions, wallet } = useApp();
+  const {
+    transactionsModalOpen,
+    setTransactionsModalOpen,
+    transactions,
+    wallet,
+    activeSubscription,
+    cancelSubscription
+  } = useApp();
+
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [feedback, setFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const handleCancelSub = async () => {
+    setIsCancelling(true);
+    setFeedback(null);
+    try {
+      const ok = await cancelSubscription();
+      if (ok) {
+        setFeedback({ text: 'AutoPay renewal cancelled successfully.', type: 'success' });
+        setConfirmingCancel(false);
+      } else {
+        setFeedback({ text: 'Failed to cancel AutoPay renewal. Please try again.', type: 'error' });
+      }
+    } catch (err: any) {
+      setFeedback({ text: err.message || 'Error cancelling subscription', type: 'error' });
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   if (!transactionsModalOpen) return null;
+
+  const hasSub = Boolean(
+    activeSubscription &&
+    (activeSubscription.status === 'active' ||
+      activeSubscription.status === 'trial' ||
+      activeSubscription.status === 'cancelled' ||
+      activeSubscription.mandateId)
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md">
       <div className="absolute inset-0" onClick={() => setTransactionsModalOpen(false)} />
-
       <motion.div
         initial={{ y: '100%', opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
@@ -22,8 +58,8 @@ export const TransactionLedgerModal: React.FC = () => {
         {/* Top Header */}
         <div className="flex items-center justify-between pb-4 border-b border-white/10">
           <div>
-            <h3 className="text-lg font-bold font-display text-white">Credit Ledger</h3>
-            <p className="text-xs text-stone-400">Server-Authoritative Ledger Records</p>
+            <h3 className="text-lg font-bold font-display text-white">Account & Wallet</h3>
+            <p className="text-xs text-stone-400">Membership, AutoPay & Credit Ledger</p>
           </div>
           <button
             onClick={() => setTransactionsModalOpen(false)}
@@ -34,13 +70,90 @@ export const TransactionLedgerModal: React.FC = () => {
         </div>
 
         {/* Current Balance Quick Bar */}
-        <div className="py-3 px-4 my-3 rounded-2xl bg-stone-900 border border-white/5 flex items-center justify-between">
+        <div className="py-3 px-4 my-2.5 rounded-2xl bg-stone-900 border border-white/5 flex items-center justify-between">
           <span className="text-xs font-semibold text-stone-400">Available Wallet Balance</span>
           <span className="text-lg font-bold text-[#f5d77f] flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 fill-[#d4af37]" />
             {wallet?.balance || 0} Credits
           </span>
         </div>
+
+        {/* ACTIVE MEMBERSHIP & CANCEL SUBSCRIPTION SECTION */}
+        {hasSub && (
+          <div className="p-3.5 my-1.5 rounded-2xl bg-gradient-to-r from-stone-900 to-[#18151b] border border-amber-500/25 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <CreditCard className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white">
+                    {activeSubscription?.planName || 'Active Membership'}
+                  </h4>
+                  <span className="text-[10px] text-stone-400 block">
+                    Status:{' '}
+                    <span
+                      className={`font-semibold capitalize ${
+                        activeSubscription?.status === 'cancelled' ? 'text-red-400' : 'text-emerald-400'
+                      }`}
+                    >
+                      {activeSubscription?.status === 'cancelled' ? 'Cancelled (No further renewal)' : 'Active AutoPay'}
+                    </span>
+                  </span>
+                </div>
+              </div>
+
+              {activeSubscription?.status !== 'cancelled' && (
+                <div>
+                  {!confirmingCancel ? (
+                    <button
+                      onClick={() => setConfirmingCancel(true)}
+                      className="px-2.5 py-1.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      Cancel AutoPay
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={handleCancelSub}
+                        disabled={isCancelling}
+                        className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        {isCancelling ? 'Cancelling...' : 'Confirm'}
+                      </button>
+                      <button
+                        onClick={() => setConfirmingCancel(false)}
+                        disabled={isCancelling}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-stone-300 text-[10px] font-medium transition-all cursor-pointer"
+                      >
+                        Keep
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {feedback && (
+              <div
+                className={`p-2 rounded-xl text-[11px] font-medium flex items-center gap-2 ${
+                  feedback.type === 'success'
+                    ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                    : 'bg-red-500/15 border border-red-500/30 text-red-300'
+                }`}
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{feedback.text}</span>
+              </div>
+            )}
+
+            {activeSubscription?.status === 'cancelled' && (
+              <p className="text-[10px] text-stone-400 leading-tight">
+                Your AutoPay mandate has been cancelled. You will not be charged again. Your remaining credits remain available in your wallet.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Transaction History List */}
         <div className="flex-1 overflow-y-auto no-scrollbar space-y-2.5 my-2 pr-1">

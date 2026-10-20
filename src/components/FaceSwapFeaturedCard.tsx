@@ -30,6 +30,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [soundInteracted, setSoundInteracted] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Active scene: selected scene if available, otherwise first scene
   const activeScene = selectedFaceSwapScene || faceSwapScenes[0] || {
@@ -120,13 +121,37 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     }
   };
 
+  // Viewport-aware video playback: pause when scrolled off-screen
+  useEffect(() => {
+    const el = containerRef.current;
+    const video = videoRef.current;
+    if (!el || !video || !isCurrentVideo) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.3) {
+            video.play().then(() => setIsPlaying(true)).catch(() => {});
+          } else {
+            video.pause();
+            setIsPlaying(false);
+          }
+        });
+      },
+      { threshold: [0.1, 0.3, 0.6] }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isCurrentVideo, currentMediaUrl]);
+
   const handleOpenFaceSwap = () => {
     setSelectedFaceSwapScene(activeScene);
     setFaceSwapModalOpen(true);
   };
 
   return (
-    <div id="face-swap-featured-card" className="relative w-full max-w-5xl mx-auto px-2 sm:px-4 mt-3">
+    <div ref={containerRef} id="face-swap-featured-card" className="relative w-full max-w-5xl mx-auto px-2 sm:px-4 mt-3">
       {/* Liquid-Glass Outer Frame with Gold Ambient Glow */}
       <motion.div
         whileHover={{ y: -2 }}

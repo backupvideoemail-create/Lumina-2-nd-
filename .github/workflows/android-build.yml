@@ -23,7 +23,7 @@ jobs:
 
       - name: Verify Web Build & Type Check
         run: |
-          npm install
+          npm install --legacy-peer-deps --no-audit
           npm run lint
           npm run build
 

@@ -41,6 +41,11 @@ export const TemplateDetailModal: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlayingVideo, setIsPlayingVideo] = useState(true);
 
+  // Draggable BEFORE/AFTER comparison slider state
+  const [sliderPosition, setSliderPosition] = useState<number>(50);
+  const [isDraggingSlider, setIsDraggingSlider] = useState<boolean>(false);
+  const sliderContainerRef = useRef<HTMLDivElement>(null);
+
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const videoPlayerRef = useRef<HTMLVideoElement>(null);
@@ -52,7 +57,42 @@ export const TemplateDetailModal: React.FC = () => {
     setIsPickerOpen(false);
     setActivePickingSlot(null);
     setIsPlayingVideo(true);
+    setSliderPosition(50);
+    setIsDraggingSlider(false);
   }, [selectedTemplate?.id]);
+
+  const updateSliderFromPointer = (clientX: number) => {
+    if (!sliderContainerRef.current) return;
+    const rect = sliderContainerRef.current.getBoundingClientRect();
+    const rawX = clientX - rect.left;
+    const pct = Math.max(5, Math.min(95, (rawX / rect.width) * 100));
+    setSliderPosition(pct);
+  };
+
+  const handleSliderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsDraggingSlider(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // fallback
+    }
+    updateSliderFromPointer(e.clientX);
+  };
+
+  const handleSliderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isDraggingSlider) {
+      updateSliderFromPointer(e.clientX);
+    }
+  };
+
+  const handleSliderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsDraggingSlider(false);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // fallback
+    }
+  };
 
   if (!selectedTemplate) return null;
 
@@ -211,6 +251,7 @@ export const TemplateDetailModal: React.FC = () => {
   const sampleBeforeThumb = tpl.sampleBefore || null;
   const hasSampleMedia = Boolean(sampleFaceThumb || sampleBeforeThumb);
   const hasActualSample = Boolean(tpl.sampleResult || tpl.sampleAfter);
+  const hasBeforeAfterComparison = Boolean(sampleBeforeThumb && displayResult && sampleBeforeThumb !== displayResult);
 
   return (
     <div
@@ -286,31 +327,75 @@ export const TemplateDetailModal: React.FC = () => {
 
       {/* 2. MAIN SCROLL CONTAINER */}
       <main className="max-w-lg w-full mx-auto px-4 py-3 space-y-4 pb-36 flex-1">
-        {/* LARGE SAMPLE PREVIEW CANVAS (Hero Model) */}
-        <section className="relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center">
-          {/* Main Media Preview */}
-          {isVideo ? (
-            <video
-              ref={videoPlayerRef}
-              src={displayResult}
-              autoPlay
-              loop
-              muted
-              playsInline
-              preload="auto"
-              draggable={false}
-              onContextMenu={(e) => e.preventDefault()}
-              className="w-full h-full object-cover pointer-events-none select-none"
-            />
-          ) : (
-            <img
-              src={displayResult}
-              alt={tpl.title}
-              draggable={false}
-              onContextMenu={(e) => e.preventDefault()}
-              className="w-full h-full object-cover pointer-events-none select-none"
-            />
+        {/* LARGE INTERACTIVE BEFORE/AFTER PREVIEW CANVAS */}
+        <section
+          ref={sliderContainerRef}
+          onPointerDown={hasBeforeAfterComparison ? handleSliderPointerDown : undefined}
+          onPointerMove={hasBeforeAfterComparison ? handleSliderPointerMove : undefined}
+          onPointerUp={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
+          onPointerCancel={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
+          className={`relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center select-none ${
+            hasBeforeAfterComparison ? 'cursor-ew-resize touch-none' : ''
+          }`}
+        >
+          {/* LAYER 1: Full-Frame BEFORE Reference (Base Layer on Left/Bottom) */}
+          {hasBeforeAfterComparison && (
+            <div className="absolute inset-0 w-full h-full overflow-hidden">
+              {isVideoMedia(sampleBeforeThumb!) ? (
+                <video
+                  src={sampleBeforeThumb!}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover pointer-events-none select-none"
+                />
+              ) : (
+                <img
+                  src={sampleBeforeThumb!}
+                  alt="Original Before Reference"
+                  draggable={false}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="w-full h-full object-cover pointer-events-none select-none"
+                />
+              )}
+            </div>
           )}
+
+          {/* LAYER 2: Transformed AFTER / Sample Result Image (Clipped Layer on Top) */}
+          <div
+            style={
+              hasBeforeAfterComparison
+                ? {
+                    clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)`
+                  }
+                : undefined
+            }
+            className="absolute inset-0 w-full h-full overflow-hidden"
+          >
+            {isVideo ? (
+              <video
+                ref={videoPlayerRef}
+                src={displayResult}
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="auto"
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                className="w-full h-full object-cover pointer-events-none select-none"
+              />
+            ) : (
+              <img
+                src={displayResult}
+                alt={tpl.title}
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                className="w-full h-full object-cover pointer-events-none select-none"
+              />
+            )}
+          </div>
 
           {/* Anti-screenshot Watermark Shield */}
           <div className="absolute inset-0 z-10 pointer-events-none" aria-hidden="true" />
@@ -319,74 +404,96 @@ export const TemplateDetailModal: React.FC = () => {
           <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
           <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/95 via-black/40 to-transparent pointer-events-none z-10" />
 
-          {/* Top Badge: Distinguish Real Generated Output vs Style Reference Preview */}
-          <div className="absolute top-4 left-4 z-20 pointer-events-none">
-            <span className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-md ${
-              isVideo
-                ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
-                : hasActualSample
-                ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
-                : 'bg-stone-900/80 border-white/20 text-stone-300'
-            }`}>
-              {isVideo ? 'Video Preview' : hasActualSample ? 'AI Sample Result' : 'Style Reference Preview'}
-            </span>
-          </div>
+          {/* DRAGGABLE SLIDER DIVIDER & TACTILE HANDLE */}
+          {hasBeforeAfterComparison && (
+            <>
+              {/* Vertical Divider Line */}
+              <div
+                style={{ left: `${sliderPosition}%` }}
+                className="absolute top-0 bottom-0 w-[2.5px] bg-white shadow-[0_0_12px_rgba(255,255,255,0.9)] z-20 -translate-x-1/2 pointer-events-none"
+              />
 
-          {/* FLOATING SAMPLES: Face Thumbnail & Before Reference (Shown ONLY when genuine sample uploaded by admin) */}
-          {hasSampleMedia && (
+              {/* Tactile Circular Knob */}
+              <div
+                style={{ left: `${sliderPosition}%` }}
+                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-30 pointer-events-none"
+              >
+                <div
+                  className={`w-9 h-9 rounded-full bg-white text-stone-900 shadow-2xl flex items-center justify-center border-2 border-stone-800 transition-transform ${
+                    isDraggingSlider ? 'scale-110 shadow-[0_0_25px_rgba(255,255,255,0.7)]' : 'hover:scale-105'
+                  }`}
+                >
+                  <div className="flex items-center gap-0.5 font-bold text-[10px] text-stone-900 tracking-tighter">
+                    <span>◄</span>
+                    <span>►</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* High-contrast floating BEFORE & AFTER Labels */}
+              <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                <span className="px-2.5 py-1 rounded-full bg-sky-500/35 border border-sky-400/60 text-sky-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
+                  BEFORE (Original)
+                </span>
+              </div>
+              <div className="absolute top-4 right-4 z-20 pointer-events-none">
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/35 border border-emerald-400/60 text-emerald-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
+                  AFTER (AI Result)
+                </span>
+              </div>
+
+              {/* Center Drag Instruction Hint */}
+              <div className="absolute bottom-4 inset-x-0 mx-auto w-fit z-20 pointer-events-none">
+                <div className="px-3 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/20 text-[10px] font-semibold text-stone-300 flex items-center gap-1.5 shadow-lg">
+                  <span>◀ Slide to compare transformation ▶</span>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* STANDALONE BADGE IF NO BEFORE-AFTER COMPARISON */}
+          {!hasBeforeAfterComparison && (
+            <div className="absolute top-4 left-4 z-20 pointer-events-none">
+              <span
+                className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-md ${
+                  isVideo
+                    ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
+                    : hasActualSample
+                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                    : 'bg-stone-900/80 border-white/20 text-stone-300'
+                }`}
+              >
+                {isVideo ? 'Video Preview' : hasActualSample ? 'AI Sample Result' : 'Style Reference Preview'}
+              </span>
+            </div>
+          )}
+
+          {/* COMPACT FACE THUMBNAIL BADGE (Display-Only example, anchored at bottom-right) */}
+          {sampleFaceThumb && (
             <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/85 backdrop-blur-xl border border-white/20 shadow-2xl">
-              {sampleFaceThumb && (
-                <div className="flex flex-col items-center">
-                  <span className="text-[8px] uppercase font-black text-amber-300 tracking-wider mb-0.5">
-                    Face Sample
-                  </span>
-                  <img
-                    src={sampleFaceThumb}
-                    alt="Admin sample face thumbnail"
-                    draggable={false}
-                    className="w-12 h-14 rounded-xl object-cover border border-amber-400/30 shadow-md pointer-events-none select-none"
-                  />
-                </div>
-              )}
-              {sampleBeforeThumb && (
-                <div className="flex flex-col items-center">
-                  <span className="text-[8px] uppercase font-black text-sky-300 tracking-wider mb-0.5">
-                    Before
-                  </span>
-                  {isVideoMedia(sampleBeforeThumb) ? (
-                    <video
-                      src={sampleBeforeThumb}
-                      autoPlay
-                      loop
-                      muted
-                      playsInline
-                      className="w-12 h-14 rounded-xl object-cover border border-sky-400/30 shadow-md pointer-events-none select-none"
-                    />
-                  ) : (
-                    <img
-                      src={sampleBeforeThumb}
-                      alt="Before reference"
-                      draggable={false}
-                      className="w-12 h-14 rounded-xl object-cover border border-sky-400/30 shadow-md pointer-events-none select-none"
-                    />
-                  )}
-                </div>
-              )}
-              <div className="text-amber-400 flex flex-col items-center justify-center pr-1 pl-0.5">
-                <ArrowRight className="w-4 h-4 stroke-[3]" />
-                <span className="text-[7.5px] uppercase font-black text-amber-300 tracking-tighter">
-                  After
+              <img
+                src={sampleFaceThumb}
+                alt="Display-only face sample"
+                draggable={false}
+                className="w-11 h-13 rounded-xl object-cover border border-purple-400/40 shadow-md pointer-events-none select-none"
+              />
+              <div className="flex flex-col text-left pr-1.5">
+                <span className="text-[8px] uppercase font-black text-purple-300 tracking-wider">
+                  Face Sample
+                </span>
+                <span className="text-[7.5px] text-stone-400 leading-tight">
+                  Display only · Customer's<br />photo will be used
                 </span>
               </div>
             </div>
           )}
 
           {/* Bottom Title & Specs inside preview */}
-          <div className="absolute bottom-4 left-4 z-20 max-w-[200px] pointer-events-none">
+          <div className="absolute bottom-4 left-4 z-20 max-w-[190px] pointer-events-none">
             <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[9px] font-black text-amber-300 uppercase tracking-wider mb-1 inline-block">
               {tpl.badge || 'PRO TEMPLATE'}
             </span>
-            <h3 className="text-lg font-black text-white leading-tight drop-shadow-md">
+            <h3 className="text-base font-black text-white leading-tight drop-shadow-md">
               {tpl.title}
             </h3>
           </div>

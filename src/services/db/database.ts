@@ -96,6 +96,17 @@ export interface GenerationJob {
   completedAt?: string;
 }
 
+export interface AdminTestRun {
+  id: string;
+  genId: string;
+  adminEmail: string;
+  templateId: string;
+  templateTitle: string;
+  model?: string;
+  providerCostUsd: number;
+  createdAt: string;
+}
+
 export interface ProductionDatabaseSchema {
   users: Record<string, UserProfile>;
   authIdentities: Record<string, AuthIdentity>;
@@ -113,6 +124,7 @@ export interface ProductionDatabaseSchema {
   userLikes: Record<string, string[]>; // userId -> templateId[]
   processedWebhooks: string[];
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
+  adminTestRuns?: AdminTestRun[];
   categoryPrompts?: Record<string, string>;
 }
 
@@ -314,6 +326,7 @@ class ProductionDatabase {
         parsed.userLikes = parsed.userLikes || {};
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
+        parsed.adminTestRuns = parsed.adminTestRuns || [];
         parsed.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS, ...(parsed.categoryPrompts || {}) };
         return parsed;
       }
@@ -339,6 +352,7 @@ class ProductionDatabase {
       userLikes: {},
       processedWebhooks: [],
       reports: [],
+      adminTestRuns: [],
       categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS }
     };
   }
@@ -1169,25 +1183,44 @@ class ProductionDatabase {
     return false;
   }
 
+  public unassignedRecoveryAssets: Array<{
+    key: string;
+    filename: string;
+    size: number;
+    lastModified?: Date;
+    publicUrl: string;
+  }> = [];
+
+  public getUnassignedRecoveryAssets() {
+    return this.unassignedRecoveryAssets;
+  }
+
   /**
    * Scans Cloudflare R2 for orphaned assets whose Firestore or database template records
    * are missing or corrupted, and reconstructs full template records.
-   * Prevents the "missing template" issue after cold starts, redeployments, or container recycling.
+   * 
+   * STRICT SAFETY INVARIANTS:
+   * 1. Never merge R2 assets merely because their filenames look similar.
+   * 2. Automatically group assets into a single Template record ONLY when a reliable
+   *    shared template ID and explicit asset-role mapping confirm the relationship.
+   * 3. Ambiguous legacy assets without confirmed template IDs are placed in unassignedRecoveryAssets;
+   *    they are NEVER guessed into existing templates and NEVER deleted.
    */
   public async recoverOrphanedTemplatesFromR2(): Promise<{
     scanned: number;
     recoveredCount: number;
     recoveredTemplates: Template[];
     skippedCount: number;
+    unassignedCount: number;
   }> {
     try {
       const { mediaStorage } = await import('../storage/mediaStorage.ts');
       const r2Objects = await mediaStorage.listR2Objects('media/');
       if (!r2Objects || r2Objects.length === 0) {
-        return { scanned: 0, recoveredCount: 0, recoveredTemplates: [], skippedCount: 0 };
+        return { scanned: 0, recoveredCount: 0, recoveredTemplates: [], skippedCount: 0, unassignedCount: 0 };
       }
 
-      // Collect all known media URLs and file names referenced by existing templates
+      // Collect all known media URLs and filenames currently in catalog
       const knownMediaSet = new Set<string>();
       for (const t of this.db.templates) {
         if (t.cover) {
@@ -1214,6 +1247,10 @@ class ProductionDatabase {
           knownMediaSet.add(t.sampleResult);
           knownMediaSet.add(path.basename(t.sampleResult.split('?')[0]));
         }
+        if (t.sampleAfter) {
+          knownMediaSet.add(t.sampleAfter);
+          knownMediaSet.add(path.basename(t.sampleAfter.split('?')[0]));
+        }
         if (t.recipe?.referenceImageUrl) {
           knownMediaSet.add(t.recipe.referenceImageUrl);
           knownMediaSet.add(path.basename(t.recipe.referenceImageUrl.split('?')[0]));
@@ -1226,81 +1263,142 @@ class ProductionDatabase {
         }
       }
 
-      const recoveredTemplates: Template[] = [];
+      // Group candidate unreferenced assets by verifiable template ID
+      interface TemplateAssetGroup {
+        templateId: string;
+        faceAsset?: { url: string; filename: string };
+        beforeAsset?: { url: string; filename: string };
+        sampleResultAsset?: { url: string; filename: string };
+        coverAsset?: { url: string; filename: string };
+        mediaAsset?: { url: string; filename: string };
+        allAssets: Array<{ url: string; filename: string }>;
+      }
+
+      const templateGroups = new Map<string, TemplateAssetGroup>();
+      this.unassignedRecoveryAssets = [];
       let skippedCount = 0;
 
-      // Filter and evaluate R2 assets
       for (const asset of r2Objects) {
         const fn = asset.filename.toLowerCase();
-        // Candidate template assets: must be a template asset (tpl_, bulk_, or public media), not private/test
-        const isCandidate = (
-          fn.startsWith('tpl_') ||
-          fn.startsWith('bulk_') ||
-          asset.key.includes('/public/tpl_') ||
-          asset.key.includes('/public/bulk_') ||
-          (asset.isPublic && (fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.png') || fn.endsWith('.webp') || fn.endsWith('.mp4')))
-        );
 
-        if (!isCandidate || fn.startsWith('test_') || fn.startsWith('fsv_')) {
+        // Skip non-template assets (tests, face swap video results, user generation outputs)
+        if (fn.startsWith('test_') || fn.startsWith('fsv_') || fn.startsWith('gen_') || fn.startsWith('user_')) {
           skippedCount++;
           continue;
         }
 
-        // Check if already referenced by any template in catalog
-        const isAlreadyReferenced = knownMediaSet.has(asset.publicUrl) || knownMediaSet.has(asset.filename) || knownMediaSet.has(asset.key);
-        if (isAlreadyReferenced) {
+        // Skip assets already tracked in active catalog
+        if (knownMediaSet.has(asset.publicUrl) || knownMediaSet.has(asset.filename) || knownMediaSet.has(asset.key)) {
           skippedCount++;
           continue;
         }
 
-        // Extract category from filename or path if encoded
-        let category: TemplateCategory = 'Devotional';
-        const cleanName = asset.filename;
-        if (/devotional|hanuman|mahadev|ram/i.test(cleanName)) {
-          category = 'Devotional';
-        } else if (/royal|swag|sherwani|maharaja/i.test(cleanName)) {
-          category = 'Royal Swag';
-        } else if (/navratri|durga|garba/i.test(cleanName)) {
-          category = 'Navratri Special';
-        } else if (/retro|80s|vintage/i.test(cleanName)) {
-          category = 'Retro 80s';
-        } else if (/hair|grooming|male/i.test(cleanName)) {
-          category = 'Male Hairstyle';
-        } else if (/fashion|runway/i.test(cleanName)) {
-          category = 'Fashion';
-        } else if (/couple|romance/i.test(cleanName)) {
-          category = 'Couple';
-        } else if (/festival|diwali|holi/i.test(cleanName)) {
-          category = 'Festival';
-        } else if (/luxury|car/i.test(cleanName)) {
-          category = 'Luxury';
+        // Extract confirmed template ID and role:
+        // Pattern 1: tpl_sample_<tplId> or sample_tpl_<tplId> or tpl_<tplId>_sample
+        // Pattern 2: tpl_face_<tplId> or face_tpl_<tplId>
+        // Pattern 3: tpl_before_<tplId> or before_tpl_<tplId>
+        let matchedId: string | null = null;
+        let role: 'face' | 'before' | 'sample' | 'cover' | 'preview' | 'general' = 'general';
+
+        const roleRegex = /(face|before|sample|after|cover|preview|ref)/i;
+        const roleMatch = fn.match(roleRegex);
+        if (roleMatch) {
+          const r = roleMatch[1].toLowerCase();
+          if (r === 'face') role = 'face';
+          else if (r === 'before') role = 'before';
+          else if (r === 'sample' || r === 'after' || r === 'ref') role = 'sample';
+          else if (r === 'cover') role = 'cover';
+          else if (r === 'preview') role = 'preview';
+        }
+
+        // Look for explicit tpl_XXXX identifier
+        const tplIdMatch = asset.filename.match(/tpl_[a-zA-Z0-9_\-]+/i);
+        if (tplIdMatch) {
+          // Normalize base ID by stripping role suffix if attached
+          matchedId = tplIdMatch[0]
+            .replace(/_(face|before|sample|after|cover|ref|preview)$/i, '')
+            .replace(/^(face|before|sample|after|cover|ref|preview)_/i, '');
+        }
+
+        if (matchedId && matchedId.length > 4) {
+          if (!templateGroups.has(matchedId)) {
+            templateGroups.set(matchedId, {
+              templateId: matchedId,
+              allAssets: []
+            });
+          }
+          const group = templateGroups.get(matchedId)!;
+          const assetInfo = { url: asset.publicUrl, filename: asset.filename };
+          group.allAssets.push(assetInfo);
+
+          if (role === 'face') group.faceAsset = assetInfo;
+          else if (role === 'before') group.beforeAsset = assetInfo;
+          else if (role === 'sample') group.sampleResultAsset = assetInfo;
+          else if (role === 'cover') group.coverAsset = assetInfo;
+          else if (role === 'preview') group.mediaAsset = assetInfo;
         } else {
-          category = 'Trending';
+          // Ambiguous asset: keep in unassigned inventory, DO NOT guess into catalog
+          this.unassignedRecoveryAssets.push({
+            key: asset.key,
+            filename: asset.filename,
+            size: asset.size,
+            lastModified: asset.lastModified,
+            publicUrl: asset.publicUrl
+          });
         }
+      }
 
-        // Clean title
+      const recoveredTemplates: Template[] = [];
+
+      for (const [tplId, group] of templateGroups.entries()) {
+        // Resolve primary result reference
+        const sampleResultUrl = group.sampleResultAsset?.url || group.coverAsset?.url || group.mediaAsset?.url || group.allAssets[0]?.url;
+        if (!sampleResultUrl) continue;
+
+        const coverUrl = group.coverAsset?.url || sampleResultUrl;
+        const previewUrl = group.mediaAsset?.url || sampleResultUrl;
+        const beforeUrl = group.beforeAsset?.url || undefined;
+        const faceThumbnailUrl = group.faceAsset?.url || undefined;
+
+        const fn = sampleResultUrl.toLowerCase();
         const isVideo = fn.endsWith('.mp4') || fn.endsWith('.mov') || fn.endsWith('.webm');
-        const baseNameNoExt = path.basename(asset.filename, path.extname(asset.filename))
-          .replace(/^(tpl_ref_|tpl_cover_|tpl_asset_|bulk_|admin_upload_)/, '')
-          .replace(/[_-]+/g, ' ')
-          .trim();
-        const displayTitle = baseNameNoExt.length > 3
-          ? `${category} - ${baseNameNoExt.substring(0, 30)}`
-          : `${category} Look (R2 Recovered)`;
+
+        // Derive category from title/path safely
+        let category: TemplateCategory = 'Devotional';
+        if (/devotional|hanuman|mahadev|ram/i.test(tplId)) category = 'Devotional';
+        else if (/royal|swag|sherwani|maharaja/i.test(tplId)) category = 'Royal Swag';
+        else if (/navratri|durga|garba/i.test(tplId)) category = 'Navratri Special';
+        else if (/retro|80s|vintage/i.test(tplId)) category = 'Retro 80s';
+        else if (/hair|grooming|male/i.test(tplId)) category = 'Male Hairstyle';
+        else if (/fashion|runway/i.test(tplId)) category = 'Fashion';
+        else if (/couple|romance/i.test(tplId)) category = 'Couple';
+        else if (/festival|diwali|holi/i.test(tplId)) category = 'Festival';
+        else if (/luxury|car/i.test(tplId)) category = 'Luxury';
+        else category = 'Trending';
 
         const categoryPrompt = this.getCategoryPrompt(category);
-        const templateId = `tpl_r2_${asset.filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const cleanTitle = tplId
+          .replace(/^tpl_/i, '')
+          .replace(/[_-]+/g, ' ')
+          .trim();
+        const displayTitle = cleanTitle.length > 2
+          ? `${category} - ${cleanTitle.substring(0, 30)}`
+          : `${category} Look (R2 Recovered)`;
 
         const restoredTemplate: Template = {
-          id: templateId,
+          id: tplId.startsWith('tpl_') ? tplId : `tpl_${tplId}`,
           title: displayTitle,
           type: isVideo ? 'video' : 'photo',
           inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
           category,
-          cover: asset.publicUrl,
-          preview: asset.publicUrl,
-          referenceImageUrl: asset.publicUrl,
-          description: `${category} style template recovered from durable Cloudflare R2 storage.`,
+          cover: coverUrl,
+          preview: previewUrl,
+          referenceImageUrl: sampleResultUrl,
+          sampleFaceThumbnail: faceThumbnailUrl,
+          sampleBefore: beforeUrl,
+          sampleResult: sampleResultUrl,
+          sampleAfter: sampleResultUrl,
+          description: `${category} style template restored from Cloudflare R2 storage.`,
           aspectRatio: '9:16',
           requiredInputs: [
             {
@@ -1324,8 +1422,11 @@ class ProductionDatabase {
             prompt: categoryPrompt,
             workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
             aspectRatio: '9:16',
-            referenceAssets: [asset.publicUrl],
-            referenceImageUrl: asset.publicUrl
+            referenceAssets: [sampleResultUrl],
+            referenceImageUrl: sampleResultUrl,
+            sampleBefore: beforeUrl,
+            sampleResult: sampleResultUrl,
+            sampleFaceThumbnail: faceThumbnailUrl
           },
           sortOrder: 0,
           isFeatured: true,
@@ -1335,34 +1436,36 @@ class ProductionDatabase {
           resolutionLabel: isVideo ? '1080p 60FPS' : '4K Ultra HD'
         };
 
-        // Add to in-memory templates
         this.db.templates.unshift(restoredTemplate);
-        knownMediaSet.add(asset.publicUrl);
-        knownMediaSet.add(asset.filename);
+        group.allAssets.forEach(a => {
+          knownMediaSet.add(a.url);
+          knownMediaSet.add(a.filename);
+        });
 
-        // Synchronously save and sync to Firestore
         this.save();
         await this.syncToFirestore('templates', restoredTemplate.id, restoredTemplate);
         recoveredTemplates.push(restoredTemplate);
       }
 
       if (recoveredTemplates.length > 0) {
-        console.log(`[R2 Recovery] Successfully recovered and synchronized ${recoveredTemplates.length} orphaned templates from R2 into Firestore & local database!`);
+        console.log(`[R2 Safe Recovery] Grouped and restored ${recoveredTemplates.length} templates with verified 3-asset roles into database & Firestore.`);
       }
 
       return {
         scanned: r2Objects.length,
         recoveredCount: recoveredTemplates.length,
         recoveredTemplates,
-        skippedCount
+        skippedCount,
+        unassignedCount: this.unassignedRecoveryAssets.length
       };
     } catch (err: any) {
-      console.error('[R2 Recovery Error]:', err.message);
+      console.error('[R2 Safe Recovery Error]:', err.message);
       return {
         scanned: 0,
         recoveredCount: 0,
         recoveredTemplates: [],
-        skippedCount: 0
+        skippedCount: 0,
+        unassignedCount: 0
       };
     }
   }
@@ -1596,6 +1699,37 @@ class ProductionDatabase {
       updatedAt: new Date().toISOString()
     });
     return prompt.trim();
+  }
+
+  /* =========================================================================
+     ADMIN TEST RUNS AUDIT LOG (Zero-Credit Testing with Real API Cost Tracking)
+  ========================================================================= */
+  public recordAdminTestRun(run: {
+    genId: string;
+    adminEmail: string;
+    templateId: string;
+    templateTitle: string;
+    model?: string;
+    providerCostUsd: number;
+  }): AdminTestRun {
+    if (!this.db.adminTestRuns) this.db.adminTestRuns = [];
+    const record: AdminTestRun = {
+      id: `adm_run_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      ...run,
+      createdAt: new Date().toISOString()
+    };
+    this.db.adminTestRuns.unshift(record);
+    // Keep max 500 audit entries
+    if (this.db.adminTestRuns.length > 500) {
+      this.db.adminTestRuns = this.db.adminTestRuns.slice(0, 500);
+    }
+    this.save();
+    this.syncToFirestore('admin_test_runs', record.id, record);
+    return record;
+  }
+
+  public getAdminTestRuns(limit = 100): AdminTestRun[] {
+    return (this.db.adminTestRuns || []).slice(0, limit);
   }
 
   /* =========================================================================

@@ -465,13 +465,27 @@ export class MediaStorageService {
         requestingUserId ? `media/users/${requestingUserId}/${safeName}` : null
       ].filter(Boolean) as string[];
 
+      const ext = path.extname(safeName).toLowerCase();
+      const extMime =
+        ext === '.mp4' ? 'video/mp4' :
+        ext === '.webm' ? 'video/webm' :
+        ext === '.mov' ? 'video/quicktime' :
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+        ext === '.png' ? 'image/png' :
+        ext === '.webp' ? 'image/webp' :
+        'application/octet-stream';
+
       for (const candidateKey of keysToTry) {
         try {
           const getRes = await this.s3Client.send(new GetObjectCommand({
             Bucket: this.r2Config.bucketName,
             Key: candidateKey
           }));
-          return { body: getRes.Body, mimeType: meta?.mimeType || 'application/octet-stream' };
+          const resolvedMime =
+            (getRes.ContentType && getRes.ContentType !== 'application/octet-stream') ? getRes.ContentType :
+            (meta?.mimeType && meta.mimeType !== 'application/octet-stream') ? meta.mimeType :
+            extMime;
+          return { body: getRes.Body, mimeType: resolvedMime };
         } catch {
           // try next key candidate
         }
@@ -480,7 +494,17 @@ export class MediaStorageService {
 
     const fullPath = path.join(UPLOADS_DIR, safeName);
     if (fs.existsSync(fullPath)) {
-      return { body: fs.createReadStream(fullPath), mimeType: meta?.mimeType || 'application/octet-stream' };
+      const ext = path.extname(safeName).toLowerCase();
+      const extMime =
+        ext === '.mp4' ? 'video/mp4' :
+        ext === '.webm' ? 'video/webm' :
+        ext === '.mov' ? 'video/quicktime' :
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+        ext === '.png' ? 'image/png' :
+        ext === '.webp' ? 'image/webp' :
+        'application/octet-stream';
+      const resolvedMime = (meta?.mimeType && meta.mimeType !== 'application/octet-stream') ? meta.mimeType : extMime;
+      return { body: fs.createReadStream(fullPath), mimeType: resolvedMime };
     }
 
     return { body: null, mimeType: '', error: 'Media file not found' };
