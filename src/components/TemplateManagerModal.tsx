@@ -30,7 +30,8 @@ import {
   AlertTriangle,
   HardDrive,
   Cloud,
-  Info
+  Info,
+  UserCheck
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
@@ -149,6 +150,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplCoverPreview, setTplCoverPreview] = useState<string>('');
   const [tplReferenceImagePreview, setTplReferenceImagePreview] = useState<string>('');
   const [tplSampleResultPreview, setTplSampleResultPreview] = useState<string>('');
+  const [tplSampleFaceThumbnail, setTplSampleFaceThumbnail] = useState<string>('');
+  const [tplSampleBefore, setTplSampleBefore] = useState<string>('');
+  const [showCustomCoverOverride, setShowCustomCoverOverride] = useState<boolean>(false);
   const [tplDetectedType, setTplDetectedType] = useState<'photo' | 'video'>('video');
 
   // Input Type Enforcement: 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO'
@@ -171,6 +175,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [isBulkUploading, setIsBulkUploading] = useState<boolean>(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; successCount: number; failCount: number }>({ current: 0, total: 0, successCount: 0, failCount: 0 });
   const [bulkSummary, setBulkSummary] = useState<{ completed: boolean; total: number; successCount: number; failCount: number } | null>(null);
+  const [isRecoveringR2, setIsRecoveringR2] = useState<boolean>(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
 
   // Unified list of all known categories (predefined + any custom categories in templates or prompt map)
   const allKnownCategories = Array.from(
@@ -242,6 +248,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const referenceImageFileRef = useRef<HTMLInputElement>(null);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
   const sampleResultFileRef = useRef<HTMLInputElement>(null);
+  const sampleFaceThumbnailFileRef = useRef<HTMLInputElement>(null);
+  const sampleBeforeFileRef = useRef<HTMLInputElement>(null);
   const recipeJsonFileRef = useRef<HTMLInputElement>(null);
   const drivingFileRef = useRef<HTMLInputElement>(null);
   const bannerFileRef = useRef<HTMLInputElement>(null);
@@ -421,12 +429,40 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     reader.readAsDataURL(file);
   };
 
+  const handleSampleFaceFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTplSampleFaceThumbnail(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSampleBeforeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTplSampleBefore(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSampleResultFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      setTplSampleResultPreview(reader.result as string);
+      const dataUrl = reader.result as string;
+      setTplSampleResultPreview(dataUrl);
+      // Auto-reuse AFTER sample as Cover Photo so Admin doesn't have to upload it twice!
+      if (!showCustomCoverOverride) {
+        setTplCoverPreview(dataUrl);
+      }
+      if (tplDetectedType === 'photo') {
+        setTplMediaPreview(dataUrl);
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -566,9 +602,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTplBadge(tpl.badge || '');
     setTplTagsInput(tpl.tags ? tpl.tags.join(', ') : '');
     setTplCostUsd(tpl.providerCostUsd || 0.25);
-    setTplCoverPreview(tpl.cover || '');
+    setTplCoverPreview(tpl.cover || tpl.sampleResult || '');
     setTplMediaPreview(tpl.preview || tpl.cover || '');
-    setTplSampleResultPreview(tpl.sampleResult || '');
+    setTplSampleResultPreview(tpl.sampleResult || tpl.sampleAfter || '');
+    setTplSampleFaceThumbnail(tpl.sampleFaceThumbnail || '');
+    setTplSampleBefore(tpl.sampleBefore || '');
     setTplDetectedType(tpl.type);
     setTplInputType(tpl.inputType || (tpl.type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'));
     setImportNotice(null);
@@ -614,7 +652,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       workflow: recipeWorkflow,
       aspectRatio: tplAspectRatio,
       duration: tplDetectedType === 'video' ? 5 : undefined,
-      drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined
+      drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
+      sampleFaceThumbnail: tplSampleFaceThumbnail || undefined,
+      sampleBefore: tplSampleBefore || undefined,
+      sampleResult: tplSampleResultPreview || undefined
     };
 
     try {
@@ -638,22 +679,38 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           providerCostUsd: Number(tplCostUsd) || 0.25
         };
 
-        if (tplMediaPreview.startsWith('data:')) {
-          updateBody.mediaBase64 = tplMediaPreview;
-        } else if (tplMediaPreview) {
-          updateBody.preview = tplMediaPreview;
+        if (tplSampleFaceThumbnail.startsWith('data:')) {
+          updateBody.sampleFaceThumbnailBase64 = tplSampleFaceThumbnail;
+        } else if (tplSampleFaceThumbnail) {
+          updateBody.sampleFaceThumbnail = tplSampleFaceThumbnail;
         }
 
-        if (tplCoverPreview.startsWith('data:')) {
-          updateBody.coverBase64 = tplCoverPreview;
-        } else if (tplCoverPreview) {
-          updateBody.cover = tplCoverPreview;
+        if (tplSampleBefore.startsWith('data:')) {
+          updateBody.sampleBeforeBase64 = tplSampleBefore;
+        } else if (tplSampleBefore) {
+          updateBody.sampleBefore = tplSampleBefore;
         }
 
         if (tplSampleResultPreview.startsWith('data:')) {
           updateBody.sampleResultBase64 = tplSampleResultPreview;
         } else if (tplSampleResultPreview) {
           updateBody.sampleResult = tplSampleResultPreview;
+          updateBody.sampleAfter = tplSampleResultPreview;
+        }
+
+        if (tplCoverPreview.startsWith('data:')) {
+          updateBody.coverBase64 = tplCoverPreview;
+        } else if (tplCoverPreview) {
+          updateBody.cover = tplCoverPreview;
+        } else if (tplSampleResultPreview) {
+          // Auto-reuse AFTER sample as Cover Photo
+          updateBody.cover = tplSampleResultPreview;
+        }
+
+        if (tplMediaPreview.startsWith('data:')) {
+          updateBody.mediaBase64 = tplMediaPreview;
+        } else if (tplMediaPreview) {
+          updateBody.preview = tplMediaPreview;
         }
 
         if (recipeDrivingVideoPreview.startsWith('data:')) {
@@ -684,8 +741,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         }
       } else {
         // CREATE new
-        if (!tplMediaPreview && !tplCoverPreview) {
-          showNotification('Please select a preview media or cover photo from phone gallery', 'error');
+        const effectiveCover = tplCoverPreview || tplSampleResultPreview || tplMediaPreview;
+        if (!effectiveCover && !tplSampleResultPreview) {
+          showNotification('Please upload an AFTER sample result or cover photo', 'error');
           setIsSubmitting(false);
           return;
         }
@@ -704,9 +762,15 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             tags,
             type: tplDetectedType,
             inputType: tplInputType,
-            mediaBase64: tplMediaPreview || tplCoverPreview,
-            coverBase64: tplCoverPreview || undefined,
+            mediaBase64: tplMediaPreview || effectiveCover,
+            coverBase64: effectiveCover.startsWith('data:') ? effectiveCover : undefined,
+            cover: !effectiveCover.startsWith('data:') && effectiveCover ? effectiveCover : undefined,
+            sampleFaceThumbnailBase64: tplSampleFaceThumbnail.startsWith('data:') ? tplSampleFaceThumbnail : undefined,
+            sampleFaceThumbnail: !tplSampleFaceThumbnail.startsWith('data:') && tplSampleFaceThumbnail ? tplSampleFaceThumbnail : undefined,
+            sampleBeforeBase64: tplSampleBefore.startsWith('data:') ? tplSampleBefore : undefined,
+            sampleBefore: !tplSampleBefore.startsWith('data:') && tplSampleBefore ? tplSampleBefore : undefined,
             sampleResultBase64: tplSampleResultPreview.startsWith('data:') ? tplSampleResultPreview : undefined,
+            sampleResult: !tplSampleResultPreview.startsWith('data:') && tplSampleResultPreview ? tplSampleResultPreview : undefined,
             drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
             drivingVideoBase64: recipeDrivingVideoPreview.startsWith('data:') ? recipeDrivingVideoPreview : undefined,
             workflow: recipeWorkflow,
@@ -725,6 +789,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setTplMediaPreview('');
           setTplCoverPreview('');
           setTplSampleResultPreview('');
+          setTplSampleFaceThumbnail('');
+          setTplSampleBefore('');
           setRecipeDrivingVideoPreview('');
           setRecipeDrivingVideoUrl('');
           setImportNotice(null);
@@ -760,6 +826,40 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       }
     } catch (err: any) {
       showNotification(err.message, 'error');
+    }
+  };
+
+  const handleScanAndRecoverR2 = async () => {
+    setIsRecoveringR2(true);
+    setRecoveryNotice(null);
+    try {
+      const res = await fetch('/api/admin/templates/recover-r2', {
+        method: 'POST',
+        headers: getAdminHeaders()
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.recoveredCount > 0) {
+          const msg = `🎉 Found ${data.scanned} R2 assets: Restored ${data.recoveredCount} missing templates back to catalog!`;
+          setRecoveryNotice(msg);
+          showNotification(msg, 'success');
+        } else {
+          const msg = `✅ R2 Audit Clean: Scanned ${data.scanned} assets. All catalog templates are 100% durable in Firestore.`;
+          setRecoveryNotice(msg);
+          showNotification(msg, 'success');
+        }
+        await refreshTemplates();
+      } else {
+        const errMsg = `R2 Scan failed: ${data.error || 'Unknown error'}`;
+        setRecoveryNotice(errMsg);
+        showNotification(errMsg, 'error');
+      }
+    } catch (err: any) {
+      const errMsg = `Failed to contact recovery service: ${err.message}`;
+      setRecoveryNotice(errMsg);
+      showNotification(errMsg, 'error');
+    } finally {
+      setIsRecoveringR2(false);
     }
   };
 
@@ -2010,7 +2110,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       Catalog: {templates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter).length} / {templates.length}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                    <button
+                      onClick={handleScanAndRecoverR2}
+                      disabled={isRecoveringR2}
+                      className="px-3 py-1.5 rounded-xl bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 text-xs font-bold flex items-center gap-1.5 border border-blue-500/30 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                      title="Scan Cloudflare R2 for orphaned assets and restore missing templates"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRecoveringR2 ? 'animate-spin text-blue-400' : ''}`} />
+                      <span>{isRecoveringR2 ? 'Scanning R2...' : 'Scan & Recover R2'}</span>
+                    </button>
                     <button
                       onClick={() => {
                         setSubTab('bulk');
@@ -2036,6 +2145,19 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {/* R2 Recovery Notice Banner */}
+                {recoveryNotice && (
+                  <div className="p-3 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-between text-xs font-medium text-blue-200">
+                    <span>{recoveryNotice}</span>
+                    <button
+                      onClick={() => setRecoveryNotice(null)}
+                      className="text-stone-400 hover:text-white text-xs font-bold px-2 py-0.5 rounded cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
 
                 {/* Category Filter Chips for Live Catalog Inspection */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
@@ -2578,102 +2700,120 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </div>
                 </div>
 
-                {/* Step 2: Separate Media Assets (Independent Cover, Preview, and Sample Result) */}
-                <div className="space-y-3 p-3.5 rounded-2xl bg-stone-900/90 border border-white/10">
+                {/* Step 2: 3 Independent Template Media Assets (Face Thumbnail, BEFORE, AFTER & Auto-Cover) */}
+                <div className="space-y-3.5 p-3.5 rounded-2xl bg-stone-900/90 border border-white/10">
                   <div className="flex items-center justify-between border-b border-white/10 pb-2">
                     <label className="text-xs font-bold text-white flex items-center gap-1.5">
                       <span className="w-4 h-4 rounded-full bg-[#ff9f00] text-black text-[10px] font-black flex items-center justify-center">2</span>
-                      <span>Media Assets (Independent Uploads)</span>
+                      <span>Template Media Assets (3 Independent Inputs)</span>
                     </label>
-                    <span className="text-[10px] text-stone-400">Separate Cover · Preview · Sample</span>
+                    <span className="text-[10px] text-amber-300 font-medium">Face · Before · After</span>
                   </div>
 
-                  {/* 2A: Cover Photo / Poster (Card Grid Display) */}
+                  {/* ASSET 1: Face Photo / Thumbnail (चेहरा थंबनेल) */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
-                        <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Cover Photo (Card Grid View)</span>
+                      <span className="text-[11px] font-bold text-stone-200 flex items-center gap-1.5">
+                        <UserCheck className="w-3.5 h-3.5 text-purple-400" />
+                        <span>1. Face Photo / Thumbnail (चेहरा थंबनेल)</span>
                       </span>
-                      <span className="text-[9px] text-stone-500">JPG, PNG, WEBP</span>
+                      <span className="text-[9px] text-stone-400">Optional · Face Portrait</span>
                     </div>
 
                     <input
-                      ref={coverFileRef}
+                      ref={sampleFaceThumbnailFileRef}
                       type="file"
                       accept="image/*"
-                      onChange={handleCoverFileSelect}
+                      onChange={handleSampleFaceFileSelect}
                       className="hidden"
                     />
 
                     <div
-                      onClick={() => coverFileRef.current?.click()}
-                      className="relative w-full h-28 rounded-xl border border-dashed border-white/20 hover:border-[#ff9f00] bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
+                      onClick={() => sampleFaceThumbnailFileRef.current?.click()}
+                      className="relative w-full h-24 rounded-xl border border-dashed border-white/20 hover:border-purple-400 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
                     >
-                      {tplCoverPreview ? (
-                        <img src={tplCoverPreview} alt="Cover Preview" className="w-full h-full object-cover" />
+                      {tplSampleFaceThumbnail ? (
+                        <div className="flex items-center gap-3 p-2 w-full h-full">
+                          <img src={tplSampleFaceThumbnail} alt="Face Sample Thumbnail" className="w-20 h-full object-cover rounded-lg border border-purple-400/40" />
+                          <div className="text-left flex-1 min-w-0">
+                            <span className="text-xs font-bold text-white block">Face Thumbnail Configured</span>
+                            <span className="text-[10px] text-purple-300 block">Click to replace</span>
+                          </div>
+                        </div>
                       ) : (
                         <div className="flex flex-col items-center text-center p-2">
-                          <Upload className="w-5 h-5 text-amber-400 mb-1" />
-                          <span className="text-xs font-semibold text-white">Choose Cover Photo</span>
-                          <span className="text-[9px] text-stone-500">Shows on home & gallery cards</span>
+                          <Upload className="w-5 h-5 text-purple-400 mb-1" />
+                          <span className="text-xs font-semibold text-white">Upload Reference Face Thumbnail</span>
+                          <span className="text-[9px] text-stone-400">Shown in customer Template Detail next to BEFORE/AFTER example</span>
                         </div>
                       )}
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
-                        Replace Cover Photo
+                        Replace Face Thumbnail
                       </div>
                     </div>
+                    <p className="text-[9.5px] text-stone-400 leading-tight">
+                      Admin example face. Customer's own uploaded photo will be used for actual AI generation.
+                    </p>
                   </div>
 
-                  {/* 2B: Preview Demonstration Media (Demo Video or Photo for Modal View) */}
+                  {/* ASSET 2: BEFORE / Source Sample (बिफोर ओरिजिनल) */}
                   <div className="space-y-1.5 pt-2 border-t border-white/5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
-                        <VideoIcon className="w-3.5 h-3.5 text-pink-400" />
-                        <span>Preview Media (Detail Modal Demo)</span>
+                      <span className="text-[11px] font-bold text-stone-200 flex items-center gap-1.5">
+                        <ImageIcon className="w-3.5 h-3.5 text-blue-400" />
+                        <span>2. BEFORE / Source Sample (बिफोर ओरिजिनल)</span>
                       </span>
-                      <span className="text-[9px] text-stone-500">MP4 Video or High-Res Photo</span>
+                      <span className="text-[9px] text-stone-400">Optional · Photo or Video</span>
                     </div>
 
                     <input
-                      ref={tplFileRef}
+                      ref={sampleBeforeFileRef}
                       type="file"
                       accept="image/*,video/*"
-                      onChange={handleTplFileSelect}
+                      onChange={handleSampleBeforeFileSelect}
                       className="hidden"
                     />
 
                     <div
-                      onClick={() => tplFileRef.current?.click()}
-                      className="relative w-full aspect-[16/9] rounded-xl border border-dashed border-white/20 hover:border-[#ff9f00] bg-black/40 flex flex-col items-center justify-center cursor-pointer overflow-hidden group"
+                      onClick={() => sampleBeforeFileRef.current?.click()}
+                      className="relative w-full h-24 rounded-xl border border-dashed border-white/20 hover:border-blue-400 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
                     >
-                      {tplMediaPreview ? (
-                        tplDetectedType === 'video' ? (
-                          <video src={tplMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
-                        ) : (
-                          <img src={tplMediaPreview} alt="Preview" className="w-full h-full object-cover" />
-                        )
+                      {tplSampleBefore ? (
+                        <div className="flex items-center gap-3 p-2 w-full h-full">
+                          {tplSampleBefore.endsWith('.mp4') || tplSampleBefore.startsWith('data:video/') ? (
+                            <video src={tplSampleBefore} autoPlay loop muted playsInline className="w-24 h-full object-cover rounded-lg border border-blue-400/40" />
+                          ) : (
+                            <img src={tplSampleBefore} alt="Before Reference" className="w-20 h-full object-cover rounded-lg border border-blue-400/40" />
+                          )}
+                          <div className="text-left flex-1 min-w-0">
+                            <span className="text-xs font-bold text-white block">BEFORE Sample Configured</span>
+                            <span className="text-[10px] text-blue-300 block">Click to replace</span>
+                          </div>
+                        </div>
                       ) : (
                         <div className="flex flex-col items-center text-center p-2">
-                          <Upload className="w-6 h-6 text-[#ff9f00] mb-1" />
-                          <span className="text-xs font-semibold text-white">Choose Demo Video or Photo</span>
-                          <span className="text-[9px] text-stone-500">Visitors watch this before generating</span>
+                          <Upload className="w-5 h-5 text-blue-400 mb-1" />
+                          <span className="text-xs font-semibold text-white">Upload Original BEFORE Sample</span>
+                          <span className="text-[9px] text-stone-400">Displayed on customer screen as the starting look</span>
                         </div>
                       )}
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
-                        Replace Preview Media
+                        Replace BEFORE Sample
                       </div>
                     </div>
+                    <p className="text-[9.5px] text-stone-400 leading-tight">
+                      Shows the original scene/person before the AI transformation was applied.
+                    </p>
                   </div>
 
-                  {/* 2C: Sample AI Result Output (Before/After AI Result) */}
+                  {/* ASSET 3: AFTER / Sample Result (आफ्टर फाइनल रिजल्ट & ऑटो कवर) */}
                   <div className="space-y-1.5 pt-2 border-t border-white/5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-stone-300 flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-stone-200 flex items-center gap-1.5">
                         <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Sample AI Result (Transformed Output Demo)</span>
+                        <span>3. AFTER / Sample Result (आफ्टर फाइनल रिजल्ट)</span>
                       </span>
-                      <span className="text-[9px] text-stone-500">Optional · Photo or Video</span>
+                      <span className="text-[9px] text-emerald-400 font-bold">Auto-assigned as Cover Photo</span>
                     </div>
 
                     <input
@@ -2686,7 +2826,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
                     <div
                       onClick={() => sampleResultFileRef.current?.click()}
-                      className="relative w-full h-24 rounded-xl border border-dashed border-white/20 hover:border-emerald-400 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden group"
+                      className="relative w-full h-28 rounded-xl border-2 border-dashed border-emerald-500/40 hover:border-emerald-400 bg-black/50 flex items-center justify-center cursor-pointer overflow-hidden group shadow-inner"
                     >
                       {tplSampleResultPreview ? (
                         tplSampleResultPreview.endsWith('.mp4') || tplSampleResultPreview.startsWith('data:video/') ? (
@@ -2696,15 +2836,92 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         )
                       ) : (
                         <div className="flex flex-col items-center text-center p-2">
-                          <Upload className="w-5 h-5 text-emerald-400 mb-1" />
-                          <span className="text-xs font-semibold text-white">Choose Sample AI Result</span>
-                          <span className="text-[9px] text-stone-500">Used for before-and-after AI transformation</span>
+                          <Upload className="w-6 h-6 text-emerald-400 mb-1" />
+                          <span className="text-xs font-bold text-white">Upload Final AFTER Sample</span>
+                          <span className="text-[9.5px] text-stone-400">Acts as visual style target & automatically sets Cover Photo</span>
                         </div>
                       )}
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-xs font-bold text-white">
-                        Replace Sample Result
+                        Replace AFTER Sample
                       </div>
                     </div>
+
+                    {tplSampleResultPreview && (
+                      <div className="flex items-center gap-1.5 p-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10.5px] font-medium">
+                        <Check className="w-3.5 h-3.5 stroke-[3] text-emerald-400 shrink-0" />
+                        <span>Reused automatically as Cover Photo (no second upload needed).</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Optional Custom Cover Override & Preview Media Accordion */}
+                  <div className="pt-2 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomCoverOverride((prev) => !prev)}
+                      className="text-[10.5px] font-semibold text-stone-400 hover:text-white flex items-center justify-between w-full p-1"
+                    >
+                      <span>Custom Cover Override or Preview Video (Optional)</span>
+                      <span>{showCustomCoverOverride ? '▲ Hide' : '▼ Show'}</span>
+                    </button>
+
+                    {showCustomCoverOverride && (
+                      <div className="space-y-3 pt-2">
+                        {/* Custom Cover Photo Override */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-stone-300">Override Cover Photo</span>
+                            <span className="text-[9px] text-stone-500">Only if different from AFTER</span>
+                          </div>
+                          <input
+                            ref={coverFileRef}
+                            type="file"
+                            accept="image/*"
+                            onChange={handleCoverFileSelect}
+                            className="hidden"
+                          />
+                          <div
+                            onClick={() => coverFileRef.current?.click()}
+                            className="relative w-full h-20 rounded-xl border border-dashed border-white/15 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden"
+                          >
+                            {tplCoverPreview ? (
+                              <img src={tplCoverPreview} alt="Cover Preview" className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] text-stone-400">Click to upload separate cover</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Custom Preview Media Override */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-stone-300">Override Preview Media (Video/Demo)</span>
+                            <span className="text-[9px] text-stone-500">For video templates</span>
+                          </div>
+                          <input
+                            ref={tplFileRef}
+                            type="file"
+                            accept="image/*,video/*"
+                            onChange={handleTplFileSelect}
+                            className="hidden"
+                          />
+                          <div
+                            onClick={() => tplFileRef.current?.click()}
+                            className="relative w-full h-20 rounded-xl border border-dashed border-white/15 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden"
+                          >
+                            {tplMediaPreview ? (
+                              tplDetectedType === 'video' ? (
+                                <video src={tplMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                              ) : (
+                                <img src={tplMediaPreview} alt="Preview" className="w-full h-full object-cover" />
+                              )
+                            ) : (
+                              <span className="text-[10px] text-stone-400">Click to upload demo video</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 

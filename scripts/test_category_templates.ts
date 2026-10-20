@@ -57,7 +57,7 @@ async function runTests() {
   
   // Category A: Devotional (2 templates)
   const devotionalCategoryPrompt = prodDb.getCategoryPrompt('Devotional');
-  const devTemplate1 = prodDb.addTemplate({
+  const devTemplate1 = await prodDb.addTemplate({
     id: `test_dev_hanuman_${Date.now()}`,
     title: 'Hanuman Ji Divine Blessing Look',
     type: 'photo',
@@ -92,7 +92,7 @@ async function runTests() {
     requiredInputs: [{ id: 'user_photo', label: 'Upload Photo', type: 'image' }]
   });
 
-  const devTemplate2 = prodDb.addTemplate({
+  const devTemplate2 = await prodDb.addTemplate({
     id: `test_dev_mahadev_${Date.now()}`,
     title: 'Mahadev Omkar Trishul Aesthetic',
     type: 'photo',
@@ -129,7 +129,7 @@ async function runTests() {
 
   // Category B: Royal Swag (1 template)
   const royalCategoryPrompt = prodDb.getCategoryPrompt('Royal Swag');
-  const royalTemplate1 = prodDb.addTemplate({
+  const royalTemplate1 = await prodDb.addTemplate({
     id: `test_royal_sherwani_${Date.now()}`,
     title: 'Royal Rajput Velvet Sherwani',
     type: 'photo',
@@ -307,9 +307,9 @@ async function runTests() {
   assert(refundTx?.amount === 10, 'Refund transaction amount equals exact deducted cost (+10)');
 
   // Clean up test templates
-  prodDb.deleteTemplate(devTemplate1.id);
-  prodDb.deleteTemplate(devTemplate2.id);
-  prodDb.deleteTemplate(royalTemplate1.id);
+  await prodDb.deleteTemplate(devTemplate1.id);
+  await prodDb.deleteTemplate(devTemplate2.id);
+  await prodDb.deleteTemplate(royalTemplate1.id);
 
   console.log('\n====================================================');
   console.log(`VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

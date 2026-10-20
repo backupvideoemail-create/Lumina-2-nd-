@@ -17,6 +17,7 @@ import path from 'path';
 import crypto from 'crypto';
 import type {
   Template,
+  TemplateCategory,
   UserProfile,
   CreditWallet,
   CreditGrant,
@@ -226,6 +227,13 @@ class ProductionDatabase {
       firestoreTemplates.forEach(t => templateMap.set(t.id, t));
       this.db.templates = Array.from(templateMap.values());
 
+      // Check R2 for any orphaned template assets missing from Firestore
+      try {
+        await this.recoverOrphanedTemplatesFromR2();
+      } catch (recErr: any) {
+        console.warn('[Database] Background R2 recovery check note:', recErr.message);
+      }
+
       // 12. App Config (Banners, Demo Video, Face Swap Scenes)
       try {
         const bannerDoc = await adminFirestoreDb.collection('config').doc('banners').get();
@@ -362,6 +370,15 @@ class ProductionDatabase {
       await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
     } catch (err: any) {
       console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
+      if (collectionName === 'templates') {
+        try {
+          await new Promise(r => setTimeout(r, 200));
+          const sanitized = JSON.parse(JSON.stringify(data));
+          await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
+        } catch (retryErr: any) {
+          console.error(`[Firestore Sync Critical] Template ${docId} persistence failed:`, retryErr.message);
+        }
+      }
     }
   }
 
@@ -1125,31 +1142,229 @@ class ProductionDatabase {
     return this.db.templates;
   }
 
-  public addTemplate(tpl: Template): Template {
+  public async addTemplate(tpl: Template): Promise<Template> {
     this.db.templates.unshift(tpl);
     this.save();
-    this.syncToFirestore('templates', tpl.id, tpl);
+    await this.syncToFirestore('templates', tpl.id, tpl);
     return tpl;
   }
 
-  public updateTemplate(id: string, updates: Partial<Template>): Template | null {
+  public async updateTemplate(id: string, updates: Partial<Template>): Promise<Template | null> {
     const tpl = this.db.templates.find(t => t.id === id);
     if (!tpl) return null;
     Object.assign(tpl, updates);
     this.save();
-    this.syncToFirestore('templates', id, tpl);
+    await this.syncToFirestore('templates', id, tpl);
     return tpl;
   }
 
-  public deleteTemplate(id: string): boolean {
+  public async deleteTemplate(id: string): Promise<boolean> {
     const index = this.db.templates.findIndex(t => t.id === id);
     if (index !== -1) {
       this.db.templates.splice(index, 1);
       this.save();
-      this.deleteFromFirestore('templates', id);
+      await this.deleteFromFirestore('templates', id);
       return true;
     }
     return false;
+  }
+
+  /**
+   * Scans Cloudflare R2 for orphaned assets whose Firestore or database template records
+   * are missing or corrupted, and reconstructs full template records.
+   * Prevents the "missing template" issue after cold starts, redeployments, or container recycling.
+   */
+  public async recoverOrphanedTemplatesFromR2(): Promise<{
+    scanned: number;
+    recoveredCount: number;
+    recoveredTemplates: Template[];
+    skippedCount: number;
+  }> {
+    try {
+      const { mediaStorage } = await import('../storage/mediaStorage.ts');
+      const r2Objects = await mediaStorage.listR2Objects('media/');
+      if (!r2Objects || r2Objects.length === 0) {
+        return { scanned: 0, recoveredCount: 0, recoveredTemplates: [], skippedCount: 0 };
+      }
+
+      // Collect all known media URLs and file names referenced by existing templates
+      const knownMediaSet = new Set<string>();
+      for (const t of this.db.templates) {
+        if (t.cover) {
+          knownMediaSet.add(t.cover);
+          knownMediaSet.add(path.basename(t.cover.split('?')[0]));
+        }
+        if (t.preview) {
+          knownMediaSet.add(t.preview);
+          knownMediaSet.add(path.basename(t.preview.split('?')[0]));
+        }
+        if (t.referenceImageUrl) {
+          knownMediaSet.add(t.referenceImageUrl);
+          knownMediaSet.add(path.basename(t.referenceImageUrl.split('?')[0]));
+        }
+        if (t.sampleFaceThumbnail) {
+          knownMediaSet.add(t.sampleFaceThumbnail);
+          knownMediaSet.add(path.basename(t.sampleFaceThumbnail.split('?')[0]));
+        }
+        if (t.sampleBefore) {
+          knownMediaSet.add(t.sampleBefore);
+          knownMediaSet.add(path.basename(t.sampleBefore.split('?')[0]));
+        }
+        if (t.sampleResult) {
+          knownMediaSet.add(t.sampleResult);
+          knownMediaSet.add(path.basename(t.sampleResult.split('?')[0]));
+        }
+        if (t.recipe?.referenceImageUrl) {
+          knownMediaSet.add(t.recipe.referenceImageUrl);
+          knownMediaSet.add(path.basename(t.recipe.referenceImageUrl.split('?')[0]));
+        }
+        if (t.recipe?.referenceAssets) {
+          t.recipe.referenceAssets.forEach(a => {
+            knownMediaSet.add(a);
+            knownMediaSet.add(path.basename(a.split('?')[0]));
+          });
+        }
+      }
+
+      const recoveredTemplates: Template[] = [];
+      let skippedCount = 0;
+
+      // Filter and evaluate R2 assets
+      for (const asset of r2Objects) {
+        const fn = asset.filename.toLowerCase();
+        // Candidate template assets: must be a template asset (tpl_, bulk_, or public media), not private/test
+        const isCandidate = (
+          fn.startsWith('tpl_') ||
+          fn.startsWith('bulk_') ||
+          asset.key.includes('/public/tpl_') ||
+          asset.key.includes('/public/bulk_') ||
+          (asset.isPublic && (fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.png') || fn.endsWith('.webp') || fn.endsWith('.mp4')))
+        );
+
+        if (!isCandidate || fn.startsWith('test_') || fn.startsWith('fsv_')) {
+          skippedCount++;
+          continue;
+        }
+
+        // Check if already referenced by any template in catalog
+        const isAlreadyReferenced = knownMediaSet.has(asset.publicUrl) || knownMediaSet.has(asset.filename) || knownMediaSet.has(asset.key);
+        if (isAlreadyReferenced) {
+          skippedCount++;
+          continue;
+        }
+
+        // Extract category from filename or path if encoded
+        let category: TemplateCategory = 'Devotional';
+        const cleanName = asset.filename;
+        if (/devotional|hanuman|mahadev|ram/i.test(cleanName)) {
+          category = 'Devotional';
+        } else if (/royal|swag|sherwani|maharaja/i.test(cleanName)) {
+          category = 'Royal Swag';
+        } else if (/navratri|durga|garba/i.test(cleanName)) {
+          category = 'Navratri Special';
+        } else if (/retro|80s|vintage/i.test(cleanName)) {
+          category = 'Retro 80s';
+        } else if (/hair|grooming|male/i.test(cleanName)) {
+          category = 'Male Hairstyle';
+        } else if (/fashion|runway/i.test(cleanName)) {
+          category = 'Fashion';
+        } else if (/couple|romance/i.test(cleanName)) {
+          category = 'Couple';
+        } else if (/festival|diwali|holi/i.test(cleanName)) {
+          category = 'Festival';
+        } else if (/luxury|car/i.test(cleanName)) {
+          category = 'Luxury';
+        } else {
+          category = 'Trending';
+        }
+
+        // Clean title
+        const isVideo = fn.endsWith('.mp4') || fn.endsWith('.mov') || fn.endsWith('.webm');
+        const baseNameNoExt = path.basename(asset.filename, path.extname(asset.filename))
+          .replace(/^(tpl_ref_|tpl_cover_|tpl_asset_|bulk_|admin_upload_)/, '')
+          .replace(/[_-]+/g, ' ')
+          .trim();
+        const displayTitle = baseNameNoExt.length > 3
+          ? `${category} - ${baseNameNoExt.substring(0, 30)}`
+          : `${category} Look (R2 Recovered)`;
+
+        const categoryPrompt = this.getCategoryPrompt(category);
+        const templateId = `tpl_r2_${asset.filename.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+        const restoredTemplate: Template = {
+          id: templateId,
+          title: displayTitle,
+          type: isVideo ? 'video' : 'photo',
+          inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
+          category,
+          cover: asset.publicUrl,
+          preview: asset.publicUrl,
+          referenceImageUrl: asset.publicUrl,
+          description: `${category} style template recovered from durable Cloudflare R2 storage.`,
+          aspectRatio: '9:16',
+          requiredInputs: [
+            {
+              id: isVideo ? 'user_media' : 'user_photo',
+              label: isVideo ? 'Upload Photo or Video' : 'Upload Your Photo',
+              type: isVideo ? 'video' : 'image',
+              description: 'Clear front-facing portrait photo'
+            }
+          ],
+          creditCost: isVideo ? 25 : 10,
+          providerCostUsd: isVideo ? 0.25 : 0.08,
+          engine: 'AI_GENERATION',
+          model: isVideo ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image',
+          workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
+          recipe: {
+            version: '1.0',
+            inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
+            provider: isVideo ? 'google_veo' : 'gemini',
+            model: isVideo ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image',
+            engine: 'AI_GENERATION',
+            prompt: categoryPrompt,
+            workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
+            aspectRatio: '9:16',
+            referenceAssets: [asset.publicUrl],
+            referenceImageUrl: asset.publicUrl
+          },
+          sortOrder: 0,
+          isFeatured: true,
+          isActive: true,
+          tags: [category, 'Recovered from R2', isVideo ? 'Video' : 'Photo'],
+          likesCount: 0,
+          resolutionLabel: isVideo ? '1080p 60FPS' : '4K Ultra HD'
+        };
+
+        // Add to in-memory templates
+        this.db.templates.unshift(restoredTemplate);
+        knownMediaSet.add(asset.publicUrl);
+        knownMediaSet.add(asset.filename);
+
+        // Synchronously save and sync to Firestore
+        this.save();
+        await this.syncToFirestore('templates', restoredTemplate.id, restoredTemplate);
+        recoveredTemplates.push(restoredTemplate);
+      }
+
+      if (recoveredTemplates.length > 0) {
+        console.log(`[R2 Recovery] Successfully recovered and synchronized ${recoveredTemplates.length} orphaned templates from R2 into Firestore & local database!`);
+      }
+
+      return {
+        scanned: r2Objects.length,
+        recoveredCount: recoveredTemplates.length,
+        recoveredTemplates,
+        skippedCount
+      };
+    } catch (err: any) {
+      console.error('[R2 Recovery Error]:', err.message);
+      return {
+        scanned: 0,
+        recoveredCount: 0,
+        recoveredTemplates: [],
+        skippedCount: 0
+      };
+    }
   }
 
   public getBanners(): HomeBannerItem[] {

@@ -24,6 +24,7 @@ import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import { prodDb } from './src/services/db/database.ts';
+import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
 import {
@@ -461,7 +462,14 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       tags = [],
       mediaBase64,
       coverBase64,
+      sampleFaceThumbnailBase64,
+      sampleFaceThumbnail: inputSampleFaceThumbnail,
+      sampleBeforeBase64,
+      sampleBefore: inputSampleBefore,
       sampleResultBase64,
+      sampleResult: inputSampleResult,
+      sampleAfterBase64,
+      sampleAfter: inputSampleAfter,
       referenceImageBase64,
       referenceImageUrl: inputReferenceImageUrl,
       drivingVideoBase64,
@@ -484,7 +492,42 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     }
     const finalDescription = (description && description.trim()) || `Trending ${category || 'Creative'} AI Template`;
 
-    let mediaUrl = 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&w=900&q=80';
+    // 1. Process AFTER / SAMPLE RESULT (Primary visual target reference)
+    const effectiveSampleResultInput = sampleResultBase64 || sampleAfterBase64 || inputSampleResult || inputSampleAfter;
+    let sampleResultUrl: string | undefined = undefined;
+    if (effectiveSampleResultInput) {
+      if (typeof effectiveSampleResultInput === 'string' && (effectiveSampleResultInput.startsWith('http://') || effectiveSampleResultInput.startsWith('https://') || effectiveSampleResultInput.startsWith('/api/media/'))) {
+        sampleResultUrl = effectiveSampleResultInput;
+      } else {
+        const storedSample = await mediaStorage.saveMedia(effectiveSampleResultInput, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
+        sampleResultUrl = storedSample.publicUrl;
+      }
+    }
+
+    // 2. Process FACE THUMBNAIL (Display-only example face thumbnail)
+    let sampleFaceThumbnailUrl: string | undefined = inputSampleFaceThumbnail || undefined;
+    if (sampleFaceThumbnailBase64) {
+      if (typeof sampleFaceThumbnailBase64 === 'string' && (sampleFaceThumbnailBase64.startsWith('http://') || sampleFaceThumbnailBase64.startsWith('https://') || sampleFaceThumbnailBase64.startsWith('/api/media/'))) {
+        sampleFaceThumbnailUrl = sampleFaceThumbnailBase64;
+      } else {
+        const storedFace = await mediaStorage.saveMedia(sampleFaceThumbnailBase64, 'tpl_face', `face_${Date.now()}`, undefined, true);
+        sampleFaceThumbnailUrl = storedFace.publicUrl;
+      }
+    }
+
+    // 3. Process BEFORE / SOURCE SAMPLE (Original starting context example)
+    let sampleBeforeUrl: string | undefined = inputSampleBefore || undefined;
+    if (sampleBeforeBase64) {
+      if (typeof sampleBeforeBase64 === 'string' && (sampleBeforeBase64.startsWith('http://') || sampleBeforeBase64.startsWith('https://') || sampleBeforeBase64.startsWith('/api/media/'))) {
+        sampleBeforeUrl = sampleBeforeBase64;
+      } else {
+        const storedBefore = await mediaStorage.saveMedia(sampleBeforeBase64, 'tpl_before', `before_${Date.now()}`, undefined, true);
+        sampleBeforeUrl = storedBefore.publicUrl;
+      }
+    }
+
+    // 4. Process Media Preview
+    let mediaUrl = sampleResultUrl || '';
     if (mediaBase64) {
       if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/'))) {
         mediaUrl = mediaBase64;
@@ -494,7 +537,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       }
     }
 
-    let coverUrl = mediaUrl;
+    // 5. AUTO-MAP COVER PHOTO FROM AFTER RESULT:
+    // If Admin uploaded an AFTER sample, automatically reuse it as Cover Photo so the admin doesn't re-upload it!
+    let coverUrl: string | undefined = undefined;
     if (coverBase64) {
       if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://') || coverBase64.startsWith('/api/media/'))) {
         coverUrl = coverBase64;
@@ -502,10 +547,22 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
         const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `cover_${Date.now()}`, undefined, true);
         coverUrl = storedCover.publicUrl;
       }
+    } else if (sampleResultUrl) {
+      // Re-use AFTER sample as Cover Photo automatically!
+      coverUrl = sampleResultUrl;
+    } else if (mediaUrl) {
+      coverUrl = mediaUrl;
     }
 
-    // Persist style-reference image for photo templates (can be identical to initial cover or separately provided)
-    let referenceImageUrl = inputReferenceImageUrl || '';
+    // Require at least one valid media reference
+    if (!coverUrl && !mediaUrl && !sampleResultUrl) {
+      return res.status(400).json({ error: 'Please upload an AFTER sample result or cover photo for this template.' });
+    }
+    const resolvedCover = coverUrl || mediaUrl || sampleResultUrl || '';
+    const resolvedMedia = mediaUrl || coverUrl || sampleResultUrl || '';
+
+    // 6. Persist style-reference image for photo templates (points to AFTER sample or cover)
+    let referenceImageUrl = inputReferenceImageUrl || sampleResultUrl || coverUrl || '';
     if (referenceImageBase64) {
       if (typeof referenceImageBase64 === 'string' && (referenceImageBase64.startsWith('http://') || referenceImageBase64.startsWith('https://') || referenceImageBase64.startsWith('/api/media/'))) {
         referenceImageUrl = referenceImageBase64;
@@ -513,18 +570,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
         const storedRef = await mediaStorage.saveMedia(referenceImageBase64, 'tpl_ref', `ref_${Date.now()}`, undefined, true);
         referenceImageUrl = storedRef.publicUrl;
       }
-    } else if (type === 'photo' && coverUrl) {
-      referenceImageUrl = coverUrl;
-    }
-
-    let sampleResultUrl: string | undefined = undefined;
-    if (sampleResultBase64) {
-      if (typeof sampleResultBase64 === 'string' && (sampleResultBase64.startsWith('http://') || sampleResultBase64.startsWith('https://') || sampleResultBase64.startsWith('/api/media/'))) {
-        sampleResultUrl = sampleResultBase64;
-      } else {
-        const storedSample = await mediaStorage.saveMedia(sampleResultBase64, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
-        sampleResultUrl = storedSample.publicUrl;
-      }
+    } else if (type === 'photo') {
+      referenceImageUrl = sampleResultUrl || coverUrl;
     }
 
     let drivingVideoUrl = inputDrivingVideoUrl || '';
@@ -554,7 +601,11 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       duration: type === 'video' ? 5 : undefined,
       drivingVideoUrl: drivingVideoUrl || undefined,
       referenceAssets: referenceImageUrl ? [referenceImageUrl] : undefined,
-      referenceImageUrl: referenceImageUrl || undefined
+      referenceImageUrl: referenceImageUrl || undefined,
+      sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
+      sampleBefore: sampleBeforeUrl || undefined,
+      sampleResult: sampleResultUrl || referenceImageUrl,
+      sampleAfter: sampleResultUrl || referenceImageUrl
     };
 
     const newTemplate: Template = {
@@ -563,10 +614,13 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       type: type === 'video' ? 'video' : 'photo',
       inputType: (inputType as TemplateInputType) || (type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'),
       category: category.trim() as TemplateCategory,
-      cover: coverUrl,
-      preview: mediaUrl,
-      referenceImageUrl: referenceImageUrl || (type === 'photo' ? coverUrl : undefined),
-      sampleResult: sampleResultUrl || mediaUrl,
+      cover: resolvedCover,
+      preview: resolvedMedia,
+      referenceImageUrl: referenceImageUrl || (type === 'photo' ? resolvedCover : undefined),
+      sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
+      sampleBefore: sampleBeforeUrl || undefined,
+      sampleResult: sampleResultUrl || referenceImageUrl,
+      sampleAfter: sampleResultUrl || referenceImageUrl,
       description: finalDescription,
       aspectRatio: (aspectRatio as AspectRatio) || '9:16',
       requiredInputs: requiredInputs || [
@@ -593,7 +647,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       resolutionLabel: type === 'video' ? '1080p 60FPS' : '4K Ultra HD'
     };
 
-    const saved = prodDb.addTemplate(newTemplate);
+    const saved = await prodDb.addTemplate(newTemplate);
     res.json({ success: true, template: saved });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to add template' });
@@ -711,7 +765,7 @@ app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
           resolutionLabel: '4K Ultra HD'
         };
 
-        const saved = prodDb.addTemplate(newTemplate);
+        const saved = await prodDb.addTemplate(newTemplate);
         savedTemplates.push(saved);
       } catch (err: any) {
         errors.push({ index: i, title: item.title || `Item ${i}`, error: err.message });
@@ -800,20 +854,62 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       delete updates.coverBase64;
     }
 
-    if (updates.sampleResultBase64) {
-      if (typeof updates.sampleResultBase64 === 'string' && (updates.sampleResultBase64.startsWith('http://') || updates.sampleResultBase64.startsWith('https://'))) {
-        updates.sampleResult = updates.sampleResultBase64;
+    if (updates.sampleFaceThumbnailBase64) {
+      if (typeof updates.sampleFaceThumbnailBase64 === 'string' && (updates.sampleFaceThumbnailBase64.startsWith('http://') || updates.sampleFaceThumbnailBase64.startsWith('https://'))) {
+        updates.sampleFaceThumbnail = updates.sampleFaceThumbnailBase64;
+      } else {
+        const storedFace = await mediaStorage.saveMedia(
+          updates.sampleFaceThumbnailBase64,
+          'tpl_face',
+          `tpl_face_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.sampleFaceThumbnail = storedFace.publicUrl;
+      }
+      delete updates.sampleFaceThumbnailBase64;
+    }
+
+    if (updates.sampleBeforeBase64) {
+      if (typeof updates.sampleBeforeBase64 === 'string' && (updates.sampleBeforeBase64.startsWith('http://') || updates.sampleBeforeBase64.startsWith('https://'))) {
+        updates.sampleBefore = updates.sampleBeforeBase64;
+      } else {
+        const storedBefore = await mediaStorage.saveMedia(
+          updates.sampleBeforeBase64,
+          'tpl_before',
+          `tpl_before_${Date.now()}`,
+          undefined,
+          true
+        );
+        updates.sampleBefore = storedBefore.publicUrl;
+      }
+      delete updates.sampleBeforeBase64;
+    }
+
+    const sampleResultCandidate = updates.sampleResultBase64 || updates.sampleAfterBase64;
+    if (sampleResultCandidate) {
+      if (typeof sampleResultCandidate === 'string' && (sampleResultCandidate.startsWith('http://') || sampleResultCandidate.startsWith('https://'))) {
+        updates.sampleResult = sampleResultCandidate;
+        updates.sampleAfter = sampleResultCandidate;
       } else {
         const storedSample = await mediaStorage.saveMedia(
-          updates.sampleResultBase64,
+          sampleResultCandidate,
           'tpl_sample',
           `tpl_sample_${Date.now()}`,
           undefined,
           true
         );
         updates.sampleResult = storedSample.publicUrl;
+        updates.sampleAfter = storedSample.publicUrl;
       }
+      // Re-use AFTER sample as Cover Photo automatically if no cover specified
+      if (!updates.cover) {
+        updates.cover = updates.sampleResult;
+      }
+      // Update reference image URL to point to AFTER sample
+      updates.referenceImageUrl = updates.sampleResult;
       delete updates.sampleResultBase64;
+      delete updates.sampleAfterBase64;
     }
 
     if (updates.drivingVideoBase64) {
@@ -852,7 +948,7 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       updates.creditCost = calculateCreditsFromUsd(Number(updates.providerCostUsd));
     }
 
-    const updated = prodDb.updateTemplate(id, updates);
+    const updated = await prodDb.updateTemplate(id, updates);
     if (!updated) {
       return res.status(404).json({ error: 'Template not found' });
     }
@@ -863,12 +959,26 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/templates/:id', requireAdmin, (req, res) => {
-  const success = prodDb.deleteTemplate(req.params.id);
+app.delete('/api/admin/templates/:id', requireAdmin, async (req, res) => {
+  const success = await prodDb.deleteTemplate(req.params.id);
   if (success) {
     return res.json({ success: true, message: 'Template removed successfully' });
   }
   res.status(404).json({ error: 'Template not found' });
+});
+
+// Admin Scan & Recover Orphaned Templates from Cloudflare R2
+app.post('/api/admin/templates/recover-r2', requireAdmin, async (_req, res) => {
+  try {
+    const result = await prodDb.recoverOrphanedTemplatesFromR2();
+    res.json({
+      success: true,
+      ...result,
+      totalTemplates: prodDb.getTemplates().length
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to scan and recover R2 templates' });
+  }
 });
 
 // Official Dynamic Provider Catalog (Higgsfield API + Google Veo + Gemini Imagen)
@@ -1610,8 +1720,43 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(400).json({ error: 'Missing orderId for verification' });
   }
 
-  // Look up stored server-side order
-  const payRec = prodDb.getPayment(orderId);
+  // Look up stored server-side order with multi-index fallback (orderId, subscriptionId, paymentId)
+  let payRec = prodDb.getPayment(orderId);
+  if (!payRec && req.body.subscriptionId) {
+    payRec = prodDb.getPayment(req.body.subscriptionId);
+  }
+  if (!payRec && paymentId) {
+    payRec = prodDb.getPaymentByPaymentId(paymentId);
+  }
+  if (!payRec && paymentId) {
+    // Live Razorpay Gateway Re-query: If server restarted or orderId is dynamic from Razorpay checkout
+    try {
+      const rzpPayment = await razorpayAdapter.getPayment(paymentId);
+      if (rzpPayment && (rzpPayment.status === 'captured' || rzpPayment.status === 'authorized')) {
+        const isIntro = rzpPayment.amount === 100 || itemId === 'plan_intro_daily';
+        payRec = {
+          id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          orderId: orderId || rzpPayment.order_id || rzpPayment.id,
+          paymentId: rzpPayment.id,
+          userId: user.id,
+          provider: 'razorpay',
+          amount: rzpPayment.amount / 100,
+          currency: 'INR',
+          type: isIntro ? 'intro_mandate' : 'one_time',
+          status: rzpPayment.status,
+          isAutoPay: Boolean(rzpPayment.notes?.isAutoPay === 'true' || req.body.subscriptionId),
+          verificationStatus: 'verified',
+          subscriptionId: req.body.subscriptionId || undefined,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await prodDb.recordPayment(payRec);
+      }
+    } catch (lookupErr: any) {
+      console.warn('[Payment Recovery Note]:', lookupErr.message);
+    }
+  }
+
   if (!payRec) {
     return res.status(404).json({ error: `Stored server-side order '${orderId}' not found.` });
   }
@@ -2462,24 +2607,40 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   // 3. Asynchronous execution with 100% exact refund on any failure
   (async () => {
     try {
+      // 1. Resolve designated AFTER sample reference image (authoritative target for scene, styling, and composition)
       const resolvedRefImage =
+        template.sampleResult ||
+        template.sampleAfter ||
         template.referenceImageUrl ||
+        (template.recipe as any)?.sampleResult ||
         (template.recipe as any)?.referenceImageUrl ||
         template.recipe?.referenceAssets?.[0] ||
         (template.type === 'photo' ? template.cover : undefined);
 
-      // Central Category Prompt + Template Nuance + Customer Instruction
+      if (template.type === 'photo' && !resolvedRefImage) {
+        throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
+      }
+
+      // 2. Authoritative Prompt Construction:
+      // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
       const categoryPrompt = prodDb.getCategoryPrompt(template.category);
       const recipePrompt = template.recipe?.prompt?.trim();
-      let effectivePrompt = categoryPrompt;
-      if (recipePrompt && recipePrompt !== categoryPrompt && !recipePrompt.startsWith('Cinematic slow-motion')) {
-        effectivePrompt = `${categoryPrompt}\nStyle Guidance: ${recipePrompt}`;
-      }
+      const effectivePrompt = buildUnifiedGenerationPrompt({
+        categoryPrompt,
+        templateRecipePrompt: recipePrompt,
+        userCustomInstructions: customPrompt,
+        templateTitle: template.title,
+        templateCategory: template.category,
+        hasAfterReference: Boolean(resolvedRefImage),
+        hasBeforeReference: Boolean(template.sampleBefore)
+      });
 
       const effectiveRecipe = template.recipe ? {
         ...template.recipe,
         prompt: effectivePrompt,
-        referenceImageUrl: resolvedRefImage
+        referenceImageUrl: resolvedRefImage,
+        sampleBefore: template.sampleBefore,
+        sampleResult: resolvedRefImage
       } : {
         version: '1.0',
         inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
@@ -2489,7 +2650,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         prompt: effectivePrompt,
         workflow: template.workflow,
         aspectRatio: template.aspectRatio,
-        referenceImageUrl: resolvedRefImage
+        referenceImageUrl: resolvedRefImage,
+        sampleBefore: template.sampleBefore,
+        sampleResult: resolvedRefImage
       };
 
       const result = await processTemplate({
@@ -2498,8 +2661,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         templateType: template.type,
         engine: template.engine,
         workflow: template.workflow,
-        inputMediaUrl,
-        referenceImageUrl: resolvedRefImage,
+        inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
+        referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
+        sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
+        sampleResultUrl: resolvedRefImage,
+        sampleFaceThumbnailUrl: template.sampleFaceThumbnail, // Strictly display-only example asset
         aspectRatio: template.aspectRatio,
         customPrompt,
         ownerUserId: user.id,

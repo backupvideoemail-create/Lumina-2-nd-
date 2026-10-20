@@ -5,6 +5,8 @@ export interface ImageGenerationParams {
   sourceImageUrl?: string;
   userImageUrl?: string;
   referenceImageUrl?: string;
+  sampleBeforeUrl?: string;
+  sampleResultUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
@@ -15,6 +17,9 @@ export interface VideoGenerationParams {
   prompt: string;
   sourceMediaUrl?: string;
   userImageUrl?: string;
+  referenceImageUrl?: string;
+  sampleBeforeUrl?: string;
+  sampleResultUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   durationSeconds?: number;
   motionStyle?: string;
@@ -44,6 +49,9 @@ export interface TemplateProcessParams {
   engine: 'SMART_TEMPLATE' | 'AI_GENERATION';
   inputMediaUrl: string;
   referenceImageUrl?: string;
+  sampleBeforeUrl?: string;
+  sampleResultUrl?: string;
+  sampleFaceThumbnailUrl?: string;
   aspectRatio: string;
   workflow: string;
   customPrompt?: string;

@@ -455,12 +455,19 @@ export class RazorpayAdapter {
     const expectedBuffer = Buffer.from(expectedSignature, 'utf-8');
 
     if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) {
-      // Also try alternative payload if both orderId and subscriptionId exist
+      // Also try alternative payloads for subscription / order permutations
       let altValid = false;
-      if (params.subscriptionId && params.orderId) {
-        const altSig = crypto.createHmac('sha256', config.keySecret).update(`${params.orderId}|${params.paymentId}`).digest('hex');
-        const altBuf = Buffer.from(altSig, 'utf-8');
-        if (signatureBuffer.length === altBuf.length && crypto.timingSafeEqual(signatureBuffer, altBuf)) {
+      if (params.subscriptionId) {
+        const altSig1 = crypto.createHmac('sha256', config.keySecret).update(`${params.subscriptionId}|${params.paymentId}`).digest('hex');
+        const altBuf1 = Buffer.from(altSig1, 'utf-8');
+        if (signatureBuffer.length === altBuf1.length && crypto.timingSafeEqual(signatureBuffer, altBuf1)) {
+          altValid = true;
+        }
+      }
+      if (!altValid && params.orderId) {
+        const altSig2 = crypto.createHmac('sha256', config.keySecret).update(`${params.orderId}|${params.paymentId}`).digest('hex');
+        const altBuf2 = Buffer.from(altSig2, 'utf-8');
+        if (signatureBuffer.length === altBuf2.length && crypto.timingSafeEqual(signatureBuffer, altBuf2)) {
           altValid = true;
         }
       }

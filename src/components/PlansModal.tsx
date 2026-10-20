@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import {
   ChevronLeft,
@@ -11,7 +11,8 @@ import {
   Tv,
   AlertCircle,
   ShieldCheck,
-  Lock
+  Lock,
+  Clock
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import {
@@ -39,6 +40,23 @@ export const PlansModal: React.FC = () => {
   const [phoneInput, setPhoneInput] = useState<string>(user?.phone || '');
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Urgency countdown timer for ₹1 Intro Offer (matches screenshot IMG_20261019_162226.png)
+  const [countdown, setCountdown] = useState<number>(3598); // 00:59:58
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown((prev) => (prev > 1 ? prev - 1 : 3598));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (totalSec: number) => {
+    const hrs = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   if (!plansModalOpen) return null;
 
@@ -420,6 +438,78 @@ export const PlansModal: React.FC = () => {
                 const isFirst = index === 0;
                 const isSecond = index === 1;
 
+                // SPECIAL HIGH-CONVERTING DESIGN FOR ₹1 INTRO OFFER (Matching IMG_20261019_162226.png)
+                if (isFirst) {
+                  return (
+                    <motion.div
+                      key={plan.id}
+                      whileTap={{ scale: 0.985 }}
+                      onClick={() => {
+                        setSelectedPlanId(plan.id);
+                        setErrorMessage(null);
+                      }}
+                      className={`relative rounded-2xl p-3 sm:p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
+                        isSelected
+                          ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
+                          : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/35 hover:border-amber-500/50'
+                      }`}
+                    >
+                      {/* Left Side: INTRO OFFER Badge, 1 day validity, ₹1 and crossed out ₹499 */}
+                      <div className="space-y-1">
+                        {/* Red Pill Badge with Fire Icon */}
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-gradient-to-r from-[#ff334b] to-[#ea1c38] text-white text-[11px] sm:text-xs font-black tracking-wide shadow-sm select-none">
+                          <span className="text-xs">🔥</span>
+                          <span>INTRO OFFER</span>
+                        </div>
+
+                        {/* Subtitle */}
+                        <p className="text-[11px] sm:text-xs font-medium text-stone-300 pt-0.5">
+                          1 day validity
+                        </p>
+
+                        {/* Price Row: ₹1 + Crossed out ₹499 */}
+                        <div className="flex items-baseline gap-2.5 sm:gap-3 pt-0.5">
+                          <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
+                            ₹1
+                          </span>
+                          <span className="relative inline-flex items-center text-stone-300 font-extrabold text-2xl sm:text-3xl tracking-tight select-none">
+                            ₹499
+                            {/* Bright Red Diagonal Strike Line */}
+                            <span className="absolute -inset-x-1.5 top-1/2 h-[3px] bg-[#ff334b] rounded-full -rotate-[14deg] transform -translate-y-1/2 shadow-sm pointer-events-none" />
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Right Side: Yellow LIMITED TIME OFFER Sticker + Countdown Timer Box */}
+                      <div className="flex flex-col items-end justify-between self-stretch shrink-0 pl-2">
+                        {/* Top Right: Yellow Limited Time Offer Badge with sunburst accents */}
+                        <div className="relative inline-flex items-center">
+                          {/* Radiating Accent Lines */}
+                          <div className="mr-1 flex flex-col items-end justify-center gap-[3px]">
+                            <span className="w-1.5 h-[2px] bg-[#ffd000] rotate-[-28deg] rounded-full" />
+                            <span className="w-2.5 h-[2px] bg-[#ffd000] rounded-full" />
+                            <span className="w-1.5 h-[2px] bg-[#ffd000] rotate-[28deg] rounded-full" />
+                          </div>
+                          <div className="bg-[#ffd000] text-black font-black text-[9px] sm:text-[10px] uppercase tracking-wider px-2 sm:px-2.5 py-1 rounded-lg text-center leading-tight shadow-md select-none">
+                            LIMITED<br />TIME OFFER
+                          </div>
+                        </div>
+
+                        {/* Bottom Right: Dark Rounded Box with Reddish Border & Live Ticking Countdown */}
+                        <div className="mt-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-black/65 border border-red-500/70 flex flex-col items-center justify-center min-w-[105px] sm:min-w-[115px] shadow-sm">
+                          <div className="flex items-center gap-1.5 text-white font-mono font-bold text-xs sm:text-sm tracking-wider">
+                            <Clock className="w-3.5 h-3.5 text-[#ff334b] stroke-[2.5] shrink-0" />
+                            <span>{formatCountdown(countdown)}</span>
+                          </div>
+                          <span className="text-[9.5px] sm:text-[10px] text-stone-400 font-medium">
+                            Offer ends in
+                          </span>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                }
+
                 return (
                   <motion.div
                     key={plan.id}
@@ -429,11 +519,7 @@ export const PlansModal: React.FC = () => {
                       setErrorMessage(null);
                     }}
                     className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
-                      isFirst
-                        ? isSelected
-                          ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
-                          : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/25 hover:border-amber-500/40'
-                        : isSecond
+                      isSecond
                         ? isSelected
                           ? 'bg-gradient-to-r from-[#261942]/95 via-[#171230]/95 to-[#24173e]/95 border-2 border-purple-400 shadow-[0_0_30px_rgba(168,85,247,0.45)]'
                           : 'bg-gradient-to-r from-[#18122c]/80 via-[#120e24]/80 to-[#1a1432]/80 border border-purple-500/25 hover:border-purple-400/45 shadow-[0_4px_20px_rgba(168,85,247,0.12)]'
@@ -463,9 +549,7 @@ export const PlansModal: React.FC = () => {
                     <div className="text-right shrink-0 pl-3">
                       <div
                         className={`text-2xl sm:text-3xl font-black font-display leading-none ${
-                          isFirst
-                            ? isSelected ? 'text-[#ffb703]' : 'text-amber-200'
-                            : isSecond
+                          isSecond
                             ? isSelected ? 'text-purple-300' : 'text-white'
                             : isSelected ? 'text-cyan-300' : 'text-white'
                         }`}

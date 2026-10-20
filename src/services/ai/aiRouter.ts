@@ -91,11 +91,19 @@ export class AIRouter {
         : basePrompt;
 
     // 4. Execute according to resolved target media type & provider
+    const sampleBeforeUrl =
+      params.sampleBeforeUrl ||
+      activeWorkflowConfig?.sampleBefore ||
+      recipe?.sampleBefore;
+
     if (provider === 'google_veo' || params.templateType === 'video' || isInputVideo) {
       return await this.generateVideo({
         prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,
         userImageUrl: params.inputMediaUrl,
+        referenceImageUrl: params.referenceImageUrl,
+        sampleBeforeUrl,
+        sampleResultUrl: params.sampleResultUrl,
         aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
         styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId
@@ -103,15 +111,20 @@ export class AIRouter {
     } else {
       const referenceImageUrl =
         params.referenceImageUrl ||
+        params.sampleResultUrl ||
         activeWorkflowConfig?.referenceImageUrl ||
+        activeWorkflowConfig?.sampleResult ||
         activeWorkflowConfig?.referenceAssetUrls?.[0] ||
         recipe?.referenceImageUrl ||
+        recipe?.sampleResult ||
         recipe?.referenceAssets?.[0];
 
       return await this.generateImage({
         prompt: combinedPrompt,
         userImageUrl: params.inputMediaUrl,
         referenceImageUrl,
+        sampleBeforeUrl,
+        sampleResultUrl: referenceImageUrl,
         aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
         styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId

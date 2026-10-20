@@ -564,6 +564,74 @@ export class MediaStorageService {
 
     return deletedCount;
   }
+
+  /**
+   * Scans all objects currently in the R2 bucket with optional key prefix.
+   * Handles multi-page pagination with ContinuationToken and resolves durable URLs.
+   */
+  public async listR2Objects(prefix: string = ''): Promise<Array<{
+    key: string;
+    filename: string;
+    size: number;
+    lastModified?: Date;
+    publicUrl: string;
+    isPublic: boolean;
+  }>> {
+    if (!this.s3Client || !this.r2Config.bucketName) {
+      return [];
+    }
+
+    const items: Array<{
+      key: string;
+      filename: string;
+      size: number;
+      lastModified?: Date;
+      publicUrl: string;
+      isPublic: boolean;
+    }> = [];
+
+    let continuationToken: string | undefined = undefined;
+
+    try {
+      do {
+        const command: ListObjectsV2Command = new ListObjectsV2Command({
+          Bucket: this.r2Config.bucketName,
+          Prefix: prefix || undefined,
+          ContinuationToken: continuationToken,
+          MaxKeys: 200
+        });
+
+        const response: any = await this.s3Client.send(command);
+        if (response.Contents) {
+          for (const obj of response.Contents) {
+            if (!obj.Key) continue;
+            const filename = path.basename(obj.Key);
+            const isPublic = obj.Key.includes('/public/') || filename.startsWith('tpl_') || filename.startsWith('bulk_');
+            let publicUrl = `/api/media/${filename}`;
+            if (isPublic && this.r2Config.publicBaseUrl) {
+              const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
+              publicUrl = `${base}/${obj.Key}`;
+            }
+
+            items.push({
+              key: obj.Key,
+              filename,
+              size: obj.Size || 0,
+              lastModified: obj.LastModified,
+              publicUrl,
+              isPublic
+            });
+          }
+        }
+        continuationToken = response.NextContinuationToken;
+      } while (continuationToken);
+
+      return items;
+    } catch (err: any) {
+      console.error('[MediaStorage] listR2Objects scan error:', err.message);
+      return items;
+    }
+  }
 }
 
 export const mediaStorage = new MediaStorageService();

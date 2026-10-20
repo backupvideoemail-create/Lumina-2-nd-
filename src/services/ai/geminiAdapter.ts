@@ -84,7 +84,7 @@ export class GeminiAdapter {
     // Build parts array
     const parts: any[] = [];
 
-    // 1. Attach user image (determines subject identity)
+    // 1. Attach user image (CUSTOMER_SOURCE_PHOTO: determines primary facial identity)
     if (params.userImageUrl) {
       try {
         const imagePayload = await this.resolveImagePayload(params.userImageUrl);
@@ -95,15 +95,16 @@ export class GeminiAdapter {
           }
         });
       } catch (err: any) {
-        throw new Error(`Failed to resolve supplied user photo: ${err.message}`);
+        throw new Error(`Failed to resolve supplied customer photo (CUSTOMER_SOURCE_PHOTO): ${err.message}`);
       }
     }
 
-    // 2. Attach template style reference image (guides visual look/aesthetic) if provided
+    // 2. Attach template style reference image (TEMPLATE_AFTER_REFERENCE: visual target for scene, pose, styling)
     let hasReferenceImage = false;
-    if (params.referenceImageUrl) {
+    const targetRefUrl = params.sampleResultUrl || params.referenceImageUrl;
+    if (targetRefUrl) {
       try {
-        const refPayload = await this.resolveImagePayload(params.referenceImageUrl);
+        const refPayload = await this.resolveImagePayload(targetRefUrl);
         parts.push({
           inlineData: {
             mimeType: refPayload.mimeType,
@@ -112,22 +113,40 @@ export class GeminiAdapter {
         });
         hasReferenceImage = true;
       } catch (err: any) {
-        throw new Error(`Failed to resolve template style reference image: ${err.message}`);
+        throw new Error(`Failed to resolve template after/reference image (TEMPLATE_AFTER_REFERENCE): ${err.message}`);
       }
     }
 
-    // 3. Construct prompt:
-    // If a reference image is provided, enforce shared server-side master prompt
-    // where user photo determines identity and reference image guides style.
-    // If no reference image is provided, preserve existing single-image / custom-edit path.
+    // 3. Attach optional TEMPLATE_BEFORE_REFERENCE (supporting context if provided and distinct)
+    let hasBeforeReference = false;
+    if (params.sampleBeforeUrl && params.sampleBeforeUrl !== targetRefUrl && params.sampleBeforeUrl !== params.userImageUrl) {
+      try {
+        const beforePayload = await this.resolveImagePayload(params.sampleBeforeUrl);
+        parts.push({
+          inlineData: {
+            mimeType: beforePayload.mimeType,
+            data: beforePayload.data
+          }
+        });
+        hasBeforeReference = true;
+      } catch (err: any) {
+        console.warn('[GeminiAdapter] Optional BEFORE reference warning:', err.message);
+      }
+    }
+
+    // 4. Construct authoritative prompt:
+    // When prompt already contains the GLOBAL_TEMPLATE_INTERPRETATION_PROMPT, use it directly with role mappings.
     let promptText: string;
-    if (hasReferenceImage) {
+    if (params.prompt && params.prompt.includes('GLOBAL_TEMPLATE_INTERPRETATION_PROMPT')) {
+      promptText = `${params.prompt}\n\nSupplied Multimodal Inputs:\n- Image 1: CUSTOMER_SOURCE_PHOTO (Preserve customer facial identity and structure)\n- Image 2: TEMPLATE_AFTER_REFERENCE (Recreate scene, pose, attire, atmosphere, and visual composition)${hasBeforeReference ? '\n- Image 3: TEMPLATE_BEFORE_REFERENCE (Starting appearance context)' : ''}\n\nAspect ratio: ${params.aspectRatio || '9:16'}.`;
+    } else if (hasReferenceImage) {
       const promptSegments = [
-        `High-end photographic transformation:`,
-        `- Image 1 is the subject's portrait photo: preserve this person's facial features, identity, facial geometry, and likeness accurately.`,
-        `- Image 2 is the style-reference image: replicate its artistic visual style, aesthetic look, color grading, lighting setup, wardrobe/outfit theme, mood, and background atmosphere.`,
-        `- Synthesize a new photorealistic, 8k ultra-sharp master photograph depicting the exact person from Image 1 seamlessly integrated into the style and aesthetic of Image 2.`,
-        params.prompt && params.prompt.trim() ? `Additional template style instructions: ${params.prompt.trim()}.` : '',
+        params.prompt && params.prompt.trim() ? params.prompt.trim() : 'Transform customer photo to match template style.',
+        `\n\nMultimodal Input Instructions:`,
+        `- Image 1 (CUSTOMER_SOURCE_PHOTO): Preserve this person's authentic facial identity, facial structure, skin tone, and likeness.`,
+        `- Image 2 (TEMPLATE_AFTER_REFERENCE): Recreate this exact artistic scene, pose, wardrobe, lighting setup, color grade, and background atmosphere.`,
+        hasBeforeReference ? `- Image 3 (TEMPLATE_BEFORE_REFERENCE): Supporting starting example.` : '',
+        `- Synthesize a new photorealistic, 8k ultra-sharp master photograph depicting the person from Image 1 in the target scene of Image 2.`,
         `Aspect ratio: ${params.aspectRatio || '9:16'}.`
       ];
       promptText = promptSegments.filter(Boolean).join('\n');

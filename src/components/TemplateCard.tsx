@@ -107,7 +107,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           />
         ) : (
           <img
-            src={template.cover}
+            src={template.cover || template.sampleResult || template.preview}
             alt={template.title}
             loading="lazy"
             draggable={false}

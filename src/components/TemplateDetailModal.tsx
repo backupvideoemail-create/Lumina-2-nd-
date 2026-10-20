@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
+import { isVideoMedia } from '../utils/mediaUtils';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -204,14 +205,12 @@ export const TemplateDetailModal: React.FC = () => {
     )
     .slice(0, 8);
 
-  const hasActualSample = Boolean(
-    tpl.sampleResult &&
-    tpl.sampleResult !== tpl.referenceImageUrl &&
-    tpl.sampleResult !== tpl.cover &&
-    tpl.sampleResult !== tpl.preview
-  );
-  const displayResult = hasActualSample ? tpl.sampleResult! : (tpl.referenceImageUrl || tpl.preview || tpl.cover);
-  const sampleBeforeThumb = tpl.sampleBefore || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80';
+  // Authoritative media resolution prioritizing AFTER sample result as main preview
+  const displayResult = tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl || tpl.cover || tpl.preview;
+  const sampleFaceThumb = tpl.sampleFaceThumbnail || null;
+  const sampleBeforeThumb = tpl.sampleBefore || null;
+  const hasSampleMedia = Boolean(sampleFaceThumb || sampleBeforeThumb);
+  const hasActualSample = Boolean(tpl.sampleResult || tpl.sampleAfter);
 
   return (
     <div
@@ -333,24 +332,50 @@ export const TemplateDetailModal: React.FC = () => {
             </span>
           </div>
 
-          {/* FLOATING "BEFORE" SAMPLE THUMBNAIL WITH TRANSFORMATION ARROW (Shown only when genuine sample exists) */}
-          {hasActualSample && (
-            <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/20 shadow-2xl">
-              <div className="flex flex-col items-center">
-                <span className="text-[8px] uppercase font-black text-amber-300 tracking-wider mb-0.5">
-                  Before
-                </span>
-                <img
-                  src={sampleBeforeThumb}
-                  alt="Sample input before transformation"
-                  draggable={false}
-                  className="w-12 h-14 rounded-xl object-cover border border-white/25 shadow-md pointer-events-none select-none"
-                />
-              </div>
-              <div className="text-amber-400 flex flex-col items-center justify-center pr-1">
+          {/* FLOATING SAMPLES: Face Thumbnail & Before Reference (Shown ONLY when genuine sample uploaded by admin) */}
+          {hasSampleMedia && (
+            <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/85 backdrop-blur-xl border border-white/20 shadow-2xl">
+              {sampleFaceThumb && (
+                <div className="flex flex-col items-center">
+                  <span className="text-[8px] uppercase font-black text-amber-300 tracking-wider mb-0.5">
+                    Face Sample
+                  </span>
+                  <img
+                    src={sampleFaceThumb}
+                    alt="Admin sample face thumbnail"
+                    draggable={false}
+                    className="w-12 h-14 rounded-xl object-cover border border-amber-400/30 shadow-md pointer-events-none select-none"
+                  />
+                </div>
+              )}
+              {sampleBeforeThumb && (
+                <div className="flex flex-col items-center">
+                  <span className="text-[8px] uppercase font-black text-sky-300 tracking-wider mb-0.5">
+                    Before
+                  </span>
+                  {isVideoMedia(sampleBeforeThumb) ? (
+                    <video
+                      src={sampleBeforeThumb}
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      className="w-12 h-14 rounded-xl object-cover border border-sky-400/30 shadow-md pointer-events-none select-none"
+                    />
+                  ) : (
+                    <img
+                      src={sampleBeforeThumb}
+                      alt="Before reference"
+                      draggable={false}
+                      className="w-12 h-14 rounded-xl object-cover border border-sky-400/30 shadow-md pointer-events-none select-none"
+                    />
+                  )}
+                </div>
+              )}
+              <div className="text-amber-400 flex flex-col items-center justify-center pr-1 pl-0.5">
                 <ArrowRight className="w-4 h-4 stroke-[3]" />
                 <span className="text-[7.5px] uppercase font-black text-amber-300 tracking-tighter">
-                  Transform
+                  After
                 </span>
               </div>
             </div>

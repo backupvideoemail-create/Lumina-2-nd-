@@ -45,6 +45,10 @@ export interface TemplateWorkflowConfig {
   drivingVideoUrl?: string;
   referenceAssetUrls?: string[];
   referenceImageUrl?: string;
+  sampleFaceThumbnail?: string;
+  sampleBefore?: string;
+  sampleResult?: string;
+  sampleAfter?: string;
 }
 
 export interface TemplateExecutionRecipe {
@@ -62,6 +66,10 @@ export interface TemplateExecutionRecipe {
   requiredInputs?: TemplateInputDef[];
   referenceAssets?: string[];
   referenceImageUrl?: string;
+  sampleFaceThumbnail?: string;
+  sampleBefore?: string;
+  sampleResult?: string;
+  sampleAfter?: string;
   drivingVideoUrl?: string;
   inputRules?: {
     minDurationSeconds?: number;
@@ -87,8 +95,10 @@ export interface Template {
   preview: string;
   cover: string;
   referenceImageUrl?: string;
+  sampleFaceThumbnail?: string;
   sampleBefore?: string;
   sampleResult?: string;
+  sampleAfter?: string;
   mediaType?: 'image' | 'video';
   description: string;
   aspectRatio: AspectRatio;
