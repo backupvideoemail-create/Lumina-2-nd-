@@ -92,12 +92,20 @@ export class MediaStorageService {
     }
   }
 
-  private async syncMetadataToFirestore(filename: string, metadata: StoredMediaMetadata) {
-    if (!adminFirestoreDb) return;
+  private async syncMetadataToFirestore(filename: string, metadata: StoredMediaMetadata): Promise<void> {
+    if (!adminFirestoreDb) {
+      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database is not connected to record media metadata.');
+      }
+      return;
+    }
     try {
       await adminFirestoreDb.collection('media_metadata').doc(filename).set(metadata, { merge: true });
     } catch (err: any) {
-      console.warn('[MediaStorage] Failed to sync media metadata to Firestore:', err.message);
+      console.error('[MediaStorage Critical] Failed to sync media metadata to Firestore:', err.message);
+      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error(`Failed to persist media metadata to Firestore: ${err.message}`);
+      }
     }
   }
 
@@ -425,6 +433,9 @@ export class MediaStorageService {
         throw new Error(`Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}': ${err.message}`);
       }
     } else {
+      if (prefix.startsWith('tpl_') && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error(`Cloudflare R2 storage is not configured. Template media assets require verified permanent R2 storage.`);
+      }
       provider = 'local';
     }
 
@@ -445,7 +456,7 @@ export class MediaStorageService {
 
     this.metadataIndex[filename] = metadata;
     this.saveIndex();
-    this.syncMetadataToFirestore(filename, metadata).catch(() => {});
+    await this.syncMetadataToFirestore(filename, metadata);
 
     return metadata;
   }

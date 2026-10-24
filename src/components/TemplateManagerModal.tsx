@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
@@ -178,11 +178,42 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [isRecoveringR2, setIsRecoveringR2] = useState<boolean>(false);
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
 
+  const [adminTemplates, setAdminTemplates] = useState<Template[]>([]);
+  const [loadingAdminTemplates, setLoadingAdminTemplates] = useState<boolean>(false);
+
+  const fetchAdminTemplates = useCallback(async () => {
+    try {
+      setLoadingAdminTemplates(true);
+      const res = await fetch('/api/admin/templates', {
+        headers: getAdminHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.templates)) {
+          setAdminTemplates(data.templates);
+          return;
+        }
+      }
+    } catch (err: any) {
+      console.warn('[TemplateManager] Failed to fetch admin templates:', err.message);
+    } finally {
+      setLoadingAdminTemplates(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchAdminTemplates();
+    }
+  }, [isOpen, fetchAdminTemplates]);
+
+  const displayTemplates = adminTemplates.length > 0 ? adminTemplates : templates;
+
   // Unified list of all known categories (predefined + any custom categories in templates or prompt map)
   const allKnownCategories = Array.from(
     new Set([
       ...CATEGORIES,
-      ...templates.map((t) => t.category).filter(Boolean),
+      ...displayTemplates.map((t) => t.category).filter(Boolean),
       ...Object.keys(categoryPromptsMap)
     ])
   );
@@ -691,20 +722,27 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           updateBody.sampleBefore = tplSampleBefore;
         }
 
+        const isNewAfterProvided = tplSampleResultPreview.startsWith('data:') || (editingTemplate && tplSampleResultPreview !== (editingTemplate.sampleResult || editingTemplate.sampleAfter));
         if (tplSampleResultPreview.startsWith('data:')) {
           updateBody.sampleResultBase64 = tplSampleResultPreview;
+          // Unconditionally update Cover with newly uploaded AFTER photo
+          updateBody.coverBase64 = tplSampleResultPreview;
         } else if (tplSampleResultPreview) {
           updateBody.sampleResult = tplSampleResultPreview;
           updateBody.sampleAfter = tplSampleResultPreview;
+          if (isNewAfterProvided) {
+            updateBody.cover = tplSampleResultPreview;
+          }
         }
 
-        if (tplCoverPreview.startsWith('data:')) {
-          updateBody.coverBase64 = tplCoverPreview;
-        } else if (tplCoverPreview) {
-          updateBody.cover = tplCoverPreview;
-        } else if (tplSampleResultPreview) {
-          // Auto-reuse AFTER sample as Cover Photo
-          updateBody.cover = tplSampleResultPreview;
+        if (!isNewAfterProvided) {
+          if (tplCoverPreview.startsWith('data:')) {
+            updateBody.coverBase64 = tplCoverPreview;
+          } else if (tplCoverPreview) {
+            updateBody.cover = tplCoverPreview;
+          } else if (tplSampleResultPreview) {
+            updateBody.cover = tplSampleResultPreview;
+          }
         }
 
         if (tplMediaPreview.startsWith('data:')) {
@@ -727,7 +765,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
         if (res.ok) {
           showNotification('Template updated successfully!');
-          await refreshTemplates();
+          await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
           setSubTab('list');
           setEditingTemplate(null);
         } else {
@@ -783,7 +821,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
         if (res.ok) {
           showNotification('Template published live to catalog!');
-          await refreshTemplates();
+          await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
           setSubTab('list');
           setTplTitle('');
           setTplMediaPreview('');
@@ -820,7 +858,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       });
       if (res.ok) {
         showNotification('Template deleted permanently');
-        await refreshTemplates();
+        await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
       } else {
         showNotification('Failed to delete template', 'error');
       }
@@ -848,7 +886,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setRecoveryNotice(msg);
           showNotification(msg, 'success');
         }
-        await refreshTemplates();
+        await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
       } else {
         const errMsg = `R2 Scan failed: ${data.error || 'Unknown error'}`;
         setRecoveryNotice(errMsg);
@@ -872,7 +910,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         body: JSON.stringify({ isActive: newStatus })
       });
       showNotification(`Template ${newStatus ? 'activated' : 'deactivated'}`);
-      await refreshTemplates();
+      await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
     } catch (err: any) {
       showNotification(err.message, 'error');
     }
@@ -1119,7 +1157,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       failCount
     });
 
-    await refreshTemplates();
+    await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
     if (failCount === 0) {
       showNotification(`All ${successCount} photo templates published successfully to ${effectiveCat}!`);
     } else {
@@ -2050,7 +2088,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             }`}
           >
             <Layers className="w-4 h-4 text-[#ff9f00]" />
-            <span>Templates ({templates.length})</span>
+            <span>Templates ({displayTemplates.length})</span>
           </button>
 
           <button
@@ -2107,7 +2145,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-stone-400">
-                      Catalog: {templates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter).length} / {templates.length}
+                      Catalog: {displayTemplates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter).length} / {displayTemplates.length}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
@@ -2169,10 +2207,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         : 'bg-white/5 text-stone-400 hover:text-white'
                     }`}
                   >
-                    All ({templates.length})
+                    All ({displayTemplates.length})
                   </button>
                   {allKnownCategories.map((cat) => {
-                    const count = templates.filter((t) => t.category === cat).length;
+                    const count = displayTemplates.filter((t) => t.category === cat).length;
                     const isEmpty = count === 0;
                     return (
                       <button
@@ -2196,7 +2234,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 </div>
 
                 <div className="space-y-2">
-                  {templates
+                  {displayTemplates
                     .filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter)
                     .map((tpl) => (
                       <div
@@ -2215,6 +2253,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                               {tpl.badge && (
                                 <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                                   {tpl.badge}
+                                </span>
+                              )}
+                              {tpl.isActive === false && (
+                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-stone-700/60 text-stone-300 border border-stone-600">
+                                  INACTIVE
                                 </span>
                               )}
                             </div>

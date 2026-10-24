@@ -845,6 +845,7 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+    const existing = prodDb.getAllTemplatesAdmin().find((t) => t.id === id);
 
     // If media replacement base64 provided
     if (updates.mediaBase64) {
@@ -918,27 +919,25 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       delete updates.sampleBeforeBase64;
     }
 
-    const sampleResultCandidate = updates.sampleResultBase64 || updates.sampleAfterBase64;
+    const sampleResultCandidate = updates.sampleResultBase64 || updates.sampleAfterBase64 || (updates.sampleResult && updates.sampleResult !== existing?.sampleResult ? updates.sampleResult : undefined);
     if (sampleResultCandidate) {
-      if (typeof sampleResultCandidate === 'string' && (sampleResultCandidate.startsWith('http://') || sampleResultCandidate.startsWith('https://'))) {
+      if (typeof sampleResultCandidate === 'string' && (sampleResultCandidate.startsWith('http://') || sampleResultCandidate.startsWith('https://') || sampleResultCandidate.startsWith('/api/media/'))) {
         updates.sampleResult = sampleResultCandidate;
         updates.sampleAfter = sampleResultCandidate;
       } else {
         const storedSample = await mediaStorage.saveMedia(
           sampleResultCandidate,
           'tpl_sample',
-          `tpl_sample_${Date.now()}`,
+          `${id}_sample_${Date.now()}`,
           undefined,
           true
         );
         updates.sampleResult = storedSample.publicUrl;
         updates.sampleAfter = storedSample.publicUrl;
       }
-      // Re-use AFTER sample as Cover Photo automatically if no cover specified
-      if (!updates.cover) {
-        updates.cover = updates.sampleResult;
-      }
-      // Update reference image URL to point to AFTER sample
+      // CRITICAL: When a new AFTER/result photo is provided, it unconditionally updates the Cover Photo!
+      // Old cover passed in request body must NEVER override the new AFTER result photo.
+      updates.cover = updates.sampleResult;
       updates.referenceImageUrl = updates.sampleResult;
       delete updates.sampleResultBase64;
       delete updates.sampleAfterBase64;

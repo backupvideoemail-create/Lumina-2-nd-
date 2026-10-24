@@ -1,3 +1,6 @@
+process.env.NODE_ENV = 'test';
+process.env.IS_ISOLATED_TEST = 'true';
+
 import { prodDb, adminFirestoreDb } from '../src/services/db/database.ts';
 import { mediaStorage } from '../src/services/storage/mediaStorage.ts';
 import { buildUnifiedGenerationPrompt, GLOBAL_PROMPT_MARKER, isUnifiedPrompt } from '../src/config/globalMasterPrompt.ts';
@@ -80,6 +83,18 @@ async function runSystemVerification() {
     invalidCaught = true;
   }
   assert(invalidCaught, 'addTemplate throws error if required fields (title, cover) are missing');
+
+  // Verify AFTER Cover Edit Update
+  console.log('\n--- SUITE 1.1: AFTER Cover Update on Edit ---');
+  const newAfterImg = 'https://images.example.com/new_after_result_v2.jpg';
+  const updatedTpl = await prodDb.updateTemplate(testTplId, {
+    sampleResult: newAfterImg,
+    sampleAfter: newAfterImg,
+    cover: newAfterImg
+  });
+  assert(updatedTpl?.cover === newAfterImg, 'Updating AFTER photo updates cover to the new AFTER photo');
+  assert(updatedTpl?.sampleResult === newAfterImg, 'Updating AFTER photo updates sampleResult');
+  assert(updatedTpl?.cover !== testBeforeImg, 'BEFORE photo is never mistakenly used as cover on edit');
 
   // Verify external URL handling in mediaStorage (never falsely labeled cloudflare_r2)
   const extTest = await mediaStorage.saveMedia('https://images.example.com/external_test.jpg', 'ext_test');

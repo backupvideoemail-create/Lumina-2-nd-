@@ -1177,8 +1177,13 @@ class ProductionDatabase {
       tpl.isActive = true;
     }
 
-    // 1. Authoritative write to Firestore with immediate read-back verification
-    if (adminFirestoreDb) {
+    // MANDATORY FIRESTORE PERSISTENCE:
+    // In production or live mode, Firestore MUST be connected. Never silently return false success on memory-only save.
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Template cannot be saved permanently.');
+      }
+    } else {
       try {
         const sanitized = JSON.parse(JSON.stringify(tpl));
         await adminFirestoreDb.collection('templates').doc(tpl.id).set(sanitized);
@@ -1196,11 +1201,9 @@ class ProductionDatabase {
         console.error(`[Database Critical] Firestore write failure for template ${tpl.id}:`, firestoreErr.message);
         throw new Error(`Firestore template write failed: ${firestoreErr.message}`);
       }
-    } else {
-      console.warn(`[Database] adminFirestoreDb not connected. Template ${tpl.id} saved to memory only.`);
     }
 
-    // 2. Update local in-memory catalog
+    // Update local in-memory catalog ONLY after verified Firestore persistence
     const existingIdx = this.db.templates.findIndex(t => t.id === tpl.id);
     if (existingIdx !== -1) {
       this.db.templates[existingIdx] = tpl;
@@ -1212,13 +1215,19 @@ class ProductionDatabase {
   }
 
   public async updateTemplate(id: string, updates: Partial<Template>): Promise<Template | null> {
-    const tpl = this.db.templates.find(t => t.id === id);
-    if (!tpl) return null;
-    Object.assign(tpl, updates);
+    const existingTpl = this.db.templates.find(t => t.id === id);
+    if (!existingTpl) return null;
 
-    if (adminFirestoreDb) {
+    // Do NOT mutate local in-memory object yet. Create proposed merged copy first!
+    const updatedTpl = { ...existingTpl, ...updates };
+
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Template update cannot be saved permanently.');
+      }
+    } else {
       try {
-        const sanitized = JSON.parse(JSON.stringify(tpl));
+        const sanitized = JSON.parse(JSON.stringify(updatedTpl));
         await adminFirestoreDb.collection('templates').doc(id).set(sanitized, { merge: true });
 
         // Verification read-back
@@ -1232,25 +1241,39 @@ class ProductionDatabase {
       }
     }
 
+    // Apply mutation to local in-memory catalog ONLY AFTER Firestore succeeds
+    Object.assign(existingTpl, updates);
     this.save();
-    return tpl;
+    return existingTpl;
   }
 
   public async deleteTemplate(id: string): Promise<boolean> {
     const index = this.db.templates.findIndex(t => t.id === id);
-    if (index !== -1) {
-      this.db.templates.splice(index, 1);
-      this.save();
-      if (adminFirestoreDb) {
-        try {
-          await adminFirestoreDb.collection('templates').doc(id).delete();
-        } catch (err: any) {
-          console.error(`[Database] Failed to delete template ${id} from Firestore:`, err.message);
-        }
+    if (index === -1) return false;
+
+    // First delete from authoritative Firestore and verify!
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Template delete cannot be performed permanently.');
       }
-      return true;
+    } else {
+      try {
+        await adminFirestoreDb.collection('templates').doc(id).delete();
+        // Verify deletion
+        const verifyDoc = await adminFirestoreDb.collection('templates').doc(id).get();
+        if (verifyDoc.exists) {
+          throw new Error(`Firestore document 'templates/${id}' still exists after delete attempt.`);
+        }
+      } catch (err: any) {
+        console.error(`[Database Critical] Failed to delete template ${id} from Firestore:`, err.message);
+        throw new Error(`Firestore template delete failed: ${err.message}`);
+      }
     }
-    return false;
+
+    // Remove from local list only after Firestore confirms deletion
+    this.db.templates.splice(index, 1);
+    this.save();
+    return true;
   }
 
   public unassignedRecoveryAssets: Array<{
