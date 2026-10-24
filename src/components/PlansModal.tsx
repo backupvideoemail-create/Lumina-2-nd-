@@ -86,8 +86,9 @@ export const PlansModal: React.FC = () => {
             : `${currentPlan.name} AutoPay`,
         image: logoUrl,
         handler: async (response: any) => {
-          const verified = await verifyPayment(
-            response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || '',
+          const effectiveOrderId = response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || res.subscriptionId || '';
+          const verifyResult = await verifyPayment(
+            effectiveOrderId,
             'plan',
             currentPlan.id,
             'razorpay',
@@ -96,11 +97,16 @@ export const PlansModal: React.FC = () => {
             response.razorpay_subscription_id || res.subscriptionId
           );
 
-          if (verified) {
+          if (verifyResult.success) {
             await refreshUserData();
             setPlansModalOpen(false);
           } else {
-            setErrorMessage('Payment verification failed on the server. If money was debited, it will reflect within a few minutes.');
+            console.error('[Razorpay Verify Error]:', verifyResult.error);
+            setErrorMessage(
+              verifyResult.error
+                ? `${verifyResult.error}. If money was debited from your bank, please retry or contact support.`
+                : 'Payment verification failed on the server. If money was debited, it will reflect within a few minutes.'
+            );
           }
         },
         prefill: {

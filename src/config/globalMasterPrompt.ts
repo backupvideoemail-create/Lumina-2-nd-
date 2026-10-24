@@ -10,7 +10,9 @@
  *    GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
  */
 
-export const GLOBAL_TEMPLATE_INTERPRETATION_PROMPT = `You are an expert visual-reference interpretation and photo/video transformation system.
+export const GLOBAL_TEMPLATE_INTERPRETATION_PROMPT = `AI PRIME STUDIO — GLOBAL TEMPLATE INTERPRETATION & EXECUTION CONSTITUTION
+
+You are an expert visual-reference interpretation and photo/video transformation system.
 
 Your task is to analyze the actual customer input and all supplied template reference assets before generating a result. Understand what each input represents, identify the intended transformation, and recreate the selected template's visual result as faithfully as the selected model and available inputs allow.
 

@@ -61,6 +61,8 @@ export const TemplateDetailModal: React.FC = () => {
     setIsDraggingSlider(false);
   }, [selectedTemplate?.id]);
 
+  const pointerStartRef = useRef<{ x: number; y: number; isHorizontalDrag: boolean } | null>(null);
+
   const updateSliderFromPointer = (clientX: number) => {
     if (!sliderContainerRef.current) return;
     const rect = sliderContainerRef.current.getBoundingClientRect();
@@ -70,28 +72,65 @@ export const TemplateDetailModal: React.FC = () => {
   };
 
   const handleSliderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    setIsDraggingSlider(true);
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // fallback
+    if (e.button !== 0) return;
+    pointerStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      isHorizontalDrag: e.pointerType === 'mouse'
+    };
+    if (e.pointerType === 'mouse') {
+      setIsDraggingSlider(true);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {}
+      updateSliderFromPointer(e.clientX);
     }
-    updateSliderFromPointer(e.clientX);
   };
 
   const handleSliderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isDraggingSlider) {
+    if (!pointerStartRef.current) return;
+
+    if (!pointerStartRef.current.isHorizontalDrag) {
+      const dx = Math.abs(e.clientX - pointerStartRef.current.x);
+      const dy = Math.abs(e.clientY - pointerStartRef.current.y);
+
+      // If vertical movement is dominant, release tracking so browser can scroll naturally
+      if (dy > 8 && dy > dx) {
+        pointerStartRef.current = null;
+        setIsDraggingSlider(false);
+        return;
+      }
+
+      // If horizontal movement is dominant, lock into slider comparison dragging
+      if (dx > 8 && dx >= dy) {
+        pointerStartRef.current.isHorizontalDrag = true;
+        setIsDraggingSlider(true);
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {}
+      }
+    }
+
+    if (pointerStartRef.current?.isHorizontalDrag) {
       updateSliderFromPointer(e.clientX);
     }
   };
 
   const handleSliderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointerStartRef.current = null;
     setIsDraggingSlider(false);
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      // fallback
-    }
+    } catch {}
+  };
+
+  const handleKnobPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    pointerStartRef.current = { x: e.clientX, y: e.clientY, isHorizontalDrag: true };
+    setIsDraggingSlider(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
   };
 
   if (!selectedTemplate) return null;
@@ -334,8 +373,8 @@ export const TemplateDetailModal: React.FC = () => {
           onPointerMove={hasBeforeAfterComparison ? handleSliderPointerMove : undefined}
           onPointerUp={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
           onPointerCancel={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
-          className={`relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center select-none ${
-            hasBeforeAfterComparison ? 'cursor-ew-resize touch-none' : ''
+          className={`relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center select-none touch-pan-y ${
+            hasBeforeAfterComparison ? 'cursor-ew-resize' : ''
           }`}
         >
           {/* LAYER 1: Full-Frame BEFORE Reference (Base Layer on Left/Bottom) */}
@@ -416,7 +455,8 @@ export const TemplateDetailModal: React.FC = () => {
               {/* Tactile Circular Knob */}
               <div
                 style={{ left: `${sliderPosition}%` }}
-                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-30 pointer-events-none"
+                onPointerDown={handleKnobPointerDown}
+                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-30 cursor-ew-resize touch-none p-3 select-none"
               >
                 <div
                   className={`w-9 h-9 rounded-full bg-white text-stone-900 shadow-2xl flex items-center justify-center border-2 border-stone-800 transition-transform ${

@@ -1,6 +1,6 @@
 import { prodDb } from '../src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from '../src/config/globalMasterPrompt.ts';
-import { Template } from '../src/types.ts';
+import { Template, PaymentRecord } from '../src/types/index.ts';
 
 async function runSystemVerification() {
   console.log('====================================================');
@@ -30,6 +30,7 @@ async function runSystemVerification() {
   const createdTemplate = await prodDb.addTemplate({
     id: testTplId,
     title: 'Royal Sherwani Before After Test',
+    description: 'Cinematic Royal Sherwani Before/After test template',
     type: 'photo',
     category: 'Royal Swag',
     cover: testAfterImg, // Reused AFTER asset as cover
@@ -41,6 +42,13 @@ async function runSystemVerification() {
     referenceImageUrl: testAfterImg,
     aspectRatio: '9:16',
     creditCost: 15,
+    engine: 'AI_GENERATION',
+    model: 'gemini-3.1-flash-image',
+    workflow: 'txt2img',
+    sortOrder: 1,
+    isFeatured: true,
+    isActive: true,
+    tags: ['royal', 'swag'],
     requiredInputs: [
       { id: 'user_photo', label: 'Customer Face Photo', type: 'image' }
     ]
@@ -132,23 +140,26 @@ async function runSystemVerification() {
   const testOrderId = `order_test_${Date.now()}`;
   const testSubId = `sub_test_${Date.now()}`;
   const testUser = prodDb.getOrCreateUser({
+    firebaseUid: `uid_test_${Date.now()}`,
     email: 'customer@example.com',
     name: 'Customer Test'
   }).user;
 
-  prodDb.recordPayment({
+  await prodDb.recordPayment({
     id: testOrderId,
     orderId: testOrderId,
+    paymentId: `pay_test_${Date.now()}`,
     subscriptionId: testSubId,
     userId: testUser.id,
-    type: 'plan',
-    planId: 'plan_1day_trial',
-    amount: 100, // 100 paise = ₹1
+    provider: 'razorpay',
+    type: 'intro_mandate',
+    amount: 1, // in INR (₹1)
     currency: 'INR',
-    gateway: 'razorpay',
     status: 'captured',
-    creditsAwarded: 40,
-    createdAt: new Date().toISOString()
+    isAutoPay: true,
+    verificationStatus: 'verified',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   });
 
   // Verify lookup by orderId

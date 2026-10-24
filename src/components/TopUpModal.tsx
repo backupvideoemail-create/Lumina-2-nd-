@@ -124,7 +124,7 @@ export const TopUpModal: React.FC = () => {
         description: `${selectedPack.name || 'Top-Up'} · ${selectedPack.credits} Instant Credits`,
         image: logoUrl,
         handler: async (response: any) => {
-          const verified = await verifyPayment(
+          const verifyRes = await verifyPayment(
             response.razorpay_order_id || orderData.orderId,
             'topup',
             selectedPack.id,
@@ -134,14 +134,14 @@ export const TopUpModal: React.FC = () => {
           );
 
           setIsProcessing(false);
-          if (verified) {
+          if (verifyRes.success) {
             setSuccessMessage(`Success! ${selectedPack.credits} credits have been added to your wallet.`);
             await refreshUserData();
             setTimeout(() => {
               setTopUpModalOpen(false);
             }, 1800);
           } else {
-            setErrorMessage('Payment verification failed. If money was deducted, credits will sync shortly.');
+            setErrorMessage(verifyRes.error || 'Payment verification failed. If money was deducted, credits will sync shortly.');
           }
         },
         prefill: {

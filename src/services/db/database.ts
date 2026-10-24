@@ -1596,12 +1596,62 @@ class ProductionDatabase {
   ========================================================================= */
   public async recordPayment(record: PaymentRecord): Promise<void> {
     this.db.payments[record.orderId] = record;
+    if (record.subscriptionId && record.subscriptionId !== record.orderId) {
+      this.db.payments[record.subscriptionId] = record;
+    }
+    if (record.paymentId && record.paymentId !== record.orderId) {
+      this.db.payments[record.paymentId] = record;
+    }
     this.save();
     await this.syncToFirestore('payments', record.orderId, record);
+    if (record.subscriptionId && record.subscriptionId !== record.orderId) {
+      await this.syncToFirestore('payments', record.subscriptionId, record);
+    }
   }
 
-  public getPayment(orderId: string): PaymentRecord | null {
-    return this.db.payments[orderId] || null;
+  public getPayment(identifier: string): PaymentRecord | null {
+    if (!identifier) return null;
+    if (this.db.payments[identifier]) {
+      return this.db.payments[identifier];
+    }
+    const found = Object.values(this.db.payments).find(
+      p =>
+        p.orderId === identifier ||
+        p.subscriptionId === identifier ||
+        p.paymentId === identifier ||
+        p.id === identifier
+    );
+    return found || null;
+  }
+
+  public async getPaymentAuthoritative(identifier: string): Promise<PaymentRecord | null> {
+    const local = this.getPayment(identifier);
+    if (local) return local;
+
+    if (adminFirestoreDb) {
+      try {
+        // Try direct doc
+        const directDoc = await adminFirestoreDb.collection('payments').doc(identifier).get();
+        if (directDoc.exists) {
+          const rec = directDoc.data() as PaymentRecord;
+          this.db.payments[rec.orderId] = rec;
+          return rec;
+        }
+
+        // Try where queries
+        for (const field of ['orderId', 'subscriptionId', 'paymentId']) {
+          const snap = await adminFirestoreDb.collection('payments').where(field, '==', identifier).limit(1).get();
+          if (!snap.empty) {
+            const rec = snap.docs[0].data() as PaymentRecord;
+            this.db.payments[rec.orderId] = rec;
+            return rec;
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getPaymentAuthoritative lookup note:', err.message);
+      }
+    }
+    return null;
   }
 
   public async setSubscription(sub: UserSubscription): Promise<void> {

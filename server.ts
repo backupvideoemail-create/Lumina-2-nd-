@@ -1758,8 +1758,18 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   if (!payRec && paymentId) {
     payRec = prodDb.getPaymentByPaymentId(paymentId);
   }
+  if (!payRec) {
+    payRec = await prodDb.getPaymentAuthoritative(orderId);
+  }
+  if (!payRec && req.body.subscriptionId) {
+    payRec = await prodDb.getPaymentAuthoritative(req.body.subscriptionId);
+  }
   if (!payRec && paymentId) {
-    // Live Razorpay Gateway Re-query: If server restarted or orderId is dynamic from Razorpay checkout
+    payRec = await prodDb.getPaymentAuthoritative(paymentId);
+  }
+
+  // Live Razorpay Gateway Re-query: If server restarted or orderId is dynamic from Razorpay checkout
+  if (!payRec && paymentId) {
     try {
       const rzpPayment = await razorpayAdapter.getPayment(paymentId);
       if (rzpPayment && (rzpPayment.status === 'captured' || rzpPayment.status === 'authorized')) {
@@ -1774,9 +1784,9 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
           currency: 'INR',
           type: isIntro ? 'intro_mandate' : 'one_time',
           status: rzpPayment.status,
-          isAutoPay: Boolean(rzpPayment.notes?.isAutoPay === 'true' || req.body.subscriptionId),
+          isAutoPay: Boolean(rzpPayment.notes?.isAutoPay === 'true' || req.body.subscriptionId || rzpPayment.subscription_id),
           verificationStatus: 'verified',
-          subscriptionId: req.body.subscriptionId || undefined,
+          subscriptionId: req.body.subscriptionId || rzpPayment.subscription_id || undefined,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -1787,8 +1797,43 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     }
   }
 
+  const effectiveSubId =
+    (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_') ? req.body.subscriptionId : null) ||
+    (orderId && orderId.startsWith('sub_') ? orderId : null);
+
+  if (!payRec && effectiveSubId) {
+    try {
+      const rzpSub = await razorpayAdapter.getSubscription(effectiveSubId);
+      if (rzpSub && ['active', 'authenticated', 'created', 'completed'].includes(rzpSub.status)) {
+        payRec = {
+          id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          orderId: effectiveSubId,
+          paymentId: paymentId || effectiveSubId,
+          userId: user.id,
+          provider: 'razorpay',
+          amount: 1,
+          currency: 'INR',
+          type: 'intro_mandate',
+          status: 'captured',
+          isAutoPay: true,
+          verificationStatus: 'verified',
+          subscriptionId: effectiveSubId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await prodDb.recordPayment(payRec);
+      }
+    } catch (subErr: any) {
+      console.warn('[Subscription Recovery Note]:', subErr.message);
+    }
+  }
+
   if (!payRec) {
-    return res.status(404).json({ error: `Stored server-side order '${orderId}' not found.` });
+    console.warn(`[Payment Verification] Stored server-side order/subscription '${orderId}' not found for user ${user.id}`);
+    return res.status(404).json({
+      error: `Stored payment record for '${orderId}' not found on server. Please retry or contact support.`,
+      code: 'ORDER_NOT_FOUND'
+    });
   }
 
   // Idempotency: Race-safe check against paymentId and orderId
@@ -1824,7 +1869,11 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     });
 
     if (!verification.verified) {
-      return res.status(400).json({ error: verification.error || 'Payment verification failed' });
+      console.warn(`[TopUp Verification Failed] orderId: ${orderId}: ${verification.error}`);
+      return res.status(400).json({
+        error: verification.error || 'Payment verification failed',
+        code: 'VERIFICATION_FAILED'
+      });
     }
 
     // Update Payment Record
@@ -1851,12 +1900,15 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   const plan = getSubscriptionPlanById(itemId);
   const targetSubId =
     (req.body.subscriptionId && req.body.subscriptionId.startsWith('sub_') ? req.body.subscriptionId : null) ||
-    (payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_') ? payRec.subscriptionId : null);
+    (payRec.subscriptionId && payRec.subscriptionId.startsWith('sub_') ? payRec.subscriptionId : null) ||
+    (orderId.startsWith('sub_') ? orderId : null);
 
   // For AutoPay plans, mandate subscription ID is MANDATORY
   if (plan.autoPayEnabled && !targetSubId) {
+    console.warn(`[Payment Verification] Missing subscription ID for AutoPay plan: ${plan.id}, orderId: ${orderId}`);
     return res.status(400).json({
-      error: 'AutoPay subscription requires a valid Razorpay subscription ID (sub_...). Mandate was not authorized.'
+      error: 'AutoPay subscription requires a valid Razorpay subscription ID (sub_...). Mandate was not authorized.',
+      code: 'MISSING_SUBSCRIPTION_ID'
     });
   }
 
@@ -1873,7 +1925,11 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   });
 
   if (!verification.verified) {
-    return res.status(400).json({ error: verification.error || 'Payment verification failed' });
+    console.warn(`[Payment Verification Failed] orderId: ${orderId}, paymentId: ${paymentId}: ${verification.error}`);
+    return res.status(400).json({
+      error: verification.error || 'Payment verification failed',
+      code: 'VERIFICATION_FAILED'
+    });
   }
 
   // Live Gateway Verification: Validate real Razorpay Subscription & Payment status
@@ -1882,8 +1938,10 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
       const rzpSub = await razorpayAdapter.getSubscription(targetSubId);
       const allowedStatuses = ['active', 'authenticated', 'created', 'completed'];
       if (!allowedStatuses.includes(rzpSub.status)) {
+        console.warn(`[Payment Verification] Mandate status '${rzpSub.status}' not in allowed list`);
         return res.status(400).json({
-          error: `Razorpay mandate is not in active/authenticated state (current status: ${rzpSub.status})`
+          error: `Razorpay mandate is not in active/authenticated state (current status: ${rzpSub.status})`,
+          code: 'MANDATE_NOT_ACTIVE'
         });
       }
     } catch (err: any) {
@@ -1894,19 +1952,27 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   if (paymentId) {
     try {
       const rzpPay = await razorpayAdapter.getPayment(paymentId);
-      if (rzpPay.status !== 'captured' || rzpPay.currency !== 'INR') {
+      // For subscription payments, allow both captured and authorized (mandate authorization)
+      const allowedStatuses = ['captured', 'authorized'];
+      if (!allowedStatuses.includes(rzpPay.status) || rzpPay.currency !== 'INR') {
+        console.warn(`[Payment Verification] Payment status '${rzpPay.status}' / currency '${rzpPay.currency}' invalid`);
         return res.status(400).json({
-          error: `Payment is not in captured INR status (status: ${rzpPay.status}, currency: ${rzpPay.currency})`
+          error: `Payment is not in confirmed INR status (status: ${rzpPay.status}, currency: ${rzpPay.currency})`,
+          code: 'INVALID_PAYMENT_STATUS'
         });
       }
       if (plan.isIntro && rzpPay.amount !== 100) {
+        console.warn(`[Payment Verification] Intro amount mismatch: expected 100 paise, got ${rzpPay.amount}`);
         return res.status(400).json({
-          error: `Initial authorization amount mismatch: expected ₹1.00 (100 paise), received ₹${rzpPay.amount / 100}`
+          error: `Initial authorization amount mismatch: expected ₹1.00 (100 paise), received ₹${rzpPay.amount / 100}`,
+          code: 'AMOUNT_MISMATCH'
         });
       }
       if (!plan.isIntro && rzpPay.amount !== Math.round(plan.price * 100)) {
+        console.warn(`[Payment Verification] Amount mismatch: expected ${plan.price}, got ${rzpPay.amount / 100}`);
         return res.status(400).json({
-          error: `Payment amount mismatch: expected ₹${plan.price}, received ₹${rzpPay.amount / 100}`
+          error: `Payment amount mismatch: expected ₹${plan.price}, received ₹${rzpPay.amount / 100}`,
+          code: 'AMOUNT_MISMATCH'
         });
       }
     } catch (err: any) {
@@ -1954,6 +2020,122 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     subscription: newSubscription,
     message: 'Payment and AutoPay mandate verified successfully'
   });
+});
+
+// Idempotent Customer Payment Reconciliation (For debited payments without plan activation)
+app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const { paymentId, subscriptionId } = req.body;
+
+  if (!paymentId && !subscriptionId) {
+    return res.status(400).json({ error: 'Please provide paymentId or subscriptionId to reconcile.' });
+  }
+
+  try {
+    let rzpPay: any = null;
+    let rzpSub: any = null;
+
+    if (paymentId) {
+      try {
+        rzpPay = await razorpayAdapter.getPayment(paymentId);
+      } catch (err: any) {
+        console.warn(`[Reconcile] Payment lookup error for ${paymentId}:`, err.message);
+      }
+    }
+
+    const effectiveSubId = subscriptionId || rzpPay?.subscription_id;
+    if (effectiveSubId) {
+      try {
+        rzpSub = await razorpayAdapter.getSubscription(effectiveSubId);
+      } catch (err: any) {
+        console.warn(`[Reconcile] Subscription lookup error for ${effectiveSubId}:`, err.message);
+      }
+    }
+
+    if (!rzpPay && !rzpSub) {
+      return res.status(404).json({ error: 'No transaction or mandate found on Razorpay with the provided identifiers.' });
+    }
+
+    // Verify status
+    const isPaymentCaptured = rzpPay && (rzpPay.status === 'captured' || rzpPay.status === 'authorized');
+    const isSubActive = rzpSub && ['active', 'authenticated', 'created', 'completed'].includes(rzpSub.status);
+
+    if (!isPaymentCaptured && !isSubActive) {
+      return res.status(400).json({
+        error: `Transaction not confirmed. Payment status: ${rzpPay?.status || 'N/A'}, Mandate status: ${rzpSub?.status || 'N/A'}`
+      });
+    }
+
+    const isIntro = (rzpPay && rzpPay.amount === 100) || Boolean(effectiveSubId);
+    const plan = isIntro ? getSubscriptionPlanById('plan_intro_daily') : getSubscriptionPlanById('plan_weekly_pass');
+    const referenceId = paymentId || effectiveSubId;
+
+    // Check if already processed
+    const alreadyProcessed =
+      (paymentId && (await prodDb.isPaymentProcessed(paymentId))) ||
+      (await prodDb.hasTransactionForReference(referenceId));
+
+    if (alreadyProcessed) {
+      return res.json({
+        success: true,
+        message: 'Payment was already reconciled and credits were granted.',
+        wallet: prodDb.getWallet(user.id),
+        subscription: prodDb.getSubscription(user.id)
+      });
+    }
+
+    // Record payment
+    const paymentRecord: PaymentRecord = {
+      id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      orderId: referenceId,
+      paymentId: paymentId || referenceId,
+      subscriptionId: effectiveSubId || undefined,
+      userId: user.id,
+      provider: 'razorpay',
+      amount: rzpPay ? rzpPay.amount / 100 : (plan?.price || 1),
+      currency: 'INR',
+      type: isIntro ? 'intro_mandate' : 'subscription',
+      status: 'captured',
+      isAutoPay: true,
+      verificationStatus: 'verified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await prodDb.recordPayment(paymentRecord);
+
+    // Activate subscription
+    const nextCalDay = calculateNextCalendarDayStartDate();
+    const newSubscription: UserSubscription = {
+      id: effectiveSubId || referenceId,
+      userId: user.id,
+      planId: plan?.id || 'plan_intro_daily',
+      planName: plan?.name || 'Trail Offer · ₹1 Intro (24h)',
+      provider: 'razorpay',
+      mandateId: effectiveSubId || undefined,
+      status: isIntro ? 'trial' : 'active',
+      startAt: new Date().toISOString(),
+      nextChargeAt: nextCalDay.isoString,
+      renewalAmount: plan?.renewalPrice || 499
+    };
+    await prodDb.setSubscription(newSubscription);
+
+    // Credit wallet exactly once
+    const creditsToGrant = plan?.includedCredits || 40;
+    await prodDb.creditWallet(user.id, creditsToGrant, `Reconciled Subscription: ${plan?.name || 'Intro Offer'}`, referenceId, 'purchase');
+    await prodDb.markWebhookProcessed(`reconcile_${referenceId}`);
+
+    console.log(`[Reconcile] Successfully reconciled payment for user ${user.id}: ${creditsToGrant} credits added.`);
+    return res.json({
+      success: true,
+      creditsAdded: creditsToGrant,
+      wallet: prodDb.getWallet(user.id),
+      subscription: newSubscription,
+      message: `Reconciliation successful! ${creditsToGrant} credits and your subscription plan have been activated.`
+    });
+  } catch (err: any) {
+    console.error('[Reconcile Error]:', err.message);
+    return res.status(500).json({ error: err.message || 'Payment reconciliation failed' });
+  }
 });
 
 // Google Play In-App Purchase Verification & Unified Balance Sync (Android com.aiprimestudio.app)

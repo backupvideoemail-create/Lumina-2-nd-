@@ -100,7 +100,8 @@ interface AppContextType {
   hasActivePlan: boolean;
   isPaying: boolean;
   initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay', phone?: string) => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
-  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<boolean>;
+  verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<{ success: boolean; error?: string }>;
+  reconcilePayment: (paymentId?: string, subscriptionId?: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   cancelSubscription: () => Promise<boolean>;
 
   // High-Intent Auth Modal & Pending Action Execution
@@ -655,7 +656,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     paymentId?: string,
     signature?: string,
     subscriptionId?: string
-  ): Promise<boolean> => {
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
       const res = await fetch('/api/payments/verify', {
         method: 'POST',
@@ -674,18 +675,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       });
       const data = await res.json();
+      setIsPaying(false);
       if (res.ok && data.success) {
         if (data.wallet) setWallet(data.wallet);
         if (data.subscription) setActiveSubscription(data.subscription);
         await refreshUserData();
-        setIsPaying(false);
-        return true;
+        return { success: true };
       }
-    } catch (err) {
+      return { success: false, error: data.error || 'Payment verification failed on the server.' };
+    } catch (err: any) {
       console.error('Payment verify error:', err);
+      setIsPaying(false);
+      return { success: false, error: err.message || 'Network error during verification' };
     }
-    setIsPaying(false);
-    return false;
+  };
+
+  // Idempotent Customer Payment Reconciliation
+  const reconcilePayment = async (
+    paymentId?: string,
+    subscriptionId?: string
+  ): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+      const res = await fetch('/api/payments/reconcile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ paymentId, subscriptionId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (data.wallet) setWallet(data.wallet);
+        if (data.subscription) setActiveSubscription(data.subscription);
+        await refreshUserData();
+        return { success: true, message: data.message };
+      }
+      return { success: false, error: data.error || 'Reconciliation failed' };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Network error during reconciliation' };
+    }
   };
 
   // Cancel Subscription
@@ -755,6 +784,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isPaying,
         initiateCheckout,
         verifyPayment,
+        reconcilePayment,
         cancelSubscription,
         authModalOpen,
         setAuthModalOpen,

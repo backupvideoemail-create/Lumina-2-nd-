@@ -37,6 +37,48 @@ jobs:
       - name: Grant Execute Permission for Gradlew
         run: chmod +x android/gradlew
 
+      - name: Recreate google-services.json from secret
+        env:
+          GOOGLE_SERVICES_SECRET: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_SECRET" ]; then
+            echo "Recreating android/app/google-services.json from repository secret..."
+            mkdir -p android/app
+            echo "$GOOGLE_SERVICES_SECRET" > android/app/google-services.json
+            mkdir -p android/app/src/debug
+            echo "$GOOGLE_SERVICES_SECRET" > android/app/src/debug/google-services.json
+
+            # Validate JSON content and package clients without printing secrets
+            node -e '
+              try {
+                const raw = process.env.GOOGLE_SERVICES_SECRET;
+                const parsed = JSON.parse(raw);
+                if (!parsed.client || !Array.isArray(parsed.client)) {
+                  console.error("Invalid google-services.json: missing client array");
+                  process.exit(1);
+                }
+                const packageNames = parsed.client.map(c => c.client_info?.android_client_info?.package_name).filter(Boolean);
+                console.log("Verified client packages:", packageNames.join(", "));
+                if (!packageNames.includes("com.aiprimestudio.app")) {
+                  console.error("Missing required client: com.aiprimestudio.app");
+                  process.exit(1);
+                }
+              } catch (e) {
+                console.error("Failed to parse GOOGLE_SERVICES_JSON as valid JSON:", e.message);
+                process.exit(1);
+              }
+            '
+          elif [ -f "android/app/google-services.json" ]; then
+            echo "Found existing android/app/google-services.json in workspace."
+            if [ ! -f "android/app/src/debug/google-services.json" ]; then
+              mkdir -p android/app/src/debug
+              cp android/app/google-services.json android/app/src/debug/google-services.json
+            fi
+          else
+            echo "::error::Both android/app/google-services.json and GOOGLE_SERVICES_JSON secret are missing!"
+            exit 1
+          fi
+
       - name: Verify Firebase Configuration
         run: |
           if [ -f "android/app/google-services.json" ]; then
