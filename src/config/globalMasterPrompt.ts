@@ -10,6 +10,17 @@
  *    GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
  */
 
+export const GLOBAL_PROMPT_MARKER = '<!-- AI_PRIME_STUDIO_UNIFIED_PROMPT_v1 -->';
+
+export function isUnifiedPrompt(prompt?: string): boolean {
+  if (!prompt) return false;
+  return (
+    prompt.includes(GLOBAL_PROMPT_MARKER) ||
+    prompt.includes('AI PRIME STUDIO — GLOBAL TEMPLATE INTERPRETATION') ||
+    prompt.includes('GLOBAL_TEMPLATE_INTERPRETATION_PROMPT')
+  );
+}
+
 export const GLOBAL_TEMPLATE_INTERPRETATION_PROMPT = `AI PRIME STUDIO — GLOBAL TEMPLATE INTERPRETATION & EXECUTION CONSTITUTION
 
 You are an expert visual-reference interpretation and photo/video transformation system.
@@ -119,7 +130,10 @@ export interface PromptAssemblyOptions {
  * GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
  */
 export function buildUnifiedGenerationPrompt(options: PromptAssemblyOptions): string {
-  const sections: string[] = [GLOBAL_TEMPLATE_INTERPRETATION_PROMPT];
+  const sections: string[] = [
+    GLOBAL_PROMPT_MARKER,
+    GLOBAL_TEMPLATE_INTERPRETATION_PROMPT
+  ];
 
   if (options.templateCategory || options.categoryPrompt) {
     const categoryName = options.templateCategory || 'General';

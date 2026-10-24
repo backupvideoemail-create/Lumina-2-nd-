@@ -443,39 +443,28 @@ export const PlansModal: React.FC = () => {
                           : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/35 hover:border-amber-500/50'
                       }`}
                     >
-                      {/* Left Side: TRIAL OFFER Badge, 1 day validity, ₹1 */}
+                      {/* Left Side: INTRO OFFER Badge, 1 day validity, ₹1 */}
                       <div className="space-y-1">
                         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-gradient-to-r from-[#ff334b] to-[#ea1c38] text-white text-[11px] sm:text-xs font-black tracking-wide shadow-sm select-none">
                           <span className="text-xs">🔥</span>
-                          <span>TRIAL OFFER</span>
+                          <span>INTRO OFFER</span>
                         </div>
 
                         <p className="text-[11px] sm:text-xs font-medium text-stone-300 pt-0.5">
-                          1 day access · 40 Credits included
+                          1 day validity · 40 Credits included
                         </p>
 
                         <div className="flex items-baseline gap-2 pt-0.5">
                           <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
                             ₹1
                           </span>
-                          <span className="text-stone-400 font-semibold text-xs sm:text-sm">
-                            first day
-                          </span>
                         </div>
                       </div>
 
-                      {/* Right Side: Verified Renewal Terms Box */}
+                      {/* Right Side: Static Yellow Badge */}
                       <div className="flex flex-col items-end justify-center self-stretch shrink-0 pl-2">
-                        <div className="px-2.5 sm:px-3 py-2 rounded-xl bg-black/65 border border-amber-500/40 flex flex-col items-end justify-center shadow-sm text-right">
-                          <span className="text-[11px] sm:text-xs font-bold text-amber-300">
-                            Renews at ₹499/week
-                          </span>
-                          <span className="text-[9px] sm:text-[10px] text-stone-300 font-medium">
-                            400 credits/cycle
-                          </span>
-                          <span className="text-[8.5px] text-stone-400 font-normal mt-0.5">
-                            Cancel anytime in Settings
-                          </span>
+                        <div className="px-2.5 py-1 rounded-lg bg-[#ffb703] text-black text-[10px] sm:text-[11px] font-black uppercase tracking-wider shadow-sm select-none">
+                          24-HOUR INTRO PASS
                         </div>
                       </div>
                     </motion.div>
@@ -568,7 +557,7 @@ export const PlansModal: React.FC = () => {
             {/* POLICY TEXT: Compact 2 lines matching design */}
             <div className="text-center pt-2 px-5">
               <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
-                ₹1 Intro Offer for 24 hours (40 credits), then renews at ₹499/week (400 credits/cycle). AutoPay can be managed or cancelled anytime in Account & Wallet Settings.
+                Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
               </p>
             </div>
           </>

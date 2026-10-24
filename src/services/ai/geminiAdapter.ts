@@ -13,6 +13,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { mediaStorage } from '../storage/mediaStorage.ts';
 import type { ImageGenerationParams, ProviderResult } from '../types.ts';
+import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
 
 export class GeminiAdapter {
   readonly providerName = 'gemini';
@@ -135,9 +136,9 @@ export class GeminiAdapter {
     }
 
     // 4. Construct authoritative prompt:
-    // When prompt already contains the GLOBAL_TEMPLATE_INTERPRETATION_PROMPT, use it directly with role mappings.
+    // When prompt already contains the unified prompt constitution, use it directly with role mappings.
     let promptText: string;
-    if (params.prompt && params.prompt.includes('GLOBAL_TEMPLATE_INTERPRETATION_PROMPT')) {
+    if (params.prompt && isUnifiedPrompt(params.prompt)) {
       promptText = `${params.prompt}\n\nSupplied Multimodal Inputs:\n- Image 1: CUSTOMER_SOURCE_PHOTO (Preserve customer facial identity and structure)\n- Image 2: TEMPLATE_AFTER_REFERENCE (Recreate scene, pose, attire, atmosphere, and visual composition)${hasBeforeReference ? '\n- Image 3: TEMPLATE_BEFORE_REFERENCE (Starting appearance context)' : ''}\n\nAspect ratio: ${params.aspectRatio || '9:16'}.`;
     } else if (hasReferenceImage) {
       const promptSegments = [

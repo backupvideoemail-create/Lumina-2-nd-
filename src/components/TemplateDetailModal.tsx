@@ -156,9 +156,9 @@ export const TemplateDetailModal: React.FC = () => {
     : [
         {
           id: 'slot_1',
-          label: tpl.type === 'video' ? 'Upload Video' : 'Upload Photo',
+          label: tpl.type === 'video' ? 'Upload Video' : 'Upload User Face Photo',
           type: tpl.type === 'video' ? 'video' : 'image',
-          description: tpl.type === 'video' ? 'Clear walking or portrait video' : 'Clear front-facing portrait photo'
+          description: tpl.type === 'video' ? 'Clear walking or portrait video' : 'Clear front-facing User Face photo'
         }
       ];
 
@@ -522,7 +522,7 @@ export const TemplateDetailModal: React.FC = () => {
                   Face Sample
                 </span>
                 <span className="text-[7.5px] text-stone-400 leading-tight">
-                  Display only · Customer's<br />photo will be used
+                  Display only · User Face<br />photo will be used
                 </span>
               </div>
             </div>
@@ -544,7 +544,7 @@ export const TemplateDetailModal: React.FC = () => {
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-black uppercase tracking-wider text-white">
-                {tpl.type === 'video' ? 'Select Video' : 'Add Photos'}
+                {tpl.type === 'video' ? 'Select Video' : 'Add User Face Photo'}
               </span>
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-amber-300 border border-white/10">
                 {filledSlotsCount}/{totalSlots} {totalSlots === 1 ? 'photo' : 'photos'} added
@@ -752,10 +752,10 @@ export const TemplateDetailModal: React.FC = () => {
               {/* Header */}
               <div className="text-center space-y-0.5">
                 <h3 className="text-base font-extrabold text-white">
-                  {activePickingSlot?.type === 'video' ? 'Add Video' : 'Add Photo'}
+                  {activePickingSlot?.type === 'video' ? 'Add Video' : 'Add User Face Photo'}
                 </h3>
                 <p className="text-xs text-stone-400">
-                  Choose how you'd like to add your {activePickingSlot?.type === 'video' ? 'video' : 'photo'}
+                  Choose how you'd like to add your {activePickingSlot?.type === 'video' ? 'video' : 'User Face photo'}
                 </p>
               </div>
 

@@ -503,6 +503,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Title is required' });
     }
     const finalDescription = (description && description.trim()) || `Trending ${category || 'Creative'} AI Template`;
+    const targetTemplateId = (req.body.id && String(req.body.id).trim()) || `tpl_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const uploadedAssetMeta: Array<{ key: string; filename: string; publicUrl: string }> = [];
 
     // 1. Process AFTER / SAMPLE RESULT (Primary visual target reference)
     const effectiveSampleResultInput = sampleResultBase64 || sampleAfterBase64 || inputSampleResult || inputSampleAfter;
@@ -511,8 +513,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof effectiveSampleResultInput === 'string' && (effectiveSampleResultInput.startsWith('http://') || effectiveSampleResultInput.startsWith('https://') || effectiveSampleResultInput.startsWith('/api/media/'))) {
         sampleResultUrl = effectiveSampleResultInput;
       } else {
-        const storedSample = await mediaStorage.saveMedia(effectiveSampleResultInput, 'tpl_sample', `sample_${Date.now()}`, undefined, true);
+        const storedSample = await mediaStorage.saveMedia(effectiveSampleResultInput, 'tpl_sample', `${targetTemplateId}_sample`, undefined, true);
         sampleResultUrl = storedSample.publicUrl;
+        if (storedSample.r2Key) uploadedAssetMeta.push({ key: storedSample.r2Key, filename: storedSample.fileId, publicUrl: storedSample.publicUrl });
       }
     }
 
@@ -522,8 +525,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof sampleFaceThumbnailBase64 === 'string' && (sampleFaceThumbnailBase64.startsWith('http://') || sampleFaceThumbnailBase64.startsWith('https://') || sampleFaceThumbnailBase64.startsWith('/api/media/'))) {
         sampleFaceThumbnailUrl = sampleFaceThumbnailBase64;
       } else {
-        const storedFace = await mediaStorage.saveMedia(sampleFaceThumbnailBase64, 'tpl_face', `face_${Date.now()}`, undefined, true);
+        const storedFace = await mediaStorage.saveMedia(sampleFaceThumbnailBase64, 'tpl_face', `${targetTemplateId}_face`, undefined, true);
         sampleFaceThumbnailUrl = storedFace.publicUrl;
+        if (storedFace.r2Key) uploadedAssetMeta.push({ key: storedFace.r2Key, filename: storedFace.fileId, publicUrl: storedFace.publicUrl });
       }
     }
 
@@ -533,8 +537,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof sampleBeforeBase64 === 'string' && (sampleBeforeBase64.startsWith('http://') || sampleBeforeBase64.startsWith('https://') || sampleBeforeBase64.startsWith('/api/media/'))) {
         sampleBeforeUrl = sampleBeforeBase64;
       } else {
-        const storedBefore = await mediaStorage.saveMedia(sampleBeforeBase64, 'tpl_before', `before_${Date.now()}`, undefined, true);
+        const storedBefore = await mediaStorage.saveMedia(sampleBeforeBase64, 'tpl_before', `${targetTemplateId}_before`, undefined, true);
         sampleBeforeUrl = storedBefore.publicUrl;
+        if (storedBefore.r2Key) uploadedAssetMeta.push({ key: storedBefore.r2Key, filename: storedBefore.fileId, publicUrl: storedBefore.publicUrl });
       }
     }
 
@@ -544,34 +549,34 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/'))) {
         mediaUrl = mediaBase64;
       } else {
-        const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `template_${Date.now()}`, undefined, true);
+        const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `${targetTemplateId}_preview`, undefined, true);
         mediaUrl = stored.publicUrl;
+        if (stored.r2Key) uploadedAssetMeta.push({ key: stored.r2Key, filename: stored.fileId, publicUrl: stored.publicUrl });
       }
     }
 
-    // 5. AUTO-MAP COVER PHOTO FROM AFTER RESULT:
-    // If Admin uploaded an AFTER sample, automatically reuse it as Cover Photo so the admin doesn't re-upload it!
-    let coverUrl: string | undefined = undefined;
-    if (coverBase64) {
+    // 5. AFTER RESULT IS THE PRIMARY AUTHORITATIVE COVER PHOTO:
+    // When Admin uploads Face Photo, BEFORE Photo and AFTER Photo, AFTER Photo is ALWAYS the Cover Photo!
+    // Face Photo is ONLY for Face Thumbnail. BEFORE Photo is ONLY for Before-After slider.
+    let coverUrl: string | undefined = sampleResultUrl;
+    if (!coverUrl && coverBase64) {
       if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://') || coverBase64.startsWith('/api/media/'))) {
         coverUrl = coverBase64;
       } else {
-        const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `cover_${Date.now()}`, undefined, true);
+        const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `${targetTemplateId}_cover`, undefined, true);
         coverUrl = storedCover.publicUrl;
+        if (storedCover.r2Key) uploadedAssetMeta.push({ key: storedCover.r2Key, filename: storedCover.fileId, publicUrl: storedCover.publicUrl });
       }
-    } else if (sampleResultUrl) {
-      // Re-use AFTER sample as Cover Photo automatically!
-      coverUrl = sampleResultUrl;
-    } else if (mediaUrl) {
+    } else if (!coverUrl && mediaUrl) {
       coverUrl = mediaUrl;
     }
 
-    // Require at least one valid media reference
-    if (!coverUrl && !mediaUrl && !sampleResultUrl) {
-      return res.status(400).json({ error: 'Please upload an AFTER sample result or cover photo for this template.' });
+    // Require AFTER sample result or explicit cover: NEVER fallback to sampleBefore or sampleFaceThumbnail
+    if (!coverUrl) {
+      return res.status(400).json({ error: 'AFTER / Sample Result photo is required for the template cover. Face thumbnail or BEFORE photo cannot be used as cover.' });
     }
-    const resolvedCover = coverUrl || mediaUrl || sampleResultUrl || '';
-    const resolvedMedia = mediaUrl || coverUrl || sampleResultUrl || '';
+    const resolvedCover = coverUrl;
+    const resolvedMedia = mediaUrl || sampleResultUrl || coverUrl || '';
 
     // 6. Persist style-reference image for photo templates (points to AFTER sample or cover)
     let referenceImageUrl = inputReferenceImageUrl || sampleResultUrl || coverUrl || '';
@@ -579,8 +584,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof referenceImageBase64 === 'string' && (referenceImageBase64.startsWith('http://') || referenceImageBase64.startsWith('https://') || referenceImageBase64.startsWith('/api/media/'))) {
         referenceImageUrl = referenceImageBase64;
       } else {
-        const storedRef = await mediaStorage.saveMedia(referenceImageBase64, 'tpl_ref', `ref_${Date.now()}`, undefined, true);
+        const storedRef = await mediaStorage.saveMedia(referenceImageBase64, 'tpl_ref', `${targetTemplateId}_ref`, undefined, true);
         referenceImageUrl = storedRef.publicUrl;
+        if (storedRef.r2Key) uploadedAssetMeta.push({ key: storedRef.r2Key, filename: storedRef.fileId, publicUrl: storedRef.publicUrl });
       }
     } else if (type === 'photo') {
       referenceImageUrl = sampleResultUrl || coverUrl;
@@ -591,8 +597,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (typeof drivingVideoBase64 === 'string' && (drivingVideoBase64.startsWith('http://') || drivingVideoBase64.startsWith('https://') || drivingVideoBase64.startsWith('/api/media/'))) {
         drivingVideoUrl = drivingVideoBase64;
       } else {
-        const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `driving_${Date.now()}`, undefined, true);
+        const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `${targetTemplateId}_driving`, undefined, true);
         drivingVideoUrl = storedDriving.publicUrl;
+        if (storedDriving.r2Key) uploadedAssetMeta.push({ key: storedDriving.r2Key, filename: storedDriving.fileId, publicUrl: storedDriving.publicUrl });
       }
     }
 
@@ -621,7 +628,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     };
 
     const newTemplate: Template = {
-      id: `tpl_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      id: targetTemplateId,
       title: title.trim(),
       type: type === 'video' ? 'video' : 'photo',
       inputType: (inputType as TemplateInputType) || (type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'),
@@ -638,9 +645,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       requiredInputs: requiredInputs || [
         {
           id: 'user_input_media',
-          label: inputType === 'VIDEO_ONLY' ? 'Upload Video' : inputType === 'IMAGE_ONLY' ? 'Upload Photo' : 'Upload Photo or Video',
+          label: inputType === 'VIDEO_ONLY' ? 'Upload Video' : inputType === 'IMAGE_ONLY' ? 'Upload User Face Photo' : 'Upload User Face Photo or Video',
           type: inputType === 'VIDEO_ONLY' ? 'video' : 'image',
-          description: inputType === 'VIDEO_ONLY' ? 'Clear video clip' : 'Clear front-facing portrait'
+          description: inputType === 'VIDEO_ONLY' ? 'Clear video clip' : 'Clear front-facing User Face photo'
         }
       ],
       creditCost: calculatedCredits,
@@ -659,8 +666,21 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       resolutionLabel: type === 'video' ? '1080p 60FPS' : '4K Ultra HD'
     };
 
-    const saved = await prodDb.addTemplate(newTemplate);
-    res.json({ success: true, template: saved });
+    try {
+      const saved = await prodDb.addTemplate(newTemplate);
+      res.json({ success: true, template: saved });
+    } catch (saveErr: any) {
+      // In case of Firestore write failure, preserve uploaded R2 assets safely in unassigned inventory
+      uploadedAssetMeta.forEach(a => {
+        prodDb.unassignedRecoveryAssets.push({
+          key: a.key,
+          filename: a.filename,
+          size: 0,
+          publicUrl: a.publicUrl
+        });
+      });
+      res.status(500).json({ error: saveErr.message || 'Failed to save template to authoritative Firestore database' });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to add template' });
   }
@@ -757,9 +777,9 @@ app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
           requiredInputs: [
             {
               id: 'user_photo',
-              label: 'Upload Your Photo',
+              label: 'Upload User Face Photo',
               type: 'image',
-              description: 'Clear front-facing portrait photo'
+              description: 'Clear front-facing User Face photo'
             }
           ],
           creditCost: calculatedCredits,
@@ -3508,6 +3528,13 @@ app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: 
 ========================================================================= */
 
 async function startServer() {
+  try {
+    await prodDb.readyPromise;
+    console.log('[Server] Authoritative Firestore database state synchronized successfully.');
+  } catch (err: any) {
+    console.warn('[Server] Initial Firestore sync notice:', err.message);
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

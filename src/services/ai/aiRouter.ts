@@ -16,6 +16,7 @@ import type {
 import { geminiAdapter } from './geminiAdapter.ts';
 import { videoProviderAdapter } from './videoProviderAdapter.ts';
 import { faceSwapAdapter } from './faceSwapAdapter.ts';
+import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
 
 export class AIRouter {
   // 1. Unified Image Generation
@@ -85,8 +86,12 @@ export class AIRouter {
         ? `Synthesize video reel for ${params.templateTitle}. Workflow: ${workflowName}.`
         : `Transform image with ${params.templateTitle} aesthetic. Workflow: ${workflowName}.`);
 
+    const alreadyHasCustomerInstructions =
+      basePrompt.includes('--- OPTIONAL CUSTOMER INSTRUCTIONS ---') ||
+      (params.customPrompt && basePrompt.includes(params.customPrompt.trim()));
+
     const combinedPrompt =
-      params.customPrompt && params.customPrompt.trim()
+      params.customPrompt && params.customPrompt.trim() && !alreadyHasCustomerInstructions
         ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
         : basePrompt;
 

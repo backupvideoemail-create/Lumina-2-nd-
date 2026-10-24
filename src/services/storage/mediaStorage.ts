@@ -17,6 +17,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
   ListObjectsV2Command
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -276,20 +277,55 @@ export class MediaStorageService {
     this.ensureDirectory();
 
     if (typeof payload === 'string' && (payload.startsWith('http://') || payload.startsWith('https://'))) {
+      const isOurR2 = Boolean(this.r2Config.publicBaseUrl && payload.startsWith(this.r2Config.publicBaseUrl.replace(/\/$/, '')));
       const isVid = payload.toLowerCase().includes('.mp4') || payload.toLowerCase().includes('.mov') || payload.toLowerCase().includes('.webm');
-      return {
-        fileId: path.basename(payload.split('?')[0]) || `${prefix}_${Date.now()}`,
-        originalName: customFileName || 'remote_media',
-        mimeType: isVid ? 'video/mp4' : 'image/jpeg',
-        sizeBytes: 0,
-        filePath: '',
-        publicUrl: payload,
-        ownerUserId,
-        isPublic: true,
-        provider: 'cloudflare_r2',
-        r2Key: '',
-        createdAt: new Date().toISOString()
-      };
+
+      if (isOurR2) {
+        return {
+          fileId: path.basename(payload.split('?')[0]) || `${prefix}_${Date.now()}`,
+          originalName: customFileName || 'remote_media',
+          mimeType: isVid ? 'video/mp4' : 'image/jpeg',
+          sizeBytes: 0,
+          filePath: '',
+          publicUrl: payload,
+          ownerUserId,
+          isPublic: true,
+          provider: 'cloudflare_r2',
+          r2Key: payload.replace(this.r2Config.publicBaseUrl.replace(/\/$/, '') + '/', ''),
+          createdAt: new Date().toISOString()
+        };
+      }
+
+      // External URL: fetch remote bytes so the asset can be uploaded to R2
+      let fetchedBuffer: Buffer | null = null;
+      try {
+        const resp = await fetch(payload);
+        if (resp.ok) {
+          const ab = await resp.arrayBuffer();
+          fetchedBuffer = Buffer.from(ab);
+        }
+      } catch (err: any) {
+        console.warn('[MediaStorage] Failed to fetch external URL for R2 persistence:', err.message);
+      }
+
+      if (fetchedBuffer) {
+        payload = fetchedBuffer;
+      } else {
+        // Fallback: Return remote URL labeled accurately as 'local' (external remote), never fake 'cloudflare_r2'
+        return {
+          fileId: path.basename(payload.split('?')[0]) || `${prefix}_${Date.now()}`,
+          originalName: customFileName || 'remote_media',
+          mimeType: isVid ? 'video/mp4' : 'image/jpeg',
+          sizeBytes: 0,
+          filePath: '',
+          publicUrl: payload,
+          ownerUserId,
+          isPublic: true,
+          provider: 'local',
+          r2Key: '',
+          createdAt: new Date().toISOString()
+        };
+      }
     }
 
     let buffer: Buffer;
@@ -369,6 +405,13 @@ export class MediaStorageService {
             isPublic: String(Boolean(isPublic || prefix.startsWith('tpl_')))
           }
         }));
+
+        // Read-back verification from Cloudflare R2:
+        await this.s3Client.send(new HeadObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: r2Key
+        }));
+
         if (isPublic && this.r2Config.publicBaseUrl) {
           const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
           publicUrl = `${base}/${r2Key}`;

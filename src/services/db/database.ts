@@ -133,11 +133,16 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 class ProductionDatabase {
   private db: ProductionDatabaseSchema;
+  public readyPromise: Promise<void>;
 
   constructor() {
     this.db = this.init();
     if (adminFirestoreDb) {
-      this.loadAuthoritativeFromFirestore().catch(() => {});
+      this.readyPromise = this.loadAuthoritativeFromFirestore().catch((err: any) => {
+        console.warn('[Database] Firestore startup sync warning:', err.message);
+      });
+    } else {
+      this.readyPromise = Promise.resolve();
     }
   }
 
@@ -1157,9 +1162,52 @@ class ProductionDatabase {
   }
 
   public async addTemplate(tpl: Template): Promise<Template> {
-    this.db.templates.unshift(tpl);
+    if (!tpl.id) {
+      throw new Error('Template must have a valid non-empty id');
+    }
+    if (!tpl.title || !tpl.title.trim()) {
+      throw new Error('Template must have a valid title');
+    }
+    if (!tpl.cover) {
+      throw new Error('Template must have a valid cover image');
+    }
+
+    // Default isActive to true
+    if (tpl.isActive === undefined) {
+      tpl.isActive = true;
+    }
+
+    // 1. Authoritative write to Firestore with immediate read-back verification
+    if (adminFirestoreDb) {
+      try {
+        const sanitized = JSON.parse(JSON.stringify(tpl));
+        await adminFirestoreDb.collection('templates').doc(tpl.id).set(sanitized);
+
+        // Verification read-back
+        const verifyDoc = await adminFirestoreDb.collection('templates').doc(tpl.id).get();
+        if (!verifyDoc.exists) {
+          throw new Error(`Firestore document 'templates/${tpl.id}' was not found after write.`);
+        }
+        const verifyData = verifyDoc.data();
+        if (!verifyData || !verifyData.title) {
+          throw new Error(`Firestore document 'templates/${tpl.id}' is missing required fields.`);
+        }
+      } catch (firestoreErr: any) {
+        console.error(`[Database Critical] Firestore write failure for template ${tpl.id}:`, firestoreErr.message);
+        throw new Error(`Firestore template write failed: ${firestoreErr.message}`);
+      }
+    } else {
+      console.warn(`[Database] adminFirestoreDb not connected. Template ${tpl.id} saved to memory only.`);
+    }
+
+    // 2. Update local in-memory catalog
+    const existingIdx = this.db.templates.findIndex(t => t.id === tpl.id);
+    if (existingIdx !== -1) {
+      this.db.templates[existingIdx] = tpl;
+    } else {
+      this.db.templates.unshift(tpl);
+    }
     this.save();
-    await this.syncToFirestore('templates', tpl.id, tpl);
     return tpl;
   }
 
@@ -1167,8 +1215,24 @@ class ProductionDatabase {
     const tpl = this.db.templates.find(t => t.id === id);
     if (!tpl) return null;
     Object.assign(tpl, updates);
+
+    if (adminFirestoreDb) {
+      try {
+        const sanitized = JSON.parse(JSON.stringify(tpl));
+        await adminFirestoreDb.collection('templates').doc(id).set(sanitized, { merge: true });
+
+        // Verification read-back
+        const verifyDoc = await adminFirestoreDb.collection('templates').doc(id).get();
+        if (!verifyDoc.exists) {
+          throw new Error(`Firestore update verification failed for template ${id}`);
+        }
+      } catch (firestoreErr: any) {
+        console.error(`[Database Critical] Firestore update failure for template ${id}:`, firestoreErr.message);
+        throw new Error(`Firestore template update failed: ${firestoreErr.message}`);
+      }
+    }
+
     this.save();
-    await this.syncToFirestore('templates', id, tpl);
     return tpl;
   }
 
@@ -1177,7 +1241,13 @@ class ProductionDatabase {
     if (index !== -1) {
       this.db.templates.splice(index, 1);
       this.save();
-      await this.deleteFromFirestore('templates', id);
+      if (adminFirestoreDb) {
+        try {
+          await adminFirestoreDb.collection('templates').doc(id).delete();
+        } catch (err: any) {
+          console.error(`[Database] Failed to delete template ${id} from Firestore:`, err.message);
+        }
+      }
       return true;
     }
     return false;

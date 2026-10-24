@@ -602,8 +602,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTplBadge(tpl.badge || '');
     setTplTagsInput(tpl.tags ? tpl.tags.join(', ') : '');
     setTplCostUsd(tpl.providerCostUsd || 0.25);
-    setTplCoverPreview(tpl.cover || tpl.sampleResult || '');
-    setTplMediaPreview(tpl.preview || tpl.cover || '');
+    setTplCoverPreview(tpl.sampleResult || tpl.sampleAfter || tpl.cover || '');
+    setTplMediaPreview(tpl.preview || tpl.sampleResult || tpl.sampleAfter || tpl.cover || '');
     setTplSampleResultPreview(tpl.sampleResult || tpl.sampleAfter || '');
     setTplSampleFaceThumbnail(tpl.sampleFaceThumbnail || '');
     setTplSampleBefore(tpl.sampleBefore || '');
@@ -2652,7 +2652,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-white flex items-center gap-1.5">
                       <span className="w-4 h-4 rounded-full bg-[#ff9f00] text-black text-[10px] font-black flex items-center justify-center">1</span>
-                      <span>Customer Input Type (What will user upload?)</span>
+                      <span>User Input Type (What will user upload?)</span>
                     </label>
                   </div>
                   <div className="grid grid-cols-3 gap-2 pt-1">
@@ -2752,7 +2752,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       </div>
                     </div>
                     <p className="text-[9.5px] text-stone-400 leading-tight">
-                      Admin example face. Customer's own uploaded photo will be used for actual AI generation.
+                      Admin example face. User Face photo will be used for actual AI generation.
                     </p>
                   </div>
 

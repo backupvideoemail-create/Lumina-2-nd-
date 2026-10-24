@@ -1,5 +1,6 @@
-import { prodDb } from '../src/services/db/database.ts';
-import { buildUnifiedGenerationPrompt } from '../src/config/globalMasterPrompt.ts';
+import { prodDb, adminFirestoreDb } from '../src/services/db/database.ts';
+import { mediaStorage } from '../src/services/storage/mediaStorage.ts';
+import { buildUnifiedGenerationPrompt, GLOBAL_PROMPT_MARKER, isUnifiedPrompt } from '../src/config/globalMasterPrompt.ts';
 import { Template, PaymentRecord } from '../src/types/index.ts';
 
 async function runSystemVerification() {
@@ -58,8 +59,31 @@ async function runSystemVerification() {
   assert(createdTemplate.sampleFaceThumbnail === testFaceThumb, 'Face Thumbnail mapped distinctly (display only)');
   assert(createdTemplate.sampleBefore === testBeforeImg, 'BEFORE reference mapped distinctly');
   assert(createdTemplate.sampleResult === testAfterImg, 'AFTER sample result mapped distinctly');
-  assert(createdTemplate.cover === testAfterImg, 'Cover automatically reuses AFTER asset (no double upload)');
-  assert(createdTemplate.requiredInputs[0].id === 'user_photo', 'Customer uploaded photo is dedicated identity input');
+  assert(createdTemplate.cover === testAfterImg, 'AFTER photo is strictly set as the Cover Photo');
+  assert(createdTemplate.cover !== testBeforeImg, 'BEFORE photo is NEVER used as Cover Photo');
+  assert(createdTemplate.cover !== testFaceThumb, 'Face Thumbnail is NEVER used as Cover Photo');
+  assert(prodDb.getTemplates().some(t => t.id === testTplId), 'Template is immediately listed in public catalog');
+  assert(createdTemplate.requiredInputs[0].id === 'user_photo', 'User Face photo is dedicated identity input');
+
+  // Verify authoritative write in Firestore directly
+  if (adminFirestoreDb) {
+    const fsSnap = await adminFirestoreDb.collection('templates').doc(testTplId).get();
+    assert(fsSnap.exists, 'Authoritative Firestore document physically verified via read-back');
+    assert(fsSnap.data()?.cover === testAfterImg, 'Firestore document has AFTER photo as cover');
+  }
+
+  // Verify validation rejection on missing title or cover
+  let invalidCaught = false;
+  try {
+    await prodDb.addTemplate({ id: 'test_inv_tpl', title: '', cover: '' } as any);
+  } catch {
+    invalidCaught = true;
+  }
+  assert(invalidCaught, 'addTemplate throws error if required fields (title, cover) are missing');
+
+  // Verify external URL handling in mediaStorage (never falsely labeled cloudflare_r2)
+  const extTest = await mediaStorage.saveMedia('https://images.example.com/external_test.jpg', 'ext_test');
+  assert(extTest.provider === 'local', 'External unhosted URL is accurately labeled local and NOT falsely labeled cloudflare_r2');
 
   // 2. R2 Orphan Recovery Grouping Verification
   console.log('\n--- SUITE 2: R2 Asset Grouping & Safe Recovery ---');
@@ -108,6 +132,8 @@ async function runSystemVerification() {
   });
 
   assert(unifiedPrompt.includes('AI PRIME STUDIO — GLOBAL TEMPLATE INTERPRETATION & EXECUTION CONSTITUTION'), 'Master Prompt header included once');
+  assert(unifiedPrompt.includes(GLOBAL_PROMPT_MARKER), 'Explicit GLOBAL_PROMPT_MARKER included in unified prompt');
+  assert(isUnifiedPrompt(unifiedPrompt), 'isUnifiedPrompt returns true for assembled unified prompt');
   assert(unifiedPrompt.includes('--- CATEGORY CONTEXT (Royal Swag) ---'), 'Category Context included once');
   assert(unifiedPrompt.includes('--- TEMPLATE SPECIFIC RECIPE (Royal Rajput Velvet Sherwani) ---'), 'Template Recipe included once');
   assert(unifiedPrompt.includes('--- OPTIONAL CUSTOMER INSTRUCTIONS ---'), 'Customer Instructions included once');
