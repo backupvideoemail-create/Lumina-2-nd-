@@ -40,36 +40,94 @@ import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts'
 let adminFirestoreDb: any = null;
 export { adminFirestoreDb };
 
-// Attempt Firebase Admin initialization if service account is provided
-try {
-  const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-  if (serviceAccountKey) {
-    let credentialObj: any;
-    if (serviceAccountKey.trim().startsWith('{')) {
-      credentialObj = JSON.parse(serviceAccountKey);
-    } else if (fs.existsSync(serviceAccountKey)) {
-      credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
-    }
+export const isIsolatedTestEnv = process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test';
 
-    if (credentialObj) {
-      const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
-      const isConfigProject = projectId === (firebaseConfig as any).projectId;
-      const targetDatabaseId = isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined;
-      const adminApp = initAdminApp({
-        credential: cert(credentialObj),
-        projectId
-      }, 'lumina-admin-app-' + Date.now());
-      adminFirestoreDb = targetDatabaseId
-        ? getAdminFirestore(adminApp, targetDatabaseId)
-        : getAdminFirestore(adminApp);
-      try {
-        adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
-      } catch {}
-      console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
+class InMemoryFirestoreMock {
+  private collections: Map<string, Map<string, any>> = new Map();
+
+  public settings(_opts: any) {}
+
+  public collection(name: string) {
+    if (!this.collections.has(name)) {
+      this.collections.set(name, new Map());
     }
+    const col = this.collections.get(name)!;
+
+    return {
+      doc: (id: string) => ({
+        get: async () => {
+          const exists = col.has(id);
+          const data = exists ? JSON.parse(JSON.stringify(col.get(id))) : undefined;
+          return {
+            exists,
+            id,
+            data: () => data
+          };
+        },
+        set: async (data: any, options?: { merge?: boolean }) => {
+          if (options?.merge && col.has(id)) {
+            const existing = col.get(id);
+            col.set(id, { ...existing, ...JSON.parse(JSON.stringify(data)) });
+          } else {
+            col.set(id, JSON.parse(JSON.stringify(data)));
+          }
+        },
+        delete: async () => {
+          col.delete(id);
+        }
+      }),
+      get: async () => {
+        const docs = Array.from(col.entries()).map(([id, val]) => ({
+          id,
+          exists: true,
+          data: () => JSON.parse(JSON.stringify(val))
+        }));
+        return {
+          empty: docs.length === 0,
+          size: docs.length,
+          docs,
+          forEach: (cb: (doc: any) => void) => docs.forEach(cb)
+        };
+      }
+    };
   }
-} catch (err: any) {
-  console.warn('[Database] Firebase Admin initialization note:', err.message);
+}
+
+if (isIsolatedTestEnv) {
+  adminFirestoreDb = new InMemoryFirestoreMock();
+  console.log('[Database] Operating in ISOLATED TEST mode with In-Memory Firestore (Production data & live Firestore untouched)');
+} else {
+  // Attempt Firebase Admin initialization if service account is provided
+  try {
+    const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    if (serviceAccountKey) {
+      let credentialObj: any;
+      if (serviceAccountKey.trim().startsWith('{')) {
+        credentialObj = JSON.parse(serviceAccountKey);
+      } else if (fs.existsSync(serviceAccountKey)) {
+        credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
+      }
+
+      if (credentialObj) {
+        const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
+        const isConfigProject = projectId === (firebaseConfig as any).projectId;
+        const targetDatabaseId = isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined;
+        const adminApp = initAdminApp({
+          credential: cert(credentialObj),
+          projectId
+        }, 'lumina-admin-app-' + Date.now());
+        adminFirestoreDb = targetDatabaseId
+          ? getAdminFirestore(adminApp, targetDatabaseId)
+          : getAdminFirestore(adminApp);
+        try {
+          adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
+        } catch {}
+        console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Database] Firebase Admin initialization note:', err.message);
+  }
 }
 
 export interface AuthIdentity {
@@ -129,7 +187,7 @@ export interface ProductionDatabaseSchema {
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
+const DB_FILE = isIsolatedTestEnv ? path.join(DATA_DIR, 'test_db.json') : path.join(DATA_DIR, 'db.json');
 
 class ProductionDatabase {
   private db: ProductionDatabaseSchema;
@@ -137,7 +195,7 @@ class ProductionDatabase {
 
   constructor() {
     this.db = this.init();
-    if (adminFirestoreDb) {
+    if (adminFirestoreDb && !isIsolatedTestEnv) {
       this.readyPromise = this.loadAuthoritativeFromFirestore().catch((err: any) => {
         console.warn('[Database] Firestore startup sync warning:', err.message);
       });
