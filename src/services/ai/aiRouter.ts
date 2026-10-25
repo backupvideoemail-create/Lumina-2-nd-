@@ -68,18 +68,8 @@ export class AIRouter {
     const workflowName = activeWorkflowConfig?.workflow || params.workflow;
     const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
 
-    // 2. Reference / Driving Video Support:
-    // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
-    if (drivingVideoUrl && isInputImage) {
-      return await this.generateFaceSwapVideo({
-        videoUrl: drivingVideoUrl,
-        imageUrls: [params.inputMediaUrl],
-        customInstructions: params.customPrompt,
-        ownerUserId: params.ownerUserId
-      });
-    }
-
-    // 3. Prompt Construction: Combine protected template prompt + optional user custom instructions
+    // 2. Prompt Construction: Combine protected template prompt + optional user custom instructions
+    // Assembled authoritatively before any execution branch so all routes receive the unified prompt exactly once
     const basePrompt =
       activeWorkflowConfig?.prompt ||
       (params.templateType === 'video'
@@ -94,6 +84,18 @@ export class AIRouter {
       params.customPrompt && params.customPrompt.trim() && !alreadyHasCustomerInstructions
         ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
         : basePrompt;
+
+    // 3. Reference / Driving Video Support:
+    // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
+    // Receives full combined prompt (Global Master Prompt + Category context + recipe + customer instructions)
+    if (drivingVideoUrl && isInputImage) {
+      return await this.generateFaceSwapVideo({
+        videoUrl: drivingVideoUrl,
+        imageUrls: [params.inputMediaUrl],
+        customInstructions: combinedPrompt,
+        ownerUserId: params.ownerUserId
+      });
+    }
 
     // 4. Execute according to resolved target media type & provider
     const sampleBeforeUrl =

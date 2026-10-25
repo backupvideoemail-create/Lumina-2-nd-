@@ -1608,11 +1608,16 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   // User MUST have activated a valid plan first (e.g. ₹1 intro plan or active subscription).
   if (isTopUp) {
     const sub = prodDb.getSubscription(user.id);
-    const hasActivePlan = Boolean(sub && (sub.status === 'active' || sub.status === 'trial' || sub.mandateId));
+    const isCancelledOrExpired = Boolean(
+      sub && (sub.status === 'cancelled' || sub.status === 'expired' || sub.status === 'payment_failed')
+    );
+    const hasActivePlan = Boolean(
+      sub && !isCancelledOrExpired && (sub.status === 'active' || sub.status === 'trial')
+    );
 
     if (!hasActivePlan) {
       return res.status(403).json({
-        error: 'Top-up is only available after activating a valid subscription plan.',
+        error: 'Top-up is only available after activating an active subscription plan.',
         requiresPlan: true
       });
     }
@@ -1676,6 +1681,15 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
     // For autoPayEnabled plans, create actual Razorpay subscription (mandate)
     if (plan.autoPayEnabled) {
       const isIntro = Boolean(plan.isIntro || plan.id === 'plan_intro_daily');
+
+      // Server-authoritative Intro Offer check: cannot be claimed more than once per user
+      if (isIntro && !prodDb.isIntroEligible(user.id)) {
+        return res.status(403).json({
+          error: 'You have already claimed your 1-time ₹1 Introductory Offer. Please select a Creator Weekly or Monthly plan.',
+          code: 'INTRO_OFFER_ALREADY_USED'
+        });
+      }
+
       const startAt = isIntro
         ? Math.floor(Date.now() / 1000) + Math.max(86400, (plan.validityHours || 24) * 3600)
         : undefined;
@@ -2929,6 +2943,17 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl
       });
 
+      // Terminal State & Race Condition Guard: If generation already timed out and refunded, do NOT mark completed
+      const currentGen = prodDb.getGeneration(genId);
+      if (currentGen && currentGen.status === 'failed') {
+        console.warn(`[Generation Guard] Generation ${genId} was already marked failed/timed out. Skipping late completion.`);
+        return;
+      }
+
+      if (!result || !result.resultUrl) {
+        throw new Error('AI provider returned empty result media URL');
+      }
+
       prodDb.updateGeneration(genId, {
         status: 'completed',
         resultMediaUrl: result.resultUrl,
@@ -3114,6 +3139,17 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
         durationSeconds: billableDuration,
         ownerUserId: user.id
       });
+
+      // Terminal State & Race Condition Guard: If face swap already timed out and refunded, do NOT mark completed
+      const currentGen = prodDb.getGeneration(genId);
+      if (currentGen && currentGen.status === 'failed') {
+        console.warn(`[Generation Guard] Face swap generation ${genId} was already marked failed/timed out. Skipping late completion.`);
+        return;
+      }
+
+      if (!result || !result.resultUrl) {
+        throw new Error('Face swap provider returned empty result video URL');
+      }
 
       prodDb.updateGeneration(genId, {
         status: 'completed',

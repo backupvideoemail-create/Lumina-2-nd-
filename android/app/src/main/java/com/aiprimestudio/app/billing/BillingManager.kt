@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Google Play Billing Manager (PBL 9.1.0 compliant)
+ * Google Play Billing Manager (Play Billing Library 7.1.1 compliant)
  * Handles:
  * 1. Subscriptions:
  *    - sub_double_bonanza_weekly: Weekly recurring subscription with verified ₹1 24h introductory offer
@@ -30,7 +30,6 @@ class BillingManager(
     private val billingClient = BillingClient.newBuilder(context)
         .setListener(this)
         .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
-        .enableAutoServiceReconnection()
         .build()
 
     private val _isReady = MutableStateFlow(false)
@@ -59,10 +58,12 @@ class BillingManager(
 
     override fun onBillingServiceDisconnected() {
         _isReady.value = false
+        // Reconnect when disconnected in Play Billing 7
+        startConnection()
     }
 
     /**
-     * Query both Subscriptions and One-Time Products using PBL 9 QueryProductDetailsResult
+     * Query both Subscriptions and One-Time Products using PBL 7.1.1 ProductDetailsResponseListener
      */
     private fun queryAllProducts() {
         val allFetched = mutableListOf<ProductDetails>()
@@ -91,9 +92,9 @@ class BillingManager(
             .setProductList(inAppProducts)
             .build()
 
-        billingClient.queryProductDetailsAsync(inAppParams) { inAppResult, queryResult ->
-            if (inAppResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                allFetched.addAll(queryResult.productDetailsList)
+        billingClient.queryProductDetailsAsync(inAppParams) { inAppResult, productDetailsList ->
+            if (inAppResult.responseCode == BillingClient.BillingResponseCode.OK && productDetailsList != null) {
+                allFetched.addAll(productDetailsList)
             }
 
             // 2. Subscriptions: Double Bonanza Weekly + Creator Weekly + Creator Monthly
@@ -116,9 +117,9 @@ class BillingManager(
                 .setProductList(subProducts)
                 .build()
 
-            billingClient.queryProductDetailsAsync(subParams) { subResult, subQueryResult ->
-                if (subResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                    allFetched.addAll(subQueryResult.productDetailsList)
+            billingClient.queryProductDetailsAsync(subParams) { subResult, subProductDetailsList ->
+                if (subResult.responseCode == BillingClient.BillingResponseCode.OK && subProductDetailsList != null) {
+                    allFetched.addAll(subProductDetailsList)
                 }
                 _productDetailsList.value = allFetched.toList()
             }
@@ -144,8 +145,11 @@ class BillingManager(
      * Never silently falls back to ₹499 base plan token if the user clicked ₹1 intro pass.
      */
     fun launchBillingFlow(activity: Activity, productDetails: ProductDetails) {
-        val offerToken = if (productDetails.productType == BillingClient.ProductType.SUBS) {
-            if (productDetails.productId == "sub_double_bonanza_weekly") {
+        val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
+            .setProductDetails(productDetails)
+
+        if (productDetails.productType == BillingClient.ProductType.SUBS) {
+            val offerToken = if (productDetails.productId == "sub_double_bonanza_weekly") {
                 // Strict check: exactly 1 INR (1,000,000 micros) introductory phase
                 val introOffer = productDetails.subscriptionOfferDetails?.find { offer ->
                     offer.pricingPhases.pricingPhaseList.any { phase ->
@@ -161,18 +165,14 @@ class BillingManager(
             } else {
                 productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
             }
-        } else {
-            productDetails.oneTimePurchaseOfferDetailsList?.firstOrNull()?.offerToken
-        }
 
-        if (offerToken.isNullOrEmpty()) {
-            _purchaseStatus.value = "No valid offer available for this product on Google Play."
-            return
+            if (offerToken.isNullOrEmpty()) {
+                _purchaseStatus.value = "No valid offer available for this product on Google Play."
+                return
+            }
+            productDetailsParamsBuilder.setOfferToken(offerToken)
         }
-
-        val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
-            .setProductDetails(productDetails)
-            .setOfferToken(offerToken)
+        // In PBL 7.1.1, INAPP (one-time purchases such as top-up packs) do not require setOfferToken
 
         val billingFlowParams = BillingFlowParams.newBuilder()
             .setProductDetailsParamsList(listOf(productDetailsParamsBuilder.build()))

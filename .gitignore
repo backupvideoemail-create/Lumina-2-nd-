@@ -19,3 +19,6 @@ keystore.properties
 !android/app/google-services.json
 !android/app/src/debug/google-services.json
 !google-services.json.example
+
+# Prevent re-adding unreferenced reference screenshots into public folder
+public/assets/

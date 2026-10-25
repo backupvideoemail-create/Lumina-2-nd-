@@ -70,6 +70,7 @@ export class VideoProviderAdapter {
     }
 
     const ai = new GoogleGenAI();
+    // Incorporate prompt directives with clear scene and motion instructions
     const prompt = `Cinematic 9:16 Instagram Reels video: ${params.prompt}. Style: ${params.styleWorkflow || 'viral motion'}. Realistic fluid motion, studio lighting, vivid atmospheric smoke, 60fps aesthetic.`;
 
     const requestPayload: any = {
@@ -82,16 +83,19 @@ export class VideoProviderAdapter {
       }
     };
 
-    // Attach initial image if available
-    if (params.userImageUrl) {
+    // Customer Image is the primary identity starting frame (CUSTOMER_SOURCE_PHOTO)
+    // In official Google Veo SDK (models.generateVideos), a single starting image is supported via requestPayload.image.
+    // Multiple binary image slots are not part of the Veo API schema; reference scene style (AFTER) is directed via prompt context.
+    const primaryIdentityMedia = params.userImageUrl || params.sourceMediaUrl;
+    if (primaryIdentityMedia) {
       try {
-        const imgPayload = await this.resolveImagePayload(params.userImageUrl);
+        const imgPayload = await this.resolveImagePayload(primaryIdentityMedia);
         requestPayload.image = {
           imageBytes: imgPayload.data,
           mimeType: imgPayload.mimeType
         };
       } catch (err: any) {
-        console.warn('[VideoProviderAdapter] Starting frame note:', err.message);
+        console.warn('[VideoProviderAdapter] Starting frame resolution note:', err.message);
       }
     }
 

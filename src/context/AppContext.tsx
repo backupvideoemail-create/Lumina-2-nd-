@@ -98,6 +98,7 @@ interface AppContextType {
   plans: PricingPlan[];
   topUps: TopUpOption[];
   hasActivePlan: boolean;
+  isIntroEligible: boolean;
   isPaying: boolean;
   initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay', phone?: string) => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
   verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<{ success: boolean; error?: string }>;
@@ -188,13 +189,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transactionsModalOpen, setTransactionsModalOpen] = useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
+  const [isIntroEligible, setIsIntroEligible] = useState<boolean>(true);
 
-  // Active Plan Check: true if user has an active or trial subscription plan
+  // Active Plan Check: strictly require active or trial subscription (cancelled or expired do NOT count)
+  const isCancelledOrExpired = Boolean(
+    activeSubscription &&
+      (activeSubscription.status === 'cancelled' ||
+        activeSubscription.status === 'expired' ||
+        activeSubscription.status === 'payment_failed')
+  );
   const hasActivePlan = Boolean(
     activeSubscription &&
-      (activeSubscription.status === 'active' ||
-        activeSubscription.status === 'trial' ||
-        Boolean(activeSubscription.mandateId))
+      !isCancelledOrExpired &&
+      (activeSubscription.status === 'active' || activeSubscription.status === 'trial')
   );
 
   // Sync Plans and Top-Up packs from Central Server Configuration
@@ -269,6 +276,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActiveSubscription(null);
       setTransactions([]);
       setGenerations([]);
+      setIsIntroEligible(true);
       return;
     }
 
@@ -283,6 +291,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (data.wallet) setWallet(data.wallet);
           setActiveSubscription(data.activeSubscription || null);
           if (data.likedTemplates) setLikedTemplates(data.likedTemplates);
+          if (typeof data.isIntroEligible === 'boolean') {
+            setIsIntroEligible(data.isIntroEligible);
+          }
         } else {
           // Token expired or invalid
           localStorage.removeItem('lumina_session_token');
@@ -781,6 +792,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         plans,
         topUps,
         hasActivePlan,
+        isIntroEligible,
         isPaying,
         initiateCheckout,
         verifyPayment,

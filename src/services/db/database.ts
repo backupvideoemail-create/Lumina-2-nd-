@@ -53,29 +53,53 @@ class InMemoryFirestoreMock {
     }
     const col = this.collections.get(name)!;
 
-    return {
-      doc: (id: string) => ({
-        get: async () => {
-          const exists = col.has(id);
-          const data = exists ? JSON.parse(JSON.stringify(col.get(id))) : undefined;
-          return {
-            exists,
-            id,
-            data: () => data
-          };
-        },
-        set: async (data: any, options?: { merge?: boolean }) => {
-          if (options?.merge && col.has(id)) {
-            const existing = col.get(id);
-            col.set(id, { ...existing, ...JSON.parse(JSON.stringify(data)) });
-          } else {
-            col.set(id, JSON.parse(JSON.stringify(data)));
-          }
-        },
-        delete: async () => {
-          col.delete(id);
+    const makeDocRef = (id: string) => ({
+      get: async () => {
+        const exists = col.has(id);
+        const data = exists ? JSON.parse(JSON.stringify(col.get(id))) : undefined;
+        return {
+          exists,
+          id,
+          data: () => data
+        };
+      },
+      set: async (data: any, options?: { merge?: boolean }) => {
+        if (options?.merge && col.has(id)) {
+          const existing = col.get(id);
+          col.set(id, { ...existing, ...JSON.parse(JSON.stringify(data)) });
+        } else {
+          col.set(id, JSON.parse(JSON.stringify(data)));
         }
-      }),
+      },
+      delete: async () => {
+        col.delete(id);
+      }
+    });
+
+    const buildQuery = (filters: Array<{ field: string; val: any }>) => ({
+      where: (f: string, _op: string, v: any) => buildQuery([...filters, { field: f, val: v }]),
+      limit: (_n: number) => buildQuery(filters),
+      get: async () => {
+        let matching = Array.from(col.entries()).map(([id, val]) => ({
+          id,
+          exists: true,
+          data: () => JSON.parse(JSON.stringify(val))
+        }));
+        for (const filter of filters) {
+          matching = matching.filter(doc => doc.data()[filter.field] === filter.val);
+        }
+        return {
+          empty: matching.length === 0,
+          size: matching.length,
+          docs: matching,
+          forEach: (cb: (doc: any) => void) => matching.forEach(cb)
+        };
+      }
+    });
+
+    return {
+      doc: makeDocRef,
+      where: (f: string, _op: string, v: any) => buildQuery([{ field: f, val: v }]),
       get: async () => {
         const docs = Array.from(col.entries()).map(([id, val]) => ({
           id,
@@ -90,6 +114,21 @@ class InMemoryFirestoreMock {
         };
       }
     };
+  }
+
+  public async runTransaction(updateFunction: (transaction: any) => Promise<any>) {
+    const t = {
+      get: async (refOrQuery: any) => {
+        if (typeof refOrQuery.get === 'function') {
+          return await refOrQuery.get();
+        }
+        return { exists: false, data: () => null, empty: true };
+      },
+      set: (docRef: any, data: any, options?: any) => docRef.set(data, options),
+      update: (docRef: any, data: any) => docRef.set(data, { merge: true }),
+      delete: (docRef: any) => docRef.delete()
+    };
+    return await updateFunction(t);
   }
 }
 
@@ -939,6 +978,17 @@ class ProductionDatabase {
     }
 
     // Local fallback ONLY for non-production development without Firestore
+    // Idempotency check: don't refund the same refId twice
+    if (refId) {
+      const existingTx = (this.db.transactions || []).find(
+        (t) => t.referenceId === refId && t.type === 'refund'
+      );
+      if (existingTx) {
+        console.warn(`[Local Refund Guard] Duplicate refund prevented for referenceId: ${refId}`);
+        return;
+      }
+    }
+
     const wallet = this.getWallet(userId);
     wallet.spentCredits = Math.max(0, wallet.spentCredits - amount);
     wallet.updatedAt = new Date().toISOString();
@@ -1221,17 +1271,35 @@ class ProductionDatabase {
   }
 
   public addGeneration(gen: Generation): void {
-    this.db.generations.unshift(gen);
-    if (this.db.users[gen.userId]) {
-      this.db.users[gen.userId].generationCount = (this.db.users[gen.userId].generationCount || 0) + 1;
+    const stored = { ...gen };
+    this.db.generations.unshift(stored);
+    if (this.db.users[stored.userId]) {
+      this.db.users[stored.userId].generationCount = (this.db.users[stored.userId].generationCount || 0) + 1;
     }
     this.save();
-    this.syncToFirestore('generations', gen.id, gen);
+    this.syncToFirestore('generations', stored.id, stored);
   }
 
   public updateGeneration(genId: string, updates: Partial<Generation>): void {
     const gen = this.db.generations.find(g => g.id === genId);
     if (gen) {
+      // Terminal State Transition Guards:
+      // 1. A failed or refunded job must NEVER be overwritten to 'completed'
+      if (gen.status === 'failed' && updates.status === 'completed') {
+        console.warn(`[Generation Guard] Attempted to mark failed/refunded generation ${genId} as completed. Blocked to prevent inconsistent state.`);
+        return;
+      }
+      // 2. A completed job must NEVER be overwritten to 'failed'
+      if (gen.status === 'completed' && updates.status === 'failed') {
+        console.warn(`[Generation Guard] Attempted to mark completed generation ${genId} as failed. Blocked to prevent duplicate refund.`);
+        return;
+      }
+      // 3. To mark 'completed', a valid result media URL must be present
+      if (updates.status === 'completed' && !updates.resultMediaUrl && !gen.resultMediaUrl) {
+        console.error(`[Generation Guard] Cannot mark generation ${genId} completed without verified resultMediaUrl.`);
+        return;
+      }
+
       Object.assign(gen, updates);
       this.save();
       this.syncToFirestore('generations', genId, gen);

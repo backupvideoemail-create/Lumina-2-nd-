@@ -31,20 +31,35 @@ export const PlansModal: React.FC = () => {
     activeSubscription,
     refreshUserData,
     user,
-    triggerHighIntentAction
+    triggerHighIntentAction,
+    isIntroEligible
   } = useApp();
 
-  // Default selection is "Double Bonanza" (₹1)
-  const [selectedPlanId, setSelectedPlanId] = useState<string>('plan_intro_daily');
+  // Default selection: If eligible for intro offer, default to 'plan_intro_daily'
+  // If user has already claimed intro offer, default to 'plan_weekly_pass' (Creator Weekly)
+  const [selectedPlanId, setSelectedPlanId] = useState<string>(
+    isIntroEligible ? 'plan_intro_daily' : 'plan_weekly_pass'
+  );
   const [showPhoneStep, setShowPhoneStep] = useState<boolean>(false);
   const [phoneInput, setPhoneInput] = useState<string>(user?.phone || '');
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!isIntroEligible && selectedPlanId === 'plan_intro_daily') {
+      setSelectedPlanId('plan_weekly_pass');
+    }
+  }, [isIntroEligible, selectedPlanId]);
+
   if (!plansModalOpen) return null;
 
+  const visiblePlans = CENTRAL_SUBSCRIPTION_PLANS.filter(
+    (p) => isIntroEligible || (!p.isIntro && p.id !== 'plan_intro_daily')
+  );
+
   const currentPlan =
-    CENTRAL_SUBSCRIPTION_PLANS.find((p) => p.id === selectedPlanId) ||
+    visiblePlans.find((p) => p.id === selectedPlanId) ||
+    visiblePlans[0] ||
     CENTRAL_SUBSCRIPTION_PLANS[0];
 
   const proceedWithRazorpayCheckout = async (phoneToUse: string) => {
@@ -422,10 +437,10 @@ export const PlansModal: React.FC = () => {
           /* CLEAN PLAN SELECTION VIEW (ZERO VISIBLE PHONE INPUT UNDER CARDS) */
           <>
             <div className="px-3.5 pt-2 space-y-2.5 relative z-20">
-              {CENTRAL_SUBSCRIPTION_PLANS.map((plan, index) => {
+              {visiblePlans.map((plan, index) => {
                 const isSelected = selectedPlanId === plan.id;
-                const isFirst = index === 0;
-                const isSecond = index === 1;
+                const isFirst = plan.id === 'plan_intro_daily' || plan.isIntro;
+                const isSecond = !isFirst && index === (isIntroEligible ? 1 : 0);
 
                 // SPECIAL HIGH-CONVERTING DESIGN FOR ₹1 INTRO OFFER (Verified Terms)
                 if (isFirst) {

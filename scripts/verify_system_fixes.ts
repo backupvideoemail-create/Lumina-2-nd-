@@ -291,6 +291,56 @@ async function runSystemVerification() {
   assert(!plansModalSource.includes('24-HOUR INTRO PASS'), 'Did not replace LIMITED TIME OFFER with 24-HOUR INTRO PASS');
   assert(!plansModalSource.includes('Then ₹499/week after first 24 hours'), 'Did not invent unapproved pricing sentences in intro card');
 
+  // 9. Durable Terminal State & Refund Idempotency
+  console.log('\n--- SUITE 9: Terminal State Guards & Refund Idempotency ---');
+  // Attempt to overwrite completed generation to failed
+  prodDb.updateGeneration(genTestId, { status: 'failed', error: 'Late failure overwrite test' });
+  const stillCompletedGen = prodDb.getGeneration(genTestId);
+  assert(stillCompletedGen?.status === 'completed', 'Completed generation cannot be overwritten to failed');
+
+  // Create a separate failed generation
+  const failedGenId = `gen_failed_${Date.now()}`;
+  prodDb.addGeneration({
+    ...initialGen,
+    id: failedGenId,
+    status: 'failed',
+    error: 'Initial timeout'
+  });
+  // Attempt to overwrite failed generation to completed
+  prodDb.updateGeneration(failedGenId, {
+    status: 'completed',
+    resultMediaUrl: 'https://images.example.com/late_leak.jpg'
+  });
+  const stillFailedGen = prodDb.getGeneration(failedGenId);
+  assert(stillFailedGen?.status === 'failed', 'Failed/refunded generation cannot be overwritten to completed');
+
+  // Attempt to complete without resultMediaUrl
+  const noUrlGenId = `gen_nourl_${Date.now()}`;
+  prodDb.addGeneration({ ...initialGen, id: noUrlGenId, status: 'processing', resultMediaUrl: undefined });
+  prodDb.updateGeneration(noUrlGenId, { status: 'completed' });
+  const rejectedGen = prodDb.getGeneration(noUrlGenId);
+  assert(rejectedGen?.status === 'processing', 'Marking completed without resultMediaUrl is strictly rejected');
+
+  // Exact-once refund idempotency test
+  const refundUserId = `user_ref_test_${Date.now()}`;
+  const refundWalletBefore = prodDb.getWallet(refundUserId);
+  const initialBalance = refundWalletBefore.balance;
+  await prodDb.refundCredits(refundUserId, 30, 'Initial refund', 'ref_id_idem_123');
+  const balanceAfter1 = prodDb.getWallet(refundUserId).balance;
+  assert(balanceAfter1 === initialBalance + 30, 'First refund increments balance by exactly 30 credits');
+
+  // Duplicate refund with identical refId
+  await prodDb.refundCredits(refundUserId, 30, 'Duplicate refund attempt', 'ref_id_idem_123');
+  const balanceAfter2 = prodDb.getWallet(refundUserId).balance;
+  assert(balanceAfter2 === balanceAfter1, 'Duplicate refund with identical refId is safely ignored (exact-once idempotency)');
+
+  // 10. Public Assets Privacy & Screenshot Cleanup
+  console.log('\n--- SUITE 10: Public Assets Privacy Verification ---');
+  assert(!fs.existsSync('public/assets/aistudio'), 'public/assets/aistudio is completely removed');
+  assert(!fs.existsSync('public/assets'), 'public/assets folder is completely removed');
+  assert(fs.existsSync('public/logo.png'), 'Essential logo.png preserved');
+  assert(fs.existsSync('public/logo.jpg'), 'Essential logo.jpg preserved');
+
   // Clean up test template
   await prodDb.deleteTemplate(testTplId);
 
