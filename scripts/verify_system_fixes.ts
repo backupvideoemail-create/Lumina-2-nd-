@@ -1,12 +1,12 @@
 process.env.NODE_ENV = 'test';
 process.env.IS_ISOLATED_TEST = 'true';
 
-import { prodDb, adminFirestoreDb } from '../src/services/db/database.ts';
-import { mediaStorage } from '../src/services/storage/mediaStorage.ts';
-import { buildUnifiedGenerationPrompt, GLOBAL_PROMPT_MARKER, isUnifiedPrompt } from '../src/config/globalMasterPrompt.ts';
-import { Template, PaymentRecord } from '../src/types/index.ts';
-
 async function runSystemVerification() {
+  // Dynamic imports guarantee environment flags are evaluated BEFORE modules initialize
+  const { prodDb, adminFirestoreDb } = await import('../src/services/db/database.ts');
+  const { mediaStorage } = await import('../src/services/storage/mediaStorage.ts');
+  const { buildUnifiedGenerationPrompt, GLOBAL_PROMPT_MARKER, isUnifiedPrompt } = await import('../src/config/globalMasterPrompt.ts');
+
   console.log('====================================================');
   console.log('AI PRIME STUDIO — SYSTEM VERIFICATION SUITE');
   console.log('====================================================');

@@ -101,6 +101,12 @@ export class MediaStorageService {
     }
     try {
       await adminFirestoreDb.collection('media_metadata').doc(filename).set(metadata, { merge: true });
+      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        const verifyDoc = await adminFirestoreDb.collection('media_metadata').doc(filename).get();
+        if (!verifyDoc.exists) {
+          throw new Error(`Media metadata verification failed: document 'media_metadata/${filename}' not found after write.`);
+        }
+      }
     } catch (err: any) {
       console.error('[MediaStorage Critical] Failed to sync media metadata to Firestore:', err.message);
       if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
@@ -130,6 +136,10 @@ export class MediaStorageService {
   }
 
   private initR2Client() {
+    if (process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test') {
+      this.s3Client = null;
+      return;
+    }
     if (
       this.r2Config.accountId &&
       this.r2Config.accessKeyId &&
