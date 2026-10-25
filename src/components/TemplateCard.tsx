@@ -35,6 +35,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     ))
   );
 
+  const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
+  const [mediaError, setMediaError] = React.useState(false);
+
   // Viewport-aware video playback: play ONLY when in viewport, pause when off-screen
   useEffect(() => {
     const cardEl = cardRef.current;
@@ -92,6 +95,22 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       {/* Full-Frame Card Chassis */}
       <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
         
+        {/* Loading Media Skeleton / Spinner - Only while loading, removed as soon as loaded */}
+        {!isMediaLoaded && !mediaError && (
+          <div className="absolute inset-0 z-[5] bg-stone-900/95 flex flex-col items-center justify-center gap-2.5 pointer-events-none animate-pulse">
+            <div className="w-7 h-7 border-2 border-amber-400/20 border-t-amber-400 rounded-full animate-spin" />
+            <span className="text-[11px] tracking-wide text-amber-200/80 font-medium">Loading media…</span>
+          </div>
+        )}
+
+        {/* Media Loading Error Fallback */}
+        {mediaError && (
+          <div className="absolute inset-0 z-[5] bg-stone-950 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+            <Sparkles className="w-7 h-7 text-stone-600 mb-1.5" />
+            <span className="text-[11px] text-stone-400 font-medium">Preview unavailable</span>
+          </div>
+        )}
+
         {/* Full-Bleed Media Canvas */}
         {isVideo ? (
           <video
@@ -102,8 +121,12 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             playsInline
             preload="metadata"
             draggable={false}
+            onLoadedData={() => setIsMediaLoaded(true)}
+            onError={() => { setIsMediaLoaded(true); setMediaError(true); }}
             onContextMenu={(e) => e.preventDefault()}
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04] pointer-events-none select-none"
+            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none ${
+              isMediaLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
           />
         ) : (
           <img
@@ -111,8 +134,12 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             alt={template.title}
             loading="lazy"
             draggable={false}
+            onLoad={() => setIsMediaLoaded(true)}
+            onError={() => { setIsMediaLoaded(true); setMediaError(true); }}
             onContextMenu={(e) => e.preventDefault()}
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.04] pointer-events-none select-none"
+            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none ${
+              isMediaLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
           />
         )}
 

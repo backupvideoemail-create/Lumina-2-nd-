@@ -621,7 +621,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       version: '1.0',
       inputType: inputType as TemplateInputType,
       provider: type === 'video' ? 'google_veo' : 'gemini',
-      model: model || (type === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image'),
+      model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
       engine: engine as TemplateEngine,
       prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
       workflow: workflow,
@@ -662,7 +662,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       creditCost: calculatedCredits,
       providerCostUsd: Number(providerCostUsd) || 0.25,
       engine: (engine as TemplateEngine) || 'AI_GENERATION',
-      model: model || (type === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image'),
+      model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
       workflow: workflow || 'neural-cinematic-portrait',
       drivingVideoUrl: drivingVideoUrl || undefined,
       recipe: resolvedRecipe,
@@ -1134,16 +1134,16 @@ app.get('/api/admin/provider-catalog', requireAdmin, async (_req, res) => {
     // Google Veo & Gemini Official Studio Models
     const googleItems = [
       {
-        id: 'g_veo_3_1_lite',
+        id: 'g_gemini_omni_video',
         provider: 'google_veo',
-        sourceId: 'google/veo-3.1-lite',
-        name: 'Google Veo 3.1 Lite (Viral Reels)',
-        model: 'veo-3.1-lite-generate-preview',
+        sourceId: 'google/gemini-omni-1.1-flash',
+        name: 'Google Video Flash (gemini-omni-1.1-flash)',
+        model: 'gemini-omni-1.1-flash',
         operationType: ['image2video', 'text2video'],
         outputType: 'video',
         category: 'Trending',
         aspectRatio: '9:16',
-        description: 'Google DeepMind official video generation model. 60FPS fluid motion.',
+        description: 'Google DeepMind official video generation model via Interactions API. 60FPS fluid motion.',
         inputType: 'IMAGE_OR_VIDEO',
         requiresDrivingVideo: false,
         providerCostUsd: 0.25,
@@ -1152,7 +1152,7 @@ app.get('/api/admin/provider-catalog', requireAdmin, async (_req, res) => {
           version: '1.0',
           inputType: 'IMAGE_OR_VIDEO',
           provider: 'google_veo',
-          model: 'veo-3.1-lite-generate-preview',
+          model: 'gemini-omni-1.1-flash',
           engine: 'AI_GENERATION',
           workflow: 'viral-reels',
           prompt: 'Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.',
@@ -1229,6 +1229,62 @@ app.put('/api/admin/banners', requireAdmin, (req, res) => {
   }
   prodDb.setBanners(banners);
   res.json({ success: true, banners: prodDb.getBanners() });
+});
+
+// Pricing Page Dedicated Hero Banner API (Admin-controlled, isolated from templates & home banners)
+app.get('/api/pricing-banner', (_req, res) => {
+  const banner = prodDb.getPricingBanner();
+  res.json({ success: true, banner });
+});
+
+app.post('/api/admin/pricing-banner', requireAdmin, async (req, res) => {
+  try {
+    const { mediaBase64, mediaUrl, mediaType = 'image', posterBase64, posterUrl, isEnabled = true } = req.body;
+    let finalMediaUrl = mediaUrl || '';
+    let finalPosterUrl = posterUrl || '';
+
+    if (mediaBase64 && typeof mediaBase64 === 'string') {
+      if (mediaBase64.startsWith('data:')) {
+        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+        const stored = await mediaStorage.saveMedia(
+          mediaBase64,
+          'asset',
+          `pricing_banner_${Date.now()}.${ext}`,
+          undefined,
+          true
+        );
+        finalMediaUrl = stored.publicUrl;
+      } else if (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/')) {
+        finalMediaUrl = mediaBase64;
+      }
+    }
+
+    if (posterBase64 && typeof posterBase64 === 'string' && posterBase64.startsWith('data:')) {
+      const storedPoster = await mediaStorage.saveMedia(
+        posterBase64,
+        'asset',
+        `pricing_poster_${Date.now()}.jpg`,
+        undefined,
+        true
+      );
+      finalPosterUrl = storedPoster.publicUrl;
+    }
+
+    if (!finalMediaUrl && isEnabled) {
+      return res.status(400).json({ error: 'Please provide media (image or video) for pricing banner.' });
+    }
+
+    const saved = prodDb.setPricingBanner({
+      mediaUrl: finalMediaUrl,
+      mediaType: mediaType === 'video' ? 'video' : 'image',
+      posterUrl: finalPosterUrl || undefined,
+      isEnabled: Boolean(isEnabled)
+    });
+
+    res.json({ success: true, banner: saved });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to save pricing banner' });
+  }
 });
 
 // Face Swap Demo Video Config API
@@ -2914,7 +2970,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         version: '1.0',
         inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
         provider: template.type === 'photo' ? 'gemini' : 'google_veo',
-        model: template.model || (template.type === 'photo' ? 'gemini-3.1-flash-image' : 'veo-3.1-lite-generate-preview'),
+        model: template.model || (template.type === 'photo' ? 'gemini-3.1-flash-image' : 'gemini-omni-1.1-flash'),
         engine: template.engine || 'AI_GENERATION',
         prompt: effectivePrompt,
         workflow: template.workflow,
@@ -3197,17 +3253,21 @@ const handleGetGenerationStatus = (req: express.Request, res: express.Response) 
     return res.status(403).json({ error: 'Access denied to this generation record' });
   }
 
-  // Stale Processing Job Recovery: If stuck in 'processing' for > 5 minutes, mark failed and refund
-  if (gen.status === 'processing') {
+  // Stale Processing Job Recovery: If stuck in 'processing' for > 5 minutes AND has no result, mark failed and refund
+  if (gen.status === 'processing' && !gen.resultMediaUrl) {
     const elapsedMs = Date.now() - new Date(gen.createdAt).getTime();
     if (elapsedMs > 5 * 60 * 1000) {
-      console.warn(`[Generation Timeout] Generation ${id} stuck in processing for > 5m. Marking failed with automatic credit refund.`);
-      prodDb.updateGeneration(id, {
-        status: 'failed',
-        error: 'The generation timed out during neural synthesis. Credits have been automatically refunded.'
-      });
-      if (gen.creditCost > 0 && !isAuthorizedAdmin) {
-        prodDb.refundCredits(gen.userId, gen.creditCost, `Refund: Timed out generation (${gen.templateTitle})`, id);
+      // Re-query database to ensure job was not completed while processing
+      const freshGen = prodDb.getGeneration(id);
+      if (freshGen && freshGen.status === 'processing' && !freshGen.resultMediaUrl) {
+        console.warn(`[Generation Timeout] Generation ${id} stuck in processing for > 5m without result. Marking failed with automatic credit refund.`);
+        prodDb.updateGeneration(id, {
+          status: 'failed',
+          error: 'The generation timed out during neural synthesis. Credits have been automatically refunded.'
+        });
+        if (freshGen.creditCost > 0 && !isAuthorizedAdmin) {
+          prodDb.refundCredits(freshGen.userId, freshGen.creditCost, `Refund: Timed out generation (${freshGen.templateTitle})`, id);
+        }
       }
     }
   }
@@ -3447,10 +3507,10 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         }
       }
     },
-    // 11. Veo Video Pipeline (Real generation test)
+    // 11. Google Video Pipeline (Real generation test)
     {
       id: 'veo_video_pipeline',
-      name: 'Google Veo Video Pipeline (veo-3.1-lite-generate-preview)',
+      name: 'Google Video Pipeline (gemini-omni-1.1-flash)',
       category: 'AI Synthesis' as const,
       fn: async () => {
         const apiKey = process.env.GEMINI_API_KEY;

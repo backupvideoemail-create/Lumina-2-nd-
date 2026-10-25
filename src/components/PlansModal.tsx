@@ -45,6 +45,28 @@ export const PlansModal: React.FC = () => {
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const [pricingBanner, setPricingBanner] = useState<{
+    mediaUrl: string;
+    mediaType: 'image' | 'video';
+    posterUrl?: string;
+    isEnabled: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetch('/api/pricing-banner')
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success && data.banner) {
+          setPricingBanner(data.banner);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [plansModalOpen]);
+
   useEffect(() => {
     if (!isIntroEligible && selectedPlanId === 'plan_intro_daily') {
       setSelectedPlanId('plan_weekly_pass');
@@ -235,15 +257,38 @@ export const PlansModal: React.FC = () => {
       >
         {/* 1. FULL-BLEED IMMERSIVE VISUAL HERO BANNER */}
         <div className="relative w-full h-[350px] sm:h-[375px] overflow-hidden">
-          {/* Creator Portrait - Framed with face perfectly visible in upper third */}
-          <motion.img
-            src={creatorModelImg}
-            alt="AI Prime Studio Visual Hero"
-            initial={{ scale: 1.05 }}
-            animate={{ scale: 1 }}
-            transition={{ duration: 1.2, ease: 'easeOut' }}
-            className="w-full h-full object-cover object-[center_16%] sm:object-[center_20%]"
-          />
+          {/* Admin Controlled Pricing Banner Media with Fallback to Creator Portrait */}
+          {pricingBanner && pricingBanner.isEnabled && pricingBanner.mediaUrl ? (
+            pricingBanner.mediaType === 'video' ? (
+              <video
+                src={pricingBanner.mediaUrl}
+                poster={pricingBanner.posterUrl || creatorModelImg}
+                autoPlay
+                muted
+                loop
+                playsInline
+                className="w-full h-full object-cover object-[center_16%] sm:object-[center_20%]"
+              />
+            ) : (
+              <motion.img
+                src={pricingBanner.mediaUrl}
+                alt="AI Prime Studio Visual Hero"
+                initial={{ scale: 1.05 }}
+                animate={{ scale: 1 }}
+                transition={{ duration: 1.2, ease: 'easeOut' }}
+                className="w-full h-full object-cover object-[center_16%] sm:object-[center_20%]"
+              />
+            )
+          ) : (
+            <motion.img
+              src={creatorModelImg}
+              alt="AI Prime Studio Visual Hero"
+              initial={{ scale: 1.05 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 1.2, ease: 'easeOut' }}
+              className="w-full h-full object-cover object-[center_16%] sm:object-[center_20%]"
+            />
+          )}
 
           {/* Cinematic Scrims & Dynamic Light Flares */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-[#07060b]" />
@@ -452,7 +497,7 @@ export const PlansModal: React.FC = () => {
                         setSelectedPlanId(plan.id);
                         setErrorMessage(null);
                       }}
-                      className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex flex-col justify-between backdrop-blur-xl ${
+                      className={`relative rounded-2xl p-2.5 sm:p-3 cursor-pointer transition-all duration-300 flex flex-col justify-between backdrop-blur-xl ${
                         isSelected
                           ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
                           : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/35 hover:border-amber-500/50'
@@ -464,7 +509,6 @@ export const PlansModal: React.FC = () => {
                           <span className="text-xs">🔥</span>
                           <span>INTRO OFFER</span>
                         </div>
-
                         <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#ffb703] text-black text-[10px] sm:text-[11px] font-black uppercase tracking-wider shadow-sm select-none">
                           <span className="text-[10px] font-bold">✨</span>
                           <span>LIMITED TIME OFFER</span>
@@ -472,14 +516,14 @@ export const PlansModal: React.FC = () => {
                       </div>
 
                       {/* Middle: 1 day validity */}
-                      <div className="pt-2">
+                      <div className="pt-1">
                         <p className="text-[11px] sm:text-xs font-medium text-stone-300">
                           1 day validity
                         </p>
                       </div>
 
                       {/* Bottom Row: Large ₹1 with struck-through ₹499 */}
-                      <div className="flex items-baseline gap-2.5 pt-1">
+                      <div className="flex items-baseline gap-2.5 pt-0.5">
                         <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
                           ₹1
                         </span>

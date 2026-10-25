@@ -334,12 +334,49 @@ async function runSystemVerification() {
   const balanceAfter2 = prodDb.getWallet(refundUserId).balance;
   assert(balanceAfter2 === balanceAfter1, 'Duplicate refund with identical refId is safely ignored (exact-once idempotency)');
 
-  // 10. Public Assets Privacy & Screenshot Cleanup
-  console.log('\n--- SUITE 10: Public Assets Privacy Verification ---');
-  assert(!fs.existsSync('public/assets/aistudio'), 'public/assets/aistudio is completely removed');
-  assert(!fs.existsSync('public/assets'), 'public/assets folder is completely removed');
+  // 10. Public Assets Privacy & Gitignore Verification
+  console.log('\n--- SUITE 10: Public Assets Privacy & Gitignore Verification ---');
+  const gitignoreContent = fs.existsSync('.gitignore') ? fs.readFileSync('.gitignore', 'utf-8') : '';
+  assert(gitignoreContent.includes('public/assets/aistudio/'), '.gitignore correctly ignores public/assets/aistudio/');
+  assert(!gitignoreContent.split('\n').some(l => l.trim() === 'public/assets/'), '.gitignore does not blanket-ignore public/assets/');
   assert(fs.existsSync('public/logo.png'), 'Essential logo.png preserved');
   assert(fs.existsSync('public/logo.jpg'), 'Essential logo.jpg preserved');
+
+  // 11. New Priority Features Verification (Pricing Banner, Omni Flash Video, Media Skeleton)
+  console.log('\n--- SUITE 11: Priority 0-3 Verification Suite ---');
+  // 11.1 Pricing Banner in Database & API
+  prodDb.setPricingBanner({
+    mediaUrl: 'https://images.unsplash.com/photo-test-banner.jpg',
+    mediaType: 'image',
+    isEnabled: true,
+    altText: 'Lumina VIP Creator Pass'
+  });
+  const updatedBanner = prodDb.getPricingBanner();
+  assert(updatedBanner !== null, 'Pricing banner is retrievable after being set');
+  assert(updatedBanner?.mediaUrl === 'https://images.unsplash.com/photo-test-banner.jpg', 'Pricing banner updates and persists in database');
+  assert(updatedBanner?.mediaType === 'image', 'Pricing banner has valid mediaType');
+  assert(updatedBanner?.isEnabled === true, 'Pricing banner has isEnabled flag');
+
+  // 11.2 Retired Veo Migration to Gemini Omni Flash
+  const templatesDataContent = fs.readFileSync('src/data/templatesData.ts', 'utf-8');
+  assert(!templatesDataContent.includes('veo-3.1-lite-generate-preview'), 'veo-3.1-lite-generate-preview completely removed from templatesData.ts');
+  assert(templatesDataContent.includes('gemini-omni-1.1-flash'), 'gemini-omni-1.1-flash configured in templatesData.ts');
+
+  const serverContent = fs.readFileSync('server.ts', 'utf-8');
+  assert(!serverContent.includes('veo-3.1-lite-generate-preview'), 'veo-3.1-lite-generate-preview completely removed from server.ts');
+  assert(serverContent.includes('gemini-omni-1.1-flash'), 'gemini-omni-1.1-flash configured in server.ts');
+
+  // 11.3 Plan Page Compact UI Checks
+  const plansModalContent = fs.readFileSync('src/components/PlansModal.tsx', 'utf-8');
+  assert(plansModalContent.includes('pricing-banner'), 'PlansModal fetches dynamic pricing-banner');
+  assert(plansModalContent.includes('INTRO OFFER'), 'PlansModal retains INTRO OFFER');
+  assert(plansModalContent.includes('LIMITED TIME OFFER'), 'PlansModal retains LIMITED TIME OFFER');
+  assert(!plansModalContent.includes('00:59:48'), 'No countdown timer in PlansModal');
+
+  // 11.4 TemplateCard Media Loading Placeholder
+  const templateCardContent = fs.readFileSync('src/components/TemplateCard.tsx', 'utf-8');
+  assert(templateCardContent.includes('Loading media…'), 'TemplateCard includes Loading media… label');
+  assert(templateCardContent.includes('isMediaLoaded'), 'TemplateCard tracks isMediaLoaded state');
 
   // Clean up test template
   await prodDb.deleteTemplate(testTplId);

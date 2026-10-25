@@ -21,4 +21,4 @@ keystore.properties
 !google-services.json.example
 
 # Prevent re-adding unreferenced reference screenshots into public folder
-public/assets/
+public/assets/aistudio/

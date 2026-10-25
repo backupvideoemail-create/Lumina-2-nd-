@@ -223,6 +223,16 @@ export interface ProductionDatabaseSchema {
   reports: Array<{ id: string; generationId: string; reason: string; timestamp: string }>;
   adminTestRuns?: AdminTestRun[];
   categoryPrompts?: Record<string, string>;
+  pricingBanner?: PricingBannerConfig | null;
+}
+
+export interface PricingBannerConfig {
+  mediaUrl: string;
+  mediaType: 'image' | 'video';
+  posterUrl?: string;
+  isEnabled: boolean;
+  altText?: string;
+  updatedAt: string;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -381,6 +391,10 @@ class ProductionDatabase {
             ...promptsDoc.data().prompts
           };
         }
+        const pricingBannerDoc = await adminFirestoreDb.collection('config').doc('pricing_banner').get();
+        if (pricingBannerDoc.exists && pricingBannerDoc.data()) {
+          this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
+        }
       } catch {
         // config docs optional
       }
@@ -429,6 +443,7 @@ class ProductionDatabase {
         parsed.processedWebhooks = parsed.processedWebhooks || [];
         parsed.reports = parsed.reports || [];
         parsed.adminTestRuns = parsed.adminTestRuns || [];
+        parsed.pricingBanner = parsed.pricingBanner || null;
         parsed.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS, ...(parsed.categoryPrompts || {}) };
         return parsed;
       }
@@ -455,6 +470,7 @@ class ProductionDatabase {
       processedWebhooks: [],
       reports: [],
       adminTestRuns: [],
+      pricingBanner: null,
       categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS }
     };
   }
@@ -1660,13 +1676,13 @@ class ProductionDatabase {
           creditCost: isVideo ? 25 : 10,
           providerCostUsd: isVideo ? 0.25 : 0.08,
           engine: 'AI_GENERATION',
-          model: isVideo ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image',
+          model: isVideo ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image',
           workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
           recipe: {
             version: '1.0',
             inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
             provider: isVideo ? 'google_veo' : 'gemini',
-            model: isVideo ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image',
+            model: isVideo ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image',
             engine: 'AI_GENERATION',
             prompt: categoryPrompt,
             workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
@@ -1727,6 +1743,27 @@ class ProductionDatabase {
     this.db.banners = banners;
     this.save();
     this.syncToFirestore('config', 'banners', { banners, updatedAt: new Date().toISOString() });
+  }
+
+  public getPricingBanner(): PricingBannerConfig | null {
+    return this.db.pricingBanner || null;
+  }
+
+  public setPricingBanner(banner: {
+    mediaUrl: string;
+    mediaType: 'image' | 'video';
+    posterUrl?: string;
+    isEnabled: boolean;
+    altText?: string;
+  }): PricingBannerConfig {
+    const updated: PricingBannerConfig = {
+      ...banner,
+      updatedAt: new Date().toISOString()
+    };
+    this.db.pricingBanner = updated;
+    this.save();
+    this.syncToFirestore('config', 'pricing_banner', updated);
+    return updated;
   }
 
   public getFaceSwapDemoVideoUrl(): string {

@@ -28,7 +28,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
     { id: 'media_storage_engine', name: 'Durable Media Storage & Protected Asset Access', category: 'Core Architecture', status: 'pending' },
     { id: 'razorpay_live_gateway', name: 'Razorpay Live Gateway & UPI AutoPay Mandates', category: 'Live Provider Integration', status: 'pending' },
     { id: 'gemini_image_pipeline', name: 'Google Gemini Photo Pipeline (gemini-3.1-flash-image)', category: 'Live Provider Integration', status: 'pending' },
-    { id: 'veo_video_pipeline', name: 'Google Veo Video Pipeline (veo-3.1-lite-generate-preview)', category: 'Live Provider Integration', status: 'pending' },
+    { id: 'veo_video_pipeline', name: 'Google Video Pipeline (gemini-omni-1.1-flash)', category: 'Live Provider Integration', status: 'pending' },
     { id: 'higgsfield_faceswap', name: 'Higgsfield Neural Face Swap Adapter Pipeline', category: 'Live Provider Integration', status: 'pending' }
   ]);
 

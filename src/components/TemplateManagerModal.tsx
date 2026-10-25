@@ -31,7 +31,8 @@ import {
   HardDrive,
   Cloud,
   Info,
-  UserCheck
+  UserCheck,
+  CreditCard
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
@@ -71,10 +72,30 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     refreshFaceSwapScenes
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'demo'>('templates');
+  const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'pricing_banner' | 'demo'>('templates');
   const [subTab, setSubTab] = useState<'list' | 'add' | 'edit' | 'bulk'>('list');
   const [faceSwapSection, setFaceSwapSection] = useState<'scenes' | 'demo'>('scenes');
   const [faceSwapSubTab, setFaceSwapSubTab] = useState<'list' | 'add' | 'edit'>('list');
+
+  // PRICING PAGE HERO BANNER ADMIN STATE
+  const [pricingBannerConfig, setPricingBannerConfig] = useState<{
+    mediaUrl: string;
+    mediaType: 'image' | 'video';
+    posterUrl?: string;
+    isEnabled: boolean;
+    altText?: string;
+  }>({
+    mediaUrl: '',
+    mediaType: 'image',
+    isEnabled: true,
+    altText: 'Lumina VIP Creator Pass'
+  });
+  const [pricingBannerPreview, setPricingBannerPreview] = useState<string>('');
+  const [pricingBannerType, setPricingBannerType] = useState<'image' | 'video'>('image');
+  const [pricingBannerPosterPreview, setPricingBannerPosterPreview] = useState<string>('');
+  const [pricingBannerEnabled, setPricingBannerEnabled] = useState<boolean>(true);
+  const [isLoadingPricingBanner, setIsLoadingPricingBanner] = useState<boolean>(false);
+  const [isSavingPricingBanner, setIsSavingPricingBanner] = useState<boolean>(false);
 
   // FACE SWAP SCENES ADMIN STATE
   const [adminFaceSwapScenes, setAdminFaceSwapScenes] = useState<FaceSwapScene[]>([]);
@@ -221,7 +242,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   // Execution Recipe (Separated from display preview MP4/Photo)
   const [recipePreset, setRecipePreset] = useState<'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom'>('veo_video');
   const [recipeProvider, setRecipeProvider] = useState<string>('google_veo');
-  const [recipeModel, setRecipeModel] = useState<string>('veo-3.1-lite-generate-preview');
+  const [recipeModel, setRecipeModel] = useState<string>('gemini-omni-1.1-flash');
   const [recipeWorkflow, setRecipeWorkflow] = useState<string>('viral-reels');
   const [recipePrompt, setRecipePrompt] = useState<string>('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
   const [recipeDrivingVideoUrl, setRecipeDrivingVideoUrl] = useState<string>('');
@@ -412,7 +433,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setRecipePreset(preset);
     if (preset === 'veo_video') {
       setRecipeProvider('google_veo');
-      setRecipeModel('veo-3.1-lite-generate-preview');
+      setRecipeModel('gemini-omni-1.1-flash');
       setRecipeWorkflow('viral-reels');
       setRecipePrompt('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
       setTplCostUsd(0.25);
@@ -434,6 +455,71 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       setTplCostUsd(1.59);
       setTplDetectedType('video');
       setTplInputType('IMAGE_ONLY');
+    }
+  };
+
+  // --- PRICING PAGE HERO BANNER HANDLERS ---
+  const fetchPricingBannerConfig = async () => {
+    setIsLoadingPricingBanner(true);
+    try {
+      const res = await fetch('/api/pricing-banner');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setPricingBannerConfig(data.config);
+          setPricingBannerPreview(data.config.mediaUrl || '');
+          setPricingBannerType(data.config.mediaType || 'image');
+          setPricingBannerPosterPreview(data.config.posterUrl || '');
+          setPricingBannerEnabled(data.config.isEnabled !== false);
+        }
+      }
+    } catch (err) {
+      console.warn('[Admin] Failed to load pricing banner config', err);
+    } finally {
+      setIsLoadingPricingBanner(false);
+    }
+  };
+
+  const handleSavePricingBanner = async () => {
+    if (!pricingBannerPreview && pricingBannerEnabled) {
+      showNotification('Please upload or provide media for the pricing banner', 'error');
+      return;
+    }
+    setIsSavingPricingBanner(true);
+    try {
+      const res = await fetch('/api/admin/pricing-banner', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          mediaBase64: pricingBannerPreview.startsWith('data:') ? pricingBannerPreview : undefined,
+          mediaUrl: !pricingBannerPreview.startsWith('data:') ? pricingBannerPreview : undefined,
+          mediaType: pricingBannerType,
+          posterBase64: pricingBannerPosterPreview.startsWith('data:') ? pricingBannerPosterPreview : undefined,
+          posterUrl: !pricingBannerPosterPreview.startsWith('data:') ? pricingBannerPosterPreview : undefined,
+          isEnabled: pricingBannerEnabled,
+          altText: 'Lumina VIP Creator Pass'
+        })
+      });
+
+      const resData = await res.json().catch(() => ({}));
+      if (res.ok && resData.success) {
+        if (resData.config) {
+          setPricingBannerConfig(resData.config);
+          setPricingBannerPreview(resData.config.mediaUrl);
+        }
+        showNotification('Pricing Page Banner updated successfully!');
+      } else {
+        const errMsg = resData.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to save pricing banner (HTTP ${res.status})`);
+        showNotification(errMsg, 'error');
+        if (res.status === 403) {
+          setIsAdminVerified(false);
+          setShowKeyInput(true);
+        }
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Network error saving pricing banner', 'error');
+    } finally {
+      setIsSavingPricingBanner(false);
     }
   };
 
@@ -644,13 +730,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
     if (tpl.recipe) {
       setRecipeProvider(tpl.recipe.provider || (tpl.type === 'video' ? 'google_veo' : 'gemini'));
-      setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image'));
+      setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.recipe.workflow || tpl.workflow);
       setRecipePrompt(tpl.recipe.prompt || '');
       setRecipeDrivingVideoUrl(tpl.recipe.drivingVideoUrl || tpl.drivingVideoUrl || '');
     } else {
       setRecipeProvider(tpl.type === 'video' ? 'google_veo' : 'gemini');
-      setRecipeModel(tpl.model || (tpl.type === 'video' ? 'veo-3.1-lite-generate-preview' : 'gemini-3.1-flash-image'));
+      setRecipeModel(tpl.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.workflow);
       setRecipePrompt(`${tpl.title}. Aesthetic workflow: ${tpl.workflow}.`);
       setRecipeDrivingVideoUrl(tpl.drivingVideoUrl || '');
@@ -2123,6 +2209,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
           <button
             onClick={() => {
+              setActiveTab('pricing_banner');
+              fetchPricingBannerConfig();
+            }}
+            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+              activeTab === 'pricing_banner'
+                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
+                : 'text-stone-400 hover:text-white'
+            }`}
+          >
+            <CreditCard className="w-4 h-4 text-amber-400" />
+            <span>Pricing Banner</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab('faceswap');
               if (adminFaceSwapScenes.length === 0) fetchAdminFaceSwapScenes();
             }}
@@ -3119,7 +3220,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         type="text"
                         value={recipeModel}
                         onChange={(e) => setRecipeModel(e.target.value)}
-                        placeholder="e.g. veo-3.1-lite-generate-preview"
+                        placeholder="e.g. gemini-omni-1.1-flash"
                         className="w-full mt-1 px-3 py-2 rounded-xl bg-black border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       />
                     </div>
@@ -3495,6 +3596,220 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 </button>
               </form>
             )}
+          </div>
+        )}
+
+        {/* TAB: PRICING PAGE HERO BANNER MANAGEMENT */}
+        {activeTab === 'pricing_banner' && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+            <div className="p-4 rounded-2xl bg-stone-900/60 border border-white/10 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <CreditCard className="w-4 h-4 text-amber-400" />
+                    <span>Pricing Page Hero Banner</span>
+                  </h4>
+                  <p className="text-xs text-stone-400 mt-0.5">
+                    Controls the top hero asset on the customer Plan / Upgrade screen. Separate from public templates.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchPricingBannerConfig}
+                  disabled={isLoadingPricingBanner}
+                  className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 transition-colors"
+                  title="Reload configuration"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isLoadingPricingBanner ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              {/* Status & Enable Toggle */}
+              <div className="p-3 rounded-xl bg-black/40 border border-white/10 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-3 h-3 rounded-full ${pricingBannerEnabled && pricingBannerPreview ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]' : 'bg-stone-600'}`} />
+                  <div>
+                    <span className="text-xs font-bold text-white">
+                      {pricingBannerEnabled && pricingBannerPreview ? 'Active on Plan Page' : 'Banner Disabled (Using Fallback Image)'}
+                    </span>
+                    <p className="text-[10px] text-stone-400">
+                      When enabled and media is set, overrides default model picture on the Plan modal.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPricingBannerEnabled(!pricingBannerEnabled)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                    pricingBannerEnabled
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                      : 'bg-stone-800 text-stone-400 border border-white/10'
+                  }`}
+                >
+                  {pricingBannerEnabled ? 'Enabled' : 'Disabled'}
+                </button>
+              </div>
+
+              {/* Media Type Selection */}
+              <div>
+                <label className="text-xs font-bold text-stone-300">Media Format</label>
+                <div className="grid grid-cols-2 gap-2 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPricingBannerType('image')}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all ${
+                      pricingBannerType === 'image'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                        : 'bg-black/40 text-stone-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    <ImageIcon className="w-3.5 h-3.5" />
+                    <span>Photo / Image</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPricingBannerType('video')}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all ${
+                      pricingBannerType === 'video'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                        : 'bg-black/40 text-stone-400 border-white/10 hover:text-white'
+                    }`}
+                  >
+                    <VideoIcon className="w-3.5 h-3.5" />
+                    <span>Inline Looping Video</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Media Upload Area */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-stone-300">
+                    {pricingBannerType === 'video' ? 'Upload Video Clip (MP4/WebM)' : 'Upload Hero Photo (JPEG/PNG/WEBP)'}
+                  </label>
+                  {pricingBannerPreview && (
+                    <button
+                      type="button"
+                      onClick={() => setPricingBannerPreview('')}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 underline"
+                    >
+                      Clear Media
+                    </button>
+                  )}
+                </div>
+
+                {pricingBannerPreview ? (
+                  <div className="relative rounded-2xl overflow-hidden border border-white/15 bg-black h-48 w-full flex items-center justify-center">
+                    {pricingBannerType === 'video' ? (
+                      <video
+                        src={pricingBannerPreview}
+                        poster={pricingBannerPosterPreview || undefined}
+                        muted
+                        loop
+                        autoPlay
+                        playsInline
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <img
+                        src={pricingBannerPreview}
+                        alt="Pricing Banner Preview"
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                    <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md text-[10px] font-bold text-amber-300 border border-white/10">
+                      Live Preview ({pricingBannerType.toUpperCase()})
+                    </div>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center h-40 rounded-2xl border-2 border-dashed border-white/15 hover:border-amber-400/50 bg-black/40 cursor-pointer p-4 text-center transition-colors">
+                    <Upload className="w-8 h-8 text-stone-500 mb-2" />
+                    <span className="text-xs font-bold text-white">Choose {pricingBannerType === 'video' ? 'Video' : 'Image'}</span>
+                    <span className="text-[10px] text-stone-400 mt-1">Recommended: 16:9 or 3:2 landscape aspect ratio</span>
+                    <input
+                      type="file"
+                      accept={pricingBannerType === 'video' ? 'video/mp4,video/webm' : 'image/jpeg,image/png,image/webp'}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const isVideo = file.type.startsWith('video');
+                        setPricingBannerType(isVideo ? 'video' : 'image');
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setPricingBannerPreview(reader.result as string);
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+              </div>
+
+              {/* If Video: Optional Poster Image */}
+              {pricingBannerType === 'video' && (
+                <div>
+                  <label className="text-xs font-bold text-stone-300 mb-1 block">
+                    Poster Image Fallback (Optional)
+                  </label>
+                  <p className="text-[10px] text-stone-400 mb-1.5">
+                    Shown while video is buffering or if autoplay is blocked by the mobile browser.
+                  </p>
+                  {pricingBannerPosterPreview ? (
+                    <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black h-24 w-40">
+                      <img src={pricingBannerPosterPreview} alt="Poster" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setPricingBannerPosterPreview('')}
+                        className="absolute top-1 right-1 p-1 rounded-full bg-black/70 text-white hover:text-rose-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-bold text-stone-300 cursor-pointer">
+                      <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Upload Video Poster Image</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            setPricingBannerPosterPreview(reader.result as string);
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+
+              {/* Save Button */}
+              <button
+                type="button"
+                onClick={handleSavePricingBanner}
+                disabled={isSavingPricingBanner}
+                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg shadow-amber-500/20"
+              >
+                {isSavingPricingBanner ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{pricingBannerEnabled ? 'Publish Pricing Page Banner' : 'Save & Keep Disabled'}</span>
+              </button>
+
+              <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 space-y-1">
+                <div className="flex items-center gap-1.5 text-amber-300 text-[11px] font-bold">
+                  <Info className="w-3.5 h-3.5" />
+                  <span>Strict Isolation Guarantee</span>
+                </div>
+                <p className="text-[10px] text-stone-400 leading-relaxed">
+                  This banner asset is saved independently in Cloudflare R2 and synced to Firestore. It never appears in the public template grid, does not affect template counts, and is isolated from Home hero banners and generation recipes.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -4487,7 +4802,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   setPasteJsonError(null);
                 }}
                 rows={8}
-                placeholder={`{\n  "provider": "google_veo",\n  "model": "veo-3.1-lite-generate-preview",\n  "workflow": "viral-reels",\n  "prompt": "Cinematic slow-motion 60FPS video reel...",\n  "inputType": "IMAGE_OR_VIDEO"\n}`}
+                placeholder={`{\n  "provider": "google_veo",\n  "model": "gemini-omni-1.1-flash",\n  "workflow": "viral-reels",\n  "prompt": "Cinematic slow-motion 60FPS video reel...",\n  "inputType": "IMAGE_OR_VIDEO"\n}`}
                 className="w-full font-mono text-xs p-3 rounded-xl bg-black border border-white/15 text-stone-200 focus:border-cyan-400 focus:outline-none"
               />
 

@@ -1,14 +1,14 @@
 /**
- * Production Google Veo Video Generation Pipeline Adapter.
+ * Production Google Gemini Omni Flash Video Generation Pipeline Adapter.
  * 
- * Uses @google/genai TypeScript SDK with veo-3.1-lite-generate-preview.
+ * Uses @google/genai TypeScript SDK with gemini-omni-1.1-flash via Interactions API.
  * Handles:
- * - Starting image + cinematic prompt payload
+ * - Starting image + cinematic prompt payload (CUSTOMER_SOURCE_PHOTO)
  * - 9:16 portrait mobile aspect ratio
- * - Asynchronous operation polling until completion
- * - Video bytes download, durable media storage, and real output URL
+ * - Direct Interactions API request lifecycle with timeout handling
+ * - Video bytes extraction (data or uri), durable storage in mediaStorage, and real output URL
  * 
- * NEVER returns fallback previews or template mock videos. If Veo fails or credentials
+ * NEVER returns fallback previews or template mock videos. If Omni Flash fails or credentials
  * are missing, throws a clear Error so caller automatically initiates exact credit refund.
  */
 
@@ -17,8 +17,8 @@ import { mediaStorage } from '../storage/mediaStorage.ts';
 import type { VideoGenerationParams, ProviderResult } from '../types.ts';
 
 export class VideoProviderAdapter {
-  readonly providerName = 'google_veo';
-  readonly modelName = 'veo-3.1-lite-generate-preview';
+  readonly providerName = 'google_omni';
+  readonly modelName = 'gemini-omni-1.1-flash';
 
   /**
    * Helper to resolve starting image input into base64 bytes and mimeType.
@@ -57,7 +57,7 @@ export class VideoProviderAdapter {
   }
 
   /**
-   * Generates a real AI video using Google Veo.
+   * Generates a real AI video using Gemini Omni Flash via Interactions API.
    */
   async generateVideo(params: VideoGenerationParams): Promise<ProviderResult> {
     const startTime = Date.now();
@@ -65,80 +65,112 @@ export class VideoProviderAdapter {
 
     if (!apiKey) {
       throw new Error(
-        'GEMINI_API_KEY is not configured in environment variables. Please provide a valid Gemini API key to execute Veo video generation.'
+        'GEMINI_API_KEY is not configured in environment variables. Please provide a valid Gemini API key to execute Gemini Omni video generation.'
       );
     }
 
-    const ai = new GoogleGenAI();
+    const ai = new GoogleGenAI({ apiKey });
     // Incorporate prompt directives with clear scene and motion instructions
     const prompt = `Cinematic 9:16 Instagram Reels video: ${params.prompt}. Style: ${params.styleWorkflow || 'viral motion'}. Realistic fluid motion, studio lighting, vivid atmospheric smoke, 60fps aesthetic.`;
 
-    const requestPayload: any = {
-      model: this.modelName,
-      prompt,
-      config: {
-        numberOfVideos: 1,
-        resolution: '720p',
-        aspectRatio: '9:16'
-      }
-    };
+    const inputParts: any[] = [];
 
     // Customer Image is the primary identity starting frame (CUSTOMER_SOURCE_PHOTO)
-    // In official Google Veo SDK (models.generateVideos), a single starting image is supported via requestPayload.image.
-    // Multiple binary image slots are not part of the Veo API schema; reference scene style (AFTER) is directed via prompt context.
     const primaryIdentityMedia = params.userImageUrl || params.sourceMediaUrl;
     if (primaryIdentityMedia) {
       try {
         const imgPayload = await this.resolveImagePayload(primaryIdentityMedia);
-        requestPayload.image = {
-          imageBytes: imgPayload.data,
-          mimeType: imgPayload.mimeType
-        };
+        inputParts.push({
+          type: 'image',
+          data: imgPayload.data,
+          mime_type: imgPayload.mimeType
+        });
       } catch (err: any) {
         console.warn('[VideoProviderAdapter] Starting frame resolution note:', err.message);
       }
     }
 
-    // 1. Initiate asynchronous video generation operation
-    let operation = await ai.models.generateVideos(requestPayload);
+    // Add text prompt
+    inputParts.push({
+      type: 'text',
+      text: prompt
+    });
 
-    // 2. Poll until operation completes (max 5 minutes)
-    const pollTimeout = Date.now() + 5 * 60 * 1000;
-    while (!operation.done) {
-      if (Date.now() > pollTimeout) {
-        throw new Error('Veo video generation timed out after 5 minutes.');
+    const targetAspectRatio = params.aspectRatio === '16:9' ? '16:9' : '9:16';
+
+    try {
+      // 1. Invoke Interactions API for gemini-omni-1.1-flash
+      const interaction = await ai.interactions.create({
+        model: this.modelName,
+        input: inputParts,
+        background: false,
+        store: false,
+        stream: false,
+        response_format: {
+          type: 'video',
+          aspect_ratio: targetAspectRatio,
+          duration: '5s',
+          resolution: '720p'
+        }
+      }, { timeout: 300000 }); // 5 minutes timeout
+
+      let videoBuffer: Buffer | null = null;
+      const videoPart = interaction.output_video;
+
+      if (videoPart?.data) {
+        videoBuffer = Buffer.from(videoPart.data, 'base64');
+      } else if ((videoPart as any)?.uri) {
+        const videoRes = await fetch((videoPart as any).uri);
+        if (videoRes.ok) {
+          const ab = await videoRes.arrayBuffer();
+          videoBuffer = Buffer.from(ab);
+        }
+      } else {
+        // Inspect steps for model_output video
+        for (const step of (interaction.steps || []) as any[]) {
+          if (step.type === 'model_output' && Array.isArray(step.content)) {
+            const vContent = step.content.find((c: any) => c.type === 'video');
+            if (vContent && (vContent as any).data) {
+              videoBuffer = Buffer.from((vContent as any).data, 'base64');
+              break;
+            } else if (vContent && (vContent as any).uri) {
+              const videoRes = await fetch((vContent as any).uri);
+              if (videoRes.ok) {
+                const ab = await videoRes.arrayBuffer();
+                videoBuffer = Buffer.from(ab);
+                break;
+              }
+            }
+          }
+        }
       }
-      await new Promise((resolve) => setTimeout(resolve, 6000));
-      operation = await ai.operations.getVideosOperation({ operation });
+
+      if (!videoBuffer || videoBuffer.length === 0) {
+        throw new Error(
+          `Gemini Omni Flash completed but returned no video output. Status: ${interaction.status || 'unknown'}`
+        );
+      }
+
+      // 2. Save actual video bytes to durable storage with owner isolation
+      const stored = await mediaStorage.saveMedia(
+        videoBuffer,
+        'generation',
+        `omni_${Date.now()}.mp4`,
+        params.ownerUserId,
+        false
+      );
+
+      return {
+        success: true,
+        resultUrl: stored.publicUrl,
+        provider: this.providerName,
+        model: this.modelName,
+        processingTimeMs: Date.now() - startTime
+      };
+    } catch (err: any) {
+      console.error('[VideoProviderAdapter] Generation failed:', err.message);
+      throw new Error(`Google Omni Flash video generation failed: ${err.message}`);
     }
-
-    if (operation.error) {
-      throw new Error(`Veo video generation failed: ${operation.error.message || JSON.stringify(operation.error)}`);
-    }
-
-    const generatedVideos = operation.response?.generatedVideos;
-    const videoData = generatedVideos?.[0]?.video;
-
-    if (!videoData?.videoBytes) {
-      throw new Error('Veo operation completed but did not return video bytes.');
-    }
-
-    // 3. Save actual video bytes to durable storage with owner isolation
-    const stored = await mediaStorage.saveMedia(
-      videoData.videoBytes,
-      'generation',
-      `veo_${Date.now()}.mp4`,
-      params.ownerUserId,
-      false
-    );
-
-    return {
-      success: true,
-      resultUrl: stored.publicUrl,
-      provider: this.providerName,
-      model: this.modelName,
-      processingTimeMs: Date.now() - startTime
-    };
   }
 }
 
