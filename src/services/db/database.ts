@@ -1183,9 +1183,39 @@ class ProductionDatabase {
     return this.db.transactions.filter(t => t.userId === userId).slice(0, 50);
   }
 
+  public isIntroEligible(userId: string): boolean {
+    if (!userId) return true;
+    // 1. Subscription check: user already has/had intro plan
+    const userSub = this.getSubscription(userId);
+    if (userSub && (userSub.planId === 'plan_intro_daily' || userSub.planId === 'sub_intro_daily')) {
+      return false;
+    }
+    // 2. Payments check: user previously paid for intro plan
+    const userPayments = Object.values(this.db.payments).filter(p => p.userId === userId);
+    const hasIntroPayment = userPayments.some(
+      p => p.type === 'intro_mandate' || p.amount === 1 || p.subscriptionId?.includes('intro') || (p.status === 'captured' && p.amount === 1)
+    );
+    if (hasIntroPayment) return false;
+
+    // 3. Credit grants check: user was previously granted intro credits
+    const grants = this.getUserGrants(userId);
+    const hasIntroGrant = grants.some(g => g.source === 'intro' && g.planId === 'plan_intro_daily');
+    if (hasIntroGrant) return false;
+
+    return true;
+  }
+
   /* =========================================================================
      GENERATIONS & JOBS
   ========================================================================= */
+  public getGenerations(): Generation[] {
+    return this.db.generations;
+  }
+
+  public getGeneration(id: string): Generation | null {
+    return this.db.generations.find(g => g.id === id) || null;
+  }
+
   public getUserGenerations(userId: string): Generation[] {
     return this.db.generations.filter(g => g.userId === userId);
   }

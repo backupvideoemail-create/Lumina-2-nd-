@@ -65,6 +65,9 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        freeCompilerArgs = freeCompilerArgs + listOf(
+            "-Xskip-metadata-version-check"
+        )
     }
 
     buildFeatures {
@@ -103,8 +106,8 @@ dependencies {
     // Image loading with Coil
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // Google Play Billing Library (v9.1.0 - latest official PBL 9 release)
-    implementation("com.android.billingclient:billing-ktx:9.1.0")
+    // Google Play Billing Library (v7.1.1 - official stable PBL compatible with Kotlin 1.9 toolchain)
+    implementation("com.android.billingclient:billing-ktx:7.1.1")
 
     // Google Sign-In & Credential Manager
     implementation("androidx.credentials:credentials:1.3.0")

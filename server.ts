@@ -368,7 +368,15 @@ app.get('/api/auth/me', (req, res) => {
   const wallet = prodDb.getWallet(user.id);
   const activeSubscription = prodDb.getSubscription(user.id);
   const likedTemplates = prodDb.getUserLikedTemplates(user.id);
-  const hasActivePlan = Boolean(activeSubscription && (activeSubscription.status === 'active' || activeSubscription.status === 'trial' || activeSubscription.mandateId));
+  const isCancelledOrExpired = Boolean(
+    activeSubscription && (activeSubscription.status === 'cancelled' || activeSubscription.status === 'expired')
+  );
+  const hasActivePlan = Boolean(
+    activeSubscription &&
+    !isCancelledOrExpired &&
+    (activeSubscription.status === 'active' || activeSubscription.status === 'trial')
+  );
+  const isIntroEligible = prodDb.isIntroEligible(user.id);
 
   res.json({
     user,
@@ -376,7 +384,8 @@ app.get('/api/auth/me', (req, res) => {
     activeSubscription,
     likedTemplates,
     hasActivePlan,
-    canTopUp: hasActivePlan
+    canTopUp: hasActivePlan,
+    isIntroEligible
   });
 });
 
@@ -3134,6 +3143,54 @@ app.get('/api/generations', requireAuth, (req, res) => {
   const results = prodDb.getUserGenerations(user.id);
   res.json({ generations: results });
 });
+
+// Single Generation Status with User Isolation and Stale Job Recovery
+const handleGetGenerationStatus = (req: express.Request, res: express.Response) => {
+  const user = (req as any).user as UserProfile;
+  const { id } = req.params;
+
+  const isAuthorizedAdmin = isServerVerifiedAdmin(user);
+  const gen = prodDb.getGenerations().find((g) => g.id === id);
+
+  if (!gen) {
+    return res.status(404).json({ error: 'Generation record not found' });
+  }
+
+  // Strict User Isolation: User A cannot inspect User B's generation
+  if (gen.userId !== user.id && !isAuthorizedAdmin) {
+    return res.status(403).json({ error: 'Access denied to this generation record' });
+  }
+
+  // Stale Processing Job Recovery: If stuck in 'processing' for > 5 minutes, mark failed and refund
+  if (gen.status === 'processing') {
+    const elapsedMs = Date.now() - new Date(gen.createdAt).getTime();
+    if (elapsedMs > 5 * 60 * 1000) {
+      console.warn(`[Generation Timeout] Generation ${id} stuck in processing for > 5m. Marking failed with automatic credit refund.`);
+      prodDb.updateGeneration(id, {
+        status: 'failed',
+        error: 'The generation timed out during neural synthesis. Credits have been automatically refunded.'
+      });
+      if (gen.creditCost > 0 && !isAuthorizedAdmin) {
+        prodDb.refundCredits(gen.userId, gen.creditCost, `Refund: Timed out generation (${gen.templateTitle})`, id);
+      }
+    }
+  }
+
+  const updatedGen = prodDb.getGenerations().find((g) => g.id === id) || gen;
+  const elapsedSeconds = Math.round((Date.now() - new Date(updatedGen.createdAt).getTime()) / 1000);
+
+  return res.json({
+    success: true,
+    generation: updatedGen,
+    status: updatedGen.status,
+    resultMediaUrl: updatedGen.resultMediaUrl,
+    error: updatedGen.error,
+    elapsedSeconds
+  });
+};
+
+app.get('/api/generations/:id/status', requireAuth, handleGetGenerationStatus);
+app.get('/api/generations/:id', requireAuth, handleGetGenerationStatus);
 
 app.delete('/api/generations/:id', requireAuth, (req, res) => {
   const user = (req as any).user as UserProfile;

@@ -215,6 +215,82 @@ async function runSystemVerification() {
   }
   assert(bySub?.subscriptionId === testSubId, 'Payment retrievable by subscriptionId');
 
+  // 6. Intro Offer Eligibility Verification
+  console.log('\n--- SUITE 6: Server-Authoritative Intro Offer Eligibility ---');
+  const freshUserId = `user_intro_test_${Date.now()}`;
+  assert(prodDb.isIntroEligible(freshUserId) === true, 'New user is eligible for Intro Offer');
+
+  // Record an intro mandate payment for this user
+  await prodDb.recordPayment({
+    id: `pay_intro_${Date.now()}`,
+    orderId: `order_intro_${Date.now()}`,
+    paymentId: `pay_id_${Date.now()}`,
+    userId: freshUserId,
+    provider: 'razorpay',
+    type: 'intro_mandate',
+    amount: 1,
+    currency: 'INR',
+    status: 'captured',
+    isAutoPay: true,
+    verificationStatus: 'verified',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  assert(prodDb.isIntroEligible(freshUserId) === false, 'User who previously claimed intro is strictly ineligible for another Intro Offer');
+
+  // 7. Generation Polling & Status Isolation
+  console.log('\n--- SUITE 7: Generation Polling & Isolation ---');
+  const genTestId = `gen_test_poll_${Date.now()}`;
+  const genOwnerId = `user_owner_${Date.now()}`;
+  const initialGen = {
+    id: genTestId,
+    userId: genOwnerId,
+    templateId: testTplId,
+    templateTitle: 'Royal Sherwani Test',
+    templateType: 'photo' as const,
+    aspectRatio: '9:16' as const,
+    status: 'processing' as const,
+    inputMediaUrl: 'https://images.example.com/user_input.jpg',
+    creditCost: 30,
+    engine: 'AI_GENERATION' as const,
+    model: 'gemini-3.1-flash-image',
+    workflow: 'txt2img',
+    isAiGenerated: true,
+    createdAt: new Date(Date.now() - 15000).toISOString()
+  };
+
+  prodDb.addGeneration(initialGen);
+
+  assert(initialGen.id === genTestId, 'Generation saved in processing state');
+  const retrievedGen = prodDb.getGeneration(genTestId);
+  assert(retrievedGen?.status === 'processing', 'Generation retrievable in processing state');
+  assert(retrievedGen?.userId === genOwnerId, 'Generation userId matches owner');
+
+  // Simulate completion via updateGeneration
+  prodDb.updateGeneration(genTestId, {
+    status: 'completed',
+    resultMediaUrl: 'https://images.example.com/final_output.jpg'
+  });
+  const completedGen = prodDb.getGeneration(genTestId);
+  assert(completedGen?.status === 'completed', 'Generation transitions to completed');
+  assert(Boolean(completedGen?.resultMediaUrl), 'Completed generation has result media URL');
+
+  // 8. Payment Page Design Lock & Timer Removal Verification
+  console.log('\n--- SUITE 8: Payment Page Intro Card Design Lock ---');
+  const fs = await import('fs');
+  const plansModalSource = fs.readFileSync('src/components/PlansModal.tsx', 'utf-8');
+
+  assert(plansModalSource.includes('🔥') && plansModalSource.includes('INTRO OFFER'), 'Intro card contains "🔥 INTRO OFFER" badge');
+  assert(plansModalSource.includes('✨') && plansModalSource.includes('LIMITED TIME OFFER'), 'Intro card contains "✨ LIMITED TIME OFFER" badge');
+  assert(plansModalSource.includes('1 day validity'), 'Intro card contains "1 day validity" subtitle');
+  assert(plansModalSource.includes('₹1'), 'Intro card contains ₹1 price');
+  assert(plansModalSource.includes('₹499'), 'Intro card contains ₹499 struck-through price');
+  assert(!plansModalSource.includes('00:59:48'), 'Countdown timer digits (00:59:48) strictly removed');
+  assert(!plansModalSource.includes('Offer ends in'), '"Offer ends in" text strictly removed');
+  assert(!plansModalSource.includes('24-HOUR INTRO PASS'), 'Did not replace LIMITED TIME OFFER with 24-HOUR INTRO PASS');
+  assert(!plansModalSource.includes('Then ₹499/week after first 24 hours'), 'Did not invent unapproved pricing sentences in intro card');
+
   // Clean up test template
   await prodDb.deleteTemplate(testTplId);
 

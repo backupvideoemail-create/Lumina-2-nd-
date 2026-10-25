@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
@@ -13,35 +13,114 @@ import {
   Film
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { Generation, Template } from '../types';
 
-export const GenerationViewerModal: React.FC = () => {
-  const {
-    activeGeneration,
-    setActiveGeneration,
-    templates,
-    setSelectedTemplate,
-    setReportModalGenId
-  } = useApp();
+interface GenerationViewerContentProps {
+  gen: Generation;
+  setActiveGeneration: (gen: Generation | null) => void;
+  templates: Template[];
+  setSelectedTemplate: (tpl: Template | null) => void;
+  setReportModalGenId: (id: string | null) => void;
+  refreshUserData: () => Promise<void>;
+  refreshGenerations: () => Promise<void>;
+}
 
+const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
+  gen,
+  setActiveGeneration,
+  templates,
+  setSelectedTemplate,
+  setReportModalGenId,
+  refreshUserData,
+  refreshGenerations
+}) => {
   const [copied, setCopied] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  if (!activeGeneration) return null;
-
-  const gen = activeGeneration;
   const isProcessing =
     gen.status === 'preparing' ||
     gen.status === 'uploading' ||
     gen.status === 'processing' ||
     gen.status === 'finalizing';
 
-  const handleDownload = () => {
+  // Active polling and live elapsed seconds counter
+  useEffect(() => {
+    if (!isProcessing) return;
+
+    // Initialize elapsed seconds
+    const initialElapsed = gen.createdAt
+      ? Math.max(0, Math.floor((Date.now() - new Date(gen.createdAt).getTime()) / 1000))
+      : 0;
+    setElapsedSeconds(initialElapsed);
+
+    // Live 1-second elapsed counter
+    const timer = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+
+    // Active server polling every 2.5 seconds
+    let isMounted = true;
+    const pollStatus = async () => {
+      try {
+        const token = localStorage.getItem('lumina_session_token');
+        const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+        const res = await fetch(`/api/generations/${gen.id}/status`, {
+          headers,
+          credentials: 'include'
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted || !data?.generation) return;
+
+        const updatedGen: Generation = data.generation;
+        if (typeof data.generation.elapsedSeconds === 'number') {
+          setElapsedSeconds(data.generation.elapsedSeconds);
+        }
+
+        // Terminal state transition (completed or failed)
+        if (updatedGen.status === 'completed' || updatedGen.status === 'failed') {
+          setActiveGeneration(updatedGen);
+          if (refreshUserData) await refreshUserData();
+          if (refreshGenerations) await refreshGenerations();
+        }
+      } catch (err) {
+        console.warn('[GenerationViewerModal] Polling note:', err);
+      }
+    };
+
+    const pollInterval = setInterval(pollStatus, 2500);
+    pollStatus(); // Immediate first check
+
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+      clearInterval(pollInterval);
+    };
+  }, [gen.id, isProcessing, setActiveGeneration, refreshUserData, refreshGenerations]);
+
+  const handleDownload = async () => {
     const url = gen.resultMediaUrl || gen.inputMediaUrl;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    if (!url) return;
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   };
 
   const handleShare = async () => {
@@ -122,6 +201,12 @@ export const GenerationViewerModal: React.FC = () => {
               <p className="text-sm text-stone-400 max-w-sm mx-auto">
                 Applying neural illumination, cinematic color grading, and lens effects for {gen.templateTitle}...
               </p>
+            </div>
+
+            {/* Live Elapsed Counter (Truthful seconds, zero fake percentage) */}
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-stone-900/90 border border-[#d4af37]/30 text-xs font-mono text-[#f5d77f] shadow-lg">
+              <span className="w-2 h-2 rounded-full bg-[#d4af37] animate-pulse" />
+              <span>Elapsed: {elapsedSeconds}s</span>
             </div>
 
             {/* Non-linear Cinematic Pipeline Steps */}
@@ -258,5 +343,31 @@ export const GenerationViewerModal: React.FC = () => {
         )}
       </div>
     </div>
+  );
+};
+
+export const GenerationViewerModal: React.FC = () => {
+  const {
+    activeGeneration,
+    setActiveGeneration,
+    templates,
+    setSelectedTemplate,
+    setReportModalGenId,
+    refreshUserData,
+    refreshGenerations
+  } = useApp();
+
+  if (!activeGeneration) return null;
+
+  return (
+    <GenerationViewerContent
+      gen={activeGeneration}
+      setActiveGeneration={setActiveGeneration}
+      templates={templates}
+      setSelectedTemplate={setSelectedTemplate}
+      setReportModalGenId={setReportModalGenId}
+      refreshUserData={refreshUserData}
+      refreshGenerations={refreshGenerations}
+    />
   );
 };

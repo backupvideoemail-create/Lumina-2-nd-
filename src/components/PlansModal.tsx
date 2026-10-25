@@ -437,35 +437,40 @@ export const PlansModal: React.FC = () => {
                         setSelectedPlanId(plan.id);
                         setErrorMessage(null);
                       }}
-                      className={`relative rounded-2xl p-3 sm:p-3.5 cursor-pointer transition-all duration-300 flex items-center justify-between backdrop-blur-xl ${
+                      className={`relative rounded-2xl p-3.5 cursor-pointer transition-all duration-300 flex flex-col justify-between backdrop-blur-xl ${
                         isSelected
                           ? 'bg-gradient-to-r from-[#2c1d0c]/95 via-[#1b140f]/95 to-[#28180c]/95 border-2 border-[#ff9f00] shadow-[0_0_30px_rgba(255,159,0,0.4)]'
                           : 'bg-gradient-to-r from-[#1c140d]/75 to-[#14100c]/75 border border-amber-500/35 hover:border-amber-500/50'
                       }`}
                     >
-                      {/* Left Side: INTRO OFFER Badge, 1 day validity, ₹1 */}
-                      <div className="space-y-1">
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-gradient-to-r from-[#ff334b] to-[#ea1c38] text-white text-[11px] sm:text-xs font-black tracking-wide shadow-sm select-none">
+                      {/* Top Row: Left INTRO OFFER badge, Right LIMITED TIME OFFER badge */}
+                      <div className="flex items-center justify-between w-full">
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-[#ff334b] to-[#ea1c38] text-white text-[11px] sm:text-xs font-black tracking-wide shadow-sm select-none">
                           <span className="text-xs">🔥</span>
                           <span>INTRO OFFER</span>
                         </div>
 
-                        <p className="text-[11px] sm:text-xs font-medium text-stone-300 pt-0.5">
-                          1 day validity · 40 Credits included
-                        </p>
-
-                        <div className="flex items-baseline gap-2 pt-0.5">
-                          <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
-                            ₹1
-                          </span>
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#ffb703] text-black text-[10px] sm:text-[11px] font-black uppercase tracking-wider shadow-sm select-none">
+                          <span className="text-[10px] font-bold">✨</span>
+                          <span>LIMITED TIME OFFER</span>
                         </div>
                       </div>
 
-                      {/* Right Side: Static Yellow Badge */}
-                      <div className="flex flex-col items-end justify-center self-stretch shrink-0 pl-2">
-                        <div className="px-2.5 py-1 rounded-lg bg-[#ffb703] text-black text-[10px] sm:text-[11px] font-black uppercase tracking-wider shadow-sm select-none">
-                          24-HOUR INTRO PASS
-                        </div>
+                      {/* Middle: 1 day validity */}
+                      <div className="pt-2">
+                        <p className="text-[11px] sm:text-xs font-medium text-stone-300">
+                          1 day validity
+                        </p>
+                      </div>
+
+                      {/* Bottom Row: Large ₹1 with struck-through ₹499 */}
+                      <div className="flex items-baseline gap-2.5 pt-1">
+                        <span className="text-[#ffb703] font-black text-3xl sm:text-4xl leading-none font-display tracking-tight">
+                          ₹1
+                        </span>
+                        <span className="text-white/90 font-bold text-2xl sm:text-3xl line-through decoration-[#ea1c38] decoration-[3px] tracking-tight">
+                          ₹499
+                        </span>
                       </div>
                     </motion.div>
                   );
