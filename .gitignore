@@ -22,3 +22,12 @@ keystore.properties
 
 # Prevent re-adding unreferenced reference screenshots into public folder
 public/assets/aistudio/
+
+# Gradle build cache, daemons and execution state
+.gradle/
+android/.gradle/
+**/.gradle/
+
+# Non-canonical package manager lockfiles (project strictly uses npm & package.json)
+bun.lock
+bun.lockb
