@@ -24,8 +24,9 @@ async function auditAllMedia() {
     ].filter(x => Boolean(x.url));
 
     for (const item of urlsToCheck) {
+      if (!item.url) continue;
+      const url: string = item.url;
       totalChecked++;
-      const url = item.url;
       if (url.startsWith('data:')) {
         okCount++;
         continue;

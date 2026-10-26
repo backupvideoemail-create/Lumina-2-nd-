@@ -509,8 +509,16 @@ export class MediaStorageService {
    */
   public async getAuthorizedObjectStream(
     fileName: string,
-    requestingUserId?: string
-  ): Promise<{ body: any; mimeType: string; error?: string }> {
+    requestingUserId?: string,
+    range?: string
+  ): Promise<{
+    body: any;
+    mimeType: string;
+    contentRange?: string;
+    contentLength?: number;
+    statusCode?: number;
+    error?: string;
+  }> {
     const safeName = path.basename(fileName);
     const meta = await this.getMetadata(safeName);
 
@@ -541,16 +549,29 @@ export class MediaStorageService {
 
       for (const candidateKey of keysToTry) {
         try {
-          const getRes = await this.s3Client.send(new GetObjectCommand({
+          const commandInput: any = {
             Bucket: this.r2Config.bucketName,
             Key: candidateKey
-          }));
+          };
+          if (range) {
+            commandInput.Range = range;
+          }
+          const getRes = await this.s3Client.send(new GetObjectCommand(commandInput));
           const resolvedMime =
             (getRes.ContentType && getRes.ContentType !== 'application/octet-stream') ? getRes.ContentType :
             (meta?.mimeType && meta.mimeType !== 'application/octet-stream') ? meta.mimeType :
             extMime;
-          return { body: getRes.Body, mimeType: resolvedMime };
-        } catch {
+          return {
+            body: getRes.Body,
+            mimeType: resolvedMime,
+            contentRange: getRes.ContentRange,
+            contentLength: getRes.ContentLength,
+            statusCode: range && getRes.ContentRange ? 206 : 200
+          };
+        } catch (err: any) {
+          if (err.name === 'InvalidRange' || err.$metadata?.httpStatusCode === 416) {
+            return { body: null, mimeType: '', statusCode: 416, error: 'Requested Range Not Satisfiable' };
+          }
           // try next key candidate
         }
       }

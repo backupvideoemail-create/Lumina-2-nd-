@@ -194,12 +194,22 @@ app.get('/api/media/:fileId', async (req, res) => {
       return res.sendFile(localPath, { acceptRanges: true });
     }
 
-    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, user?.id);
+    const rangeHeader = req.headers.range;
+    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, user?.id, rangeHeader);
     if (authResult.error || !authResult.body) {
-      const status = authResult.error?.includes('Unauthorized') ? 403 : 404;
+      const status = authResult.statusCode || (authResult.error?.includes('Unauthorized') ? 403 : 404);
       return res.status(status).json({ error: authResult.error || 'Media file not found' });
     }
 
+    if (authResult.statusCode) {
+      res.status(authResult.statusCode);
+    }
+    if (authResult.contentRange) {
+      res.setHeader('Content-Range', authResult.contentRange);
+    }
+    if (authResult.contentLength !== undefined) {
+      res.setHeader('Content-Length', authResult.contentLength);
+    }
     res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=86400');

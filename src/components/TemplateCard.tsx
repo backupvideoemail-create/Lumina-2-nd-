@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Play, Sparkles, Image as ImageIcon, UserCheck, ArrowUpRight, ShieldCheck } from 'lucide-react';
 import { Template } from '../types';
 import { useApp } from '../context/AppContext';
+import { isVideoMedia } from '../utils/mediaUtils';
 
 interface TemplateCardProps {
   template: Template;
@@ -23,16 +24,11 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const cardRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Authoritative media type with fallback
+  // Determine candidate media and whether it is a real playable video stream
+  const candidateMedia = template.preview || template.cover;
   const isVideo = Boolean(
-    template.mediaType === 'video' ||
-    (template.mediaType === undefined && (
-      template.type === 'video' ||
-      template.cover?.endsWith('.mp4') ||
-      template.cover?.endsWith('.webm') ||
-      template.cover?.startsWith('data:video/') ||
-      (template.preview && (template.preview.endsWith('.mp4') || template.preview.startsWith('data:video/')))
-    ))
+    !template.isFaceSwap &&
+    (template.mediaType === 'video' || isVideoMedia(candidateMedia))
   );
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
