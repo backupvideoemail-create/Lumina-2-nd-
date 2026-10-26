@@ -150,7 +150,10 @@ if (isIsolatedTestEnv) {
       if (credentialObj) {
         const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
         const isConfigProject = projectId === (firebaseConfig as any).projectId;
-        const targetDatabaseId = isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined;
+        const explicitDbId = process.env.FIRESTORE_DATABASE_ID?.trim();
+        const targetDatabaseId = explicitDbId
+          ? (explicitDbId === '(default)' ? undefined : explicitDbId)
+          : (isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined);
         const adminApp = initAdminApp({
           credential: cert(credentialObj),
           projectId
@@ -416,6 +419,90 @@ class ProductionDatabase {
     }
   }
 
+  /**
+   * Safe targeted catalog refresh from Firestore.
+   * Only reloads templates, Face Swap scenes, banners, and prompts without disturbing
+   * active user sessions, wallets, transactions, or generation job state.
+   */
+  public async refreshCatalogFromFirestore(): Promise<{
+    templatesCount: number;
+    faceSwapScenesCount: number;
+    bannersCount: number;
+  }> {
+    if (!adminFirestoreDb) {
+      throw new Error('Firestore connection is not available to refresh catalog.');
+    }
+
+    // 1. Templates
+    const tplSnap = await adminFirestoreDb.collection('templates').get();
+    const firestoreTemplates: Template[] = [];
+    if (!tplSnap.empty) {
+      tplSnap.forEach((d: any) => {
+        firestoreTemplates.push(d.data() as Template);
+      });
+    }
+    const templateMap = new Map<string, Template>();
+    SEED_TEMPLATES.forEach(t => templateMap.set(t.id, t));
+    (this.db.templates || []).forEach(t => templateMap.set(t.id, t));
+    firestoreTemplates.forEach(t => templateMap.set(t.id, t));
+    this.db.templates = Array.from(templateMap.values());
+
+    // 2. Face Swap Scenes & Config
+    try {
+      const scenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+      if (scenesDoc.exists && scenesDoc.data()?.scenes) {
+        const firestoreScenes: FaceSwapScene[] = scenesDoc.data().scenes;
+        const sceneMap = new Map<string, FaceSwapScene>();
+        SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
+        (this.db.faceSwapScenes || []).forEach(s => sceneMap.set(s.id, s));
+        firestoreScenes.forEach(s => sceneMap.set(s.id, s));
+        this.db.faceSwapScenes = Array.from(sceneMap.values()).map(s => {
+          if (s.id === 'fsv_trending_dance_stage' && s.title === 'Viral Instagram Dance Sequence') {
+            return { ...s, title: 'Viral Instagram Reels Sequence' };
+          }
+          return s;
+        });
+      }
+
+      // 3. Home Banners
+      const bannerDoc = await adminFirestoreDb.collection('config').doc('banners').get();
+      if (bannerDoc.exists && bannerDoc.data()?.banners) {
+        this.db.banners = bannerDoc.data().banners;
+      }
+
+      // 4. Face Swap Demo Video
+      const demoDoc = await adminFirestoreDb.collection('config').doc('faceswap_demo').get();
+      if (demoDoc.exists && demoDoc.data()?.demoVideoUrl) {
+        this.db.faceSwapDemoVideoUrl = demoDoc.data().demoVideoUrl;
+      }
+
+      // 5. Pricing Banner Pool
+      const pricingBannerDoc = await adminFirestoreDb.collection('config').doc('pricing_banner').get();
+      if (pricingBannerDoc.exists && pricingBannerDoc.data()) {
+        this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
+      }
+
+      // 6. Category Prompts
+      const promptsDoc = await adminFirestoreDb.collection('config').doc('category_prompts').get();
+      if (promptsDoc.exists && promptsDoc.data()?.prompts) {
+        this.db.categoryPrompts = {
+          ...DEFAULT_CATEGORY_PROMPTS,
+          ...promptsDoc.data().prompts
+        };
+      }
+    } catch (cfgErr: any) {
+      console.warn('[Database] Catalog config docs note during targeted refresh:', cfgErr.message);
+    }
+
+    this.save();
+    console.log('[Database] Targeted catalog & scene sync completed from Firestore');
+    return {
+      templatesCount: this.db.templates.length,
+      faceSwapScenesCount: this.db.faceSwapScenes.length,
+      bannersCount: this.db.banners.length
+    };
+  }
+
   private init(): ProductionDatabaseSchema {
     try {
       if (!fs.existsSync(DATA_DIR)) {
@@ -506,11 +593,18 @@ class ProductionDatabase {
   /* =========================================================================
      FIRESTORE SYNC HELPERS
   ========================================================================= */
-  public async syncToFirestore(collectionName: string, docId: string, data: any): Promise<void> {
-    if (!adminFirestoreDb) return;
+  public async syncToFirestore(
+    collectionName: string,
+    docId: string,
+    data: any
+  ): Promise<{ success: boolean; cloudPersisted: boolean; error?: string }> {
+    if (!adminFirestoreDb) {
+      return { success: false, cloudPersisted: false, error: 'Firestore Admin SDK not connected' };
+    }
     try {
       const sanitized = JSON.parse(JSON.stringify(data));
       await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
+      return { success: true, cloudPersisted: true };
     } catch (err: any) {
       console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
       if (collectionName === 'templates') {
@@ -518,10 +612,13 @@ class ProductionDatabase {
           await new Promise(r => setTimeout(r, 200));
           const sanitized = JSON.parse(JSON.stringify(data));
           await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
+          return { success: true, cloudPersisted: true };
         } catch (retryErr: any) {
           console.error(`[Firestore Sync Critical] Template ${docId} persistence failed:`, retryErr.message);
+          return { success: false, cloudPersisted: false, error: retryErr.message };
         }
       }
+      return { success: false, cloudPersisted: false, error: err.message };
     }
   }
 
@@ -1959,12 +2056,32 @@ class ProductionDatabase {
       createdAt: sceneData.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Face Swap scene cannot be saved permanently to Cloud.');
+      }
+    } else {
+      try {
+        const proposedScenes = [newScene, ...this.db.faceSwapScenes.filter(s => s.id !== newScene.id)];
+        await adminFirestoreDb.collection('config').doc('faceswap_scenes').set({
+          scenes: JSON.parse(JSON.stringify(proposedScenes)),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        // Verification read-back
+        const verifyDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+        if (!verifyDoc.exists || !verifyDoc.data()?.scenes) {
+          throw new Error('Firestore read-back verification failed for faceswap_scenes document.');
+        }
+      } catch (firestoreErr: any) {
+        console.error('[Database Critical] Firestore write failure for Face Swap scene:', firestoreErr.message);
+        throw new Error(`Firestore scene write failed: ${firestoreErr.message}`);
+      }
+    }
+
     this.db.faceSwapScenes.unshift(newScene);
     this.save();
-    await this.syncToFirestore('config', 'faceswap_scenes', {
-      scenes: this.db.faceSwapScenes,
-      updatedAt: new Date().toISOString()
-    });
     return newScene;
   }
 
@@ -1973,28 +2090,66 @@ class ProductionDatabase {
     const scene = this.db.faceSwapScenes.find(s => s.id === id);
     if (!scene) return null;
 
+    const proposedScene = { ...scene, ...updates, updatedAt: new Date().toISOString() };
+    const proposedScenes = this.db.faceSwapScenes.map(s => s.id === id ? proposedScene : s);
+
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Face Swap scene cannot be updated permanently on Cloud.');
+      }
+    } else {
+      try {
+        await adminFirestoreDb.collection('config').doc('faceswap_scenes').set({
+          scenes: JSON.parse(JSON.stringify(proposedScenes)),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        const verifyDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+        if (!verifyDoc.exists || !verifyDoc.data()?.scenes) {
+          throw new Error('Firestore read-back verification failed for faceswap_scenes document.');
+        }
+      } catch (firestoreErr: any) {
+        console.error(`[Database Critical] Firestore update failure for Face Swap scene ${id}:`, firestoreErr.message);
+        throw new Error(`Firestore scene update failed: ${firestoreErr.message}`);
+      }
+    }
+
     Object.assign(scene, updates, { updatedAt: new Date().toISOString() });
     this.save();
-    await this.syncToFirestore('config', 'faceswap_scenes', {
-      scenes: this.db.faceSwapScenes,
-      updatedAt: new Date().toISOString()
-    });
     return scene;
   }
 
   public async deleteFaceSwapScene(id: string): Promise<boolean> {
     if (!this.db.faceSwapScenes) return false;
     const index = this.db.faceSwapScenes.findIndex(s => s.id === id);
-    if (index !== -1) {
-      this.db.faceSwapScenes.splice(index, 1);
-      this.save();
-      await this.syncToFirestore('config', 'faceswap_scenes', {
-        scenes: this.db.faceSwapScenes,
-        updatedAt: new Date().toISOString()
-      });
-      return true;
+    if (index === -1) return false;
+
+    const proposedScenes = this.db.faceSwapScenes.filter(s => s.id !== id);
+
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Face Swap scene cannot be deleted permanently from Cloud.');
+      }
+    } else {
+      try {
+        await adminFirestoreDb.collection('config').doc('faceswap_scenes').set({
+          scenes: JSON.parse(JSON.stringify(proposedScenes)),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        const verifyDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+        if (!verifyDoc.exists || !verifyDoc.data()?.scenes) {
+          throw new Error('Firestore read-back verification failed for faceswap_scenes document after delete.');
+        }
+      } catch (firestoreErr: any) {
+        console.error(`[Database Critical] Firestore delete failure for Face Swap scene ${id}:`, firestoreErr.message);
+        throw new Error(`Firestore scene delete failed: ${firestoreErr.message}`);
+      }
     }
-    return false;
+
+    this.db.faceSwapScenes.splice(index, 1);
+    this.save();
+    return true;
   }
 
   /**

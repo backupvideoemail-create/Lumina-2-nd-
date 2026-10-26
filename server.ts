@@ -463,12 +463,22 @@ app.post('/api/templates/:id/like', requireAuth, (req, res) => {
   });
 });
 
-// Admin Verification Route (Allows Content Studio to verify admin access state)
+// Admin Verification Route (Allows Content Studio to verify admin access state and live backend status)
 app.get('/api/admin/verify', requireAdmin, (req, res) => {
   const user = getAuthenticatedUser(req);
+  const storageStatus = mediaStorage.getStatus();
   res.json({
     authorized: true,
-    user: user ? { id: user.id, email: user.email, role: user.role } : null
+    user: user ? { id: user.id, email: user.email, role: user.role } : null,
+    backendStatus: {
+      firestoreConnected: Boolean(adminFirestoreDb),
+      firestoreProjectId: adminFirestoreDb?.projectId || null,
+      firestoreDatabaseId: adminFirestoreDb?.databaseId || null,
+      r2Configured: storageStatus.r2Configured,
+      r2Bucket: storageStatus.bucket || null,
+      r2MissingEnvVars: storageStatus.missingEnvVars,
+      activeStorageDriver: storageStatus.activeDriver
+    }
   });
 });
 
@@ -844,8 +854,15 @@ app.put('/api/admin/categories/prompts', requireAdmin, (req, res) => {
   res.json({ success: true, prompts: prodDb.getCategoryPrompts() });
 });
 
-// Admin Get All Templates (Including Inactive)
-app.get('/api/admin/templates', requireAdmin, (_req, res) => {
+// Admin Get All Templates (Including Inactive, with optional cloud refresh)
+app.get('/api/admin/templates', requireAdmin, async (req, res) => {
+  if (req.query.refresh === 'true' && adminFirestoreDb) {
+    try {
+      await prodDb.refreshCatalogFromFirestore();
+    } catch (err: any) {
+      console.warn('[Admin] Template catalog refresh note:', err.message);
+    }
+  }
   res.json({ templates: prodDb.getAllTemplatesAdmin() });
 });
 
@@ -1393,7 +1410,14 @@ app.get('/api/faceswap/scenes', (req, res) => {
   res.json({ success: true, scenes });
 });
 
-app.get('/api/admin/faceswap/scenes', requireAdmin, (_req, res) => {
+app.get('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
+  if (req.query.refresh === 'true' && adminFirestoreDb) {
+    try {
+      await prodDb.refreshCatalogFromFirestore();
+    } catch (err: any) {
+      console.warn('[Admin] Face Swap scenes refresh note:', err.message);
+    }
+  }
   const scenes = prodDb.getFaceSwapScenes(true);
   res.json({ success: true, scenes });
 });
@@ -1546,22 +1570,39 @@ app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
   }
 });
 
-// Admin One-Click Cloud Database & Storage Synchronization
-app.post('/api/admin/sync-firestore', requireAdmin, async (_req, res) => {
+// Admin One-Click Cloud Database & Storage Synchronization (Supports 'catalog' vs 'full' scope)
+app.post('/api/admin/sync-firestore', requireAdmin, async (req, res) => {
   try {
-    await prodDb.loadAuthoritativeFromFirestore();
-    const isConnected = Boolean(adminFirestoreDb);
+    const scope = (req.query.scope as string) || req.body?.scope || 'catalog';
+    if (!adminFirestoreDb) {
+      return res.status(503).json({
+        success: false,
+        firestoreConnected: false,
+        error: 'Firestore Admin SDK not connected. FIREBASE_SERVICE_ACCOUNT_KEY is missing in environment secrets.',
+        code: 'FIRESTORE_NOT_CONNECTED',
+        templatesCount: prodDb.getTemplates().length,
+        faceSwapScenesCount: prodDb.getFaceSwapScenes(true).length
+      });
+    }
+
+    if (scope === 'full') {
+      await prodDb.loadAuthoritativeFromFirestore();
+    } else {
+      await prodDb.refreshCatalogFromFirestore();
+    }
+
     const storageStatus = mediaStorage.getStatus();
     res.json({
       success: true,
-      firestoreConnected: isConnected,
+      scope,
+      firestoreConnected: true,
       templatesCount: prodDb.getTemplates().length,
       faceSwapScenesCount: prodDb.getFaceSwapScenes(true).length,
       storageDriver: storageStatus.activeDriver,
       r2Configured: storageStatus.r2Configured,
-      message: isConnected
-        ? 'Authoritative state synchronized from Firestore successfully.'
-        : 'Firestore Admin SDK not connected (FIREBASE_SERVICE_ACCOUNT_KEY missing). Operating on local cache.'
+      message: scope === 'full'
+        ? 'Complete authoritative state (wallets, users, templates, scenes) synchronized from Firestore.'
+        : 'Catalog templates, Face Swap scenes, and banners refreshed from shared Firestore.'
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Firestore synchronization failed' });

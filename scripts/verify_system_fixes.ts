@@ -429,6 +429,48 @@ async function runSystemVerification() {
   // Clean up test template
   await prodDb.deleteTemplate(testTplId);
 
+  // 11.6 Suite 13: Option A Shared Backend & Targeted Sync Verification
+  console.log('\n--- SUITE 13: Option A Shared Backend & Targeted Sync Verification ---');
+  // Test FaceSwapScene creation
+  const testScene = await prodDb.createFaceSwapScene({
+    id: `fsv_test_shared_${Date.now()}`,
+    title: 'Test Shared Scene',
+    description: 'Testing shared Firestore persistence',
+    sampleFace: 'https://images.unsplash.com/test-face.jpg',
+    sourceVideoPreview: 'https://images.unsplash.com/test-source.mp4',
+    resultVideoPreview: 'https://images.unsplash.com/test-result.mp4',
+    creditCost: 45,
+    durationSeconds: 8,
+    aspectRatio: '9:16',
+    category: 'Viral & Trending',
+    tags: ['Test', 'Shared'],
+    isActive: true,
+    status: 'published'
+  });
+  assert(testScene !== null && testScene.id.startsWith('fsv_test_shared_'), 'FaceSwap scene created with verified ID');
+  const retrievedScene = prodDb.getFaceSwapScene(testScene.id);
+  assert(retrievedScene !== null && retrievedScene.title === 'Test Shared Scene', 'FaceSwap scene retrievable from database');
+
+  // Test FaceSwapScene update
+  const updatedScene = await prodDb.updateFaceSwapScene(testScene.id, { title: 'Updated Shared Scene' });
+  assert(updatedScene !== null && updatedScene.title === 'Updated Shared Scene', 'FaceSwap scene updated with verified title');
+
+  // Test FaceSwapScene deletion
+  const deletedScene = await prodDb.deleteFaceSwapScene(testScene.id);
+  assert(deletedScene === true, 'FaceSwap scene deleted successfully');
+  assert(prodDb.getFaceSwapScene(testScene.id) === null, 'FaceSwap scene no longer exists after delete');
+
+  // Test Targeted Catalog Refresh method
+  const refreshResult = await prodDb.refreshCatalogFromFirestore();
+  assert(refreshResult !== null, 'Targeted refreshCatalogFromFirestore completes successfully');
+  assert(typeof refreshResult.templatesCount === 'number', 'refreshCatalogFromFirestore returns templatesCount');
+  assert(typeof refreshResult.faceSwapScenesCount === 'number', 'refreshCatalogFromFirestore returns faceSwapScenesCount');
+
+  // Verify server sync route has scope handling
+  assert(serverContent.includes('scope === \'full\''), 'server.ts handles full authoritative scope');
+  assert(serverContent.includes('refreshCatalogFromFirestore'), 'server.ts uses targeted catalog refresh');
+  assert(serverContent.includes('FIRESTORE_NOT_CONNECTED'), 'server.ts returns FIRESTORE_NOT_CONNECTED when SDK is missing');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

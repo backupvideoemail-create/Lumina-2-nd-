@@ -193,10 +193,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [adminTemplates, setAdminTemplates] = useState<Template[]>([]);
   const [loadingAdminTemplates, setLoadingAdminTemplates] = useState<boolean>(false);
 
-  const fetchAdminTemplates = useCallback(async () => {
+  const fetchAdminTemplates = useCallback(async (refresh: boolean = false) => {
     try {
       setLoadingAdminTemplates(true);
-      const res = await fetch('/api/admin/templates', {
+      const url = refresh ? '/api/admin/templates?refresh=true' : '/api/admin/templates';
+      const res = await fetch(url, {
         headers: getAdminHeaders()
       });
       if (res.ok) {
@@ -1542,9 +1543,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   // ==========================================
   // FACE SWAP SCENES ADMIN HANDLERS
   // ==========================================
-  const fetchAdminFaceSwapScenes = async () => {
+  const fetchAdminFaceSwapScenes = async (refresh: boolean = false) => {
     try {
-      const res = await fetch('/api/admin/faceswap/scenes', { headers: getAdminHeaders() });
+      const url = refresh ? '/api/admin/faceswap/scenes?refresh=true' : '/api/admin/faceswap/scenes';
+      const res = await fetch(url, { headers: getAdminHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.scenes && Array.isArray(data.scenes)) {
