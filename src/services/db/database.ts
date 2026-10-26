@@ -226,11 +226,22 @@ export interface ProductionDatabaseSchema {
   pricingBanner?: PricingBannerConfig | null;
 }
 
-export interface PricingBannerConfig {
+export interface PricingBannerItem {
+  id: string;
   mediaUrl: string;
   mediaType: 'image' | 'video';
   posterUrl?: string;
   isEnabled: boolean;
+  altText?: string;
+  createdAt: string;
+}
+
+export interface PricingBannerConfig {
+  items?: PricingBannerItem[];
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video';
+  posterUrl?: string;
+  isEnabled?: boolean;
   altText?: string;
   updatedAt: string;
 }
@@ -1746,7 +1757,124 @@ class ProductionDatabase {
   }
 
   public getPricingBanner(): PricingBannerConfig | null {
-    return this.db.pricingBanner || null;
+    if (!this.db.pricingBanner) return null;
+    if (!this.db.pricingBanner.items || !Array.isArray(this.db.pricingBanner.items)) {
+      if (this.db.pricingBanner.mediaUrl) {
+        this.db.pricingBanner.items = [
+          {
+            id: 'banner_initial',
+            mediaUrl: this.db.pricingBanner.mediaUrl,
+            mediaType: this.db.pricingBanner.mediaType || 'image',
+            posterUrl: this.db.pricingBanner.posterUrl,
+            isEnabled: this.db.pricingBanner.isEnabled !== false,
+            altText: this.db.pricingBanner.altText || 'Lumina VIP Creator Pass',
+            createdAt: this.db.pricingBanner.updatedAt || new Date().toISOString()
+          }
+        ];
+      } else {
+        this.db.pricingBanner.items = [];
+      }
+    }
+    return this.db.pricingBanner;
+  }
+
+  public getPricingBannerPool(): PricingBannerItem[] {
+    const config = this.getPricingBanner();
+    return config?.items || [];
+  }
+
+  public getRandomActivePricingBanner(): PricingBannerItem | null {
+    const pool = this.getPricingBannerPool();
+    const active = pool.filter(item => item.isEnabled !== false && item.mediaUrl && item.mediaUrl.trim().length > 0);
+    if (active.length > 0) {
+      const idx = Math.floor(Math.random() * active.length);
+      return active[idx];
+    }
+    // Fallback to legacy single banner if items array was empty
+    const legacy = this.db.pricingBanner;
+    if (legacy && legacy.isEnabled !== false && legacy.mediaUrl) {
+      return {
+        id: 'banner_legacy',
+        mediaUrl: legacy.mediaUrl,
+        mediaType: legacy.mediaType || 'image',
+        posterUrl: legacy.posterUrl,
+        isEnabled: true,
+        altText: legacy.altText,
+        createdAt: legacy.updatedAt || new Date().toISOString()
+      };
+    }
+    return null;
+  }
+
+  public addPricingBannerItem(data: {
+    mediaUrl: string;
+    mediaType?: 'image' | 'video';
+    posterUrl?: string;
+    isEnabled?: boolean;
+    altText?: string;
+  }): PricingBannerItem {
+    const newItem: PricingBannerItem = {
+      id: `pbn_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      mediaUrl: data.mediaUrl,
+      mediaType: data.mediaType === 'video' ? 'video' : 'image',
+      posterUrl: data.posterUrl,
+      isEnabled: data.isEnabled !== false,
+      altText: data.altText || 'Lumina VIP Creator Pass',
+      createdAt: new Date().toISOString()
+    };
+
+    const currentConfig = this.getPricingBanner();
+    const items = currentConfig?.items ? [...currentConfig.items, newItem] : [newItem];
+
+    const updated: PricingBannerConfig = {
+      items,
+      mediaUrl: newItem.mediaUrl,
+      mediaType: newItem.mediaType,
+      posterUrl: newItem.posterUrl,
+      isEnabled: true,
+      altText: newItem.altText,
+      updatedAt: new Date().toISOString()
+    };
+
+    this.db.pricingBanner = updated;
+    this.save();
+    this.syncToFirestore('config', 'pricing_banner', updated);
+    return newItem;
+  }
+
+  public deletePricingBannerItem(id: string): boolean {
+    const currentConfig = this.getPricingBanner();
+    if (!currentConfig || !currentConfig.items) return false;
+    const initialLen = currentConfig.items.length;
+    currentConfig.items = currentConfig.items.filter(item => item.id !== id);
+    if (currentConfig.items.length !== initialLen) {
+      currentConfig.updatedAt = new Date().toISOString();
+      if (currentConfig.items.length > 0) {
+        currentConfig.mediaUrl = currentConfig.items[0].mediaUrl;
+        currentConfig.mediaType = currentConfig.items[0].mediaType;
+        currentConfig.posterUrl = currentConfig.items[0].posterUrl;
+      } else {
+        currentConfig.mediaUrl = '';
+      }
+      this.db.pricingBanner = currentConfig;
+      this.save();
+      this.syncToFirestore('config', 'pricing_banner', currentConfig);
+      return true;
+    }
+    return false;
+  }
+
+  public togglePricingBannerItem(id: string, isEnabled: boolean): PricingBannerItem | null {
+    const currentConfig = this.getPricingBanner();
+    if (!currentConfig || !currentConfig.items) return null;
+    const item = currentConfig.items.find(i => i.id === id);
+    if (!item) return null;
+    item.isEnabled = isEnabled;
+    currentConfig.updatedAt = new Date().toISOString();
+    this.db.pricingBanner = currentConfig;
+    this.save();
+    this.syncToFirestore('config', 'pricing_banner', currentConfig);
+    return item;
   }
 
   public setPricingBanner(banner: {
@@ -1756,8 +1884,32 @@ class ProductionDatabase {
     isEnabled: boolean;
     altText?: string;
   }): PricingBannerConfig {
+    const existing = this.getPricingBanner();
+    const existingItems = existing?.items || [];
+    
+    // Check if item already exists with this mediaUrl
+    let items = [...existingItems];
+    const existingItemIdx = items.findIndex(i => i.mediaUrl === banner.mediaUrl);
+    if (existingItemIdx !== -1) {
+      items[existingItemIdx] = {
+        ...items[existingItemIdx],
+        ...banner
+      };
+    } else if (banner.mediaUrl) {
+      items.unshift({
+        id: `pbn_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        mediaUrl: banner.mediaUrl,
+        mediaType: banner.mediaType,
+        posterUrl: banner.posterUrl,
+        isEnabled: banner.isEnabled,
+        altText: banner.altText,
+        createdAt: new Date().toISOString()
+      });
+    }
+
     const updated: PricingBannerConfig = {
       ...banner,
+      items,
       updatedAt: new Date().toISOString()
     };
     this.db.pricingBanner = updated;
@@ -1795,7 +1947,7 @@ class ProductionDatabase {
     return scenes.find(s => s.id === id) || null;
   }
 
-  public createFaceSwapScene(sceneData: FaceSwapScene): FaceSwapScene {
+  public async createFaceSwapScene(sceneData: FaceSwapScene): Promise<FaceSwapScene> {
     if (!this.db.faceSwapScenes) {
       this.db.faceSwapScenes = [];
     }
@@ -1809,34 +1961,34 @@ class ProductionDatabase {
     };
     this.db.faceSwapScenes.unshift(newScene);
     this.save();
-    this.syncToFirestore('config', 'faceswap_scenes', {
+    await this.syncToFirestore('config', 'faceswap_scenes', {
       scenes: this.db.faceSwapScenes,
       updatedAt: new Date().toISOString()
     });
     return newScene;
   }
 
-  public updateFaceSwapScene(id: string, updates: Partial<FaceSwapScene>): FaceSwapScene | null {
+  public async updateFaceSwapScene(id: string, updates: Partial<FaceSwapScene>): Promise<FaceSwapScene | null> {
     if (!this.db.faceSwapScenes) return null;
     const scene = this.db.faceSwapScenes.find(s => s.id === id);
     if (!scene) return null;
 
     Object.assign(scene, updates, { updatedAt: new Date().toISOString() });
     this.save();
-    this.syncToFirestore('config', 'faceswap_scenes', {
+    await this.syncToFirestore('config', 'faceswap_scenes', {
       scenes: this.db.faceSwapScenes,
       updatedAt: new Date().toISOString()
     });
     return scene;
   }
 
-  public deleteFaceSwapScene(id: string): boolean {
+  public async deleteFaceSwapScene(id: string): Promise<boolean> {
     if (!this.db.faceSwapScenes) return false;
     const index = this.db.faceSwapScenes.findIndex(s => s.id === id);
     if (index !== -1) {
       this.db.faceSwapScenes.splice(index, 1);
       this.save();
-      this.syncToFirestore('config', 'faceswap_scenes', {
+      await this.syncToFirestore('config', 'faceswap_scenes', {
         scenes: this.db.faceSwapScenes,
         updatedAt: new Date().toISOString()
       });

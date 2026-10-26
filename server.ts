@@ -23,7 +23,7 @@ import {
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
-import { prodDb } from './src/services/db/database.ts';
+import { prodDb, adminFirestoreDb } from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
@@ -1232,9 +1232,91 @@ app.put('/api/admin/banners', requireAdmin, (req, res) => {
 });
 
 // Pricing Page Dedicated Hero Banner API (Admin-controlled, isolated from templates & home banners)
+// Returns a randomly chosen active banner from the pool on each page refresh / open
 app.get('/api/pricing-banner', (_req, res) => {
-  const banner = prodDb.getPricingBanner();
-  res.json({ success: true, banner });
+  const randomBanner = prodDb.getRandomActivePricingBanner();
+  const pool = prodDb.getPricingBannerPool();
+  res.json({
+    success: true,
+    banner: randomBanner,
+    totalPoolSize: pool.length,
+    activePoolSize: pool.filter(i => i.isEnabled !== false && i.mediaUrl).length
+  });
+});
+
+app.get('/api/admin/pricing-banners', requireAdmin, (_req, res) => {
+  const pool = prodDb.getPricingBannerPool();
+  res.json({ success: true, banners: pool });
+});
+
+app.post('/api/admin/pricing-banners', requireAdmin, async (req, res) => {
+  try {
+    const { mediaBase64, mediaUrl, mediaType = 'image', posterBase64, posterUrl, isEnabled = true, altText } = req.body;
+    let finalMediaUrl = mediaUrl || '';
+    let finalPosterUrl = posterUrl || '';
+
+    if (mediaBase64 && typeof mediaBase64 === 'string') {
+      if (mediaBase64.startsWith('data:')) {
+        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+        const stored = await mediaStorage.saveMedia(
+          mediaBase64,
+          'asset',
+          `pricing_banner_${Date.now()}.${ext}`,
+          undefined,
+          true
+        );
+        finalMediaUrl = stored.publicUrl;
+      } else if (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/')) {
+        finalMediaUrl = mediaBase64;
+      }
+    }
+
+    if (posterBase64 && typeof posterBase64 === 'string' && posterBase64.startsWith('data:')) {
+      const storedPoster = await mediaStorage.saveMedia(
+        posterBase64,
+        'asset',
+        `pricing_poster_${Date.now()}.jpg`,
+        undefined,
+        true
+      );
+      finalPosterUrl = storedPoster.publicUrl;
+    }
+
+    if (!finalMediaUrl) {
+      return res.status(400).json({ error: 'Please provide media (image or video) for pricing banner.' });
+    }
+
+    const newItem = prodDb.addPricingBannerItem({
+      mediaUrl: finalMediaUrl,
+      mediaType: mediaType === 'video' ? 'video' : 'image',
+      posterUrl: finalPosterUrl || undefined,
+      isEnabled: Boolean(isEnabled),
+      altText: altText || 'Lumina VIP Creator Pass'
+    });
+
+    res.json({ success: true, banner: newItem, allBanners: prodDb.getPricingBannerPool() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to add pricing banner' });
+  }
+});
+
+app.put('/api/admin/pricing-banners/:id/toggle', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const { isEnabled } = req.body;
+  const updated = prodDb.togglePricingBannerItem(id, Boolean(isEnabled));
+  if (!updated) {
+    return res.status(404).json({ error: 'Pricing banner not found' });
+  }
+  res.json({ success: true, banner: updated, allBanners: prodDb.getPricingBannerPool() });
+});
+
+app.delete('/api/admin/pricing-banners/:id', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const deleted = prodDb.deletePricingBannerItem(id);
+  if (!deleted) {
+    return res.status(404).json({ error: 'Pricing banner not found' });
+  }
+  res.json({ success: true, deletedId: id, allBanners: prodDb.getPricingBannerPool() });
 });
 
 app.post('/api/admin/pricing-banner', requireAdmin, async (req, res) => {
@@ -1367,7 +1449,7 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       cleanResultVideo = stored.publicUrl;
     }
 
-    const scene = prodDb.createFaceSwapScene({
+    const scene = await prodDb.createFaceSwapScene({
       id: `fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       title: title.trim(),
       description: (description || title).trim(),
@@ -1444,23 +1526,45 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     if (req.body.isFeatured !== undefined) updates.isFeatured = Boolean(req.body.isFeatured);
     if (req.body.order !== undefined) updates.order = Number(req.body.order) || 0;
 
-    const updated = prodDb.updateFaceSwapScene(id, updates);
+    const updated = await prodDb.updateFaceSwapScene(id, updates);
     res.json({ success: true, scene: updated });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to update Face Swap scene', code: 'UPDATE_FAILED' });
   }
 });
 
-app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = prodDb.deleteFaceSwapScene(id);
+    const deleted = await prodDb.deleteFaceSwapScene(id);
     if (!deleted) {
       return res.status(404).json({ error: 'Face Swap scene not found' });
     }
     res.json({ success: true, deletedId: id });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to delete Face Swap scene' });
+  }
+});
+
+// Admin One-Click Cloud Database & Storage Synchronization
+app.post('/api/admin/sync-firestore', requireAdmin, async (_req, res) => {
+  try {
+    await prodDb.loadAuthoritativeFromFirestore();
+    const isConnected = Boolean(adminFirestoreDb);
+    const storageStatus = mediaStorage.getStatus();
+    res.json({
+      success: true,
+      firestoreConnected: isConnected,
+      templatesCount: prodDb.getTemplates().length,
+      faceSwapScenesCount: prodDb.getFaceSwapScenes(true).length,
+      storageDriver: storageStatus.activeDriver,
+      r2Configured: storageStatus.r2Configured,
+      message: isConnected
+        ? 'Authoritative state synchronized from Firestore successfully.'
+        : 'Firestore Admin SDK not connected (FIREBASE_SERVICE_ACCOUNT_KEY missing). Operating on local cache.'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Firestore synchronization failed' });
   }
 });
 

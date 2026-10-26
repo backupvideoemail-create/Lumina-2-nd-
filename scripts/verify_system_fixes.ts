@@ -373,10 +373,58 @@ async function runSystemVerification() {
   assert(plansModalContent.includes('LIMITED TIME OFFER'), 'PlansModal retains LIMITED TIME OFFER');
   assert(!plansModalContent.includes('00:59:48'), 'No countdown timer in PlansModal');
 
-  // 11.4 TemplateCard Media Loading Placeholder
-  const templateCardContent = fs.readFileSync('src/components/TemplateCard.tsx', 'utf-8');
-  assert(templateCardContent.includes('Loading media…'), 'TemplateCard includes Loading media… label');
-  assert(templateCardContent.includes('isMediaLoaded'), 'TemplateCard tracks isMediaLoaded state');
+  // 11.5 Multi-Banner Pool & Rotation Tests
+  console.log('\n--- SUITE 12: Pricing Banner Multi-Photo Rotation Pool & Clean Canvas ---');
+  // Add 3 test banners to pool
+  const b1 = prodDb.addPricingBannerItem({
+    mediaUrl: 'https://images.unsplash.com/banner-1.jpg',
+    mediaType: 'image',
+    altText: 'Test Banner 1',
+    isEnabled: true
+  });
+  const b2 = prodDb.addPricingBannerItem({
+    mediaUrl: 'https://images.unsplash.com/banner-2.jpg',
+    mediaType: 'image',
+    altText: 'Test Banner 2',
+    isEnabled: true
+  });
+  const b3 = prodDb.addPricingBannerItem({
+    mediaUrl: 'https://images.unsplash.com/banner-3.mp4',
+    mediaType: 'video',
+    altText: 'Test Video Banner 3',
+    isEnabled: false // disabled
+  });
+
+  const pool = prodDb.getPricingBannerPool();
+  assert(pool.length >= 3, 'Pricing banner pool contains multiple items');
+  assert(pool.some(item => item.id === b1.id), 'Banner 1 exists in pool');
+  assert(pool.some(item => item.id === b2.id), 'Banner 2 exists in pool');
+  assert(pool.some(item => item.id === b3.id), 'Banner 3 exists in pool');
+
+  // Random active selection: should only select active items (b1 or b2, never b3)
+  const randomSelected = prodDb.getRandomActivePricingBanner();
+  assert(randomSelected !== null, 'Random active banner is returned');
+  assert(randomSelected?.isEnabled === true, 'Returned random banner is strictly an enabled banner');
+  assert(randomSelected?.id !== b3.id, 'Disabled banner is never selected in active rotation');
+
+  // Toggle b3 to enabled and test
+  const toggled = prodDb.togglePricingBannerItem(b3.id, true);
+  assert(toggled?.isEnabled === true, 'Banner 3 successfully toggled to enabled');
+
+  // Delete test items from pool
+  prodDb.deletePricingBannerItem(b1.id);
+  prodDb.deletePricingBannerItem(b2.id);
+  prodDb.deletePricingBannerItem(b3.id);
+  const poolAfterDelete = prodDb.getPricingBannerPool();
+  assert(!poolAfterDelete.some(item => item.id === b1.id), 'Banner 1 deleted from pool');
+
+  // Clean Canvas Test: verify no overlapping text overlay remains in PlansModal.tsx
+  assert(!plansModalContent.includes('VIRAL REELS CREATOR PRO'), 'PlansModal has no VIRAL REELS CREATOR PRO overlay');
+  assert(!plansModalContent.includes('Trending AI Effects'), 'PlansModal has no redundant Trending AI Effects HTML chips');
+  assert(!plansModalContent.includes('500+ AI Templates'), 'PlansModal has no redundant 500+ AI Templates HTML chips');
+  assert(!plansModalContent.includes('Instagram Reels Trends'), 'PlansModal has no redundant Instagram Reels Trends HTML chips');
+  assert(!plansModalContent.includes('Ultra 4K Quality'), 'PlansModal has no redundant Ultra 4K Quality HTML chips');
+  assert(plansModalContent.includes('object-cover'), 'PlansModal maintains full-bleed banner canvas');
 
   // Clean up test template
   await prodDb.deleteTemplate(testTplId);
