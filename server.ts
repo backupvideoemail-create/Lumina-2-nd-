@@ -1495,6 +1495,7 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       aspectRatio: aspectRatio as any,
       category: (category || 'Viral & Trending').trim(),
       tags: Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean),
+      masterRecipePrompt: req.body.masterRecipePrompt ? String(req.body.masterRecipePrompt).trim() : undefined,
       isActive: Boolean(isActive),
       status: status === 'draft' ? 'draft' : 'published',
       isFeatured: Boolean(isFeatured),
@@ -1518,6 +1519,9 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     const updates: any = {};
     if (req.body.title !== undefined) updates.title = String(req.body.title).trim();
     if (req.body.description !== undefined) updates.description = String(req.body.description).trim();
+    if (req.body.masterRecipePrompt !== undefined) {
+      updates.masterRecipePrompt = req.body.masterRecipePrompt ? String(req.body.masterRecipePrompt).trim() : undefined;
+    }
     
     if (req.body.sampleFace !== undefined) {
       let face = String(req.body.sampleFace).trim();
@@ -2989,13 +2993,14 @@ app.post('/api/reports', async (req, res) => {
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const { templateId, inputMediaUrl, customPrompt } = req.body;
+  const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
 
   const template = prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
-    return res.status(404).json({ error: 'Template not found' });
+    return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
   }
   if (!inputMediaUrl) {
-    return res.status(400).json({ error: 'Please upload media to generate' });
+    return res.status(400).json({ error: 'Please upload media to generate', code: 'MISSING_MEDIA', stage: 'validation' });
   }
 
   // Detect uploaded media type (image vs video)
@@ -3009,19 +3014,29 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const primaryMedia = inputMediaUrl.includes('|||') ? inputMediaUrl.split('|||')[0] : inputMediaUrl;
   const detectedInputType: 'image' | 'video' = isVideoMedia(primaryMedia) ? 'video' : 'image';
-  const allowedInputType: TemplateInputType =
-    template.inputType || (template.type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY');
 
-  // Input Type Enforcement: Disallow incompatible input media
-  if (allowedInputType === 'IMAGE_ONLY' && detectedInputType === 'video') {
+  // Input Contract Enforcement: Prioritize requiredInputs first, then configured inputType
+  const hasExplicitSlots = Boolean(template.requiredInputs && template.requiredInputs.length > 0);
+  const requiresImageOnly = hasExplicitSlots
+    ? template.requiredInputs.every((s) => s.type === 'image')
+    : (template.inputType === 'IMAGE_ONLY' || (!template.inputType && template.type === 'photo'));
+  const requiresVideoOnly = hasExplicitSlots
+    ? template.requiredInputs.every((s) => s.type === 'video')
+    : (template.inputType === 'VIDEO_ONLY');
+
+  if (requiresImageOnly && detectedInputType === 'video') {
     return res.status(400).json({
-      error: 'This template accepts photo inputs only. Please upload a photo (JPG, PNG, WEBP).'
+      error: 'This template accepts photo inputs only. Please upload a photo (JPG, PNG, WEBP).',
+      code: 'INVALID_INPUT_TYPE',
+      stage: 'validation'
     });
   }
 
-  if (allowedInputType === 'VIDEO_ONLY' && detectedInputType === 'image') {
+  if (requiresVideoOnly && detectedInputType === 'image') {
     return res.status(400).json({
-      error: 'This template accepts video inputs only. Please upload a video (MP4, MOV).'
+      error: 'This template accepts video inputs only. Please upload a video (MP4, MOV).',
+      code: 'INVALID_INPUT_TYPE',
+      stage: 'validation'
     });
   }
 
@@ -3108,7 +3123,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       const effectivePrompt = buildUnifiedGenerationPrompt({
         categoryPrompt,
         templateRecipePrompt: recipePrompt,
-        userCustomInstructions: customPrompt,
+        userCustomInstructions: sanitizedCustomPrompt,
         templateTitle: template.title,
         templateCategory: template.category,
         hasAfterReference: Boolean(resolvedRefImage),
@@ -3147,7 +3162,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         sampleResultUrl: resolvedRefImage,
         sampleFaceThumbnailUrl: template.sampleFaceThumbnail, // Strictly display-only example asset
         aspectRatio: template.aspectRatio,
-        customPrompt,
+        customPrompt: sanitizedCustomPrompt,
         ownerUserId: user.id,
         recipe: effectiveRecipe,
         detectedInputType,
@@ -3200,8 +3215,23 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     durationSeconds = 5,
     faceReferenceUrls = [],
     faceReferenceBase64List = [],
-    customInstructions
+    customInstructions,
+    sceneId
   } = req.body;
+
+  // Resolve server-selected scene recipe and authoritative original driving video
+  const selectedScene = sceneId
+    ? prodDb.getFaceSwapScene(sceneId)
+    : (sourceVideoUrl ? prodDb.getFaceSwapScenes(true).find(s => s.sourceVideoPreview === sourceVideoUrl || s.resultVideoPreview === sourceVideoUrl) : null);
+
+  // Authoritative Driving Video Enforcement:
+  // NEVER use resultVideoPreview as the driving video. If client accidentally supplied result video, override with sourceVideoPreview.
+  let resolvedSourceVideo = sourceVideoBase64 || sourceVideoUrl;
+  if (selectedScene) {
+    if (!resolvedSourceVideo || resolvedSourceVideo === selectedScene.resultVideoPreview || (typeof resolvedSourceVideo === 'string' && resolvedSourceVideo.includes(selectedScene.resultVideoPreview))) {
+      resolvedSourceVideo = selectedScene.sourceVideoPreview;
+    }
+  }
 
   // 1. Duration Validation: Clamped strictly between 4 and 15 seconds
   const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 5)));
@@ -3211,7 +3241,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   let billableDuration = requestedDuration;
 
   try {
-    const rawVideoInput = sourceVideoBase64 || sourceVideoUrl;
+    const rawVideoInput = resolvedSourceVideo;
     if (!rawVideoInput) {
       return res.status(400).json({ error: 'Please upload or provide a source video.' });
     }
@@ -3342,10 +3372,12 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   // 7. Execute Real Higgsfield Genjutsu Generation Asynchronously with Trimmed Video URL
   (async () => {
     try {
+      const sanitizedInstructions = customInstructions ? String(customInstructions).trim().slice(0, 300) : undefined;
       const result = await faceSwapAdapter.generateFaceSwapVideo({
         videoUrl: trimmedVideoUrl,
         imageUrls: allReferenceUrls, // ALL reference images sent
-        customInstructions,
+        masterRecipePrompt: selectedScene?.masterRecipePrompt,
+        customInstructions: sanitizedInstructions,
         resolution: '480p',
         durationSeconds: billableDuration,
         ownerUserId: user.id

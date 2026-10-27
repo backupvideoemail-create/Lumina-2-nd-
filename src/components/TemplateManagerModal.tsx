@@ -103,6 +103,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [sceneIsFeatured, setSceneIsFeatured] = useState<boolean>(false);
   const [sceneOrder, setSceneOrder] = useState<number>(0);
 
+  // DEFAULT RECIPE PROMPTS (Standardized across Admin and Engine)
+  const DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT =
+    "High aesthetic cinematic neural motion transfer. Seamlessly map target facial identity onto the main character in this driving sequence, preserving facial micro-expressions, skin tone, natural eye-gaze, lighting integration, hair structure, and fluid body choreography without distortion or artifacts.";
+  const DEFAULT_PHOTO_RECIPE_PROMPT =
+    "Hyper-realistic commercial studio portrait, 8k resolution, photorealistic skin textures, dramatic softbox lighting, perfect face identity mapping, authentic color grading.";
+  const DEFAULT_VIDEO_RECIPE_PROMPT =
+    "Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, fluid natural motion, color-graded aesthetic.";
+
+  const [sceneMasterRecipePrompt, setSceneMasterRecipePrompt] = useState<string>(DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT);
+
   // Asset 1: Sample Face Photo
   const [sceneSampleFace, setSceneSampleFace] = useState<string>('');
   const [sceneSampleFaceName, setSceneSampleFaceName] = useState<string>('');
@@ -603,7 +613,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const isVideo = file.type.startsWith('video');
-    setTplDetectedType(isVideo ? 'video' : 'photo');
+    const detected = isVideo ? 'video' : 'photo';
+    setTplDetectedType(detected);
+    if (!editingTemplate) {
+      if (!recipePrompt || recipePrompt === DEFAULT_PHOTO_RECIPE_PROMPT || recipePrompt === DEFAULT_VIDEO_RECIPE_PROMPT) {
+        setRecipePrompt(detected === 'photo' ? DEFAULT_PHOTO_RECIPE_PROMPT : DEFAULT_VIDEO_RECIPE_PROMPT);
+      }
+    }
     const reader = new FileReader();
     reader.onload = () => {
       setTplMediaPreview(reader.result as string);
@@ -1747,6 +1763,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneSourceVideoName('');
     setSceneResultVideo('');
     setSceneResultVideoName('');
+    setSceneMasterRecipePrompt(DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT);
 
     setFaceSwapSubTab('add');
   };
@@ -1771,6 +1788,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneSourceVideoName(scene.sourceVideoPreview ? 'Current original video' : '');
     setSceneResultVideo(scene.resultVideoPreview || '');
     setSceneResultVideoName(scene.resultVideoPreview ? 'Current swapped video' : '');
+    setSceneMasterRecipePrompt(scene.masterRecipePrompt || '');
 
     setFaceSwapSubTab('edit');
   };
@@ -2046,6 +2064,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         sampleFace: finalSampleFace,
         sourceVideoPreview: finalSourceVideo,
         resultVideoPreview: finalResultVideo,
+        masterRecipePrompt: sceneMasterRecipePrompt.trim() || undefined,
         isActive: sceneIsActive,
         status: targetStatus,
         isFeatured: sceneIsFeatured,
@@ -2350,7 +2369,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       onClick={() => {
                         setEditingTemplate(null);
                         setTplTitle('');
+                        setTplDescription('');
                         setTplMediaPreview('');
+                        setTplCoverPreview('');
+                        setTplSampleResultPreview('');
+                        setTplSampleBefore('');
+                        setTplSampleFaceThumbnail('');
+                        setRecipePrompt(tplDetectedType === 'photo' ? DEFAULT_PHOTO_RECIPE_PROMPT : DEFAULT_VIDEO_RECIPE_PROMPT);
                         setSubTab('add');
                       }}
                       className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 active:scale-95 transition-all cursor-pointer"
@@ -4633,6 +4658,29 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           rows={2}
                           className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 resize-none leading-relaxed"
                         />
+                      </div>
+
+                      {/* SCENE MASTER RECIPE PROMPT */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Motion Transfer Scene Recipe Prompt (सीन AI प्रॉम्ट - Optional)</span>
+                          </label>
+                          <span className="text-[9.5px] text-stone-400">
+                            {sceneMasterRecipePrompt.length} chars
+                          </span>
+                        </div>
+                        <textarea
+                          value={sceneMasterRecipePrompt}
+                          onChange={(e) => setSceneMasterRecipePrompt(e.target.value)}
+                          placeholder="e.g. High aesthetic cinematic neural motion transfer. Seamlessly map target facial identity..."
+                          rows={3}
+                          className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 resize-none leading-relaxed font-mono"
+                        />
+                        <p className="text-[10px] text-stone-400 mt-1">
+                          प्रॉम्ट क्रम: Global Identity Prompt → Scene Recipe Prompt → Customer Instructions. Existing scenes बिना इस field के भी सुरक्षित चलेंगे।
+                        </p>
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

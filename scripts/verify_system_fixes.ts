@@ -471,6 +471,97 @@ async function runSystemVerification() {
   assert(serverContent.includes('refreshCatalogFromFirestore'), 'server.ts uses targeted catalog refresh');
   assert(serverContent.includes('FIRESTORE_NOT_CONNECTED'), 'server.ts returns FIRESTORE_NOT_CONNECTED when SDK is missing');
 
+  // 12. SUITE 14: Minimal-Scope Template Prompt Management, Video UX & Input Contracts
+  console.log('\n--- SUITE 14: Template Prompt Management, Driving Video Safety & Video UX ---');
+  
+  // 14.1 FaceSwapScene with masterRecipePrompt
+  const testRecipeSceneId = `fsv_test_recipe_${Date.now()}`;
+  const testRecipePrompt = 'Seamless motion transfer with perfect head pose orientation and matching cinematic illumination';
+  const sceneWithRecipe = await prodDb.createFaceSwapScene({
+    id: testRecipeSceneId,
+    title: 'Recipe Test Scene',
+    description: 'Testing masterRecipePrompt persistence',
+    sampleFace: 'https://images.unsplash.com/test-face.jpg',
+    sourceVideoPreview: 'https://cdn.example.com/authoritative-source.mp4',
+    resultVideoPreview: 'https://cdn.example.com/marketing-result.mp4',
+    masterRecipePrompt: testRecipePrompt,
+    creditCost: 45,
+    durationSeconds: 8,
+    aspectRatio: '9:16',
+    category: 'Viral & Trending',
+    tags: ['Test', 'Recipe'],
+    isActive: true,
+    status: 'published'
+  });
+  assert(sceneWithRecipe !== null, 'FaceSwapScene created with masterRecipePrompt');
+  const readBackScene = prodDb.getFaceSwapScene(testRecipeSceneId);
+  assert(readBackScene?.masterRecipePrompt === testRecipePrompt, 'masterRecipePrompt persisted and read back identically');
+
+  // 14.2 Backwards compatibility with legacy scenes without masterRecipePrompt
+  const legacySceneId = `fsv_test_legacy_${Date.now()}`;
+  const legacyScene = await prodDb.createFaceSwapScene({
+    id: legacySceneId,
+    title: 'Legacy Scene No Recipe',
+    description: 'Testing backward compatibility for scenes without masterRecipePrompt',
+    sampleFace: 'https://images.unsplash.com/test-face.jpg',
+    sourceVideoPreview: 'https://cdn.example.com/legacy-source.mp4',
+    resultVideoPreview: 'https://cdn.example.com/legacy-result.mp4',
+    creditCost: 45,
+    durationSeconds: 5,
+    aspectRatio: '9:16',
+    category: 'Viral & Trending',
+    tags: ['Legacy'],
+    isActive: true,
+    status: 'published'
+  });
+  assert(legacyScene !== null, 'Legacy FaceSwapScene without masterRecipePrompt creates cleanly');
+  const readBackLegacy = prodDb.getFaceSwapScene(legacySceneId);
+  assert(readBackLegacy !== null && readBackLegacy.masterRecipePrompt === undefined, 'Legacy scene loads with undefined masterRecipePrompt without throwing');
+
+  // Clean up test scenes
+  await prodDb.deleteFaceSwapScene(testRecipeSceneId);
+  await prodDb.deleteFaceSwapScene(legacySceneId);
+
+  // 14.3 Prompt Assembly Order Verification in faceSwapAdapter
+  const fsAdapterSource = fs.readFileSync('src/services/ai/faceSwapAdapter.ts', 'utf-8');
+  assert(fsAdapterSource.includes('HIGGSFIELD_BASE_IDENTITY_PROMPT'), 'faceSwapAdapter preserves HIGGSFIELD_BASE_IDENTITY_PROMPT');
+  assert(fsAdapterSource.includes('SCENE_RECIPE_PROMPT:'), 'faceSwapAdapter includes SCENE_RECIPE_PROMPT in assembly');
+  assert(fsAdapterSource.includes('USER_CUSTOM_INSTRUCTIONS:'), 'faceSwapAdapter includes USER_CUSTOM_INSTRUCTIONS in assembly');
+  assert(fsAdapterSource.includes('slice(0, 300)'), 'faceSwapAdapter clamps customInstructions to 300 characters');
+
+  // 14.4 Authoritative Driving Video Safety in server.ts
+  assert(serverContent.includes('selectedScene.sourceVideoPreview'), 'server.ts resolves sourceVideoPreview from selectedScene');
+  assert(serverContent.includes('NEVER use resultVideoPreview as the driving video'), 'server.ts explicitly overrides resultVideoPreview');
+  assert(serverContent.includes('masterRecipePrompt: selectedScene?.masterRecipePrompt'), 'server.ts passes masterRecipePrompt to faceSwapAdapter');
+
+  // 14.5 TemplateDetailModal Video UX & Photo Slider preservation
+  const detailModalSource = fs.readFileSync('src/components/TemplateDetailModal.tsx', 'utf-8');
+  assert(detailModalSource.includes('Original Video (Before)'), 'TemplateDetailModal has Original Video (Before) tab');
+  assert(detailModalSource.includes('AI Result (After)'), 'TemplateDetailModal has AI Result (After) tab');
+  assert(detailModalSource.includes('aspect-[9/16] max-h-[75vh] sm:max-h-[82vh]'), 'TemplateDetailModal has responsive near full-screen mobile height');
+  assert(detailModalSource.includes('clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)`'), 'TemplateDetailModal preserves photo before/after slider with polygon clipPath');
+  assert(detailModalSource.includes('custom-instructions-input'), 'TemplateDetailModal includes customer custom instructions input');
+  assert(detailModalSource.includes('customPrompt.length}/300'), 'TemplateDetailModal displays 300 character counter');
+  assert(detailModalSource.includes('goToPrev') && detailModalSource.includes('goToNext'), 'TemplateDetailModal has previous/next template navigation');
+  assert(detailModalSource.includes('AI Prime Studio Diagnostic Report'), 'TemplateDetailModal has safe error diagnostic copy button');
+
+  // 14.6 FaceSwapModal Video Rendering & Driving Video Safety
+  const faceSwapModalSource = fs.readFileSync('src/components/FaceSwapModal.tsx', 'utf-8');
+  assert(faceSwapModalSource.includes('isVideoMedia(candidateMedia)'), 'FaceSwapModal checks isVideoMedia to avoid rendering MP4 in <img> tags');
+  assert(faceSwapModalSource.includes('scene.sourceVideoPreview'), 'FaceSwapModal selects authoritative sourceVideoPreview');
+  assert(faceSwapModalSource.includes('safeLog') && faceSwapModalSource.includes('Copy Details'), 'FaceSwapModal has safe diagnostic error reporting');
+
+  // 14.7 TemplateManagerModal Recipe Defaults
+  const tplManagerSource = fs.readFileSync('src/components/TemplateManagerModal.tsx', 'utf-8');
+  assert(tplManagerSource.includes('DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT'), 'TemplateManagerModal defines DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT');
+  assert(tplManagerSource.includes('DEFAULT_PHOTO_RECIPE_PROMPT'), 'TemplateManagerModal defines DEFAULT_PHOTO_RECIPE_PROMPT');
+  assert(tplManagerSource.includes('DEFAULT_VIDEO_RECIPE_PROMPT'), 'TemplateManagerModal defines DEFAULT_VIDEO_RECIPE_PROMPT');
+  assert(tplManagerSource.includes('sceneMasterRecipePrompt'), 'TemplateManagerModal binds masterRecipePrompt state');
+
+  // 14.8 TemplateCard Preview-First Flow
+  const tplCardSource = fs.readFileSync('src/components/TemplateCard.tsx', 'utf-8');
+  assert(tplCardSource.includes('setSelectedTemplate(template)'), 'TemplateCard opens preview modal first instead of direct generation bypass');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

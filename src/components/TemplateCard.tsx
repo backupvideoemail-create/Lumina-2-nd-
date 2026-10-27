@@ -67,15 +67,16 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    // Preview-First Flow: Always show template transformation preview first
     if (template.isFaceSwap) {
       const scene =
         faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || 'fsv_trending_dance_stage')) ||
         faceSwapScenes[0];
-      setSelectedFaceSwapScene(scene);
-      setFaceSwapModalOpen(true);
-    } else {
-      setSelectedTemplate(template);
+      if (scene) {
+        setSelectedFaceSwapScene(scene);
+      }
     }
+    setSelectedTemplate(template);
   };
 
   return (

@@ -39,7 +39,8 @@ export const HIGGSFIELD_BASE_IDENTITY_PROMPT =
 export interface GenjutsuMotionTransferParams {
   videoUrl: string;
   imageUrls: string[];
-  customInstructions?: string;
+  masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Motion Transfer Recipe)
+  customInstructions?: string; // Optional Customer Instructions (sensible max 300 chars)
   resolution?: '480p';
   durationSeconds?: number;
   ownerUserId?: string;
@@ -91,10 +92,17 @@ export class HiggsfieldGenjutsuAdapter {
       throw new Error('At least 1 face reference image is required (4-5 recommended from different angles).');
     }
 
-    // Build protected prompt: Protected Base Identity Prompt + User Custom Instructions
+    // Build protected prompt strictly composed without duplication:
+    // 1. HIGGSFIELD_BASE_IDENTITY_PROMPT (Global Identity Preservation)
+    // 2. SCENE_RECIPE_PROMPT (Scene-level motion transfer recipe)
+    // 3. USER_CUSTOM_INSTRUCTIONS (Optional customer custom guidance, max 300 chars)
     let finalPrompt = HIGGSFIELD_BASE_IDENTITY_PROMPT;
+    if (params.masterRecipePrompt && params.masterRecipePrompt.trim()) {
+      finalPrompt = `${finalPrompt}\n\nSCENE_RECIPE_PROMPT:\n${params.masterRecipePrompt.trim()}`;
+    }
     if (params.customInstructions && params.customInstructions.trim()) {
-      finalPrompt = `${HIGGSFIELD_BASE_IDENTITY_PROMPT}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${params.customInstructions.trim()}`;
+      const sanitizedCustomerInput = params.customInstructions.trim().slice(0, 300);
+      finalPrompt = `${finalPrompt}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${sanitizedCustomerInput}`;
     }
 
     // All selected reference images must be sent

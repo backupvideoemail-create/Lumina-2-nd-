@@ -295,6 +295,7 @@ export interface FaceSwapScene {
   category: string;
   tags: string[];
   demoVideoUrl?: string;
+  masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Motion Transfer Recipe)
   isActive?: boolean;
   status?: 'published' | 'draft';
   isFeatured?: boolean;

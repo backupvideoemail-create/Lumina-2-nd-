@@ -18,10 +18,12 @@ import {
   Info,
   ShieldCheck,
   Plus,
-  Trash2
+  Trash2,
+  Copy
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene } from '../types';
+import { isVideoMedia } from '../utils/mediaUtils';
 
 export const FaceSwapModal: React.FC = () => {
   const {
@@ -40,17 +42,17 @@ export const FaceSwapModal: React.FC = () => {
 
   const activeScene = selectedFaceSwapScene || faceSwapScenes[0];
 
-  // 1. Source Video State
+  // 1. Source Video State (Authoritative original driving video)
   const [videoSourceMode, setVideoSourceMode] = useState<'upload' | 'preset'>('upload');
   const [sourceVideoFile, setSourceVideoFile] = useState<File | null>(null);
   const [sourceVideoBase64, setSourceVideoBase64] = useState<string | null>(null);
   const [selectedPresetVideo, setSelectedPresetVideo] = useState<string>(
-    activeScene?.sourceVideoPreview || activeScene?.resultVideoPreview || ''
+    activeScene?.sourceVideoPreview || ''
   );
 
   useEffect(() => {
     if (activeScene) {
-      setSelectedPresetVideo(activeScene.sourceVideoPreview || activeScene.resultVideoPreview || '');
+      setSelectedPresetVideo(activeScene.sourceVideoPreview || '');
     }
   }, [activeScene]);
 
@@ -224,11 +226,12 @@ export const FaceSwapModal: React.FC = () => {
     setIsGenerating(true);
 
     const payload = {
-      sourceVideoUrl: videoSourceMode === 'preset' ? selectedPresetVideo : undefined,
+      sceneId: videoSourceMode === 'preset' ? activeScene?.id : undefined,
+      sourceVideoUrl: videoSourceMode === 'preset' ? (activeScene?.sourceVideoPreview || selectedPresetVideo) : undefined,
       sourceVideoBase64: videoSourceMode === 'upload' ? sourceVideoBase64! : undefined,
       durationSeconds,
       faceReferenceBase64List: referenceImages,
-      customInstructions: customInstructions.trim() || undefined
+      customInstructions: customInstructions.trim() ? customInstructions.trim().slice(0, 300) : undefined
     };
 
     const res = await generateFaceSwapVideo(payload as any);
@@ -352,27 +355,48 @@ export const FaceSwapModal: React.FC = () => {
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-              {faceSwapScenes.map((scene) => (
-                <div
-                  key={scene.id}
-                  onClick={() => {
-                    setSelectedPresetVideo(scene.resultVideoPreview);
-                    setSelectedFaceSwapScene(scene);
-                  }}
-                  className={`relative rounded-xl overflow-hidden aspect-[9/16] cursor-pointer border transition-all ${
-                    selectedPresetVideo === scene.resultVideoPreview
-                      ? 'border-[#d4af37] ring-2 ring-[#d4af37]/30 shadow-lg'
-                      : 'border-white/10 opacity-70 hover:opacity-100'
-                  }`}
-                >
-                  <img src={scene.resultVideoPreview} alt={scene.title} className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
-                  <div className="absolute bottom-1.5 inset-x-1.5">
-                    <p className="text-[10px] font-bold text-white truncate">{scene.title}</p>
-                    <span className="text-[9px] text-[#f5d77f] font-medium">{scene.category}</span>
+              {faceSwapScenes.map((scene) => {
+                const isSelected = activeScene?.id === scene.id || selectedPresetVideo === scene.sourceVideoPreview;
+                const candidateMedia = scene.resultVideoPreview || scene.sourceVideoPreview;
+                const isVideo = isVideoMedia(candidateMedia);
+
+                return (
+                  <div
+                    key={scene.id}
+                    onClick={() => {
+                      setSelectedPresetVideo(scene.sourceVideoPreview);
+                      setSelectedFaceSwapScene(scene);
+                    }}
+                    className={`relative rounded-xl overflow-hidden aspect-[9/16] cursor-pointer border transition-all ${
+                      isSelected
+                        ? 'border-[#d4af37] ring-2 ring-[#d4af37]/30 shadow-lg'
+                        : 'border-white/10 opacity-70 hover:opacity-100'
+                    }`}
+                  >
+                    {isVideo ? (
+                      <video
+                        src={candidateMedia}
+                        autoPlay
+                        loop
+                        muted
+                        playsInline
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
+                    ) : (
+                      <img
+                        src={candidateMedia}
+                        alt={scene.title}
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent pointer-events-none" />
+                    <div className="absolute bottom-1.5 inset-x-1.5 pointer-events-none">
+                      <p className="text-[10px] font-bold text-white truncate">{scene.title}</p>
+                      <span className="text-[9px] text-[#f5d77f] font-medium">{scene.category}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -558,9 +582,36 @@ export const FaceSwapModal: React.FC = () => {
         </section>
 
         {errorMessage && (
-          <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{errorMessage}</span>
+          <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 text-xs space-y-2.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2 text-rose-300 font-bold">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>Face Swap Request Note</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const safeLog = JSON.stringify({
+                    error: errorMessage,
+                    sceneId: activeScene?.id,
+                    sceneTitle: activeScene?.title,
+                    durationSeconds,
+                    timestamp: new Date().toISOString()
+                  }, null, 2);
+                  navigator.clipboard?.writeText(safeLog);
+                }}
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-stone-300 hover:text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                title="Copy safe error diagnostics"
+              >
+                <Copy className="w-3 h-3" />
+                <span>Copy Details</span>
+              </button>
+            </div>
+            <p className="text-xs text-rose-200 leading-relaxed">{errorMessage}</p>
+            <div className="p-2 rounded-xl bg-black/40 border border-white/5 text-[10px] text-stone-400 flex items-center justify-between">
+              <span>Stage: Video Motion Transfer · 480p</span>
+              <span>100% exact refund guaranteed</span>
+            </div>
           </div>
         )}
       </main>

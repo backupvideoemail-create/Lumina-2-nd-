@@ -13,6 +13,10 @@ import {
   Camera,
   Layers,
   ChevronRight,
+  ChevronLeft,
+  Volume2,
+  VolumeX,
+  Copy,
   ShieldCheck,
   RefreshCw,
   Wallet
@@ -30,7 +34,10 @@ export const TemplateDetailModal: React.FC = () => {
     user,
     triggerHighIntentAction,
     createGeneration,
-    setInsufficientCreditsModal
+    setInsufficientCreditsModal,
+    faceSwapScenes,
+    setSelectedFaceSwapScene,
+    setFaceSwapModalOpen
   } = useApp();
 
   // Multi-input slot state: maps slot ID -> base64/URL data
@@ -40,8 +47,12 @@ export const TemplateDetailModal: React.FC = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlayingVideo, setIsPlayingVideo] = useState(true);
+  const [isVideoMuted, setIsVideoMuted] = useState(true);
+  const [activeVideoTab, setActiveVideoTab] = useState<'before' | 'after'>('after');
+  const [customPrompt, setCustomPrompt] = useState('');
+  const [copiedError, setCopiedError] = useState(false);
 
-  // Draggable BEFORE/AFTER comparison slider state
+  // Draggable BEFORE/AFTER comparison slider state (Photo templates)
   const [sliderPosition, setSliderPosition] = useState<number>(50);
   const [isDraggingSlider, setIsDraggingSlider] = useState<boolean>(false);
   const sliderContainerRef = useRef<HTMLDivElement>(null);
@@ -57,8 +68,12 @@ export const TemplateDetailModal: React.FC = () => {
     setIsPickerOpen(false);
     setActivePickingSlot(null);
     setIsPlayingVideo(true);
+    setIsVideoMuted(true);
+    setActiveVideoTab('after');
+    setCustomPrompt('');
     setSliderPosition(50);
     setIsDraggingSlider(false);
+    setCopiedError(false);
   }, [selectedTemplate?.id]);
 
   const pointerStartRef = useRef<{ x: number; y: number; isHorizontalDrag: boolean } | null>(null);
@@ -103,7 +118,7 @@ export const TemplateDetailModal: React.FC = () => {
 
       // If horizontal movement is dominant, lock into slider comparison dragging
       if (dx > 8 && dx >= dy) {
-        pointerStartRef.current.isHorizontalDrag = true;
+        pointerStartRef.current = true ? { ...pointerStartRef.current, isHorizontalDrag: true } : null;
         setIsDraggingSlider(true);
         try {
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -139,6 +154,17 @@ export const TemplateDetailModal: React.FC = () => {
   const userBalance = wallet?.balance ?? 0;
   const hasCredits = userBalance >= tpl.creditCost;
 
+  // Next / Previous Navigation
+  const currentIndex = templates.findIndex((t) => t.id === tpl.id);
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex >= 0 && currentIndex < templates.length - 1;
+  const goToPrev = () => {
+    if (hasPrev) setSelectedTemplate(templates[currentIndex - 1]);
+  };
+  const goToNext = () => {
+    if (hasNext) setSelectedTemplate(templates[currentIndex + 1]);
+  };
+
   const isVideo = Boolean(
     tpl.mediaType === 'video' ||
     (tpl.mediaType === undefined && (
@@ -150,18 +176,66 @@ export const TemplateDetailModal: React.FC = () => {
     ))
   );
 
-  // Derive required upload slots from template data
-  const requiredSlots: TemplateInputDef[] = (tpl.requiredInputs && tpl.requiredInputs.length > 0)
-    ? tpl.requiredInputs
-    : [
+  // Derive required upload slots by prioritizing explicit requiredInputs first,
+  // then configured inputType / recipe.inputType, avoiding defaulting to video slot solely because tpl.type === 'video'
+  const requiredSlots: TemplateInputDef[] = (() => {
+    if (tpl.requiredInputs && tpl.requiredInputs.length > 0) {
+      return tpl.requiredInputs;
+    }
+    // Check configured inputType
+    const configuredType = tpl.inputType || tpl.recipe?.inputType;
+    if (configuredType === 'IMAGE_ONLY') {
+      return [
         {
           id: 'slot_1',
-          label: tpl.type === 'video' ? 'Upload Video' : 'Upload User Face Photo',
-          type: tpl.type === 'video' ? 'video' : 'image',
-          description: tpl.type === 'video' ? 'Clear walking or portrait video' : 'Clear front-facing User Face photo'
+          label: 'Upload User Face Photo',
+          type: 'image',
+          description: 'Clear front-facing User Face photo'
         }
       ];
+    }
+    if (configuredType === 'VIDEO_ONLY') {
+      return [
+        {
+          id: 'slot_1',
+          label: 'Upload Driving Video',
+          type: 'video',
+          description: 'Clear portrait driving video'
+        }
+      ];
+    }
+    if (configuredType === 'IMAGE_OR_VIDEO') {
+      return [
+        {
+          id: 'slot_1',
+          label: 'Upload Face Photo or Video',
+          type: 'image',
+          description: 'Clear front-facing portrait photo'
+        }
+      ];
+    }
+    // Default fallback: if template is face swap or photo, expect image
+    if (tpl.isFaceSwap || tpl.type === 'photo') {
+      return [
+        {
+          id: 'slot_1',
+          label: 'Upload User Face Photo',
+          type: 'image',
+          description: 'Clear front-facing User Face photo'
+        }
+      ];
+    }
+    return [
+      {
+        id: 'slot_1',
+        label: 'Upload Video',
+        type: 'video',
+        description: 'Clear walking or portrait video'
+      }
+    ];
+  })();
 
+  const hasVideoSlots = requiredSlots.some((s) => s.type === 'video');
   const totalSlots = requiredSlots.length;
   const filledSlotsCount = Object.keys(inputSlots).filter((k) => Boolean(inputSlots[k])).length;
   const isAllInputsReady = filledSlotsCount >= totalSlots;
@@ -237,7 +311,8 @@ export const TemplateDetailModal: React.FC = () => {
       triggerHighIntentAction({
         type: 'generate',
         templateId: tpl.id,
-        inputMediaUrl: combinedPayload
+        inputMediaUrl: combinedPayload,
+        customPrompt: customPrompt.trim() || undefined
       });
       return;
     }
@@ -252,7 +327,8 @@ export const TemplateDetailModal: React.FC = () => {
     }
 
     setIsGenerating(true);
-    const res = await createGeneration(tpl.id, combinedPayload);
+    setUploadError(null);
+    const res = await createGeneration(tpl.id, combinedPayload, customPrompt.trim() || undefined);
     setIsGenerating(false);
 
     if (res.success) {
@@ -288,28 +364,56 @@ export const TemplateDetailModal: React.FC = () => {
   const displayResult = tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl || tpl.cover || tpl.preview;
   const sampleFaceThumb = tpl.sampleFaceThumbnail || null;
   const sampleBeforeThumb = tpl.sampleBefore || null;
-  const hasSampleMedia = Boolean(sampleFaceThumb || sampleBeforeThumb);
+  const drivingVideoCandidate = tpl.drivingVideoUrl || (sampleBeforeThumb && isVideoMedia(sampleBeforeThumb) ? sampleBeforeThumb : '');
+  const videoBeforeSrc = drivingVideoCandidate || sampleBeforeThumb || '';
+  const videoAfterSrc = displayResult;
+  const hasBothVideos = Boolean(videoBeforeSrc && videoAfterSrc && videoBeforeSrc !== videoAfterSrc);
+
   const hasActualSample = Boolean(tpl.sampleResult || tpl.sampleAfter);
   const hasBeforeAfterComparison = Boolean(sampleBeforeThumb && displayResult && sampleBeforeThumb !== displayResult);
+
+  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
 
   return (
     <div
       className="fixed inset-0 z-50 bg-[#070609] overflow-y-auto no-scrollbar flex flex-col select-none protected-media"
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* 1. TOP IMMERSIVE APP BAR */}
-      <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 bg-[#070609]/90 backdrop-blur-2xl border-b border-white/10">
-        {/* Close Button */}
-        <button
-          onClick={() => setSelectedTemplate(null)}
-          className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white transition-all cursor-pointer"
-          aria-label="Close"
-        >
-          <X className="w-5 h-5 stroke-[2.5]" />
-        </button>
+      {/* 1. TOP IMMERSIVE APP BAR WITH PREV/NEXT NAVIGATION */}
+      <header className="sticky top-0 z-40 flex items-center justify-between px-3 sm:px-4 py-3 bg-[#070609]/90 backdrop-blur-2xl border-b border-white/10">
+        <div className="flex items-center gap-1">
+          {/* Close Button */}
+          <button
+            onClick={() => setSelectedTemplate(null)}
+            className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white transition-all cursor-pointer"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5 stroke-[2.5]" />
+          </button>
+
+          {/* Prev / Next buttons */}
+          <button
+            onClick={goToPrev}
+            disabled={!hasPrev}
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 disabled:opacity-20 disabled:cursor-not-allowed flex items-center justify-center text-white transition-all cursor-pointer"
+            title="Previous Template"
+            aria-label="Previous Template"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button
+            onClick={goToNext}
+            disabled={!hasNext}
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 disabled:opacity-20 disabled:cursor-not-allowed flex items-center justify-center text-white transition-all cursor-pointer"
+            title="Next Template"
+            aria-label="Next Template"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
 
         {/* Template Title */}
-        <div className="flex flex-col items-center max-w-[220px] sm:max-w-xs text-center truncate">
+        <div className="flex flex-col items-center max-w-[190px] sm:max-w-xs text-center truncate">
           <h2 className="text-sm sm:text-base font-extrabold text-white truncate leading-tight">
             {tpl.title}
           </h2>
@@ -318,20 +422,29 @@ export const TemplateDetailModal: React.FC = () => {
           </span>
         </div>
 
-        {/* Video Play/Pause or Credits */}
-        <div className="flex items-center gap-2">
+        {/* Video Controls & Credits */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {isVideo && (
-            <button
-              onClick={togglePlayPause}
-              className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white transition-all cursor-pointer"
-              title={isPlayingVideo ? 'Pause' : 'Play'}
-            >
-              {isPlayingVideo ? (
-                <Pause className="w-4 h-4 fill-white" />
-              ) : (
-                <Play className="w-4 h-4 fill-white ml-0.5" />
-              )}
-            </button>
+            <>
+              <button
+                onClick={() => setIsVideoMuted((prev) => !prev)}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white transition-all cursor-pointer"
+                title={isVideoMuted ? 'Unmute' : 'Mute'}
+              >
+                {isVideoMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={togglePlayPause}
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 flex items-center justify-center text-white transition-all cursor-pointer"
+                title={isPlayingVideo ? 'Pause' : 'Play'}
+              >
+                {isPlayingVideo ? (
+                  <Pause className="w-4 h-4 fill-white" />
+                ) : (
+                  <Play className="w-4 h-4 fill-white ml-0.5" />
+                )}
+              </button>
+            </>
           )}
 
           <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1e170d] border border-amber-500/40 text-[11px] font-black text-amber-300">
@@ -366,30 +479,140 @@ export const TemplateDetailModal: React.FC = () => {
 
       {/* 2. MAIN SCROLL CONTAINER */}
       <main className="max-w-lg w-full mx-auto px-4 py-3 space-y-4 pb-36 flex-1">
-        {/* LARGE INTERACTIVE BEFORE/AFTER PREVIEW CANVAS */}
-        <section
-          ref={sliderContainerRef}
-          onPointerDown={hasBeforeAfterComparison ? handleSliderPointerDown : undefined}
-          onPointerMove={hasBeforeAfterComparison ? handleSliderPointerMove : undefined}
-          onPointerUp={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
-          onPointerCancel={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
-          className={`relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center select-none touch-pan-y ${
-            hasBeforeAfterComparison ? 'cursor-ew-resize' : ''
-          }`}
-        >
-          {/* LAYER 1: Full-Frame BEFORE Reference (Base Layer on Left/Bottom) */}
-          {hasBeforeAfterComparison && (
-            <div className="absolute inset-0 w-full h-full overflow-hidden">
-              {isVideoMedia(sampleBeforeThumb!) ? (
-                <video
-                  src={sampleBeforeThumb!}
-                  autoPlay
-                  loop
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover pointer-events-none select-none"
-                />
-              ) : (
+        {/* VIDEO TEMPLATE PREVIEW: NEAR FULL-SCREEN MOBILE HEIGHT WITH BEFORE/AFTER TABS */}
+        {isVideo ? (
+          <section className="space-y-2">
+            {/* Tabs for Before vs After Video */}
+            {hasBothVideos && (
+              <div className="flex items-center justify-center p-1 rounded-2xl bg-[#14121b] border border-white/10 w-fit mx-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveVideoTab('before');
+                    setIsPlayingVideo(true);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                    activeVideoTab === 'before'
+                      ? 'bg-sky-500 text-white shadow-md'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  Original Video (Before)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveVideoTab('after');
+                    setIsPlayingVideo(true);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                    activeVideoTab === 'after'
+                      ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  AI Result (After)
+                </button>
+              </div>
+            )}
+
+            {/* Video Canvas Container (Responsive Near Full-screen Height) */}
+            <div
+              onClick={togglePlayPause}
+              className="relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[75vh] sm:max-h-[82vh] w-full flex items-center justify-center select-none cursor-pointer group"
+            >
+              <video
+                ref={videoPlayerRef}
+                key={currentVideoSrc}
+                src={currentVideoSrc}
+                autoPlay
+                loop
+                muted={isVideoMuted}
+                playsInline
+                preload="auto"
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                className="w-full h-full object-cover"
+              />
+
+              {/* Scrims */}
+              <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
+              <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
+
+              {/* Floating Top Badge */}
+              <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                <span
+                  className={`px-2.5 py-1 rounded-full border text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md ${
+                    activeVideoTab === 'before'
+                      ? 'bg-sky-500/30 border-sky-400/60 text-sky-100'
+                      : 'bg-amber-500/30 border-amber-400/60 text-amber-200'
+                  }`}
+                >
+                  {activeVideoTab === 'before' ? 'Original Driving Video' : 'AI Rendered Video Result'}
+                </span>
+              </div>
+
+              {/* Mute/Sound and Play status indicator overlay */}
+              <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsVideoMuted((prev) => !prev);
+                  }}
+                  className="p-2 rounded-full bg-black/65 backdrop-blur-md border border-white/20 text-white hover:bg-black/85 transition-all"
+                  title={isVideoMuted ? 'Tap to unmute sound' : 'Tap to mute sound'}
+                >
+                  {isVideoMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5 text-amber-300" />}
+                </button>
+              </div>
+
+              {/* Face sample pill if present */}
+              {sampleFaceThumb && (
+                <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/85 backdrop-blur-xl border border-white/20 shadow-2xl pointer-events-none">
+                  <img
+                    src={sampleFaceThumb}
+                    alt="Face sample"
+                    draggable={false}
+                    className="w-10 h-12 rounded-xl object-cover border border-purple-400/40 shadow-md"
+                  />
+                  <div className="flex flex-col text-left pr-1.5">
+                    <span className="text-[8px] uppercase font-black text-purple-300 tracking-wider">
+                      Face Sample
+                    </span>
+                    <span className="text-[7.5px] text-stone-400 leading-tight">
+                      Display only · User Face<br />photo will be used
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Title & Badge */}
+              <div className="absolute bottom-4 left-4 z-20 max-w-[200px] pointer-events-none">
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[9px] font-black text-amber-300 uppercase tracking-wider mb-1 inline-block">
+                  {tpl.badge || 'PRO VIDEO'}
+                </span>
+                <h3 className="text-base font-black text-white leading-tight drop-shadow-md">
+                  {tpl.title}
+                </h3>
+              </div>
+            </div>
+          </section>
+        ) : (
+          /* PHOTO TEMPLATE: INTERACTIVE BEFORE/AFTER PREVIEW CANVAS WITH DRAGGABLE SLIDER */
+          <section
+            ref={sliderContainerRef}
+            onPointerDown={hasBeforeAfterComparison ? handleSliderPointerDown : undefined}
+            onPointerMove={hasBeforeAfterComparison ? handleSliderPointerMove : undefined}
+            onPointerUp={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
+            onPointerCancel={hasBeforeAfterComparison ? handleSliderPointerUp : undefined}
+            className={`relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[620px] w-full flex items-center justify-center select-none touch-pan-y ${
+              hasBeforeAfterComparison ? 'cursor-ew-resize' : ''
+            }`}
+          >
+            {/* LAYER 1: Full-Frame BEFORE Reference (Base Layer on Left/Bottom) */}
+            {hasBeforeAfterComparison && (
+              <div className="absolute inset-0 w-full h-full overflow-hidden">
                 <img
                   src={sampleBeforeThumb!}
                   alt="Original Before Reference"
@@ -397,35 +620,20 @@ export const TemplateDetailModal: React.FC = () => {
                   onContextMenu={(e) => e.preventDefault()}
                   className="w-full h-full object-cover pointer-events-none select-none"
                 />
-              )}
-            </div>
-          )}
+              </div>
+            )}
 
-          {/* LAYER 2: Transformed AFTER / Sample Result Image (Clipped Layer on Top) */}
-          <div
-            style={
-              hasBeforeAfterComparison
-                ? {
-                    clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)`
-                  }
-                : undefined
-            }
-            className="absolute inset-0 w-full h-full overflow-hidden"
-          >
-            {isVideo ? (
-              <video
-                ref={videoPlayerRef}
-                src={displayResult}
-                autoPlay
-                loop
-                muted
-                playsInline
-                preload="auto"
-                draggable={false}
-                onContextMenu={(e) => e.preventDefault()}
-                className="w-full h-full object-cover pointer-events-none select-none"
-              />
-            ) : (
+            {/* LAYER 2: Transformed AFTER / Sample Result Image (Clipped Layer on Top) */}
+            <div
+              style={
+                hasBeforeAfterComparison
+                  ? {
+                      clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)`
+                    }
+                  : undefined
+              }
+              className="absolute inset-0 w-full h-full overflow-hidden"
+            >
               <img
                 src={displayResult}
                 alt={tpl.title}
@@ -433,121 +641,143 @@ export const TemplateDetailModal: React.FC = () => {
                 onContextMenu={(e) => e.preventDefault()}
                 className="w-full h-full object-cover pointer-events-none select-none"
               />
-            )}
-          </div>
+            </div>
 
-          {/* Anti-screenshot Watermark Shield */}
-          <div className="absolute inset-0 z-10 pointer-events-none" aria-hidden="true" />
+            {/* Anti-screenshot Watermark Shield */}
+            <div className="absolute inset-0 z-10 pointer-events-none" aria-hidden="true" />
 
-          {/* Subtle Top & Bottom Gradient Scrims */}
-          <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
-          <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/95 via-black/40 to-transparent pointer-events-none z-10" />
+            {/* Subtle Top & Bottom Gradient Scrims */}
+            <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
+            <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/95 via-black/40 to-transparent pointer-events-none z-10" />
 
-          {/* DRAGGABLE SLIDER DIVIDER & TACTILE HANDLE */}
-          {hasBeforeAfterComparison && (
-            <>
-              {/* Vertical Divider Line */}
-              <div
-                style={{ left: `${sliderPosition}%` }}
-                className="absolute top-0 bottom-0 w-[2.5px] bg-white shadow-[0_0_12px_rgba(255,255,255,0.9)] z-20 -translate-x-1/2 pointer-events-none"
-              />
-
-              {/* Tactile Circular Knob */}
-              <div
-                style={{ left: `${sliderPosition}%` }}
-                onPointerDown={handleKnobPointerDown}
-                className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-30 cursor-ew-resize touch-none p-3 select-none"
-              >
+            {/* DRAGGABLE SLIDER DIVIDER & TACTILE HANDLE */}
+            {hasBeforeAfterComparison && (
+              <>
+                {/* Vertical Divider Line */}
                 <div
-                  className={`w-9 h-9 rounded-full bg-white text-stone-900 shadow-2xl flex items-center justify-center border-2 border-stone-800 transition-transform ${
-                    isDraggingSlider ? 'scale-110 shadow-[0_0_25px_rgba(255,255,255,0.7)]' : 'hover:scale-105'
-                  }`}
+                  style={{ left: `${sliderPosition}%` }}
+                  className="absolute top-0 bottom-0 w-[2.5px] bg-white shadow-[0_0_12px_rgba(255,255,255,0.9)] z-20 -translate-x-1/2 pointer-events-none"
+                />
+
+                {/* Tactile Circular Knob */}
+                <div
+                  style={{ left: `${sliderPosition}%` }}
+                  onPointerDown={handleKnobPointerDown}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-30 cursor-ew-resize touch-none p-3 select-none"
                 >
-                  <div className="flex items-center gap-0.5 font-bold text-[10px] text-stone-900 tracking-tighter">
-                    <span>◄</span>
-                    <span>►</span>
+                  <div
+                    className={`w-9 h-9 rounded-full bg-white text-stone-900 shadow-2xl flex items-center justify-center border-2 border-stone-800 transition-transform ${
+                      isDraggingSlider ? 'scale-110 shadow-[0_0_25px_rgba(255,255,255,0.7)]' : 'hover:scale-105'
+                    }`}
+                  >
+                    <div className="flex items-center gap-0.5 font-bold text-[10px] text-stone-900 tracking-tighter">
+                      <span>◄</span>
+                      <span>►</span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* High-contrast floating BEFORE & AFTER Labels */}
+                {/* High-contrast floating BEFORE & AFTER Labels */}
+                <div className="absolute top-4 left-4 z-20 pointer-events-none">
+                  <span className="px-2.5 py-1 rounded-full bg-sky-500/35 border border-sky-400/60 text-sky-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
+                    BEFORE (Original)
+                  </span>
+                </div>
+                <div className="absolute top-4 right-4 z-20 pointer-events-none">
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/35 border border-emerald-400/60 text-emerald-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
+                    AFTER (AI Result)
+                  </span>
+                </div>
+
+                {/* Center Drag Instruction Hint */}
+                <div className="absolute bottom-4 inset-x-0 mx-auto w-fit z-20 pointer-events-none">
+                  <div className="px-3 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/20 text-[10px] font-semibold text-stone-300 flex items-center gap-1.5 shadow-lg">
+                    <span>◀ Slide to compare transformation ▶</span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* STANDALONE BADGE IF NO BEFORE-AFTER COMPARISON */}
+            {!hasBeforeAfterComparison && (
               <div className="absolute top-4 left-4 z-20 pointer-events-none">
-                <span className="px-2.5 py-1 rounded-full bg-sky-500/35 border border-sky-400/60 text-sky-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
-                  BEFORE (Original)
+                <span
+                  className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-md ${
+                    hasActualSample
+                      ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                      : 'bg-stone-900/80 border-white/20 text-stone-300'
+                  }`}
+                >
+                  {hasActualSample ? 'AI Sample Result' : 'Style Reference Preview'}
                 </span>
               </div>
-              <div className="absolute top-4 right-4 z-20 pointer-events-none">
-                <span className="px-2.5 py-1 rounded-full bg-emerald-500/35 border border-emerald-400/60 text-emerald-100 text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md">
-                  AFTER (AI Result)
-                </span>
-              </div>
+            )}
 
-              {/* Center Drag Instruction Hint */}
-              <div className="absolute bottom-4 inset-x-0 mx-auto w-fit z-20 pointer-events-none">
-                <div className="px-3 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/20 text-[10px] font-semibold text-stone-300 flex items-center gap-1.5 shadow-lg">
-                  <span>◀ Slide to compare transformation ▶</span>
+            {/* COMPACT FACE THUMBNAIL BADGE */}
+            {sampleFaceThumb && (
+              <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/85 backdrop-blur-xl border border-white/20 shadow-2xl">
+                <img
+                  src={sampleFaceThumb}
+                  alt="Display-only face sample"
+                  draggable={false}
+                  className="w-11 h-13 rounded-xl object-cover border border-purple-400/40 shadow-md pointer-events-none select-none"
+                />
+                <div className="flex flex-col text-left pr-1.5">
+                  <span className="text-[8px] uppercase font-black text-purple-300 tracking-wider">
+                    Face Sample
+                  </span>
+                  <span className="text-[7.5px] text-stone-400 leading-tight">
+                    Display only · User Face<br />photo will be used
+                  </span>
                 </div>
               </div>
-            </>
-          )}
+            )}
 
-          {/* STANDALONE BADGE IF NO BEFORE-AFTER COMPARISON */}
-          {!hasBeforeAfterComparison && (
-            <div className="absolute top-4 left-4 z-20 pointer-events-none">
-              <span
-                className={`px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider backdrop-blur-md shadow-md ${
-                  isVideo
-                    ? 'bg-amber-500/20 border-amber-400/40 text-amber-300'
-                    : hasActualSample
-                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
-                    : 'bg-stone-900/80 border-white/20 text-stone-300'
-                }`}
-              >
-                {isVideo ? 'Video Preview' : hasActualSample ? 'AI Sample Result' : 'Style Reference Preview'}
+            {/* Bottom Title & Specs inside preview */}
+            <div className="absolute bottom-4 left-4 z-20 max-w-[190px] pointer-events-none">
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[9px] font-black text-amber-300 uppercase tracking-wider mb-1 inline-block">
+                {tpl.badge || 'PRO TEMPLATE'}
               </span>
+              <h3 className="text-base font-black text-white leading-tight drop-shadow-md">
+                {tpl.title}
+              </h3>
             </div>
-          )}
+          </section>
+        )}
 
-          {/* COMPACT FACE THUMBNAIL BADGE (Display-Only example, anchored at bottom-right) */}
-          {sampleFaceThumb && (
-            <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2 p-1.5 rounded-2xl bg-black/85 backdrop-blur-xl border border-white/20 shadow-2xl">
-              <img
-                src={sampleFaceThumb}
-                alt="Display-only face sample"
-                draggable={false}
-                className="w-11 h-13 rounded-xl object-cover border border-purple-400/40 shadow-md pointer-events-none select-none"
-              />
-              <div className="flex flex-col text-left pr-1.5">
-                <span className="text-[8px] uppercase font-black text-purple-300 tracking-wider">
-                  Face Sample
-                </span>
-                <span className="text-[7.5px] text-stone-400 leading-tight">
-                  Display only · User Face<br />photo will be used
-                </span>
-              </div>
+        {/* FACE SWAP STUDIO SHORTCUT IF APPLICABLE */}
+        {tpl.isFaceSwap && (
+          <button
+            type="button"
+            onClick={() => {
+              const matchingScene = faceSwapScenes.find(
+                (s) => s.id === tpl.id || s.title.toLowerCase() === tpl.title.toLowerCase()
+              ) || faceSwapScenes[0];
+              if (matchingScene) {
+                setSelectedFaceSwapScene(matchingScene);
+              }
+              setSelectedTemplate(null);
+              setFaceSwapModalOpen(true);
+            }}
+            className="w-full py-2.5 px-3.5 rounded-2xl bg-gradient-to-r from-purple-900/40 to-indigo-900/40 border border-purple-500/40 text-purple-200 hover:text-white hover:border-purple-400/70 text-xs font-bold flex items-center justify-between transition-all cursor-pointer shadow-md"
+          >
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-400" />
+              <span>Face Swap Studio: Customize angles & presets</span>
             </div>
-          )}
-
-          {/* Bottom Title & Specs inside preview */}
-          <div className="absolute bottom-4 left-4 z-20 max-w-[190px] pointer-events-none">
-            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[9px] font-black text-amber-300 uppercase tracking-wider mb-1 inline-block">
-              {tpl.badge || 'PRO TEMPLATE'}
-            </span>
-            <h3 className="text-base font-black text-white leading-tight drop-shadow-md">
-              {tpl.title}
-            </h3>
-          </div>
-        </section>
+            <ChevronRight className="w-4 h-4 text-purple-300" />
+          </button>
+        )}
 
         {/* 3. MULTI-INPUT SLOTS / SELECTION AREA */}
         <section className="space-y-2.5">
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-black uppercase tracking-wider text-white">
-                {tpl.type === 'video' ? 'Select Video' : 'Add User Face Photo'}
+                {hasVideoSlots ? 'Select Video' : 'Add User Face Photo'}
               </span>
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 text-amber-300 border border-white/10">
-                {filledSlotsCount}/{totalSlots} {totalSlots === 1 ? 'photo' : 'photos'} added
+                {filledSlotsCount}/{totalSlots} {hasVideoSlots ? (totalSlots === 1 ? 'video' : 'videos') : (totalSlots === 1 ? 'photo' : 'photos')} added
               </span>
             </div>
 
@@ -556,7 +786,7 @@ export const TemplateDetailModal: React.FC = () => {
             </span>
           </div>
 
-          {/* DYNAMIC UPLOAD SLOTS GENERATED FROM requiredInputs */}
+          {/* DYNAMIC UPLOAD SLOTS GENERATED FROM CONTRACT */}
           <div className={`grid gap-2.5 ${totalSlots > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
             {requiredSlots.map((slot, index) => {
               const uploadedData = inputSlots[slot.id];
@@ -624,7 +854,7 @@ export const TemplateDetailModal: React.FC = () => {
 
                       <div className="flex-1 min-w-0">
                         <span className="text-xs font-bold text-white block truncate">
-                          {slot.label || `Add Photo ${index + 1}`}
+                          {slot.label || (slot.type === 'video' ? `Add Video ${index + 1}` : `Add Photo ${index + 1}`)}
                         </span>
                         <span className="text-[10px] text-stone-400 block truncate">
                           Tap to select
@@ -637,11 +867,59 @@ export const TemplateDetailModal: React.FC = () => {
             })}
           </div>
 
-          {/* Error Message */}
+          {/* CUSTOM INSTRUCTIONS (OPTIONAL, MAX 300 CHARACTERS) */}
+          <div className="space-y-1.5 p-3 rounded-2xl bg-[#121018] border border-white/10">
+            <div className="flex items-center justify-between">
+              <label htmlFor="custom-instructions-input" className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>Custom Instructions (Optional)</span>
+              </label>
+              <span
+                className={`text-[10px] font-mono font-semibold ${
+                  customPrompt.length >= 280 ? 'text-amber-400' : 'text-stone-400'
+                }`}
+              >
+                {customPrompt.length}/300
+              </span>
+            </div>
+            <textarea
+              id="custom-instructions-input"
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value.slice(0, 300))}
+              maxLength={300}
+              rows={2}
+              placeholder="E.g., warm golden hour lighting, cinematic film grain, formal navy suit..."
+              className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 transition-colors resize-none"
+            />
+            <p className="text-[10px] text-stone-400 leading-tight">
+              Tailor expressions, mood, or lighting without altering base identity.
+            </p>
+          </div>
+
+          {/* SAFE DIAGNOSTIC ERROR DISPLAY WITH COPY DETAILS */}
           {uploadError && (
-            <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{uploadError}</span>
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-white">Generation / Upload Issue</p>
+                  <p className="text-[11px] text-rose-200 mt-0.5 leading-relaxed">{uploadError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const errorReport = `AI Prime Studio Diagnostic Report\nTemplate ID: ${tpl.id}\nTitle: ${tpl.title}\nCategory: ${tpl.category}\nError: ${uploadError}\nTimestamp: ${new Date().toISOString()}`;
+                    navigator.clipboard.writeText(errorReport);
+                    setCopiedError(true);
+                    setTimeout(() => setCopiedError(false), 2000);
+                  }}
+                  className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-[10px] font-semibold flex items-center gap-1 shrink-0"
+                  title="Copy safe error details"
+                >
+                  {copiedError ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedError ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
             </div>
           )}
         </section>
@@ -710,7 +988,7 @@ export const TemplateDetailModal: React.FC = () => {
                   <span>
                     {isAllInputsReady
                       ? 'Generate Now'
-                      : `Add ${totalSlots - filledSlotsCount} More ${tpl.type === 'video' ? 'Video' : 'Photo'}`}
+                      : `Add ${totalSlots - filledSlotsCount} More ${hasVideoSlots ? 'Video' : 'Photo'}`}
                   </span>
                 </>
               )}
