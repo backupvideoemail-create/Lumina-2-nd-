@@ -17,14 +17,20 @@ async function auditAllMedia() {
   const missingAssets: Array<{ id: string; title: string; field: string; url: string; error?: string }> = [];
 
   for (const t of templates) {
-    const urlsToCheck = [
+    const rawUrls: Array<{ field: string; url?: string | null }> = [
       { field: 'cover', url: t.cover },
       { field: 'preview', url: t.preview },
-      { field: 'sampleResult', url: t.sampleResult }
-    ].filter(x => Boolean(x.url));
+      { field: 'sampleResult', url: t.sampleResult },
+      { field: 'sampleBefore', url: t.sampleBefore },
+      { field: 'sampleAfter', url: t.sampleAfter },
+      { field: 'referenceImageUrl', url: t.referenceImageUrl }
+    ];
+
+    const urlsToCheck: Array<{ field: string; url: string }> = rawUrls.filter(
+      (item): item is { field: string; url: string } => typeof item.url === 'string' && item.url.trim().length > 0
+    );
 
     for (const item of urlsToCheck) {
-      if (!item.url) continue;
       const url: string = item.url;
       totalChecked++;
       if (url.startsWith('data:')) {
@@ -84,26 +90,28 @@ async function auditAllMedia() {
   console.log(`Total Face Swap scenes: ${scenes.length}`);
   for (const s of scenes) {
     console.log(`\nScene [${s.id}] "${s.title}":`);
-    const fields = [
+    const rawSceneFields: Array<{ name: string; url?: string | null }> = [
       { name: 'sampleFace', url: s.sampleFace },
       { name: 'sourceVideoPreview', url: s.sourceVideoPreview },
-      { name: 'resultVideoPreview', url: s.resultVideoPreview }
+      { name: 'resultVideoPreview', url: s.resultVideoPreview },
+      { name: 'demoVideoUrl', url: s.demoVideoUrl }
     ];
-    for (const f of fields) {
-      if (!f.url) {
+    for (const f of rawSceneFields) {
+      if (!f.url || typeof f.url !== 'string' || f.url.trim().length === 0) {
         console.log(`  ${f.name}: (empty)`);
         continue;
       }
-      if (f.url.startsWith('/api/media/')) {
-        const fileId = f.url.replace('/api/media/', '');
+      const mediaUrl: string = f.url;
+      if (mediaUrl.startsWith('/api/media/')) {
+        const fileId = mediaUrl.replace('/api/media/', '').split('?')[0];
         const stream = await mediaStorage.getAuthorizedObjectStream(fileId);
         if (stream.body) {
-          console.log(`  ${f.name}: OK -> ${f.url} (mime: ${stream.mimeType})`);
+          console.log(`  ${f.name}: OK -> ${mediaUrl} (mime: ${stream.mimeType})`);
         } else {
-          console.log(`  ${f.name}: FAILED -> ${f.url} (error: ${stream.error})`);
+          console.log(`  ${f.name}: FAILED -> ${mediaUrl} (error: ${stream.error})`);
         }
       } else {
-        console.log(`  ${f.name}: EXTERNAL/OTHER -> ${f.url}`);
+        console.log(`  ${f.name}: EXTERNAL/OTHER -> ${mediaUrl}`);
       }
     }
   }
