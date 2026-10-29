@@ -1434,11 +1434,74 @@ class ProductionDatabase {
      TEMPLATES & INTERACTIVE LIKES
   ========================================================================= */
   public getTemplates(): Template[] {
-    return this.db.templates.filter(t => t.isActive !== false);
+    return this.db.templates
+      .filter(t => t.isActive !== false)
+      .sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
   }
 
   public getAllTemplatesAdmin(): Template[] {
-    return this.db.templates;
+    return [...this.db.templates].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
+  }
+
+  public async reorderTemplates(orderedIds: string[]): Promise<Template[]> {
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return this.getAllTemplatesAdmin();
+    }
+
+    const templateMap = new Map<string, Template>();
+    for (const t of this.db.templates) {
+      templateMap.set(t.id, t);
+    }
+
+    const reordered: Template[] = [];
+    orderedIds.forEach((id, index) => {
+      const t = templateMap.get(id);
+      if (t) {
+        t.sortOrder = index;
+        reordered.push(t);
+        templateMap.delete(id);
+      }
+    });
+
+    // Append any templates not explicitly in orderedIds
+    let remainingOrder = orderedIds.length;
+    for (const remaining of templateMap.values()) {
+      if (remaining.sortOrder === undefined || remaining.sortOrder < orderedIds.length) {
+        remaining.sortOrder = remainingOrder++;
+      }
+      reordered.push(remaining);
+    }
+
+    this.db.templates = reordered.sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
+    this.save();
+
+    // Persist updated sortOrder to authoritative Firestore
+    if (adminFirestoreDb) {
+      try {
+        if (typeof adminFirestoreDb.batch === 'function') {
+          const batch = adminFirestoreDb.batch();
+          for (const t of this.db.templates) {
+            const docRef = adminFirestoreDb.collection('templates').doc(t.id);
+            batch.set(docRef, { sortOrder: t.sortOrder, updatedAt: new Date().toISOString() }, { merge: true });
+          }
+          await batch.commit();
+        } else {
+          for (const t of this.db.templates) {
+            await adminFirestoreDb.collection('templates').doc(t.id).set(
+              { sortOrder: t.sortOrder, updatedAt: new Date().toISOString() },
+              { merge: true }
+            );
+          }
+        }
+      } catch (err: any) {
+        console.error('[Database] Failed to batch persist template sortOrder to Firestore:', err.message);
+        if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+          throw new Error(`Firestore reorder persistence failed: ${err.message}`);
+        }
+      }
+    }
+
+    return this.getAllTemplatesAdmin();
   }
 
   public async addTemplate(tpl: Template): Promise<Template> {
@@ -2033,15 +2096,63 @@ class ProductionDatabase {
   ========================================================================= */
   public getFaceSwapScenes(includeInactive = false): FaceSwapScene[] {
     const scenes = this.db.faceSwapScenes || [];
+    const sorted = [...scenes].sort((a, b) => (a.order ?? 999999) - (b.order ?? 999999));
     if (includeInactive) {
-      return [...scenes];
+      return sorted;
     }
-    return scenes.filter(s => s.isActive !== false && s.status !== 'draft');
+    return sorted.filter(s => s.isActive !== false && s.status !== 'draft');
   }
 
   public getFaceSwapScene(id: string): FaceSwapScene | null {
     const scenes = this.db.faceSwapScenes || [];
     return scenes.find(s => s.id === id) || null;
+  }
+
+  public async reorderFaceSwapScenes(orderedIds: string[]): Promise<FaceSwapScene[]> {
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return this.getFaceSwapScenes(true);
+    }
+
+    const sceneMap = new Map<string, FaceSwapScene>();
+    for (const s of (this.db.faceSwapScenes || [])) {
+      sceneMap.set(s.id, s);
+    }
+
+    const reordered: FaceSwapScene[] = [];
+    orderedIds.forEach((id, index) => {
+      const s = sceneMap.get(id);
+      if (s) {
+        s.order = index;
+        s.updatedAt = new Date().toISOString();
+        reordered.push(s);
+        sceneMap.delete(id);
+      }
+    });
+
+    let remainingOrder = orderedIds.length;
+    for (const remaining of sceneMap.values()) {
+      remaining.order = remainingOrder++;
+      reordered.push(remaining);
+    }
+
+    this.db.faceSwapScenes = reordered.sort((a, b) => (a.order ?? 999999) - (b.order ?? 999999));
+    this.save();
+
+    if (adminFirestoreDb) {
+      try {
+        await adminFirestoreDb.collection('config').doc('faceswap_scenes').set({
+          scenes: JSON.parse(JSON.stringify(this.db.faceSwapScenes)),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err: any) {
+        console.error('[Database] Failed to persist reordered FaceSwap scenes to Firestore:', err.message);
+        if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+          throw new Error(`Firestore scene reorder failed: ${err.message}`);
+        }
+      }
+    }
+
+    return this.getFaceSwapScenes(true);
   }
 
   public async createFaceSwapScene(sceneData: FaceSwapScene): Promise<FaceSwapScene> {

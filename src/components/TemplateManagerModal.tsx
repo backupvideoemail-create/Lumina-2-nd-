@@ -32,7 +32,10 @@ import {
   Cloud,
   Info,
   UserCheck,
-  CreditCard
+  CreditCard,
+  GripVertical,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
@@ -202,6 +205,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const [adminTemplates, setAdminTemplates] = useState<Template[]>([]);
   const [loadingAdminTemplates, setLoadingAdminTemplates] = useState<boolean>(false);
+
+  // --- TEMPLATE & FACE SWAP DRAG-AND-DROP REORDERING STATE ---
+  const [draggedTemplateId, setDraggedTemplateId] = useState<string | null>(null);
+  const [isReorderingTemplates, setIsReorderingTemplates] = useState<boolean>(false);
+  const [draggedSceneId, setDraggedSceneId] = useState<string | null>(null);
+  const [isReorderingScenes, setIsReorderingScenes] = useState<boolean>(false);
 
   const fetchAdminTemplates = useCallback(async (refresh: boolean = false) => {
     try {
@@ -823,13 +832,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       setRecipeProvider(tpl.recipe.provider || (tpl.type === 'video' ? 'google_veo' : 'gemini'));
       setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.recipe.workflow || tpl.workflow);
-      setRecipePrompt(tpl.recipe.prompt || '');
+      setRecipePrompt(tpl.recipe.prompt?.trim() ? tpl.recipe.prompt : (tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT));
       setRecipeDrivingVideoUrl(tpl.recipe.drivingVideoUrl || tpl.drivingVideoUrl || '');
     } else {
       setRecipeProvider(tpl.type === 'video' ? 'google_veo' : 'gemini');
       setRecipeModel(tpl.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.workflow);
-      setRecipePrompt(`${tpl.title}. Aesthetic workflow: ${tpl.workflow}.`);
+      setRecipePrompt(tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT);
       setRecipeDrivingVideoUrl(tpl.drivingVideoUrl || '');
     }
 
@@ -1075,6 +1084,165 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       showNotification(errMsg, 'error');
     } finally {
       setIsRecoveringR2(false);
+    }
+  };
+
+  // --- TEMPLATE & FACE SWAP DRAG-AND-DROP REORDERING HANDLERS ---
+  const handleMoveTemplate = async (templateId: string, direction: 'up' | 'down') => {
+    const currentIndex = displayTemplates.findIndex((t) => t.id === templateId);
+    if (currentIndex === -1) return;
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= displayTemplates.length) return;
+
+    const newTemplates = [...displayTemplates];
+    const [moved] = newTemplates.splice(currentIndex, 1);
+    newTemplates.splice(targetIndex, 0, moved);
+
+    setAdminTemplates(newTemplates);
+    setIsReorderingTemplates(true);
+
+    try {
+      const res = await fetch('/api/admin/templates/reorder', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ orderedIds: newTemplates.map((t) => t.id) })
+      });
+      if (res.ok) {
+        showNotification('Template order updated and saved!');
+        if (refreshTemplates) await refreshTemplates();
+      } else {
+        const data = await res.json().catch(() => null);
+        showNotification(data?.error || 'Failed to save template order', 'error');
+        await fetchAdminTemplates();
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Network error while reordering', 'error');
+      await fetchAdminTemplates();
+    } finally {
+      setIsReorderingTemplates(false);
+    }
+  };
+
+  const handleDropTemplate = async (targetTemplateId: string) => {
+    if (!draggedTemplateId || draggedTemplateId === targetTemplateId) {
+      setDraggedTemplateId(null);
+      return;
+    }
+
+    const fromIndex = displayTemplates.findIndex((t) => t.id === draggedTemplateId);
+    const toIndex = displayTemplates.findIndex((t) => t.id === targetTemplateId);
+    if (fromIndex === -1 || toIndex === -1) {
+      setDraggedTemplateId(null);
+      return;
+    }
+
+    const newTemplates = [...displayTemplates];
+    const [moved] = newTemplates.splice(fromIndex, 1);
+    newTemplates.splice(toIndex, 0, moved);
+
+    setAdminTemplates(newTemplates);
+    setDraggedTemplateId(null);
+    setIsReorderingTemplates(true);
+
+    try {
+      const res = await fetch('/api/admin/templates/reorder', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ orderedIds: newTemplates.map((t) => t.id) })
+      });
+      if (res.ok) {
+        showNotification('Template order saved!');
+        if (refreshTemplates) await refreshTemplates();
+      } else {
+        const data = await res.json().catch(() => null);
+        showNotification(data?.error || 'Failed to save template order', 'error');
+        await fetchAdminTemplates();
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Network error while reordering', 'error');
+      await fetchAdminTemplates();
+    } finally {
+      setIsReorderingTemplates(false);
+    }
+  };
+
+  const handleMoveScene = async (sceneId: string, direction: 'up' | 'down') => {
+    const sceneList = adminFaceSwapScenes.length > 0 ? adminFaceSwapScenes : faceSwapScenes;
+    const currentIndex = sceneList.findIndex((s) => s.id === sceneId);
+    if (currentIndex === -1) return;
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= sceneList.length) return;
+
+    const newScenes = [...sceneList];
+    const [moved] = newScenes.splice(currentIndex, 1);
+    newScenes.splice(targetIndex, 0, moved);
+
+    setAdminFaceSwapScenes(newScenes);
+    setIsReorderingScenes(true);
+
+    try {
+      const res = await fetch('/api/admin/faceswap/scenes/reorder', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ orderedIds: newScenes.map((s) => s.id) })
+      });
+      if (res.ok) {
+        showNotification('Face Swap scene order saved!');
+        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+      } else {
+        const data = await res.json().catch(() => null);
+        showNotification(data?.error || 'Failed to save scene order', 'error');
+        await fetchAdminFaceSwapScenes();
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Network error while reordering', 'error');
+      await fetchAdminFaceSwapScenes();
+    } finally {
+      setIsReorderingScenes(false);
+    }
+  };
+
+  const handleDropScene = async (targetSceneId: string) => {
+    if (!draggedSceneId || draggedSceneId === targetSceneId) {
+      setDraggedSceneId(null);
+      return;
+    }
+
+    const sceneList = adminFaceSwapScenes.length > 0 ? adminFaceSwapScenes : faceSwapScenes;
+    const fromIndex = sceneList.findIndex((s) => s.id === draggedSceneId);
+    const toIndex = sceneList.findIndex((s) => s.id === targetSceneId);
+    if (fromIndex === -1 || toIndex === -1) {
+      setDraggedSceneId(null);
+      return;
+    }
+
+    const newScenes = [...sceneList];
+    const [moved] = newScenes.splice(fromIndex, 1);
+    newScenes.splice(toIndex, 0, moved);
+
+    setAdminFaceSwapScenes(newScenes);
+    setDraggedSceneId(null);
+    setIsReorderingScenes(true);
+
+    try {
+      const res = await fetch('/api/admin/faceswap/scenes/reorder', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ orderedIds: newScenes.map((s) => s.id) })
+      });
+      if (res.ok) {
+        showNotification('Face Swap scene order saved!');
+        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+      } else {
+        const data = await res.json().catch(() => null);
+        showNotification(data?.error || 'Failed to save scene order', 'error');
+        await fetchAdminFaceSwapScenes();
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'Network error while reordering', 'error');
+      await fetchAdminFaceSwapScenes();
+    } finally {
+      setIsReorderingScenes(false);
     }
   };
 
@@ -1788,7 +1956,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneSourceVideoName(scene.sourceVideoPreview ? 'Current original video' : '');
     setSceneResultVideo(scene.resultVideoPreview || '');
     setSceneResultVideoName(scene.resultVideoPreview ? 'Current swapped video' : '');
-    setSceneMasterRecipePrompt(scene.masterRecipePrompt || '');
+    setSceneMasterRecipePrompt(scene.masterRecipePrompt?.trim() ? scene.masterRecipePrompt : DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT);
 
     setFaceSwapSubTab('edit');
   };
@@ -2255,82 +2423,84 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </div>
         )}
 
-        {/* Studio Top Navigation Tabs */}
-        <div className="flex border-b border-white/10 bg-stone-900/40 p-1.5 gap-1.5 px-4">
-          <button
-            onClick={() => {
-              setActiveTab('templates');
-              setSubTab('list');
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'templates'
-                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
-                : 'text-stone-400 hover:text-white'
-            }`}
-          >
-            <Layers className="w-4 h-4 text-[#ff9f00]" />
-            <span>Templates ({displayTemplates.length})</span>
-          </button>
+        {/* Studio Top Navigation Tabs (Mobile-Friendly Responsive Layout) */}
+        <div className="border-b border-white/10 bg-stone-900/60 p-2 px-3 sm:px-4">
+          <div className="grid grid-cols-2 sm:flex sm:flex-row gap-1.5">
+            <button
+              onClick={() => {
+                setActiveTab('templates');
+                setSubTab('list');
+              }}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer sm:flex-1 ${
+                activeTab === 'templates'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <Layers className="w-4 h-4 text-[#ff9f00] shrink-0" />
+              <span className="truncate">Templates ({displayTemplates.length})</span>
+            </button>
 
-          <button
-            onClick={() => {
-              setActiveTab('catalog');
-              if (catalogItems.length === 0) fetchProviderCatalog();
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'catalog'
-                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
-                : 'text-stone-400 hover:text-white'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 text-cyan-400" />
-            <span>Provider Catalog</span>
-          </button>
+            <button
+              onClick={() => {
+                setActiveTab('catalog');
+                if (catalogItems.length === 0) fetchProviderCatalog();
+              }}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer sm:flex-1 ${
+                activeTab === 'catalog'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span className="truncate">Provider Catalog</span>
+            </button>
 
-          <button
-            onClick={() => {
-              setActiveTab('banners');
-              setSubTab('list');
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'banners'
-                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
-                : 'text-stone-400 hover:text-white'
-            }`}
-          >
-            <Film className="w-4 h-4 text-pink-400" />
-            <span>Hero Banners</span>
-          </button>
+            <button
+              onClick={() => {
+                setActiveTab('banners');
+                setSubTab('list');
+              }}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer sm:flex-1 ${
+                activeTab === 'banners'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <Film className="w-4 h-4 text-pink-400 shrink-0" />
+              <span className="truncate">Hero Banners</span>
+            </button>
 
-          <button
-            onClick={() => {
-              setActiveTab('pricing_banner');
-              fetchPricingBannerConfig();
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'pricing_banner'
-                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
-                : 'text-stone-400 hover:text-white'
-            }`}
-          >
-            <CreditCard className="w-4 h-4 text-amber-400" />
-            <span>Pricing Banner</span>
-          </button>
+            <button
+              onClick={() => {
+                setActiveTab('pricing_banner');
+                fetchPricingBannerConfig();
+              }}
+              className={`py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer sm:flex-1 ${
+                activeTab === 'pricing_banner'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <CreditCard className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="truncate">Pricing Banner</span>
+            </button>
 
-          <button
-            onClick={() => {
-              setActiveTab('faceswap');
-              if (adminFaceSwapScenes.length === 0) fetchAdminFaceSwapScenes();
-            }}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-              activeTab === 'faceswap' || activeTab === 'demo'
-                ? 'bg-white/10 text-white border border-white/10 shadow-sm'
-                : 'text-stone-400 hover:text-white'
-            }`}
-          >
-            <VideoIcon className="w-4 h-4 text-emerald-400" />
-            <span>Face Swap ({adminFaceSwapScenes.length || faceSwapScenes.length})</span>
-          </button>
+            <button
+              onClick={() => {
+                setActiveTab('faceswap');
+                if (adminFaceSwapScenes.length === 0) fetchAdminFaceSwapScenes();
+              }}
+              className={`col-span-2 sm:col-span-1 sm:flex-1 py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer ${
+                activeTab === 'faceswap' || activeTab === 'demo'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <VideoIcon className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="truncate">Face Swap ({adminFaceSwapScenes.length || faceSwapScenes.length})</span>
+            </button>
+          </div>
         </div>
 
         {/* TAB 1: TEMPLATES MANAGEMENT */}
@@ -2436,21 +2606,59 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 </div>
 
                 <div className="space-y-2">
-                  {displayTemplates
-                    .filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter)
-                    .map((tpl) => (
+                  {(() => {
+                    const filtered = displayTemplates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter);
+                    return filtered.map((tpl, index) => (
                       <div
                         key={tpl.id}
-                        className="p-3 rounded-2xl bg-stone-900/60 border border-white/10 flex items-center justify-between gap-3"
+                        draggable
+                        onDragStart={() => setDraggedTemplateId(tpl.id)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => handleDropTemplate(tpl.id)}
+                        className={`p-3 rounded-2xl bg-stone-900/60 border flex items-center justify-between gap-2 sm:gap-3 transition-all ${
+                          draggedTemplateId === tpl.id
+                            ? 'opacity-40 border-amber-400/60 shadow-lg'
+                            : 'border-white/10 hover:border-white/20'
+                        }`}
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                          {/* Drag Handle & Mobile Move Up/Down Controls */}
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <div
+                              className="p-1 text-stone-500 hover:text-amber-400 cursor-grab active:cursor-grabbing"
+                              title="Drag to reorder"
+                            >
+                              <GripVertical className="w-4 h-4" />
+                            </div>
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                disabled={index === 0 || isReorderingTemplates}
+                                onClick={() => handleMoveTemplate(tpl.id, 'up')}
+                                className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                title="Move up"
+                              >
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={index === filtered.length - 1 || isReorderingTemplates}
+                                onClick={() => handleMoveTemplate(tpl.id, 'down')}
+                                className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                title="Move down"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
                           <img
                             src={tpl.cover}
                             alt={tpl.title}
                             className="w-12 h-14 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0"
                           />
                           <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
                               <h4 className="text-xs font-bold text-white truncate">{tpl.title}</h4>
                               {tpl.badge && (
                                 <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
@@ -2473,7 +2681,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => handleToggleActive(tpl)}
                             title={tpl.isActive !== false ? 'Deactivate' : 'Activate'}
@@ -2499,7 +2707,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           </button>
                         </div>
                       </div>
-                    ))}
+                    ));
+                  })()}
                 </div>
               </div>
             )}
@@ -4157,13 +4366,52 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     </div>
 
                     <div className="space-y-2.5">
-                      {(adminFaceSwapScenes.length > 0 ? adminFaceSwapScenes : faceSwapScenes).map((scene) => (
+                      {(() => {
+                        const sceneList = adminFaceSwapScenes.length > 0 ? adminFaceSwapScenes : faceSwapScenes;
+                        return sceneList.map((scene, index) => (
                         <div
                           key={scene.id}
-                          className="p-3 rounded-2xl bg-stone-900/70 border border-white/10 hover:border-white/20 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                          draggable
+                          onDragStart={() => setDraggedSceneId(scene.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => handleDropScene(scene.id)}
+                          className={`p-3 rounded-2xl bg-stone-900/70 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                            draggedSceneId === scene.id
+                              ? 'opacity-40 border-amber-400/60 shadow-lg'
+                              : 'border-white/10 hover:border-white/20'
+                          }`}
                         >
-                          {/* 3 Asset Thumbnails */}
+                          {/* Reorder controls + 3 Asset Thumbnails */}
                           <div className="flex items-center gap-2 shrink-0">
+                            {/* Drag handle & Mobile buttons */}
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <div
+                                className="p-1 text-stone-500 hover:text-amber-400 cursor-grab active:cursor-grabbing"
+                                title="Drag to reorder scene"
+                              >
+                                <GripVertical className="w-4 h-4" />
+                              </div>
+                              <div className="flex flex-col">
+                                <button
+                                  type="button"
+                                  disabled={index === 0 || isReorderingScenes}
+                                  onClick={() => handleMoveScene(scene.id, 'up')}
+                                  className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                  title="Move up"
+                                >
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={index === sceneList.length - 1 || isReorderingScenes}
+                                  onClick={() => handleMoveScene(scene.id, 'down')}
+                                  className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                  title="Move down"
+                                >
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
                             {/* 1. Sample Face */}
                             <div className="relative w-12 h-14 rounded-xl overflow-hidden bg-black border border-white/10">
                               <img
@@ -4315,7 +4563,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             </button>
                           </div>
                         </div>
-                      ))}
+                      ));
+                    })()}
                     </div>
                   </div>
                 ) : (

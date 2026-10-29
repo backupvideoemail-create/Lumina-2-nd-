@@ -488,6 +488,9 @@ export const TemplateDetailModal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    if (videoPlayerRef.current) {
+                      videoPlayerRef.current.pause();
+                    }
                     setActiveVideoTab('before');
                     setIsPlayingVideo(true);
                   }}
@@ -502,6 +505,9 @@ export const TemplateDetailModal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    if (videoPlayerRef.current) {
+                      videoPlayerRef.current.pause();
+                    }
                     setActiveVideoTab('after');
                     setIsPlayingVideo(true);
                   }}
@@ -532,7 +538,7 @@ export const TemplateDetailModal: React.FC = () => {
                 preload="auto"
                 draggable={false}
                 onContextMenu={(e) => e.preventDefault()}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain bg-black"
               />
 
               {/* Scrims */}

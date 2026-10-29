@@ -562,6 +562,70 @@ async function runSystemVerification() {
   const tplCardSource = fs.readFileSync('src/components/TemplateCard.tsx', 'utf-8');
   assert(tplCardSource.includes('setSelectedTemplate(template)'), 'TemplateCard opens preview modal first instead of direct generation bypass');
 
+  // 13. SUITE 15: Admin Gallery Mobile UI, Drag-and-Drop Reordering, Driving Video Security & Video Framing
+  console.log('\n--- SUITE 15: Admin Mobile Tabs, Drag & Drop Reordering, Driving Video Security & Video Framing ---');
+
+  // 15.1 Admin Gallery Top Navigation Mobile Layout
+  assert(tplManagerSource.includes('grid grid-cols-2 sm:flex sm:flex-row gap-1.5'), 'TemplateManagerModal uses responsive grid on mobile and flex on desktop');
+  assert(tplManagerSource.includes('col-span-2 sm:col-span-1'), 'TemplateManagerModal gives Face Swap tab full-width column span on mobile to prevent clipping');
+
+  // 15.2 Template Drag-and-Drop Reordering Persistence
+  const allCurrentTpls = prodDb.getTemplates();
+  assert(allCurrentTpls.length >= 2, 'At least 2 templates exist in test database for reorder verification');
+  const tplId1 = allCurrentTpls[0].id;
+  const tplId2 = allCurrentTpls[1].id;
+  const originalOrder = allCurrentTpls.map(t => t.id);
+
+  // Invert top 2 templates and verify
+  const reversedTplIds = [tplId2, tplId1, ...originalOrder.slice(2)];
+  await prodDb.reorderTemplates(reversedTplIds);
+  const reorderedTpls = prodDb.getTemplates();
+  assert(reorderedTpls[0].id === tplId2 && reorderedTpls[1].id === tplId1, 'Template order updated in memory and sorted by sortOrder ascending');
+  assert(reorderedTpls[0].sortOrder === 0 && reorderedTpls[1].sortOrder === 1, 'sortOrder values normalized to 0, 1, 2... sequence');
+
+  // Restore original template order
+  await prodDb.reorderTemplates(originalOrder);
+  const restoredTpls = prodDb.getTemplates();
+  assert(restoredTpls[0].id === tplId1 && restoredTpls[1].id === tplId2, 'Original template order successfully restored');
+
+  // 15.3 FaceSwapScene Reordering Persistence
+  const currentScenes = prodDb.getFaceSwapScenes();
+  assert(currentScenes.length >= 2, 'At least 2 FaceSwap scenes exist in test database for reorder verification');
+  const sceneId1 = currentScenes[0].id;
+  const sceneId2 = currentScenes[1].id;
+  const originalSceneOrder = currentScenes.map(s => s.id);
+
+  // Invert top 2 scenes and verify
+  const reversedSceneIds = [sceneId2, sceneId1, ...originalSceneOrder.slice(2)];
+  await prodDb.reorderFaceSwapScenes(reversedSceneIds);
+  const reorderedScenes = prodDb.getFaceSwapScenes();
+  assert(reorderedScenes[0].id === sceneId2 && reorderedScenes[1].id === sceneId1, 'FaceSwapScene order updated in memory and sorted by order ascending');
+  assert(reorderedScenes[0].order === 0 && reorderedScenes[1].order === 1, 'order values normalized to 0, 1, 2... sequence');
+
+  // Restore original scene order
+  await prodDb.reorderFaceSwapScenes(originalSceneOrder);
+  const restoredScenes = prodDb.getFaceSwapScenes();
+  assert(restoredScenes[0].id === sceneId1 && restoredScenes[1].id === sceneId2, 'Original scene order successfully restored');
+
+  // 15.4 Reorder API endpoints in server.ts
+  assert(serverContent.includes('/api/admin/templates/reorder'), 'server.ts exposes POST /api/admin/templates/reorder');
+  assert(serverContent.includes('/api/admin/faceswap/scenes/reorder'), 'server.ts exposes POST /api/admin/faceswap/scenes/reorder');
+  assert(serverContent.includes('reorderTemplates(orderedIds)'), 'server.ts invokes prodDb.reorderTemplates');
+  assert(serverContent.includes('reorderFaceSwapScenes(orderedIds)'), 'server.ts invokes prodDb.reorderFaceSwapScenes');
+
+  // 15.5 Server-Authoritative Driving Video Security
+  assert(serverContent.includes('SCENE_NOT_FOUND'), 'server.ts returns 404 SCENE_NOT_FOUND when sceneId is not found');
+  assert(serverContent.includes('resolvedSourceVideo = selectedScene.sourceVideoPreview'), 'server.ts strictly binds driving video to selectedScene.sourceVideoPreview');
+  assert(serverContent.includes('Explicit custom video upload workflow'), 'server.ts preserves custom video upload workflow only when no sceneId is provided');
+
+  // 15.6 Template Prompt Fallback Preservation
+  assert(tplManagerSource.includes('DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT') && tplManagerSource.includes('scene.masterRecipePrompt'), 'TemplateManagerModal provides DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT fallback for legacy scenes');
+  assert(tplManagerSource.includes('DEFAULT_VIDEO_RECIPE_PROMPT') && tplManagerSource.includes('DEFAULT_PHOTO_RECIPE_PROMPT'), 'TemplateManagerModal provides prompt fallbacks for legacy templates');
+
+  // 15.7 Video Player Full-Height Framing & Single Playback UX
+  assert(detailModalSource.includes('object-contain bg-black'), 'TemplateDetailModal uses object-contain to prevent cropping full-body portrait videos');
+  assert(detailModalSource.includes('videoPlayerRef.current.pause()'), 'TemplateDetailModal pauses previous playback when switching video tabs');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

@@ -46,7 +46,8 @@ import type {
   CreditTransaction,
   Generation,
   UserSubscription,
-  PaymentRecord
+  PaymentRecord,
+  FaceSwapScene
 } from './src/types/index.ts';
 
 dotenv.config({ override: true });
@@ -1034,6 +1035,25 @@ app.delete('/api/admin/templates/:id', requireAdmin, async (req, res) => {
   res.status(404).json({ error: 'Template not found' });
 });
 
+// Admin Reorder Templates (persists sortOrder across catalog)
+app.post('/api/admin/templates/reorder', requireAdmin, async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: 'orderedIds must be an array of template IDs', code: 'INVALID_ORDERED_IDS' });
+    }
+    const updatedTemplates = await prodDb.reorderTemplates(orderedIds);
+    res.json({
+      success: true,
+      count: orderedIds.length,
+      templates: updatedTemplates
+    });
+  } catch (err: any) {
+    console.error('[Admin Templates Reorder Error]:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to reorder templates', code: 'REORDER_FAILED' });
+  }
+});
+
 // Admin Scan & Recover Orphaned Templates from Cloudflare R2
 app.post('/api/admin/templates/recover-r2', requireAdmin, async (_req, res) => {
   try {
@@ -1581,6 +1601,25 @@ app.delete('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, deletedId: id });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to delete Face Swap scene' });
+  }
+});
+
+// Admin Reorder Face Swap Scenes (persists order field in faceswap_scenes)
+app.post('/api/admin/faceswap/scenes/reorder', requireAdmin, async (req, res) => {
+  try {
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: 'orderedIds must be an array of scene IDs', code: 'INVALID_ORDERED_IDS' });
+    }
+    const updatedScenes = await prodDb.reorderFaceSwapScenes(orderedIds);
+    res.json({
+      success: true,
+      count: orderedIds.length,
+      scenes: updatedScenes
+    });
+  } catch (err: any) {
+    console.error('[Admin FaceSwap Scenes Reorder Error]:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to reorder Face Swap scenes', code: 'REORDER_FAILED' });
   }
 });
 
@@ -3220,16 +3259,35 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   } = req.body;
 
   // Resolve server-selected scene recipe and authoritative original driving video
-  const selectedScene = sceneId
-    ? prodDb.getFaceSwapScene(sceneId)
-    : (sourceVideoUrl ? prodDb.getFaceSwapScenes(true).find(s => s.sourceVideoPreview === sourceVideoUrl || s.resultVideoPreview === sourceVideoUrl) : null);
+  let selectedScene: FaceSwapScene | null = null;
+  if (sceneId) {
+    selectedScene = prodDb.getFaceSwapScene(sceneId);
+    if (!selectedScene) {
+      return res.status(404).json({
+        error: `Face Swap scene '${sceneId}' not found. Please select a valid preset scene.`,
+        code: 'SCENE_NOT_FOUND',
+        stage: 'validation'
+      });
+    }
+  } else if (sourceVideoUrl && !sourceVideoBase64) {
+    // If no sceneId is provided, check if sourceVideoUrl matches any existing preset scene
+    selectedScene = prodDb.getFaceSwapScenes(true).find(
+      s => s.sourceVideoPreview === sourceVideoUrl || s.resultVideoPreview === sourceVideoUrl
+    ) || null;
+  }
 
   // Authoritative Driving Video Enforcement:
-  // NEVER use resultVideoPreview as the driving video. If client accidentally supplied result video, override with sourceVideoPreview.
-  let resolvedSourceVideo = sourceVideoBase64 || sourceVideoUrl;
+  // NEVER use resultVideoPreview as the driving video.
+  let resolvedSourceVideo = '';
   if (selectedScene) {
-    if (!resolvedSourceVideo || resolvedSourceVideo === selectedScene.resultVideoPreview || (typeof resolvedSourceVideo === 'string' && resolvedSourceVideo.includes(selectedScene.resultVideoPreview))) {
-      resolvedSourceVideo = selectedScene.sourceVideoPreview;
+    // When a preset scene is selected, driving video MUST strictly be the scene's authoritative sourceVideoPreview
+    resolvedSourceVideo = selectedScene.sourceVideoPreview;
+  } else {
+    // Explicit custom video upload workflow (user uploaded their own custom driving video)
+    resolvedSourceVideo = sourceVideoBase64 || sourceVideoUrl || '';
+    const matchedResultScene = prodDb.getFaceSwapScenes(true).find(s => s.resultVideoPreview === resolvedSourceVideo);
+    if (matchedResultScene) {
+      resolvedSourceVideo = matchedResultScene.sourceVideoPreview;
     }
   }
 
