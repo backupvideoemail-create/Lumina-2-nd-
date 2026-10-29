@@ -227,6 +227,7 @@ export interface ProductionDatabaseSchema {
   adminTestRuns?: AdminTestRun[];
   categoryPrompts?: Record<string, string>;
   pricingBanner?: PricingBannerConfig | null;
+  deletedTemplateIds?: string[];
 }
 
 export interface PricingBannerItem {
@@ -441,10 +442,17 @@ class ProductionDatabase {
         firestoreTemplates.push(d.data() as Template);
       });
     }
+    const deletedIds = new Set(this.db.deletedTemplateIds || []);
     const templateMap = new Map<string, Template>();
-    SEED_TEMPLATES.forEach(t => templateMap.set(t.id, t));
-    (this.db.templates || []).forEach(t => templateMap.set(t.id, t));
-    firestoreTemplates.forEach(t => templateMap.set(t.id, t));
+    SEED_TEMPLATES.forEach(t => {
+      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+    });
+    (this.db.templates || []).forEach(t => {
+      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+    });
+    firestoreTemplates.forEach(t => {
+      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+    });
     this.db.templates = Array.from(templateMap.values());
 
     // 2. Face Swap Scenes & Config
@@ -520,9 +528,14 @@ class ProductionDatabase {
         parsed.jobs = parsed.jobs || [];
         parsed.payments = parsed.payments || {};
         parsed.subscriptions = parsed.subscriptions || {};
+        const deletedIds = new Set(parsed.deletedTemplateIds || []);
         const tplMap = new Map<string, Template>();
-        SEED_TEMPLATES.forEach(t => tplMap.set(t.id, t));
-        (parsed.templates || []).forEach((t: Template) => tplMap.set(t.id, t));
+        SEED_TEMPLATES.forEach(t => {
+          if (!deletedIds.has(t.id)) tplMap.set(t.id, t);
+        });
+        (parsed.templates || []).forEach((t: Template) => {
+          if (!deletedIds.has(t.id)) tplMap.set(t.id, t);
+        });
         parsed.templates = Array.from(tplMap.values());
         parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
         parsed.faceSwapDemoVideoUrl = parsed.faceSwapDemoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4';
@@ -1448,13 +1461,27 @@ class ProductionDatabase {
       return this.getAllTemplatesAdmin();
     }
 
+    // 1. Sanitize and deduplicate incoming IDs
+    const sanitizedIds = Array.from(
+      new Set(
+        orderedIds.filter((id) => typeof id === 'string' && id.trim().length > 0)
+      )
+    );
+
     const templateMap = new Map<string, Template>();
     for (const t of this.db.templates) {
       templateMap.set(t.id, t);
     }
 
+    // 2. Filter strictly to valid existing IDs
+    const validOrderedIds = sanitizedIds.filter((id) => templateMap.has(id));
+    if (validOrderedIds.length === 0) {
+      return this.getAllTemplatesAdmin();
+    }
+
+    // 3. Assign sequential sortOrder to specified templates
     const reordered: Template[] = [];
-    orderedIds.forEach((id, index) => {
+    validOrderedIds.forEach((id, index) => {
       const t = templateMap.get(id);
       if (t) {
         t.sortOrder = index;
@@ -1463,20 +1490,26 @@ class ProductionDatabase {
       }
     });
 
-    // Append any templates not explicitly in orderedIds
-    let remainingOrder = orderedIds.length;
-    for (const remaining of templateMap.values()) {
-      if (remaining.sortOrder === undefined || remaining.sortOrder < orderedIds.length) {
-        remaining.sortOrder = remainingOrder++;
-      }
+    // 4. Preserve relative ordering of remaining/non-visible templates
+    const remainingTemplates = Array.from(templateMap.values()).sort(
+      (a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)
+    );
+    let remainingOrder = validOrderedIds.length;
+    for (const remaining of remainingTemplates) {
+      remaining.sortOrder = remainingOrder++;
       reordered.push(remaining);
     }
 
+    // Sort complete catalog
     this.db.templates = reordered.sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
     this.save();
 
-    // Persist updated sortOrder to authoritative Firestore
-    if (adminFirestoreDb) {
+    // 5. Authoritative Firestore Persistence
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Template reordering cannot be saved permanently to Cloud.');
+      }
+    } else {
       try {
         if (typeof adminFirestoreDb.batch === 'function') {
           const batch = adminFirestoreDb.batch();
@@ -1493,11 +1526,17 @@ class ProductionDatabase {
             );
           }
         }
-      } catch (err: any) {
-        console.error('[Database] Failed to batch persist template sortOrder to Firestore:', err.message);
-        if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
-          throw new Error(`Firestore reorder persistence failed: ${err.message}`);
+
+        // Verification read-back of top reordered template
+        if (reordered.length > 0) {
+          const verifyDoc = await adminFirestoreDb.collection('templates').doc(reordered[0].id).get();
+          if (!verifyDoc.exists) {
+            throw new Error(`Firestore read-back verification failed for template ${reordered[0].id}`);
+          }
         }
+      } catch (err: any) {
+        console.error('[Database Critical] Firestore template reorder persistence failed:', err.message);
+        throw new Error(`Firestore template reorder persistence failed: ${err.message}`);
       }
     }
 
@@ -1615,7 +1654,19 @@ class ProductionDatabase {
 
     // Remove from local list only after Firestore confirms deletion
     this.db.templates.splice(index, 1);
+    if (!this.db.deletedTemplateIds) this.db.deletedTemplateIds = [];
+    if (!this.db.deletedTemplateIds.includes(id)) {
+      this.db.deletedTemplateIds.push(id);
+    }
     this.save();
+    if (adminFirestoreDb) {
+      try {
+        await adminFirestoreDb.collection('config').doc('deleted_template_ids').set({
+          ids: this.db.deletedTemplateIds,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch {}
+    }
     return true;
   }
 
@@ -1717,8 +1768,23 @@ class ProductionDatabase {
       for (const asset of r2Objects) {
         const fn = asset.filename.toLowerCase();
 
-        // Skip non-template assets (tests, face swap video results, user generation outputs)
-        if (fn.startsWith('test_') || fn.startsWith('fsv_') || fn.startsWith('gen_') || fn.startsWith('user_')) {
+        // Skip non-template assets (tests, face swap video results, user generation outputs, admin uploads, banners)
+        if (
+          fn.startsWith('test_') ||
+          fn.startsWith('fsv_') ||
+          fn.startsWith('gen_') ||
+          fn.startsWith('user_') ||
+          fn.startsWith('admin_upload_') ||
+          fn.startsWith('pbn_') ||
+          fn.startsWith('banner_')
+        ) {
+          this.unassignedRecoveryAssets.push({
+            key: asset.key,
+            filename: asset.filename,
+            size: asset.size,
+            lastModified: asset.lastModified,
+            publicUrl: asset.publicUrl
+          });
           skippedCount++;
           continue;
         }
@@ -1747,16 +1813,21 @@ class ProductionDatabase {
           else if (r === 'preview') role = 'preview';
         }
 
-        // Look for explicit tpl_XXXX identifier
+        // Look for explicit tpl_XXXX identifier with a genuine semantic slug (not just timestamp/asset)
         const tplIdMatch = asset.filename.match(/tpl_[a-zA-Z0-9_\-]+/i);
         if (tplIdMatch) {
-          // Normalize base ID by stripping role suffix if attached
-          matchedId = tplIdMatch[0]
+          // Normalize base ID by stripping role suffix/prefix if attached
+          const rawId = tplIdMatch[0]
             .replace(/_(face|before|sample|after|cover|ref|preview)$/i, '')
-            .replace(/^(face|before|sample|after|cover|ref|preview)_/i, '');
+            .replace(/^(tpl_)?(face|before|sample|after|cover|ref|preview)_/i, 'tpl_');
+          
+          // Reject generic upload timestamp IDs from becoming fake templates
+          if (!/tpl_(asset|cover|before|face|sample|admin)_[0-9]+/i.test(rawId)) {
+            matchedId = rawId;
+          }
         }
 
-        if (matchedId && matchedId.length > 4) {
+        if (matchedId && matchedId.length > 6) {
           if (!templateGroups.has(matchedId)) {
             templateGroups.set(matchedId, {
               templateId: matchedId,
@@ -1773,7 +1844,7 @@ class ProductionDatabase {
           else if (role === 'cover') group.coverAsset = assetInfo;
           else if (role === 'preview') group.mediaAsset = assetInfo;
         } else {
-          // Ambiguous asset: keep in unassigned inventory, DO NOT guess into catalog
+          // Ambiguous or single-asset file: keep in unassigned inventory, DO NOT guess into catalog
           this.unassignedRecoveryAssets.push({
             key: asset.key,
             filename: asset.filename,
@@ -1787,6 +1858,29 @@ class ProductionDatabase {
       const recoveredTemplates: Template[] = [];
 
       for (const [tplId, group] of templateGroups.entries()) {
+        const proposedId = tplId.startsWith('tpl_') ? tplId : `tpl_${tplId}`;
+
+        // If template already exists in catalog, never create a duplicate!
+        if (this.db.templates.some(t => t.id === proposedId)) {
+          skippedCount += group.allAssets.length;
+          continue;
+        }
+
+        // Strict template integrity: Group MUST have at least 2 distinct assets (e.g. before/face + sample)
+        // or a verified multi-asset structure to qualify as a template record
+        if (!group.beforeAsset && !group.faceAsset && group.allAssets.length < 2) {
+          group.allAssets.forEach(a => {
+            this.unassignedRecoveryAssets.push({
+              key: a.filename,
+              filename: a.filename,
+              size: 0,
+              lastModified: new Date().toISOString(),
+              publicUrl: a.url
+            });
+          });
+          continue;
+        }
+
         // Resolve primary result reference
         const sampleResultUrl = group.sampleResultAsset?.url || group.coverAsset?.url || group.mediaAsset?.url || group.allAssets[0]?.url;
         if (!sampleResultUrl) continue;
@@ -1822,7 +1916,7 @@ class ProductionDatabase {
           : `${category} Look (R2 Recovered)`;
 
         const restoredTemplate: Template = {
-          id: tplId.startsWith('tpl_') ? tplId : `tpl_${tplId}`,
+          id: proposedId,
           title: displayTitle,
           type: isVideo ? 'video' : 'photo',
           inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
@@ -2113,13 +2207,27 @@ class ProductionDatabase {
       return this.getFaceSwapScenes(true);
     }
 
+    // 1. Sanitize and deduplicate incoming IDs
+    const sanitizedIds = Array.from(
+      new Set(
+        orderedIds.filter((id) => typeof id === 'string' && id.trim().length > 0)
+      )
+    );
+
     const sceneMap = new Map<string, FaceSwapScene>();
     for (const s of (this.db.faceSwapScenes || [])) {
       sceneMap.set(s.id, s);
     }
 
+    // 2. Filter strictly to valid existing IDs
+    const validOrderedIds = sanitizedIds.filter((id) => sceneMap.has(id));
+    if (validOrderedIds.length === 0) {
+      return this.getFaceSwapScenes(true);
+    }
+
+    // 3. Assign sequential order to specified scenes
     const reordered: FaceSwapScene[] = [];
-    orderedIds.forEach((id, index) => {
+    validOrderedIds.forEach((id, index) => {
       const s = sceneMap.get(id);
       if (s) {
         s.order = index;
@@ -2129,8 +2237,12 @@ class ProductionDatabase {
       }
     });
 
-    let remainingOrder = orderedIds.length;
-    for (const remaining of sceneMap.values()) {
+    // 4. Preserve relative ordering of remaining/unspecified scenes
+    const remainingScenes = Array.from(sceneMap.values()).sort(
+      (a, b) => (a.order ?? 999999) - (b.order ?? 999999)
+    );
+    let remainingOrder = validOrderedIds.length;
+    for (const remaining of remainingScenes) {
       remaining.order = remainingOrder++;
       reordered.push(remaining);
     }
@@ -2138,17 +2250,26 @@ class ProductionDatabase {
     this.db.faceSwapScenes = reordered.sort((a, b) => (a.order ?? 999999) - (b.order ?? 999999));
     this.save();
 
-    if (adminFirestoreDb) {
+    // 5. Authoritative Firestore Persistence
+    if (!adminFirestoreDb) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Authoritative Firestore database connection is not available. Face Swap scene order cannot be saved permanently to Cloud.');
+      }
+    } else {
       try {
         await adminFirestoreDb.collection('config').doc('faceswap_scenes').set({
           scenes: JSON.parse(JSON.stringify(this.db.faceSwapScenes)),
           updatedAt: new Date().toISOString()
         }, { merge: true });
-      } catch (err: any) {
-        console.error('[Database] Failed to persist reordered FaceSwap scenes to Firestore:', err.message);
-        if (process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
-          throw new Error(`Firestore scene reorder failed: ${err.message}`);
+
+        // Verification read-back
+        const verifyDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+        if (!verifyDoc.exists || !verifyDoc.data()?.scenes) {
+          throw new Error('Firestore read-back verification failed for faceswap_scenes configuration.');
         }
+      } catch (err: any) {
+        console.error('[Database Critical] Failed to persist reordered FaceSwap scenes to Firestore:', err.message);
+        throw new Error(`Firestore scene reorder failed: ${err.message}`);
       }
     }
 

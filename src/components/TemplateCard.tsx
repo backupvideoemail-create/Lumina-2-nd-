@@ -25,10 +25,21 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Determine candidate media and whether it is a real playable video stream
-  const candidateMedia = template.preview || template.cover;
+  const matchingScene = template.isFaceSwap
+    ? (faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || template.id)) || faceSwapScenes[0])
+    : (template.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === template.faceSwapSceneId) : null);
+
+  const candidateMedia = matchingScene
+    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || template.preview || template.cover)
+    : (template.preview || template.cover);
+
+  const sampleFace = matchingScene?.sampleFace || template.sampleFaceThumbnail;
+
   const isVideo = Boolean(
-    !template.isFaceSwap &&
-    (template.mediaType === 'video' || isVideoMedia(candidateMedia))
+    template.type === 'video' ||
+    template.mediaType === 'video' ||
+    template.isFaceSwap ||
+    isVideoMedia(candidateMedia)
   );
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
@@ -112,7 +123,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
         {isVideo ? (
           <video
             ref={videoRef}
-            src={template.preview || template.cover}
+            src={candidateMedia}
             loop
             muted
             playsInline
@@ -177,6 +188,20 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             <span>{template.creditCost} ✦</span>
           </div>
         </div>
+
+        {/* Sample Face Inset for Face Swap Templates (Small thumbnail that does not block the card) */}
+        {template.isFaceSwap && sampleFace && (
+          <div className="absolute top-12 left-2.5 z-20 pointer-events-none flex items-center gap-1.5 p-1 rounded-xl bg-black/75 backdrop-blur-md border border-purple-400/40 shadow-lg">
+            <img
+              src={sampleFace}
+              alt="Face Reference"
+              className="w-7 h-9 rounded-lg object-cover border border-purple-400/30"
+            />
+            <span className="text-[8px] font-black text-purple-300 pr-1 uppercase tracking-tighter">
+              Sample
+            </span>
+          </div>
+        )}
 
         {/* Video / Play Indicator Overlay for quick glance */}
         {isVideo && (

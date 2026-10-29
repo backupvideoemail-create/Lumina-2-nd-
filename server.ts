@@ -1028,11 +1028,16 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/admin/templates/:id', requireAdmin, async (req, res) => {
-  const success = await prodDb.deleteTemplate(req.params.id);
-  if (success) {
-    return res.json({ success: true, message: 'Template removed successfully' });
+  try {
+    const success = await prodDb.deleteTemplate(req.params.id);
+    if (success) {
+      return res.json({ success: true, message: 'Template removed successfully' });
+    }
+    res.status(404).json({ error: 'Template not found' });
+  } catch (err: any) {
+    console.error('[Admin Delete Template Error]:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to delete template' });
   }
-  res.status(404).json({ error: 'Template not found' });
 });
 
 // Admin Reorder Templates (persists sortOrder across catalog)

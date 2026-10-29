@@ -47,10 +47,21 @@ export const TemplateDetailModal: React.FC = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlayingVideo, setIsPlayingVideo] = useState(true);
-  const [isVideoMuted, setIsVideoMuted] = useState(true);
+  const [isVideoMuted, setIsVideoMuted] = useState(false);
+  const [needsUserSoundInteraction, setNeedsUserSoundInteraction] = useState(false);
+  const [isVideoLoading, setIsVideoLoading] = useState(true);
+  const [videoError, setVideoError] = useState(false);
   const [activeVideoTab, setActiveVideoTab] = useState<'before' | 'after'>('after');
   const [customPrompt, setCustomPrompt] = useState('');
   const [copiedError, setCopiedError] = useState(false);
+  const [diagnosticDetails, setDiagnosticDetails] = useState<{
+    httpStatus?: number;
+    errorCode?: string;
+    stage?: string;
+    correlationId?: string;
+    timestamp?: string;
+    refunded?: boolean;
+  } | null>(null);
 
   // Draggable BEFORE/AFTER comparison slider state (Photo templates)
   const [sliderPosition, setSliderPosition] = useState<number>(50);
@@ -65,10 +76,14 @@ export const TemplateDetailModal: React.FC = () => {
   useEffect(() => {
     setInputSlots({});
     setUploadError(null);
+    setDiagnosticDetails(null);
     setIsPickerOpen(false);
     setActivePickingSlot(null);
     setIsPlayingVideo(true);
-    setIsVideoMuted(true);
+    setIsVideoMuted(false);
+    setNeedsUserSoundInteraction(false);
+    setIsVideoLoading(true);
+    setVideoError(false);
     setActiveVideoTab('after');
     setCustomPrompt('');
     setSliderPosition(50);
@@ -165,16 +180,59 @@ export const TemplateDetailModal: React.FC = () => {
     if (hasNext) setSelectedTemplate(templates[currentIndex + 1]);
   };
 
+  // Resolve matching scene for Face Swap templates
+  const matchingScene = tpl.isFaceSwap
+    ? (faceSwapScenes.find((s) => s.id === (tpl.faceSwapSceneId || tpl.id)) || faceSwapScenes[0])
+    : (tpl.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === tpl.faceSwapSceneId) : null);
+
+  // Authoritative media resolution prioritizing AFTER sample result as main preview
+  const displayResult = matchingScene
+    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || tpl.sampleResult || tpl.sampleAfter || tpl.preview || tpl.cover || '')
+    : (tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl || tpl.cover || tpl.preview || '');
+
+  const sampleFaceThumb = matchingScene?.sampleFace || tpl.sampleFaceThumbnail || null;
+  const sampleBeforeThumb = matchingScene?.sourceVideoPreview || tpl.sampleBefore || null;
+  const drivingVideoCandidate = matchingScene?.sourceVideoPreview || tpl.drivingVideoUrl || (sampleBeforeThumb && isVideoMedia(sampleBeforeThumb) ? sampleBeforeThumb : '');
+  const videoBeforeSrc = drivingVideoCandidate || sampleBeforeThumb || '';
+  const videoAfterSrc = displayResult;
+  const hasBothVideos = Boolean(videoBeforeSrc && videoAfterSrc && videoBeforeSrc !== videoAfterSrc);
+
   const isVideo = Boolean(
+    tpl.isFaceSwap ||
+    Boolean(matchingScene) ||
     tpl.mediaType === 'video' ||
-    (tpl.mediaType === undefined && (
-      tpl.type === 'video' ||
-      tpl.cover?.endsWith('.mp4') ||
-      tpl.cover?.endsWith('.webm') ||
-      tpl.cover?.startsWith('data:video/') ||
-      (tpl.preview && (tpl.preview.endsWith('.mp4') || tpl.preview.startsWith('data:video/')))
-    ))
+    tpl.type === 'video' ||
+    isVideoMedia(videoAfterSrc) ||
+    isVideoMedia(videoBeforeSrc) ||
+    tpl.cover?.endsWith('.mp4') ||
+    tpl.cover?.endsWith('.webm') ||
+    tpl.cover?.startsWith('data:video/')
   );
+
+  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
+
+  // Autoplay with sound detection & graceful recovery
+  useEffect(() => {
+    if (isVideo && videoPlayerRef.current) {
+      videoPlayerRef.current.muted = isVideoMuted;
+      videoPlayerRef.current.play().catch(() => {
+        if (videoPlayerRef.current && !isVideoMuted) {
+          videoPlayerRef.current.muted = true;
+          videoPlayerRef.current.play().catch(() => {});
+          setNeedsUserSoundInteraction(true);
+        }
+      });
+    }
+  }, [currentVideoSrc, isVideo]);
+
+  const handleEnableSound = () => {
+    if (videoPlayerRef.current) {
+      videoPlayerRef.current.muted = false;
+      videoPlayerRef.current.play().catch(() => {});
+    }
+    setIsVideoMuted(false);
+    setNeedsUserSoundInteraction(false);
+  };
 
   // Derive required upload slots by prioritizing explicit requiredInputs first,
   // then configured inputType / recipe.inputType, avoiding defaulting to video slot solely because tpl.type === 'video'
@@ -328,13 +386,22 @@ export const TemplateDetailModal: React.FC = () => {
 
     setIsGenerating(true);
     setUploadError(null);
+    setDiagnosticDetails(null);
     const res = await createGeneration(tpl.id, combinedPayload, customPrompt.trim() || undefined);
     setIsGenerating(false);
 
     if (res.success) {
       setSelectedTemplate(null);
-    } else if (res.error) {
-      setUploadError(res.error);
+    } else {
+      setUploadError(res.error || 'Generation failed');
+      setDiagnosticDetails({
+        httpStatus: res.httpStatus || 400,
+        errorCode: res.errorCode || 'GENERATION_FAILED',
+        stage: res.stage || 'generation_request',
+        correlationId: res.correlationId || `req_${Date.now()}`,
+        timestamp: res.timestamp || new Date().toISOString(),
+        refunded: res.refunded
+      });
     }
   };
 
@@ -360,19 +427,8 @@ export const TemplateDetailModal: React.FC = () => {
     )
     .slice(0, 8);
 
-  // Authoritative media resolution prioritizing AFTER sample result as main preview
-  const displayResult = tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl || tpl.cover || tpl.preview;
-  const sampleFaceThumb = tpl.sampleFaceThumbnail || null;
-  const sampleBeforeThumb = tpl.sampleBefore || null;
-  const drivingVideoCandidate = tpl.drivingVideoUrl || (sampleBeforeThumb && isVideoMedia(sampleBeforeThumb) ? sampleBeforeThumb : '');
-  const videoBeforeSrc = drivingVideoCandidate || sampleBeforeThumb || '';
-  const videoAfterSrc = displayResult;
-  const hasBothVideos = Boolean(videoBeforeSrc && videoAfterSrc && videoBeforeSrc !== videoAfterSrc);
-
-  const hasActualSample = Boolean(tpl.sampleResult || tpl.sampleAfter);
+  const hasActualSample = Boolean(tpl.sampleResult || tpl.sampleAfter || matchingScene?.resultVideoPreview);
   const hasBeforeAfterComparison = Boolean(sampleBeforeThumb && displayResult && sampleBeforeThumb !== displayResult);
-
-  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
 
   return (
     <div
@@ -494,13 +550,13 @@ export const TemplateDetailModal: React.FC = () => {
                     setActiveVideoTab('before');
                     setIsPlayingVideo(true);
                   }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
                     activeVideoTab === 'before'
                       ? 'bg-sky-500 text-white shadow-md'
                       : 'text-stone-400 hover:text-white'
                   }`}
                 >
-                  Original Video (Before)
+                  BEFORE — ORIGINAL
                 </button>
                 <button
                   type="button"
@@ -511,13 +567,13 @@ export const TemplateDetailModal: React.FC = () => {
                     setActiveVideoTab('after');
                     setIsPlayingVideo(true);
                   }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
                     activeVideoTab === 'after'
                       ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md'
                       : 'text-stone-400 hover:text-white'
                   }`}
                 >
-                  AI Result (After)
+                  AFTER — AI RESULT
                 </button>
               </div>
             )}
@@ -527,19 +583,44 @@ export const TemplateDetailModal: React.FC = () => {
               onClick={togglePlayPause}
               className="relative rounded-3xl overflow-hidden bg-black border border-white/15 shadow-[0_20px_50px_rgba(0,0,0,0.9)] aspect-[9/16] max-h-[75vh] sm:max-h-[82vh] w-full flex items-center justify-center select-none cursor-pointer group"
             >
-              <video
-                ref={videoPlayerRef}
-                key={currentVideoSrc}
-                src={currentVideoSrc}
-                autoPlay
-                loop
-                muted={isVideoMuted}
-                playsInline
-                preload="auto"
-                draggable={false}
-                onContextMenu={(e) => e.preventDefault()}
-                className="w-full h-full object-contain bg-black"
-              />
+              {videoError || !currentVideoSrc ? (
+                <div className="flex flex-col items-center justify-center p-6 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">Video Preview Unavailable</h4>
+                    <p className="text-xs text-stone-400 mt-1 max-w-xs">
+                      Media stream could not be loaded or is synchronizing with durable storage.
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono text-stone-500 bg-white/5 px-2 py-1 rounded">
+                    ID: {tpl.id}
+                  </span>
+                </div>
+              ) : (
+                <video
+                  ref={videoPlayerRef}
+                  key={currentVideoSrc}
+                  src={currentVideoSrc}
+                  autoPlay
+                  loop
+                  muted={isVideoMuted}
+                  playsInline
+                  preload="auto"
+                  draggable={false}
+                  onLoadedData={() => {
+                    setIsVideoLoading(false);
+                    setVideoError(false);
+                  }}
+                  onError={() => {
+                    setIsVideoLoading(false);
+                    setVideoError(true);
+                  }}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="w-full h-full object-contain bg-black"
+                />
+              )}
 
               {/* Scrims */}
               <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
@@ -558,18 +639,40 @@ export const TemplateDetailModal: React.FC = () => {
                 </span>
               </div>
 
+              {/* Autoplay Sound Prompt Overlay */}
+              {needsUserSoundInteraction && !videoError && (
+                <div className="absolute top-16 inset-x-0 mx-auto w-fit z-30 pointer-events-auto">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEnableSound();
+                    }}
+                    className="px-4 py-2 rounded-full bg-amber-500 text-black font-extrabold text-xs shadow-2xl flex items-center gap-2 hover:bg-amber-400 active:scale-95 transition-all cursor-pointer border border-amber-300"
+                  >
+                    <Volume2 className="w-4 h-4 fill-black" />
+                    <span>🔊 Tap to Play with Sound</span>
+                  </button>
+                </div>
+              )}
+
               {/* Mute/Sound and Play status indicator overlay */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setIsVideoMuted((prev) => !prev);
+                    if (isVideoMuted) {
+                      handleEnableSound();
+                    } else {
+                      setIsVideoMuted(true);
+                      if (videoPlayerRef.current) videoPlayerRef.current.muted = true;
+                    }
                   }}
-                  className="p-2 rounded-full bg-black/65 backdrop-blur-md border border-white/20 text-white hover:bg-black/85 transition-all"
+                  className="p-2 rounded-full bg-black/65 backdrop-blur-md border border-white/20 text-white hover:bg-black/85 transition-all cursor-pointer"
                   title={isVideoMuted ? 'Tap to unmute sound' : 'Tap to mute sound'}
                 >
-                  {isVideoMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5 text-amber-300" />}
+                  {isVideoMuted ? <VolumeX className="w-3.5 h-3.5 text-stone-400" /> : <Volume2 className="w-3.5 h-3.5 text-amber-300" />}
                 </button>
               </div>
 
@@ -904,7 +1007,7 @@ export const TemplateDetailModal: React.FC = () => {
 
           {/* SAFE DIAGNOSTIC ERROR DISPLAY WITH COPY DETAILS */}
           {uploadError && (
-            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2">
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 space-y-2.5">
               <div className="flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
                 <div className="flex-1 min-w-0">
@@ -914,17 +1017,53 @@ export const TemplateDetailModal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    const errorReport = `AI Prime Studio Diagnostic Report\nTemplate ID: ${tpl.id}\nTitle: ${tpl.title}\nCategory: ${tpl.category}\nError: ${uploadError}\nTimestamp: ${new Date().toISOString()}`;
+                    const statusStr = diagnosticDetails?.httpStatus || 400;
+                    const codeStr = diagnosticDetails?.errorCode || 'GENERATION_FAILED';
+                    const stageStr = diagnosticDetails?.stage || 'validation';
+                    const corrIdStr = diagnosticDetails?.correlationId || 'N/A';
+                    const timeStr = diagnosticDetails?.timestamp || new Date().toISOString();
+                    const refundStr = diagnosticDetails?.refunded
+                      ? '100% Verified Refund Completed'
+                      : (stageStr === 'validation' || statusStr === 400 || statusStr === 402 ? 'Credits Not Deducted' : 'Pending Server Verification');
+
+                    const errorReport = `AI Prime Studio Diagnostic Report\nTemplate ID: ${tpl.id}\nTitle: ${tpl.title}\nCategory: ${tpl.category}\nHTTP Status: ${statusStr}\nError Code: ${codeStr}\nFailure Stage: ${stageStr}\nCorrelation ID: ${corrIdStr}\nSafe Message: ${uploadError}\nRefund Status: ${refundStr}\nTimestamp: ${timeStr}`;
                     navigator.clipboard.writeText(errorReport);
                     setCopiedError(true);
                     setTimeout(() => setCopiedError(false), 2000);
                   }}
-                  className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-[10px] font-semibold flex items-center gap-1 shrink-0"
+                  className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-[10px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer transition-colors"
                   title="Copy safe error details"
                 >
                   {copiedError ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedError ? 'Copied' : 'Copy'}</span>
+                  <span>{copiedError ? 'Copied' : 'Copy Details'}</span>
                 </button>
+              </div>
+
+              {/* Diagnostic Metadata Badges */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-rose-500/20 text-[9.5px] font-mono">
+                <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-stone-300">
+                  HTTP {diagnosticDetails?.httpStatus || 400}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-rose-300">
+                  {diagnosticDetails?.errorCode || 'ERROR'}
+                </span>
+                <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-amber-300">
+                  stage:{diagnosticDetails?.stage || 'validation'}
+                </span>
+                {diagnosticDetails?.correlationId && (
+                  <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-sky-300 truncate max-w-[150px]">
+                    id:{diagnosticDetails.correlationId}
+                  </span>
+                )}
+                {diagnosticDetails?.refunded ? (
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold">
+                    ✓ Credits 100% Refunded
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded bg-sky-500/20 border border-sky-500/30 text-sky-300 font-bold">
+                    Credits Preserved (0 Deducted)
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -993,8 +1132,8 @@ export const TemplateDetailModal: React.FC = () => {
                   <Sparkles className="w-5 h-5 fill-current" />
                   <span>
                     {isAllInputsReady
-                      ? 'Generate Now'
-                      : `Add ${totalSlots - filledSlotsCount} More ${hasVideoSlots ? 'Video' : 'Photo'}`}
+                      ? (tpl.isFaceSwap ? 'Swap Face Now' : (isVideo ? 'Create Video Now' : 'Create Photo Now'))
+                      : (tpl.isFaceSwap ? 'Add Photo to Swap Face' : `Add ${totalSlots - filledSlotsCount} More ${hasVideoSlots ? 'Video' : 'Photo'}`)}
                   </span>
                 </>
               )}

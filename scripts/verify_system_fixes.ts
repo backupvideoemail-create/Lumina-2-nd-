@@ -626,6 +626,58 @@ async function runSystemVerification() {
   assert(detailModalSource.includes('object-contain bg-black'), 'TemplateDetailModal uses object-contain to prevent cropping full-body portrait videos');
   assert(detailModalSource.includes('videoPlayerRef.current.pause()'), 'TemplateDetailModal pauses previous playback when switching video tabs');
 
+  // 14. SUITE 16: Reorder Hardening, Type-Safe FaceSwap & Structured Diagnostics
+  console.log('\n--- SUITE 16: Reorder Hardening, Type Safety & Diagnostics ---');
+
+  // 16.1 Reorder Deduplication and Invalid ID Resilience
+  const testTpls = prodDb.getTemplates();
+  const id0 = testTpls[0].id;
+  const id1 = testTpls[1].id;
+  // Test with duplicates and non-existent IDs
+  const messyOrder = [id1, id1, 'invalid_ghost_id_404', id0, id0];
+  const reorderedResult = await prodDb.reorderTemplates(messyOrder);
+  assert(reorderedResult.length === testTpls.length, 'reorderTemplates retains full catalog length even when input has missing or invalid IDs');
+  assert(reorderedResult[0].id === id1 && reorderedResult[1].id === id0, 'reorderTemplates deduplicates IDs and orders strictly by sanitized list');
+
+  // Restore order
+  await prodDb.reorderTemplates(testTpls.map(t => t.id));
+
+  // 16.2 Scene Reorder Resilience
+  const testScenes = prodDb.getFaceSwapScenes();
+  const sId0 = testScenes[0].id;
+  const sId1 = testScenes[1].id;
+  const messySceneOrder = [sId1, sId1, 'ghost_scene_999', sId0];
+  const reorderedScenesRes = await prodDb.reorderFaceSwapScenes(messySceneOrder);
+  assert(reorderedScenesRes.length === testScenes.length, 'reorderFaceSwapScenes retains all valid scenes when messy list is passed');
+  assert(reorderedScenesRes[0].id === sId1 && reorderedScenesRes[1].id === sId0, 'reorderFaceSwapScenes deduplicates IDs successfully');
+
+  // Restore scene order
+  await prodDb.reorderFaceSwapScenes(testScenes.map(s => s.id));
+
+  // 16.3 Database Cloud Persistence Security Guard
+  const dbSource = fs.readFileSync('src/services/db/database.ts', 'utf-8');
+  assert(dbSource.includes('Authoritative Firestore database connection is not available. Template reordering cannot be saved permanently to Cloud.'), 'database.ts strictly forbids claiming cloud persistence when adminFirestoreDb is disconnected in non-test runtime');
+  assert(dbSource.includes('Firestore read-back verification failed for template'), 'database.ts performs read-back verification after writing template reorder');
+
+  // 16.4 Type-Safe Face Swap & Elimination of "as any"
+  const typesSource = fs.readFileSync('src/types/index.ts', 'utf-8');
+  assert(typesSource.includes('export interface FaceSwapGenerateRequest'), 'types/index.ts explicitly exports FaceSwapGenerateRequest interface');
+  assert(typesSource.includes('sceneId?: string'), 'FaceSwapGenerateRequest includes optional sceneId field');
+  assert(!faceSwapModalSource.includes('payload as any'), 'FaceSwapModal eliminates unsafe (payload as any) type cast');
+
+  // 16.5 Structured Diagnostics & Verified Refund Reporting
+  assert(detailModalSource.includes('diagnosticDetails'), 'TemplateDetailModal maintains structured diagnosticDetails state');
+  assert(detailModalSource.includes('Credits Preserved (0 Deducted)'), 'TemplateDetailModal displays Credits Preserved for client validation rejections instead of false refund claims');
+  assert(detailModalSource.includes('✓ Credits 100% Refunded'), 'TemplateDetailModal only displays refund badge when backend confirms refund');
+  assert(faceSwapModalSource.includes('diagnosticDetails'), 'FaceSwapModal maintains structured diagnosticDetails state');
+
+  // 16.6 Filter-Aware Template Reordering & React Hooks Rule Compliance
+  assert(tplManagerSource.includes('visibleList = displayTemplates.filter'), 'TemplateManagerModal calculates visible list based on active category filter for relative reordering');
+  // Verify hooks are placed before line where if (!isOpen) return null happens
+  const hookIdx = tplManagerSource.indexOf('const [draggedTemplateId, setDraggedTemplateId]');
+  const earlyReturnIdx = tplManagerSource.indexOf('if (!isOpen) return null;');
+  assert(hookIdx !== -1 && hookIdx < earlyReturnIdx, 'TemplateManagerModal declares all reorder hooks before early return, preventing React Rules of Hooks crash');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

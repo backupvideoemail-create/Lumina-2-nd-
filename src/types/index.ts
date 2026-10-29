@@ -304,3 +304,23 @@ export interface FaceSwapScene {
   updatedAt?: string;
 }
 
+export interface FaceSwapGenerateRequest {
+  sceneId?: string;
+  sourceVideoUrl?: string;
+  sourceVideoBase64?: string;
+  durationSeconds?: number;
+  faceReferenceUrls?: string[];
+  faceReferenceBase64List?: string[];
+  customInstructions?: string;
+}
+
+export interface GenerationResult {
+  success: boolean;
+  error?: string;
+  errorCode?: string;
+  httpStatus?: number;
+  stage?: string;
+  correlationId?: string;
+  timestamp?: string;
+  refunded?: boolean;
+}

@@ -212,6 +212,85 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [draggedSceneId, setDraggedSceneId] = useState<string | null>(null);
   const [isReorderingScenes, setIsReorderingScenes] = useState<boolean>(false);
 
+  // --- IN-APP SECURE DELETION CONFIRMATION DIALOG (replaces blocked window.confirm in iframe) ---
+  const [itemToDelete, setItemToDelete] = useState<{
+    type: 'template' | 'scene' | 'banner' | 'bannerPool';
+    id: string;
+    title: string;
+  } | null>(null);
+  const [isDeletingItem, setIsDeletingItem] = useState<boolean>(false);
+
+  const executeConfirmedDelete = async () => {
+    if (!itemToDelete) return;
+    setIsDeletingItem(true);
+    try {
+      if (itemToDelete.type === 'template') {
+        const res = await fetch(`/api/admin/templates/${itemToDelete.id}`, {
+          method: 'DELETE',
+          headers: getAdminHeaders()
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok) {
+          showNotification('Template deleted permanently from catalog & Firestore');
+          await Promise.all([fetchAdminTemplates(true), refreshTemplates()]);
+          setItemToDelete(null);
+        } else {
+          showNotification(`Failed to delete template: ${data?.error || 'Server error'}`, 'error');
+        }
+      } else if (itemToDelete.type === 'scene') {
+        const res = await fetch(`/api/admin/faceswap/scenes/${itemToDelete.id}`, {
+          method: 'DELETE',
+          headers: getAdminHeaders()
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok) {
+          showNotification(`Scene "${itemToDelete.title}" permanently deleted`);
+          await fetchAdminFaceSwapScenes();
+          if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
+          setItemToDelete(null);
+        } else {
+          showNotification(`Failed to delete scene: ${data?.error || 'Server error'}`, 'error');
+        }
+      } else if (itemToDelete.type === 'banner') {
+        const updatedList = banners.filter((b) => b.id !== itemToDelete.id);
+        const res = await fetch('/api/admin/banners', {
+          method: 'PUT',
+          headers: getAdminHeaders(),
+          body: JSON.stringify({ banners: updatedList })
+        });
+        if (res.ok) {
+          setBanners(updatedList);
+          showNotification('Banner removed');
+          setItemToDelete(null);
+        } else {
+          showNotification('Failed to remove banner', 'error');
+        }
+      } else if (itemToDelete.type === 'bannerPool') {
+        const res = await fetch(`/api/admin/pricing-banners/${itemToDelete.id}`, {
+          method: 'DELETE',
+          headers: getAdminHeaders()
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
+          showNotification('बैनर को पूल से सफलतापूर्वक हटा दिया गया');
+          if (Array.isArray(data.pool)) {
+            setPricingBannerPool(data.pool);
+            if (testRotatedBanner?.id === itemToDelete.id) {
+              setTestRotatedBanner(data.pool[0] || null);
+            }
+          }
+          setItemToDelete(null);
+        } else {
+          showNotification('Failed to remove banner from pool', 'error');
+        }
+      }
+    } catch (err: any) {
+      showNotification(`Delete action error: ${err.message}`, 'error');
+    } finally {
+      setIsDeletingItem(false);
+    }
+  };
+
   const fetchAdminTemplates = useCallback(async (refresh: boolean = false) => {
     try {
       setLoadingAdminTemplates(true);
@@ -1089,14 +1168,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   // --- TEMPLATE & FACE SWAP DRAG-AND-DROP REORDERING HANDLERS ---
   const handleMoveTemplate = async (templateId: string, direction: 'up' | 'down') => {
-    const currentIndex = displayTemplates.findIndex((t) => t.id === templateId);
-    if (currentIndex === -1) return;
-    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= displayTemplates.length) return;
+    // When a category filter is active, move relative to visible templates in this category
+    const visibleList = displayTemplates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter);
+    const visibleIndex = visibleList.findIndex((t) => t.id === templateId);
+    if (visibleIndex === -1) return;
+    const targetVisibleIndex = direction === 'up' ? visibleIndex - 1 : visibleIndex + 1;
+    if (targetVisibleIndex < 0 || targetVisibleIndex >= visibleList.length) return;
+
+    const targetTemplateId = visibleList[targetVisibleIndex].id;
+    const fromIndex = displayTemplates.findIndex((t) => t.id === templateId);
+    const toIndex = displayTemplates.findIndex((t) => t.id === targetTemplateId);
+    if (fromIndex === -1 || toIndex === -1) return;
 
     const newTemplates = [...displayTemplates];
-    const [moved] = newTemplates.splice(currentIndex, 1);
-    newTemplates.splice(targetIndex, 0, moved);
+    const [moved] = newTemplates.splice(fromIndex, 1);
+    newTemplates.splice(toIndex, 0, moved);
 
     setAdminTemplates(newTemplates);
     setIsReorderingTemplates(true);

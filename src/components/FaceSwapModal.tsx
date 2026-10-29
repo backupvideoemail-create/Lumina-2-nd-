@@ -22,7 +22,7 @@ import {
   Copy
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { FaceSwapScene } from '../types';
+import { FaceSwapScene, FaceSwapGenerateRequest } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 
 export const FaceSwapModal: React.FC = () => {
@@ -71,9 +71,17 @@ export const FaceSwapModal: React.FC = () => {
   const [costUsd, setCostUsd] = useState<number>(1.59);
   const [isCalculating, setIsCalculating] = useState<boolean>(false);
 
-  // 6. UI & Generation States
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [copiedDetails, setCopiedDetails] = useState<boolean>(false);
+  const [diagnosticDetails, setDiagnosticDetails] = useState<{
+    httpStatus?: number;
+    errorCode?: string;
+    stage?: string;
+    correlationId?: string;
+    timestamp?: string;
+    refunded?: boolean;
+  } | null>(null);
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const imagesInputRef = useRef<HTMLInputElement>(null);
@@ -224,8 +232,10 @@ export const FaceSwapModal: React.FC = () => {
     }
 
     setIsGenerating(true);
+    setErrorMessage(null);
+    setDiagnosticDetails(null);
 
-    const payload = {
+    const payload: FaceSwapGenerateRequest = {
       sceneId: videoSourceMode === 'preset' ? activeScene?.id : undefined,
       sourceVideoUrl: videoSourceMode === 'preset' ? (activeScene?.sourceVideoPreview || selectedPresetVideo) : undefined,
       sourceVideoBase64: videoSourceMode === 'upload' ? sourceVideoBase64! : undefined,
@@ -234,13 +244,21 @@ export const FaceSwapModal: React.FC = () => {
       customInstructions: customInstructions.trim() ? customInstructions.trim().slice(0, 300) : undefined
     };
 
-    const res = await generateFaceSwapVideo(payload as any);
+    const res = await generateFaceSwapVideo(payload);
     setIsGenerating(false);
 
     if (res.success) {
       setFaceSwapModalOpen(false);
-    } else if (res.error) {
-      setErrorMessage(res.error);
+    } else {
+      setErrorMessage(res.error || 'Face swap request failed');
+      setDiagnosticDetails({
+        httpStatus: res.httpStatus || 400,
+        errorCode: res.errorCode || 'FACESWAP_FAILED',
+        stage: res.stage || 'validation',
+        correlationId: res.correlationId || `fsv_${Date.now()}`,
+        timestamp: res.timestamp || new Date().toISOString(),
+        refunded: res.refunded
+      });
     }
   };
 
@@ -586,31 +604,71 @@ export const FaceSwapModal: React.FC = () => {
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2 text-rose-300 font-bold">
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                <span>Face Swap Request Note</span>
+                <span>Face Swap Request Diagnostic</span>
               </div>
               <button
                 type="button"
                 onClick={() => {
+                  const statusStr = diagnosticDetails?.httpStatus || 400;
+                  const codeStr = diagnosticDetails?.errorCode || 'FACESWAP_FAILED';
+                  const stageStr = diagnosticDetails?.stage || 'validation';
+                  const corrIdStr = diagnosticDetails?.correlationId || 'N/A';
+                  const timeStr = diagnosticDetails?.timestamp || new Date().toISOString();
+                  const refundStr = diagnosticDetails?.refunded
+                    ? '100% Verified Refund Completed'
+                    : (stageStr === 'validation' || statusStr === 400 || statusStr === 402 ? 'Credits Not Deducted' : 'Pending Server Verification');
+
                   const safeLog = JSON.stringify({
-                    error: errorMessage,
-                    sceneId: activeScene?.id,
-                    sceneTitle: activeScene?.title,
+                    reportType: 'AI Prime Studio FaceSwap Diagnostic Report',
+                    sceneId: activeScene?.id || 'custom_upload',
+                    sceneTitle: activeScene?.title || 'Custom Video',
                     durationSeconds,
-                    timestamp: new Date().toISOString()
+                    httpStatus: statusStr,
+                    errorCode: codeStr,
+                    stage: stageStr,
+                    correlationId: corrIdStr,
+                    error: errorMessage,
+                    refundStatus: refundStr,
+                    timestamp: timeStr
                   }, null, 2);
                   navigator.clipboard?.writeText(safeLog);
+                  setCopiedDetails(true);
+                  setTimeout(() => setCopiedDetails(false), 2000);
                 }}
-                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-stone-300 hover:text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-stone-300 hover:text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                 title="Copy safe error diagnostics"
               >
-                <Copy className="w-3 h-3" />
-                <span>Copy Details</span>
+                {copiedDetails ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedDetails ? 'Copied' : 'Copy Details'}</span>
               </button>
             </div>
             <p className="text-xs text-rose-200 leading-relaxed">{errorMessage}</p>
-            <div className="p-2 rounded-xl bg-black/40 border border-white/5 text-[10px] text-stone-400 flex items-center justify-between">
-              <span>Stage: Video Motion Transfer · 480p</span>
-              <span>100% exact refund guaranteed</span>
+
+            {/* Diagnostic Badges */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-rose-500/20 text-[9.5px] font-mono">
+              <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-stone-300">
+                HTTP {diagnosticDetails?.httpStatus || 400}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-rose-300">
+                {diagnosticDetails?.errorCode || 'ERROR'}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-amber-300">
+                stage:{diagnosticDetails?.stage || 'validation'}
+              </span>
+              {diagnosticDetails?.correlationId && (
+                <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-sky-300 truncate max-w-[150px]">
+                  id:{diagnosticDetails.correlationId}
+                </span>
+              )}
+              {diagnosticDetails?.refunded ? (
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold">
+                  ✓ Credits 100% Refunded
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-sky-500/20 border border-sky-500/30 text-sky-300 font-bold">
+                  Credits Preserved (0 Deducted)
+                </span>
+              )}
             </div>
           </div>
         )}

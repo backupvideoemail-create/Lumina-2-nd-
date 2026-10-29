@@ -8,7 +8,9 @@ import {
   UserSubscription,
   PricingPlan,
   TopUpOption,
-  FaceSwapScene
+  FaceSwapScene,
+  FaceSwapGenerateRequest,
+  GenerationResult
 } from '../types';
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
@@ -18,16 +20,7 @@ export type PendingAction =
   | { type: 'buy_plan'; planId?: string }
   | {
       type: 'faceswap';
-      payloadOrSceneId:
-        | string
-        | {
-            sourceVideoUrl?: string;
-            sourceVideoBase64?: string;
-            durationSeconds: number;
-            faceReferenceUrls?: string[];
-            faceReferenceBase64List?: string[];
-            customInstructions?: string;
-          };
+      payloadOrSceneId: string | FaceSwapGenerateRequest;
       legacyFacePhotoUrl?: string;
     }
   | { type: 'navigate_creations' }
@@ -47,18 +40,9 @@ interface AppContextType {
   faceSwapModalOpen: boolean;
   setFaceSwapModalOpen: (open: boolean) => void;
   generateFaceSwapVideo: (
-    payloadOrSceneId:
-      | string
-      | {
-          sourceVideoUrl?: string;
-          sourceVideoBase64?: string;
-          durationSeconds: number;
-          faceReferenceUrls?: string[];
-          faceReferenceBase64List?: string[];
-          customInstructions?: string;
-        },
+    payloadOrSceneId: string | FaceSwapGenerateRequest,
     legacyFacePhotoUrl?: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<GenerationResult>;
 
   // Templates
   templates: Template[];
@@ -90,7 +74,7 @@ interface AppContextType {
   loadingGenerations: boolean;
   activeGeneration: Generation | null;
   setActiveGeneration: (gen: Generation | null) => void;
-  createGeneration: (templateId: string, inputMediaUrl: string, customPrompt?: string) => Promise<{ success: boolean; error?: string }>;
+  createGeneration: (templateId: string, inputMediaUrl: string, customPrompt?: string) => Promise<GenerationResult>;
   deleteGeneration: (id: string) => Promise<void>;
   refreshGenerations: () => Promise<void>;
 
@@ -492,7 +476,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     templateId: string,
     inputMediaUrl: string,
     customPrompt?: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<GenerationResult> => {
     if (!user) {
       setPendingAction({ type: 'generate', templateId, inputMediaUrl, customPrompt });
       setAuthModalOpen(true);
@@ -517,7 +501,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setWallet({ ...wallet, balance: data.remainingCredits });
         }
         await refreshUserData();
-        return { success: true };
+        return {
+          success: true,
+          correlationId: data.generation.id,
+          timestamp: data.generation.createdAt
+        };
       } else {
         if (res.status === 402) {
           setInsufficientCreditsModal({
@@ -526,27 +514,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             availableCredits: wallet?.balance ?? 0
           });
         }
-        return { success: false, error: data.error || 'Generation request failed' };
+        return {
+          success: false,
+          error: data.error || 'Generation request failed',
+          errorCode: data.code || `HTTP_${res.status}`,
+          httpStatus: res.status,
+          stage: data.stage || 'generation_request',
+          correlationId: data.correlationId || data.requestId || data.generationId || `req_${Date.now()}`,
+          timestamp: data.timestamp || new Date().toISOString(),
+          refunded: Boolean(data.refunded)
+        };
       }
     } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
+      return {
+        success: false,
+        error: err.message || 'Network error',
+        errorCode: 'NETWORK_ERROR',
+        httpStatus: 0,
+        stage: 'network',
+        timestamp: new Date().toISOString()
+      };
     }
   };
 
   // Face Swap Generation
   const generateFaceSwapVideo = async (
-    payloadOrSceneId:
-      | string
-      | {
-          sourceVideoUrl?: string;
-          sourceVideoBase64?: string;
-          durationSeconds: number;
-          faceReferenceUrls?: string[];
-          faceReferenceBase64List?: string[];
-          customInstructions?: string;
-        },
+    payloadOrSceneId: string | FaceSwapGenerateRequest,
     legacyFacePhotoUrl?: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<GenerationResult> => {
     if (!user) {
       setPendingAction({ type: 'faceswap', payloadOrSceneId, legacyFacePhotoUrl });
       setAuthModalOpen(true);
@@ -582,7 +577,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setWallet({ ...wallet, balance: data.remainingCredits });
         }
         await refreshUserData();
-        return { success: true };
+        return {
+          success: true,
+          correlationId: data.generation.id,
+          timestamp: data.generation.createdAt
+        };
       } else {
         if (res.status === 402) {
           setInsufficientCreditsModal({
@@ -591,10 +590,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             availableCredits: wallet?.balance ?? 0
           });
         }
-        return { success: false, error: data.error || 'Face swap request failed' };
+        return {
+          success: false,
+          error: data.error || 'Face swap request failed',
+          errorCode: data.code || `HTTP_${res.status}`,
+          httpStatus: res.status,
+          stage: data.stage || 'validation',
+          correlationId: data.correlationId || data.requestId || `fsv_${Date.now()}`,
+          timestamp: data.timestamp || new Date().toISOString(),
+          refunded: Boolean(data.refunded)
+        };
       }
     } catch (err: any) {
-      return { success: false, error: err.message || 'Network error' };
+      return {
+        success: false,
+        error: err.message || 'Network error',
+        errorCode: 'NETWORK_ERROR',
+        httpStatus: 0,
+        stage: 'network',
+        timestamp: new Date().toISOString()
+      };
     }
   };
 
