@@ -16,64 +16,80 @@ async function auditAllMedia() {
   let missingCount = 0;
   const missingAssets: Array<{ id: string; title: string; field: string; url: string; error?: string }> = [];
 
-  for (const t of templates) {
-    const rawUrls: Array<{ field: string; url?: string | null }> = [
-      { field: 'cover', url: t.cover },
-      { field: 'preview', url: t.preview },
-      { field: 'sampleResult', url: t.sampleResult },
-      { field: 'sampleBefore', url: t.sampleBefore },
-      { field: 'sampleAfter', url: t.sampleAfter },
-      { field: 'referenceImageUrl', url: t.referenceImageUrl }
-    ];
+  const BATCH_SIZE = 6;
+  for (let i = 0; i < templates.length; i += BATCH_SIZE) {
+    const batch = templates.slice(i, i + BATCH_SIZE);
+    await Promise.all(
+      batch.map(async (t) => {
+        const rawUrls: Array<{ field: string; url?: string | null }> = [
+          { field: 'cover', url: t.cover },
+          { field: 'preview', url: t.preview },
+          { field: 'sampleResult', url: t.sampleResult },
+          { field: 'sampleBefore', url: t.sampleBefore },
+          { field: 'sampleAfter', url: t.sampleAfter },
+          { field: 'referenceImageUrl', url: t.referenceImageUrl }
+        ];
 
-    const urlsToCheck: Array<{ field: string; url: string }> = rawUrls.filter(
-      (item): item is { field: string; url: string } => typeof item.url === 'string' && item.url.trim().length > 0
+        for (const item of rawUrls) {
+          if (!item.url || typeof item.url !== 'string') {
+            continue;
+          }
+          const trimmedUrl = item.url.trim();
+          if (!trimmedUrl) {
+            continue;
+          }
+
+          totalChecked++;
+          if (trimmedUrl.startsWith('data:')) {
+            okCount++;
+            continue;
+          }
+
+          if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
+            try {
+              if (item.url) {
+                const resp = await fetch(item.url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
+                if (resp.ok) {
+                  okCount++;
+                } else {
+                  missingCount++;
+                  const failedUrl: string = item.url ?? '';
+                  missingAssets.push({ id: t.id, title: t.title, field: item.field, url: failedUrl, error: `HTTP ${resp.status}` });
+                }
+              }
+            } catch (err: any) {
+              missingCount++;
+              const failedUrl: string = item.url ?? '';
+              missingAssets.push({ id: t.id, title: t.title, field: item.field, url: failedUrl, error: err.message });
+            }
+            continue;
+          }
+
+          if (trimmedUrl.startsWith('/api/media/')) {
+            const fileId = trimmedUrl.replace('/api/media/', '').split('?')[0];
+            try {
+              const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId);
+              if (streamRes.error || !streamRes.body) {
+                missingCount++;
+                const failedUrl: string = item.url ?? '';
+                missingAssets.push({ id: t.id, title: t.title, field: item.field, url: failedUrl, error: streamRes.error || 'NotFound' });
+              } else {
+                okCount++;
+              }
+            } catch (err: any) {
+              missingCount++;
+              const failedUrl: string = item.url ?? '';
+              missingAssets.push({ id: t.id, title: t.title, field: item.field, url: failedUrl, error: err.message });
+            }
+            continue;
+          }
+
+          // Other relative URL like /sample-cover.jpg
+          const relUrl: string = item.url ?? '';
+          missingAssets.push({ id: t.id, title: t.title, field: item.field, url: relUrl, error: 'Relative path without host' });
+        }
+      })
     );
-
-    for (const item of urlsToCheck) {
-      const url: string = item.url;
-      totalChecked++;
-      if (url.startsWith('data:')) {
-        okCount++;
-        continue;
-      }
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        // External URL
-        try {
-          const resp = await fetch(url, { method: 'HEAD' });
-          if (resp.ok) {
-            okCount++;
-          } else {
-            missingCount++;
-            missingAssets.push({ id: t.id, title: t.title, field: item.field, url, error: `HTTP ${resp.status}` });
-          }
-        } catch (err: any) {
-          missingCount++;
-          missingAssets.push({ id: t.id, title: t.title, field: item.field, url, error: err.message });
-        }
-        continue;
-      }
-
-      if (url.startsWith('/api/media/')) {
-        const fileId = url.replace('/api/media/', '').split('?')[0];
-        try {
-          const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId);
-          if (streamRes.error || !streamRes.body) {
-            missingCount++;
-            missingAssets.push({ id: t.id, title: t.title, field: item.field, url, error: streamRes.error || 'NotFound' });
-          } else {
-            okCount++;
-          }
-        } catch (err: any) {
-          missingCount++;
-          missingAssets.push({ id: t.id, title: t.title, field: item.field, url, error: err.message });
-        }
-        continue;
-      }
-
-      // Other relative URL like /sample-cover.jpg
-      missingAssets.push({ id: t.id, title: t.title, field: item.field, url, error: 'Relative path without host' });
-    }
   }
 
   console.log(`\nTemplates media check: ${okCount} OK, ${missingCount} FAILED out of ${totalChecked} checked.`);

@@ -14,12 +14,12 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { FaceSwapScene } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 
 export const FaceSwapFeaturedCard: React.FC = () => {
   const {
     faceSwapScenes,
-    selectedFaceSwapScene,
     setSelectedFaceSwapScene,
     setFaceSwapModalOpen
   } = useApp();
@@ -32,8 +32,11 @@ export const FaceSwapFeaturedCard: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Active scene: selected scene if available, otherwise first scene
-  const activeScene = selectedFaceSwapScene || faceSwapScenes[0] || {
+  // Decoupled local state for featured banner: does NOT get mutated when user clicks gallery cards below
+  const [localFeaturedScene, setLocalFeaturedScene] = useState<FaceSwapScene | null>(null);
+
+  // Active scene for the featured banner: local featured scene if selected, otherwise first scene
+  const activeScene = localFeaturedScene || faceSwapScenes[0] || {
     id: 'fsv_trending_dance_stage',
     title: 'Viral Instagram Reels Sequence',
     description: 'Electrifying neon stage choreography with fluid hip-hop footwork.',
@@ -150,29 +153,42 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     setFaceSwapModalOpen(true);
   };
 
+  const handleScrollToGallery = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const galleryEl = document.getElementById('face-swap-scene-gallery');
+    if (galleryEl) {
+      galleryEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   return (
-    <div ref={containerRef} id="face-swap-featured-card" className="relative w-full max-w-5xl mx-auto px-2 sm:px-4 mt-3">
+    <div ref={containerRef} id="face-swap-featured-card" className="relative w-full max-w-5xl mx-auto px-2 sm:px-4 mt-1.5 mb-2">
       {/* Liquid-Glass Outer Frame with Gold Ambient Glow */}
       <motion.div
         whileHover={{ y: -2 }}
         transition={{ type: 'spring', stiffness: 350, damping: 25 }}
-        className="relative rounded-[24px] overflow-hidden bg-gradient-to-b from-[#181613] via-[#101015] to-[#0a0a0e] border border-[#d4af37]/40 shadow-[0_12px_32px_rgba(0,0,0,0.85),0_0_24px_rgba(212,175,55,0.15)] group"
+        className="relative rounded-[22px] overflow-hidden bg-gradient-to-b from-[#181613] via-[#101015] to-[#0a0a0e] border border-[#d4af37]/40 shadow-[0_12px_32px_rgba(0,0,0,0.85),0_0_24px_rgba(212,175,55,0.15)] group"
       >
         {/* Top reflection sweep */}
         <div className="absolute top-0 inset-x-0 h-[1.5px] bg-gradient-to-r from-transparent via-[#f5d77f]/60 to-transparent pointer-events-none z-20" />
 
         {/* Top Badges & Priority Ribbon */}
-        <div className="relative z-20 px-3.5 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between">
+        <div className="relative z-20 px-3 py-1.5 sm:px-4 sm:py-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#d4af37] text-stone-950 text-[10px] sm:text-xs font-black tracking-wider uppercase shadow-[0_0_12px_rgba(212,175,55,0.5)]">
               <Flame className="w-3 h-3 fill-stone-950" />
               <span>TOP FEATURE · AI VIDEO</span>
             </span>
 
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-white/10 backdrop-blur-md text-stone-200 text-[11px] font-semibold border border-white/10">
+            <button
+              type="button"
+              onClick={handleScrollToGallery}
+              title="Browse all Face Swap Trending Scenes below"
+              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/10 hover:bg-white/20 active:scale-95 backdrop-blur-md text-stone-200 hover:text-white text-[10.5px] sm:text-[11px] font-semibold border border-white/10 cursor-pointer transition-all"
+            >
               <Video className="w-3 h-3 text-[#d4af37]" />
-              <span>{activeScene.category || 'Viral Reels'}</span>
-            </span>
+              <span>Trending Dance &amp; Character Swap</span>
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -183,10 +199,10 @@ export const FaceSwapFeaturedCard: React.FC = () => {
         </div>
 
         {/* Center Visual: Dedicated Video/Image Slot & Interactive Mode Switcher */}
-        <div className="relative px-3 sm:px-5">
+        <div className="relative px-2.5 sm:px-4">
           <div
             onClick={isCurrentVideo ? () => handleTogglePlay() : undefined}
-            className={`relative rounded-2xl overflow-hidden aspect-[16/9] sm:aspect-[18/9] w-full bg-black border border-white/10 shadow-2xl flex items-center justify-center ${
+            className={`relative rounded-2xl overflow-hidden aspect-[18/9] sm:aspect-[21/9] max-h-[220px] sm:max-h-[280px] w-full bg-black border border-white/10 shadow-2xl flex items-center justify-center ${
               isCurrentVideo ? 'cursor-pointer' : ''
             }`}
           >
@@ -332,12 +348,12 @@ export const FaceSwapFeaturedCard: React.FC = () => {
         </div>
 
         {/* Bottom Headline, Subtitle and Action CTA */}
-        <div className="px-3.5 py-3 sm:px-5 space-y-2.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="px-3 py-2 sm:px-4 sm:py-2.5 space-y-1.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div>
               {/* Scene Title Tagline (Cleanly positioned outside the video frame) */}
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                <span className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-[#f5d77f] flex items-center gap-1">
+              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                <span className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-[#f5d77f] flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-[#d4af37]" />
                   <span>
                     {previewMode === 'demo'
@@ -346,20 +362,20 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                   </span>
                 </span>
                 {previewMode === 'after' && (
-                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                  <span className="px-1.5 py-0.2 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9.5px] font-bold">
                     Swapped Face Active
                   </span>
                 )}
                 {previewMode === 'before' && (
-                  <span className="px-2 py-0.5 rounded-md bg-stone-700 text-stone-300 text-[10px] font-bold">
+                  <span className="px-1.5 py-0.2 rounded-md bg-stone-700 text-stone-300 text-[9.5px] font-bold">
                     Original Video
                   </span>
                 )}
               </div>
-              <h2 className="text-lg sm:text-xl font-black font-display text-white tracking-tight leading-snug">
+              <h2 className="text-base sm:text-lg font-black font-display text-white tracking-tight leading-snug">
                 FACE SWAP VIDEO
               </h2>
-              <p className="text-[11px] sm:text-xs text-stone-300 mt-0.5 max-w-md">
+              <p className="text-[10.5px] sm:text-xs text-stone-300 mt-0.5 max-w-md line-clamp-1 sm:line-clamp-none">
                 Create a cinematic video with your face. Star in viral reels sequences, supercars, and red carpet epics.
               </p>
             </div>
@@ -368,7 +384,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.96 }}
               onClick={handleOpenFaceSwap}
-              className="py-2.5 px-5 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_18px_rgba(212,175,55,0.35)] cursor-pointer shrink-0"
+              className="py-2 px-4 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_18px_rgba(212,175,55,0.35)] cursor-pointer shrink-0"
             >
               <Wand2 className="w-3.5 h-3.5" />
               <span>Try Face Swap</span>
@@ -377,7 +393,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
           </div>
 
           {/* Quick Scene Chips */}
-          <div className="pt-1.5 border-t border-white/5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <div className="pt-1 border-t border-white/5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
             <span className="text-[9px] uppercase font-bold text-stone-500 whitespace-nowrap">
               Scenes:
             </span>
@@ -389,10 +405,10 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                   <button
                     key={scene.id}
                     onClick={() => {
-                      setSelectedFaceSwapScene(scene);
+                      setLocalFeaturedScene(scene);
                       setPreviewMode('after');
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer ${
+                    className={`px-2.5 py-0.5 rounded-lg text-[10px] whitespace-nowrap transition-all flex items-center gap-1 cursor-pointer ${
                       isSelected
                         ? 'bg-gradient-to-r from-amber-400/20 to-[#d4af37]/20 border border-[#d4af37] text-amber-200 font-bold shadow-[0_0_8px_rgba(212,175,55,0.25)]'
                         : 'bg-white/5 hover:bg-white/10 border border-white/5 text-stone-300 hover:text-white'

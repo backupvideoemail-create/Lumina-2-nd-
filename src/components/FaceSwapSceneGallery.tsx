@@ -2,12 +2,15 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Sparkles, Video, Wand2, Eye, Play, Flame } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { FaceSwapScene } from '../types';
+import { FaceSwapScene, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 
 export const FaceSwapSceneGallery: React.FC = () => {
   const {
     faceSwapScenes,
+    templates,
+    selectedTemplate,
+    setSelectedTemplate,
     selectedFaceSwapScene,
     setSelectedFaceSwapScene,
     setFaceSwapModalOpen
@@ -21,10 +24,46 @@ export const FaceSwapSceneGallery: React.FC = () => {
   if (publishedScenes.length === 0) return null;
 
   const handlePreviewScene = (scene: FaceSwapScene) => {
-    setSelectedFaceSwapScene(scene);
-    const cardEl = document.getElementById('face-swap-featured-card');
-    if (cardEl) {
-      cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Independent Full-Screen Preview: Opens TemplateDetailModal for this specific scene/template
+    // Does NOT alter or scroll to the top featured banner!
+    const existingTemplate = templates.find((t) => t.faceSwapSceneId === scene.id || t.id === scene.id);
+    if (existingTemplate) {
+      setSelectedTemplate(existingTemplate);
+    } else {
+      const sceneTemplate: Template = {
+        id: scene.id,
+        title: scene.title,
+        type: 'video',
+        category: 'Trending',
+        cover: scene.resultVideoPreview || scene.sourceVideoPreview,
+        preview: scene.resultVideoPreview || scene.sourceVideoPreview,
+        sampleFaceThumbnail: scene.sampleFace,
+        sampleBefore: scene.sourceVideoPreview,
+        sampleResult: scene.resultVideoPreview,
+        sampleAfter: scene.resultVideoPreview,
+        description: scene.description,
+        aspectRatio: scene.aspectRatio || '9:16',
+        inputType: 'IMAGE_OR_VIDEO',
+        requiredInputs: [
+          {
+            id: 'user_face',
+            label: 'Upload Your Photo',
+            type: 'image',
+            description: 'Clear front-facing portrait photo'
+          }
+        ],
+        creditCost: scene.creditCost || 45,
+        engine: 'AI_GENERATION',
+        model: 'gemini-omni-1.1-flash',
+        workflow: 'viral-reels',
+        sortOrder: 1,
+        isFeatured: false,
+        isActive: true,
+        tags: scene.tags || ['Face Swap', 'Viral'],
+        isFaceSwap: true,
+        faceSwapSceneId: scene.id
+      };
+      setSelectedTemplate(sceneTemplate);
     }
   };
 
@@ -34,7 +73,7 @@ export const FaceSwapSceneGallery: React.FC = () => {
   };
 
   return (
-    <div className="relative w-full max-w-5xl mx-auto px-2 sm:px-4">
+    <div id="face-swap-scene-gallery" className="relative w-full max-w-5xl mx-auto px-2 sm:px-4">
       {/* Section Header */}
       <div className="flex items-center justify-between mb-3 px-1">
         <div className="flex items-center gap-2">
@@ -64,7 +103,10 @@ export const FaceSwapSceneGallery: React.FC = () => {
       {/* Horizontal Scroll / Responsive Grid Collection */}
       <div className="flex gap-3 overflow-x-auto pb-3 pt-1 no-scrollbar sm:grid sm:grid-cols-3 md:grid-cols-4 sm:overflow-visible">
         {publishedScenes.map((scene) => {
-          const isSelected = selectedFaceSwapScene?.id === scene.id;
+          const isSelected =
+            selectedTemplate?.faceSwapSceneId === scene.id ||
+            selectedTemplate?.id === scene.id ||
+            selectedFaceSwapScene?.id === scene.id;
           const previewMedia = scene.resultVideoPreview || scene.sourceVideoPreview;
           const isVideo = isVideoMedia(previewMedia);
 

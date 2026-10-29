@@ -351,7 +351,19 @@ class ProductionDatabase {
         this.db.userLikes[d.id] = d.data()?.templateIds || [];
       });
 
-      // 11. Templates (Merge Firestore templates with default SEED_TEMPLATES so catalog is always rich & full)
+      // 11. Templates (Authoritative sync with tombstone filtering)
+      // 11a. Fetch deleted_template_ids doc from Firestore first
+      try {
+        const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+        if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
+          const remoteDeleted = deletedDoc.data()!.ids;
+          this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
+        }
+      } catch (delErr: any) {
+        console.warn('[Database] Fetch deleted_template_ids note:', delErr.message);
+      }
+      const deletedIds = new Set(this.db.deletedTemplateIds || []);
+
       const tplSnap = await adminFirestoreDb.collection('templates').get();
       const firestoreTemplates: Template[] = [];
       if (!tplSnap.empty) {
@@ -359,19 +371,21 @@ class ProductionDatabase {
           firestoreTemplates.push(d.data() as Template);
         });
       }
-      // Merge: custom/updated Firestore templates override seed by ID, while ensuring all seed templates exist
+      // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates
       const templateMap = new Map<string, Template>();
-      SEED_TEMPLATES.forEach(t => templateMap.set(t.id, t));
-      (this.db.templates || []).forEach(t => templateMap.set(t.id, t));
-      firestoreTemplates.forEach(t => templateMap.set(t.id, t));
+      SEED_TEMPLATES.forEach(t => {
+        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      });
+      (this.db.templates || []).forEach(t => {
+        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      });
+      firestoreTemplates.forEach(t => {
+        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      });
       this.db.templates = Array.from(templateMap.values());
 
-      // Check R2 for any orphaned template assets missing from Firestore
-      try {
-        await this.recoverOrphanedTemplatesFromR2();
-      } catch (recErr: any) {
-        console.warn('[Database] Background R2 recovery check note:', recErr.message);
-      }
+      // Note: We intentionally DO NOT auto-run recoverOrphanedTemplatesFromR2() on startup.
+      // Orphan recovery is strictly run manually via Admin "Scan & Recover R2" to prevent resurrecting deleted templates.
 
       // 12. App Config (Banners, Demo Video, Face Swap Scenes)
       try {
@@ -435,6 +449,18 @@ class ProductionDatabase {
     }
 
     // 1. Templates
+    // Fetch deleted_template_ids doc from Firestore first
+    try {
+      const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+      if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
+        const remoteDeleted = deletedDoc.data()!.ids;
+        this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
+      }
+    } catch (delErr: any) {
+      console.warn('[Database] Fetch deleted_template_ids note during refresh:', delErr.message);
+    }
+    const deletedIds = new Set(this.db.deletedTemplateIds || []);
+
     const tplSnap = await adminFirestoreDb.collection('templates').get();
     const firestoreTemplates: Template[] = [];
     if (!tplSnap.empty) {
@@ -442,7 +468,6 @@ class ProductionDatabase {
         firestoreTemplates.push(d.data() as Template);
       });
     }
-    const deletedIds = new Set(this.db.deletedTemplateIds || []);
     const templateMap = new Map<string, Template>();
     SEED_TEMPLATES.forEach(t => {
       if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
@@ -1592,6 +1617,18 @@ class ProductionDatabase {
     } else {
       this.db.templates.unshift(tpl);
     }
+    // If template was previously tombstoned, remove it from deletedTemplateIds
+    if (this.db.deletedTemplateIds && this.db.deletedTemplateIds.includes(tpl.id)) {
+      this.db.deletedTemplateIds = this.db.deletedTemplateIds.filter(id => id !== tpl.id);
+      if (adminFirestoreDb) {
+        try {
+          await adminFirestoreDb.collection('config').doc('deleted_template_ids').set({
+            ids: this.db.deletedTemplateIds,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        } catch {}
+      }
+    }
     this.save();
     return tpl;
   }
@@ -1631,7 +1668,6 @@ class ProductionDatabase {
 
   public async deleteTemplate(id: string): Promise<boolean> {
     const index = this.db.templates.findIndex(t => t.id === id);
-    if (index === -1) return false;
 
     // First delete from authoritative Firestore and verify!
     if (!adminFirestoreDb) {
@@ -1653,7 +1689,9 @@ class ProductionDatabase {
     }
 
     // Remove from local list only after Firestore confirms deletion
-    this.db.templates.splice(index, 1);
+    if (index !== -1) {
+      this.db.templates.splice(index, 1);
+    }
     if (!this.db.deletedTemplateIds) this.db.deletedTemplateIds = [];
     if (!this.db.deletedTemplateIds.includes(id)) {
       this.db.deletedTemplateIds.push(id);
@@ -1856,9 +1894,20 @@ class ProductionDatabase {
       }
 
       const recoveredTemplates: Template[] = [];
+      const deletedIds = new Set(this.db.deletedTemplateIds || []);
 
       for (const [tplId, group] of templateGroups.entries()) {
         const proposedId = tplId.startsWith('tpl_') ? tplId : `tpl_${tplId}`;
+
+        // If template was explicitly deleted/tombstoned, NEVER recover or recreate it!
+        if (
+          deletedIds.has(proposedId) ||
+          deletedIds.has(tplId) ||
+          Array.from(deletedIds).some(delId => proposedId.includes(delId) || tplId.includes(delId))
+        ) {
+          skippedCount += group.allAssets.length;
+          continue;
+        }
 
         // If template already exists in catalog, never create a duplicate!
         if (this.db.templates.some(t => t.id === proposedId)) {
@@ -1874,7 +1923,7 @@ class ProductionDatabase {
               key: a.filename,
               filename: a.filename,
               size: 0,
-              lastModified: new Date().toISOString(),
+              lastModified: new Date(),
               publicUrl: a.url
             });
           });

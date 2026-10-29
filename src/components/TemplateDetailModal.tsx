@@ -163,6 +163,52 @@ export const TemplateDetailModal: React.FC = () => {
     } catch {}
   };
 
+  // Resolve matching scene for Face Swap templates
+  const matchingScene = selectedTemplate?.isFaceSwap
+    ? (faceSwapScenes.find((s) => s.id === (selectedTemplate.faceSwapSceneId || selectedTemplate.id)) || faceSwapScenes[0])
+    : (selectedTemplate?.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === selectedTemplate.faceSwapSceneId) : null);
+
+  // Authoritative media resolution prioritizing AFTER sample result as main preview
+  const displayResult = matchingScene
+    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || selectedTemplate?.sampleResult || selectedTemplate?.sampleAfter || selectedTemplate?.preview || selectedTemplate?.cover || '')
+    : (selectedTemplate?.sampleResult || selectedTemplate?.sampleAfter || selectedTemplate?.referenceImageUrl || selectedTemplate?.cover || selectedTemplate?.preview || '');
+
+  const sampleBeforeThumb = matchingScene?.sourceVideoPreview || selectedTemplate?.sampleBefore || null;
+  const drivingVideoCandidate = matchingScene?.sourceVideoPreview || selectedTemplate?.drivingVideoUrl || (sampleBeforeThumb && isVideoMedia(sampleBeforeThumb) ? sampleBeforeThumb : '');
+  const videoBeforeSrc = drivingVideoCandidate || sampleBeforeThumb || '';
+  const videoAfterSrc = displayResult;
+
+  const isVideo = Boolean(
+    selectedTemplate && (
+      selectedTemplate.isFaceSwap ||
+      Boolean(matchingScene) ||
+      selectedTemplate.mediaType === 'video' ||
+      selectedTemplate.type === 'video' ||
+      isVideoMedia(videoAfterSrc) ||
+      isVideoMedia(videoBeforeSrc) ||
+      selectedTemplate.cover?.endsWith('.mp4') ||
+      selectedTemplate.cover?.endsWith('.webm') ||
+      selectedTemplate.cover?.startsWith('data:video/')
+    )
+  );
+
+  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
+
+  // Autoplay with sound detection & graceful recovery (Hook called unconditionally)
+  useEffect(() => {
+    if (selectedTemplate && isVideo && videoPlayerRef.current) {
+      videoPlayerRef.current.muted = isVideoMuted;
+      videoPlayerRef.current.play().catch(() => {
+        if (videoPlayerRef.current && !isVideoMuted) {
+          videoPlayerRef.current.muted = true;
+          videoPlayerRef.current.play().catch(() => {});
+          setNeedsUserSoundInteraction(true);
+        }
+      });
+    }
+  }, [currentVideoSrc, isVideo, selectedTemplate]);
+
+  // ALL HOOKS FINISHED: Early return if modal is closed
   if (!selectedTemplate) return null;
 
   const tpl = selectedTemplate;
@@ -180,50 +226,8 @@ export const TemplateDetailModal: React.FC = () => {
     if (hasNext) setSelectedTemplate(templates[currentIndex + 1]);
   };
 
-  // Resolve matching scene for Face Swap templates
-  const matchingScene = tpl.isFaceSwap
-    ? (faceSwapScenes.find((s) => s.id === (tpl.faceSwapSceneId || tpl.id)) || faceSwapScenes[0])
-    : (tpl.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === tpl.faceSwapSceneId) : null);
-
-  // Authoritative media resolution prioritizing AFTER sample result as main preview
-  const displayResult = matchingScene
-    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || tpl.sampleResult || tpl.sampleAfter || tpl.preview || tpl.cover || '')
-    : (tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl || tpl.cover || tpl.preview || '');
-
   const sampleFaceThumb = matchingScene?.sampleFace || tpl.sampleFaceThumbnail || null;
-  const sampleBeforeThumb = matchingScene?.sourceVideoPreview || tpl.sampleBefore || null;
-  const drivingVideoCandidate = matchingScene?.sourceVideoPreview || tpl.drivingVideoUrl || (sampleBeforeThumb && isVideoMedia(sampleBeforeThumb) ? sampleBeforeThumb : '');
-  const videoBeforeSrc = drivingVideoCandidate || sampleBeforeThumb || '';
-  const videoAfterSrc = displayResult;
   const hasBothVideos = Boolean(videoBeforeSrc && videoAfterSrc && videoBeforeSrc !== videoAfterSrc);
-
-  const isVideo = Boolean(
-    tpl.isFaceSwap ||
-    Boolean(matchingScene) ||
-    tpl.mediaType === 'video' ||
-    tpl.type === 'video' ||
-    isVideoMedia(videoAfterSrc) ||
-    isVideoMedia(videoBeforeSrc) ||
-    tpl.cover?.endsWith('.mp4') ||
-    tpl.cover?.endsWith('.webm') ||
-    tpl.cover?.startsWith('data:video/')
-  );
-
-  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
-
-  // Autoplay with sound detection & graceful recovery
-  useEffect(() => {
-    if (isVideo && videoPlayerRef.current) {
-      videoPlayerRef.current.muted = isVideoMuted;
-      videoPlayerRef.current.play().catch(() => {
-        if (videoPlayerRef.current && !isVideoMuted) {
-          videoPlayerRef.current.muted = true;
-          videoPlayerRef.current.play().catch(() => {});
-          setNeedsUserSoundInteraction(true);
-        }
-      });
-    }
-  }, [currentVideoSrc, isVideo]);
 
   const handleEnableSound = () => {
     if (videoPlayerRef.current) {

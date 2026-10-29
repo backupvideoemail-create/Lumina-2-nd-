@@ -652,30 +652,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleDeleteBannerFromPool = async (bannerId: string) => {
-    if (!window.confirm('क्या आप वाकई इस बैनर को पूल से हटाना चाहते हैं?')) return;
-    try {
-      const res = await fetch(`/api/admin/pricing-banners/${bannerId}`, {
-        method: 'DELETE',
-        headers: getAdminHeaders()
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        showNotification('बैनर को पूल से सफलतापूर्वक हटा दिया गया');
-        if (Array.isArray(data.pool)) {
-          setPricingBannerPool(data.pool);
-          if (testRotatedBanner?.id === bannerId) {
-            setTestRotatedBanner(data.pool[0] || null);
-          }
-        } else {
-          fetchPricingBannerConfig();
-        }
-      } else {
-        showNotification(data.error || 'बैनर हटाने में विफल', 'error');
-      }
-    } catch (err: any) {
-      showNotification(err.message || 'त्रुटि हुई', 'error');
-    }
+  const handleDeleteBannerFromPool = (bannerId: string) => {
+    const item = pricingBannerPool.find((b) => b.id === bannerId);
+    setItemToDelete({
+      type: 'bannerPool',
+      id: bannerId,
+      title: item?.altText || 'Pricing Banner'
+    });
   };
 
   const handleTestRandomRefresh = async () => {
@@ -1114,21 +1097,20 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleDeleteTemplate = async (id: string) => {
-    if (!confirm('Are you sure you want to permanently delete this template?')) return;
-    try {
-      const res = await fetch(`/api/admin/templates/${id}`, {
-        method: 'DELETE',
-        headers: getAdminHeaders()
+  const handleDeleteTemplate = (target: string | Template) => {
+    if (typeof target === 'string') {
+      const found = displayTemplates.find((t) => t.id === target);
+      setItemToDelete({
+        type: 'template',
+        id: target,
+        title: found?.title || target
       });
-      if (res.ok) {
-        showNotification('Template deleted permanently');
-        await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
-      } else {
-        showNotification('Failed to delete template', 'error');
-      }
-    } catch (err: any) {
-      showNotification(err.message, 'error');
+    } else {
+      setItemToDelete({
+        type: 'template',
+        id: target.id,
+        title: target.title
+      });
     }
   };
 
@@ -1334,7 +1316,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const handleToggleActive = async (tpl: Template) => {
     try {
-      const newStatus = !tpl.isActive;
+      const currentActive = tpl.isActive !== false;
+      const newStatus = !currentActive;
       await fetch(`/api/admin/templates/${tpl.id}`, {
         method: 'PUT',
         headers: getAdminHeaders(),
@@ -1708,22 +1691,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleDeleteBanner = async (id: string) => {
-    if (!confirm('Delete this banner?')) return;
-    const updatedList = banners.filter((b) => b.id !== id);
-    try {
-      const res = await fetch('/api/admin/banners', {
-        method: 'PUT',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ banners: updatedList })
-      });
-      if (res.ok) {
-        setBanners(updatedList);
-        showNotification('Banner removed');
-      }
-    } catch (err: any) {
-      showNotification(err.message, 'error');
-    }
+  const handleDeleteBanner = (id: string) => {
+    const b = banners.find((item) => item.id === id);
+    setItemToDelete({
+      type: 'banner',
+      id,
+      title: b?.title || 'Hero Banner'
+    });
   };
 
   const handleMoveBanner = async (index: number, direction: 'up' | 'down') => {
@@ -2050,13 +2024,15 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const handleToggleSceneActive = async (scene: FaceSwapScene) => {
     try {
       const headers = getAdminHeaders();
+      const currentActive = scene.isActive !== false;
+      const nextActive = !currentActive;
       const res = await fetch(`/api/admin/faceswap/scenes/${scene.id}`, {
         method: 'PUT',
         headers,
-        body: JSON.stringify({ isActive: !scene.isActive })
+        body: JSON.stringify({ isActive: nextActive })
       });
       if (res.ok) {
-        showNotification(`Scene "${scene.title}" ${!scene.isActive ? 'activated' : 'deactivated'}`);
+        showNotification(`Scene "${scene.title}" ${nextActive ? 'activated' : 'deactivated'}`);
         await fetchAdminFaceSwapScenes();
         if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
       } else {
@@ -2088,24 +2064,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleDeleteScene = async (scene: FaceSwapScene) => {
-    if (!window.confirm(`Permanently delete Face Swap scene "${scene.title}"?`)) return;
-    try {
-      const headers = getAdminHeaders();
-      const res = await fetch(`/api/admin/faceswap/scenes/${scene.id}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (res.ok) {
-        showNotification(`Scene "${scene.title}" permanently deleted`);
-        await fetchAdminFaceSwapScenes();
-        if (refreshFaceSwapScenes) await refreshFaceSwapScenes();
-      } else {
-        showNotification('Failed to delete scene', 'error');
-      }
-    } catch {
-      showNotification('Failed to delete scene', 'error');
-    }
+  const handleDeleteScene = (scene: FaceSwapScene) => {
+    setItemToDelete({
+      type: 'scene',
+      id: scene.id,
+      title: scene.title
+    });
   };
 
   const handleSaveFaceSwapScene = async (targetStatus: 'published' | 'draft' = 'published') => {
@@ -2786,7 +2750,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDeleteTemplate(tpl.id)}
+                            onClick={() => handleDeleteTemplate(tpl)}
                             className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -5566,6 +5530,67 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 text-xs font-black cursor-pointer shadow active:scale-95"
                 >
                   Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* IN-APP CONFIRMATION MODAL FOR SECURE DELETION (NO IFRAME BLOCKING) */}
+        {itemToDelete && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <div className="w-full max-w-sm rounded-3xl bg-[#14131b] border border-rose-500/40 p-5 space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">Permanently Delete?</h4>
+                  <p className="text-[11px] text-stone-400">
+                    {itemToDelete.type === 'template' && 'Template from catalog and Firestore'}
+                    {itemToDelete.type === 'scene' && 'Face Swap scene from catalog'}
+                    {itemToDelete.type === 'banner' && 'Home hero banner'}
+                    {itemToDelete.type === 'bannerPool' && 'Pricing banner from rotation pool'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-black/60 border border-white/10 text-xs text-stone-200">
+                <span className="text-stone-400 block text-[10px] uppercase font-bold tracking-wider">Item:</span>
+                <span className="font-semibold text-white truncate block mt-0.5">{itemToDelete.title}</span>
+                <span className="font-mono text-[10px] text-stone-500 block truncate mt-0.5">ID: {itemToDelete.id}</span>
+              </div>
+
+              <p className="text-[11px] text-rose-300 leading-relaxed">
+                This action is permanent and cannot be undone. Are you sure you want to proceed?
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isDeletingItem}
+                  onClick={() => setItemToDelete(null)}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-stone-300 hover:text-white bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingItem}
+                  onClick={executeConfirmedDelete}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isDeletingItem ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Yes, Delete</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>

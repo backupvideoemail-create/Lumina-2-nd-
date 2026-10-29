@@ -48,10 +48,15 @@ export const HomeView: React.FC = () => {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-rotating Hero Carousel State (4.5s timer)
+  // Auto-rotating Hero Carousel State (6.0s timer with reset on interaction)
   const [banners, setBanners] = useState<HomeBannerItem[]>(HOME_HERO_BANNERS);
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [timerResetKey, setTimerResetKey] = useState(0);
+
+  const resetTimer = () => {
+    setTimerResetKey((k) => k + 1);
+  };
 
   // Fetch live admin-managed banners dynamically
   useEffect(() => {
@@ -74,9 +79,9 @@ export const HomeView: React.FC = () => {
     if (isPaused || banners.length === 0) return;
     const interval = setInterval(() => {
       setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
-    }, 4500);
+    }, 6000);
     return () => clearInterval(interval);
-  }, [isPaused, banners.length]);
+  }, [isPaused, banners.length, timerResetKey]);
 
   const activeBanner: HomeBannerItem = banners[currentBannerIndex] || banners[0] || HOME_HERO_BANNERS[0];
 
@@ -181,13 +186,13 @@ export const HomeView: React.FC = () => {
         </button>
       </header>
 
-      {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 4.5 seconds) */}
+      {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 6.0 seconds) */}
       <section
         className="px-3.5 pt-2 pb-2 relative"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
-        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 h-64 sm:h-72 w-full group">
+        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-[16/9] w-full max-h-[380px] bg-black group">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
@@ -198,7 +203,7 @@ export const HomeView: React.FC = () => {
               onClick={() => handleBannerClick(activeBanner)}
               className="absolute inset-0 cursor-pointer"
             >
-              {/* Background Media: Supports both Video and Image */}
+              {/* Background Media: Supports both Video and Image with Blurred Ambient Backdrop */}
               {Boolean(
                 activeBanner.mediaType === 'video' ||
                 activeBanner.videoUrl ||
@@ -206,28 +211,50 @@ export const HomeView: React.FC = () => {
                 activeBanner.image?.endsWith('.webm') ||
                 activeBanner.image?.startsWith('data:video/')
               ) ? (
-                <video
-                  src={activeBanner.videoUrl || activeBanner.image}
-                  poster={activeBanner.coverMedia || activeBanner.image?.endsWith('.mp4') ? undefined : activeBanner.image}
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                  className="w-full h-full object-cover object-center"
-                />
+                <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
+                  {/* Ambient dynamic background blur for full frame theater experience */}
+                  <video
+                    key={`hero_bg_${activeBanner.id}_${activeBanner.videoUrl || activeBanner.image}`}
+                    src={activeBanner.videoUrl || activeBanner.image}
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    aria-hidden="true"
+                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-40 scale-110 pointer-events-none select-none"
+                  />
+                  <video
+                    key={`hero_fg_${activeBanner.id}_${activeBanner.videoUrl || activeBanner.image}`}
+                    src={activeBanner.videoUrl || activeBanner.image}
+                    poster={activeBanner.coverMedia || (activeBanner.image?.endsWith('.mp4') ? undefined : activeBanner.image)}
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    className="relative z-10 w-full h-full object-contain object-center"
+                  />
+                </div>
               ) : (
-                <img
-                  src={activeBanner.image}
-                  alt={activeBanner.title}
-                  className="w-full h-full object-cover object-center"
-                />
+                <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
+                  <img
+                    src={activeBanner.image}
+                    alt={activeBanner.title}
+                    aria-hidden="true"
+                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-40 scale-110 pointer-events-none select-none"
+                  />
+                  <img
+                    src={activeBanner.image}
+                    alt={activeBanner.title}
+                    className="relative z-10 w-full h-full object-contain object-center"
+                  />
+                </div>
               )}
 
               {/* Multi-layer Cinematic Scrims */}
               <div
-                className={`absolute inset-0 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/85 via-black/40 to-transparent'}`}
+                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/85 via-black/40 to-transparent'}`}
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#070609] via-transparent to-black/30" />
+              <div className="absolute inset-0 z-15 bg-gradient-to-t from-[#070609] via-transparent to-black/30" />
 
               {/* Floating PRO Badge with Video Play Icon (Top Right) */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black shadow-[0_0_20px_rgba(255,159,0,0.5)]">
@@ -254,12 +281,13 @@ export const HomeView: React.FC = () => {
 
           {/* Carousel Pagination Dots (Center Bottom) */}
           <div className="absolute bottom-2.5 inset-x-0 z-30 flex items-center justify-center gap-1.5">
-            {HOME_HERO_BANNERS.map((banner, idx) => (
+            {banners.map((banner, idx) => (
               <button
-                key={banner.id}
+                key={banner.id || idx}
                 onClick={(e) => {
                   e.stopPropagation();
                   setCurrentBannerIndex(idx);
+                  resetTimer();
                 }}
                 className={`transition-all duration-300 rounded-full cursor-pointer ${
                   currentBannerIndex === idx
