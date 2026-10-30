@@ -117,6 +117,7 @@ class InMemoryFirestoreMock {
   }
 
   public async runTransaction(updateFunction: (transaction: any) => Promise<any>) {
+    const pendingWrites: Array<() => Promise<void>> = [];
     const t = {
       get: async (refOrQuery: any) => {
         if (typeof refOrQuery.get === 'function') {
@@ -124,11 +125,27 @@ class InMemoryFirestoreMock {
         }
         return { exists: false, data: () => null, empty: true };
       },
-      set: (docRef: any, data: any, options?: any) => docRef.set(data, options),
-      update: (docRef: any, data: any) => docRef.set(data, { merge: true }),
-      delete: (docRef: any) => docRef.delete()
+      set: (docRef: any, data: any, options?: any) => {
+        pendingWrites.push(async () => {
+          await docRef.set(data, options);
+        });
+      },
+      update: (docRef: any, data: any) => {
+        pendingWrites.push(async () => {
+          await docRef.set(data, { merge: true });
+        });
+      },
+      delete: (docRef: any) => {
+        pendingWrites.push(async () => {
+          await docRef.delete();
+        });
+      }
     };
-    return await updateFunction(t);
+    const result = await updateFunction(t);
+    for (const write of pendingWrites) {
+      await write();
+    }
+    return result;
   }
 }
 
@@ -357,8 +374,9 @@ class ProductionDatabase {
       try {
         const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
         if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
-          const remoteDeleted = deletedDoc.data()!.ids;
-          this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
+          this.db.deletedTemplateIds = [...deletedDoc.data()!.ids];
+        } else {
+          this.db.deletedTemplateIds = [];
         }
         tombstoneFetchSuccess = true;
       } catch (delErr: any) {
@@ -455,12 +473,13 @@ class ProductionDatabase {
     }
 
     // 1. Templates
-    // Fetch deleted_template_ids doc from Firestore first
+    // Fetch deleted_template_ids doc from Firestore first (authoritative reconciliation)
     try {
       const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
       if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
-        const remoteDeleted = deletedDoc.data()!.ids;
-        this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
+        this.db.deletedTemplateIds = [...deletedDoc.data()!.ids];
+      } else {
+        this.db.deletedTemplateIds = [];
       }
     } catch (delErr: any) {
       console.error('[Database Critical] Fetch deleted_template_ids error during refresh:', delErr.message);
@@ -1598,73 +1617,76 @@ class ProductionDatabase {
         throw new Error('Authoritative Firestore database connection is not available. Template cannot be saved permanently.');
       }
     } else {
-      try {
-        const sanitized = JSON.parse(JSON.stringify(tpl));
-        await adminFirestoreDb.collection('templates').doc(tpl.id).set(sanitized);
+      const tplDocRef = adminFirestoreDb.collection('templates').doc(tpl.id);
+      const tombstoneDocRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
+      const sanitized = JSON.parse(JSON.stringify(tpl));
+      let neededRemoval = false;
 
-        // Verification read-back
-        const verifyDoc = await adminFirestoreDb.collection('templates').doc(tpl.id).get();
+      try {
+        if (typeof adminFirestoreDb.runTransaction === 'function') {
+          await adminFirestoreDb.runTransaction(async (transaction: any) => {
+            // Transaction Rule: All reads before writes
+            const snap = await transaction.get(tombstoneDocRef);
+            let currentIds: string[] = [];
+            if (snap.exists && Array.isArray(snap.data()?.ids)) {
+              currentIds = snap.data().ids;
+              if (currentIds.includes(tpl.id)) {
+                neededRemoval = true;
+                currentIds = currentIds.filter(id => id !== tpl.id);
+              }
+            }
+
+            // Atomic writes in single transaction
+            transaction.set(tplDocRef, sanitized);
+            if (neededRemoval) {
+              transaction.set(tombstoneDocRef, {
+                ids: currentIds,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+          });
+        } else {
+          const snap = await tombstoneDocRef.get();
+          let currentIds: string[] = [];
+          if (snap.exists && Array.isArray(snap.data()?.ids)) {
+            currentIds = snap.data().ids;
+            if (currentIds.includes(tpl.id)) {
+              neededRemoval = true;
+              currentIds = currentIds.filter(id => id !== tpl.id);
+            }
+          }
+          await tplDocRef.set(sanitized);
+          if (neededRemoval) {
+            await tombstoneDocRef.set({
+              ids: currentIds,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          }
+        }
+
+        // Post-transaction Read-back verification of template document
+        const verifyDoc = await tplDocRef.get();
         if (!verifyDoc.exists) {
-          throw new Error(`Firestore document 'templates/${tpl.id}' was not found after write.`);
+          throw new Error(`Firestore document 'templates/${tpl.id}' was not found after atomic create transaction.`);
         }
         const verifyData = verifyDoc.data();
         if (!verifyData || !verifyData.title) {
           throw new Error(`Firestore document 'templates/${tpl.id}' is missing required fields.`);
         }
-      } catch (firestoreErr: any) {
-        console.error(`[Database Critical] Firestore write failure for template ${tpl.id}:`, firestoreErr.message);
-        throw new Error(`Firestore template write failed: ${firestoreErr.message}`);
-      }
-    }
 
-    // If template was previously tombstoned, remove it from config/deleted_template_ids in Firestore with read-back verification
-    if (adminFirestoreDb) {
-      try {
-        const docRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
-        let neededRemoval = false;
-        if (typeof adminFirestoreDb.runTransaction === 'function') {
-          await adminFirestoreDb.runTransaction(async (transaction: any) => {
-            const snap = await transaction.get(docRef);
-            if (snap.exists && Array.isArray(snap.data()?.ids)) {
-              const currentIds: string[] = snap.data().ids;
-              if (currentIds.includes(tpl.id)) {
-                neededRemoval = true;
-                const filtered = currentIds.filter(id => id !== tpl.id);
-                transaction.set(docRef, {
-                  ids: filtered,
-                  updatedAt: new Date().toISOString()
-                }, { merge: true });
-              }
-            }
-          });
-        } else {
-          const snap = await docRef.get();
-          if (snap.exists && Array.isArray(snap.data()?.ids)) {
-            const currentIds: string[] = snap.data().ids;
-            if (currentIds.includes(tpl.id)) {
-              neededRemoval = true;
-              const filtered = currentIds.filter(id => id !== tpl.id);
-              await docRef.set({
-                ids: filtered,
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
-            }
-          }
-        }
-
+        // Post-transaction Read-back verification of tombstone removal
         if (neededRemoval) {
-          // Read-back verification that tombstone was strictly removed
-          const verifyTombstoneDoc = await docRef.get();
+          const verifyTombstoneDoc = await tombstoneDocRef.get();
           if (verifyTombstoneDoc.exists && Array.isArray(verifyTombstoneDoc.data()?.ids)) {
             if (verifyTombstoneDoc.data()!.ids.includes(tpl.id)) {
               throw new Error(`Firestore tombstone removal verification failed: ID '${tpl.id}' is still present in config/deleted_template_ids.`);
             }
-            this.db.deletedTemplateIds = verifyTombstoneDoc.data()!.ids;
+            this.db.deletedTemplateIds = [...verifyTombstoneDoc.data()!.ids];
           }
         }
-      } catch (tombstoneErr: any) {
-        console.error(`[Database Critical] Failed to remove tombstone for re-created template ${tpl.id}:`, tombstoneErr.message);
-        throw new Error(`Firestore tombstone removal failed for template ${tpl.id}: ${tombstoneErr.message}`);
+      } catch (firestoreErr: any) {
+        console.error(`[Database Critical] Firestore atomic write failure for template ${tpl.id}:`, firestoreErr.message);
+        throw new Error(`Firestore template atomic write failed: ${firestoreErr.message}`);
       }
     }
 
@@ -1725,24 +1747,14 @@ class ProductionDatabase {
         throw new Error('Authoritative Firestore database connection is not available. Template delete cannot be performed permanently.');
       }
     } else {
-      try {
-        await adminFirestoreDb.collection('templates').doc(id).delete();
-        // Verify deletion
-        const verifyDoc = await adminFirestoreDb.collection('templates').doc(id).get();
-        if (verifyDoc.exists) {
-          throw new Error(`Firestore document 'templates/${id}' still exists after delete attempt.`);
-        }
-      } catch (err: any) {
-        console.error(`[Database Critical] Failed to delete template ${id} from Firestore:`, err.message);
-        throw new Error(`Firestore template delete failed: ${err.message}`);
-      }
+      const tplDocRef = adminFirestoreDb.collection('templates').doc(id);
+      const tombstoneDocRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
 
-      // Safe transactional update of deleted_template_ids in Firestore
       try {
-        const docRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
         if (typeof adminFirestoreDb.runTransaction === 'function') {
           await adminFirestoreDb.runTransaction(async (transaction: any) => {
-            const snap = await transaction.get(docRef);
+            // Transaction Rule: All reads before writes
+            const snap = await transaction.get(tombstoneDocRef);
             let currentIds: string[] = [];
             if (snap.exists && Array.isArray(snap.data()?.ids)) {
               currentIds = snap.data().ids;
@@ -1750,13 +1762,16 @@ class ProductionDatabase {
             if (!currentIds.includes(id)) {
               currentIds.push(id);
             }
-            transaction.set(docRef, {
+
+            // Atomic writes in single transaction
+            transaction.delete(tplDocRef);
+            transaction.set(tombstoneDocRef, {
               ids: currentIds,
               updatedAt: new Date().toISOString()
             }, { merge: true });
           });
         } else {
-          const snap = await docRef.get();
+          const snap = await tombstoneDocRef.get();
           let currentIds: string[] = [];
           if (snap.exists && Array.isArray(snap.data()?.ids)) {
             currentIds = snap.data().ids;
@@ -1764,23 +1779,30 @@ class ProductionDatabase {
           if (!currentIds.includes(id)) {
             currentIds.push(id);
           }
-          await docRef.set({
+          await tplDocRef.delete();
+          await tombstoneDocRef.set({
             ids: currentIds,
             updatedAt: new Date().toISOString()
           }, { merge: true });
         }
 
-        // Verification read-back of tombstone persistence
-        const verifyTombstoneDoc = await docRef.get();
+        // Post-transaction Read-back verification of template document deletion
+        const verifyDoc = await tplDocRef.get();
+        if (verifyDoc.exists) {
+          throw new Error(`Firestore document 'templates/${id}' still exists after atomic delete attempt.`);
+        }
+
+        // Post-transaction Read-back verification of tombstone persistence
+        const verifyTombstoneDoc = await tombstoneDocRef.get();
         if (!verifyTombstoneDoc.exists || !Array.isArray(verifyTombstoneDoc.data()?.ids) || !verifyTombstoneDoc.data()!.ids.includes(id)) {
-          throw new Error(`Firestore tombstone verification failed: ID '${id}' is not present in config/deleted_template_ids after write.`);
+          throw new Error(`Firestore tombstone verification failed: ID '${id}' is not present in config/deleted_template_ids after atomic delete.`);
         }
 
         // Update local state with the verified remote IDs
-        this.db.deletedTemplateIds = verifyTombstoneDoc.data()!.ids;
-      } catch (tombstoneErr: any) {
-        console.error(`[Database Critical] Failed to persist tombstone for template ${id}:`, tombstoneErr.message);
-        throw new Error(`Firestore tombstone persistence failed for template ${id}: ${tombstoneErr.message}`);
+        this.db.deletedTemplateIds = [...verifyTombstoneDoc.data()!.ids];
+      } catch (err: any) {
+        console.error(`[Database Critical] Failed atomic delete for template ${id} in Firestore:`, err.message);
+        throw new Error(`Firestore atomic template delete failed: ${err.message}`);
       }
     }
 
@@ -1826,6 +1848,26 @@ class ProductionDatabase {
     skippedCount: number;
     unassignedCount: number;
   }> {
+    // 1. Authoritative Fail-Closed Guard: Firestore connection MUST be available
+    if (!adminFirestoreDb) {
+      throw new Error('Authoritative Firestore database connection is not available. R2 orphan recovery halted fail-closed to prevent reviving deleted templates.');
+    }
+
+    // 2. Fetch authoritative deleted_template_ids tombstone doc before scanning or creating templates
+    try {
+      const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+      if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
+        this.db.deletedTemplateIds = [...deletedDoc.data()!.ids];
+      } else {
+        this.db.deletedTemplateIds = [];
+      }
+    } catch (delErr: any) {
+      console.error('[Database Critical] Fetch deleted_template_ids error during R2 recovery:', delErr.message);
+      throw new Error(`Failed to fetch authoritative deleted template tombstones from Firestore: ${delErr.message}. R2 orphan recovery halted fail-closed to prevent reviving deleted templates.`);
+    }
+
+    const deletedIds = new Set(this.db.deletedTemplateIds || []);
+
     try {
       const { mediaStorage } = await import('../storage/mediaStorage.ts');
       const r2Objects = await mediaStorage.listR2Objects('media/');
@@ -1981,18 +2023,6 @@ class ProductionDatabase {
         }
       }
 
-      if (adminFirestoreDb) {
-        try {
-          const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
-          if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
-            const remoteDeleted = deletedDoc.data()!.ids;
-            this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
-          }
-        } catch (delErr: any) {
-          console.warn('[Database] Fetch deleted_template_ids note during R2 recovery:', delErr.message);
-        }
-      }
-      const deletedIds = new Set(this.db.deletedTemplateIds || []);
       const recoveredTemplates: Template[] = [];
 
       for (const [tplId, group] of templateGroups.entries()) {
@@ -2138,13 +2168,7 @@ class ProductionDatabase {
       };
     } catch (err: any) {
       console.error('[R2 Safe Recovery Error]:', err.message);
-      return {
-        scanned: 0,
-        recoveredCount: 0,
-        recoveredTemplates: [],
-        skippedCount: 0,
-        unassignedCount: 0
-      };
+      throw err;
     }
   }
 

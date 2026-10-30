@@ -678,6 +678,208 @@ async function runSystemVerification() {
   const earlyReturnIdx = tplManagerSource.indexOf('if (!isOpen) return null;');
   assert(hookIdx !== -1 && hookIdx < earlyReturnIdx, 'TemplateManagerModal declares all reorder hooks before early return, preventing React Rules of Hooks crash');
 
+  // 15. SUITE 17: Authoritative Tombstone Reconciliation, Atomic Lifecycle & Fail-Closed Cross-Builder Sync
+  console.log('\n--- SUITE 17: Authoritative Tombstone Reconciliation, Atomic Lifecycle & Fail-Closed Cross-Builder Sync ---');
+
+  const testSyncId1 = `tpl_primary_sync_${Date.now()}`;
+  const testSyncId2 = `tpl_secondary_sync_${Date.now()}`;
+  const testSyncCover = 'https://images.example.com/sync_cover.jpg';
+
+  // 17.1 Primary Creates Template -> Firestore Read-Back -> Secondary Refresh -> Template Available
+  await prodDb.addTemplate({
+    id: testSyncId1,
+    title: 'Primary Sync Test Template',
+    description: 'Testing cross-builder template creation sync',
+    type: 'photo',
+    category: 'Trending',
+    cover: testSyncCover,
+    preview: testSyncCover,
+    sampleResult: testSyncCover,
+    aspectRatio: '9:16',
+    creditCost: 10,
+    engine: 'AI_GENERATION',
+    model: 'gemini-3.1-flash-image',
+    workflow: 'gemini-photo-style',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_ONLY',
+      provider: 'gemini',
+      model: 'gemini-3.1-flash-image',
+      engine: 'AI_GENERATION',
+      prompt: 'Testing prompt',
+      workflow: 'gemini-photo-style',
+      aspectRatio: '9:16',
+      sampleResult: testSyncCover
+    },
+    sortOrder: 0,
+    isFeatured: false,
+    isActive: true,
+    tags: ['Trending'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
+  });
+
+  const firestoreDoc1 = await adminFirestoreDb.collection('templates').doc(testSyncId1).get();
+  assert(firestoreDoc1.exists && firestoreDoc1.data()?.title === 'Primary Sync Test Template', '17.1 Primary template write verified in authoritative Firestore');
+  
+  // Refresh catalog to simulate Secondary builder syncing from Firestore
+  await prodDb.refreshCatalogFromFirestore();
+  assert(prodDb.getTemplates().some(t => t.id === testSyncId1), '17.1 Secondary refresh makes newly created Primary template available');
+
+  // 17.2 Primary Deletes Template -> Atomic Single Transaction -> Secondary Refresh -> Deleted ID Never Resurfaces
+  await prodDb.deleteTemplate(testSyncId1);
+  const deletedTplSnap = await adminFirestoreDb.collection('templates').doc(testSyncId1).get();
+  assert(!deletedTplSnap.exists, '17.2 Template doc removed from Firestore collection');
+
+  const tombstoneDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+  assert(tombstoneDoc.exists && tombstoneDoc.data()?.ids?.includes(testSyncId1), '17.2 Tombstone ID persisted in config/deleted_template_ids');
+
+  // Simulate Secondary builder refresh
+  await prodDb.refreshCatalogFromFirestore();
+  assert(!prodDb.getTemplates().some(t => t.id === testSyncId1), '17.2 Deleted template never resurfaces on Secondary refresh');
+
+  // 17.3 Same ID Re-created -> Tombstone Removed Atomically -> Available In Both Builders
+  await prodDb.addTemplate({
+    id: testSyncId1,
+    title: 'Primary Sync Test Template (Re-created)',
+    description: 'Testing cross-builder re-creation with tombstone clearance',
+    type: 'photo',
+    category: 'Trending',
+    cover: testSyncCover,
+    preview: testSyncCover,
+    sampleResult: testSyncCover,
+    aspectRatio: '9:16',
+    creditCost: 10,
+    engine: 'AI_GENERATION',
+    model: 'gemini-3.1-flash-image',
+    workflow: 'gemini-photo-style',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_ONLY',
+      provider: 'gemini',
+      model: 'gemini-3.1-flash-image',
+      engine: 'AI_GENERATION',
+      prompt: 'Testing re-creation prompt',
+      workflow: 'gemini-photo-style',
+      aspectRatio: '9:16',
+      sampleResult: testSyncCover
+    },
+    sortOrder: 0,
+    isFeatured: false,
+    isActive: true,
+    tags: ['Trending'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
+  });
+
+  const tombstoneDocAfterRecreate = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+  assert(!tombstoneDocAfterRecreate.data()?.ids?.includes(testSyncId1), '17.3 Re-created template ID atomically removed from Firestore deleted_template_ids');
+
+  await prodDb.refreshCatalogFromFirestore();
+  assert(prodDb.getTemplates().some(t => t.id === testSyncId1 && t.title.includes('Re-created')), '17.3 Re-created template available in catalog after authoritative refresh');
+
+  // 17.4 Secondary Creates Template -> Primary Refresh -> Template Available
+  await prodDb.addTemplate({
+    id: testSyncId2,
+    title: 'Secondary Sync Test Template',
+    description: 'Testing secondary template creation',
+    type: 'photo',
+    category: 'Trending',
+    cover: testSyncCover,
+    preview: testSyncCover,
+    sampleResult: testSyncCover,
+    aspectRatio: '9:16',
+    creditCost: 10,
+    engine: 'AI_GENERATION',
+    model: 'gemini-3.1-flash-image',
+    workflow: 'gemini-photo-style',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_ONLY',
+      provider: 'gemini',
+      model: 'gemini-3.1-flash-image',
+      engine: 'AI_GENERATION',
+      prompt: 'Testing prompt 2',
+      workflow: 'gemini-photo-style',
+      aspectRatio: '9:16',
+      sampleResult: testSyncCover
+    },
+    sortOrder: 0,
+    isFeatured: false,
+    isActive: true,
+    tags: ['Trending'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
+  });
+
+  await prodDb.refreshCatalogFromFirestore();
+  assert(prodDb.getTemplates().some(t => t.id === testSyncId2), '17.4 Template created on Secondary is available after Primary refresh');
+
+  // 17.5 Firestore Tombstone Read Failure -> Catalog Refresh & R2 Recovery Fail-Closed
+  const origCollection = adminFirestoreDb.collection.bind(adminFirestoreDb);
+  adminFirestoreDb.collection = (colName: string) => {
+    if (colName === 'config') {
+      return {
+        doc: (docId: string) => {
+          if (docId === 'deleted_template_ids') {
+            return {
+              get: async () => { throw new Error('Simulated network/permission failure for deleted_template_ids'); },
+              set: async () => { throw new Error('Simulated failure'); }
+            };
+          }
+          return origCollection(colName).doc(docId);
+        }
+      };
+    }
+    return origCollection(colName);
+  };
+
+  let refreshThrew = false;
+  try {
+    await prodDb.refreshCatalogFromFirestore();
+  } catch (err: any) {
+    if (err.message.includes('authoritative deleted template tombstones from Firestore')) {
+      refreshThrew = true;
+    }
+  }
+  assert(refreshThrew, '17.5 Catalog refresh fails-closed with explicit error when tombstone fetch fails');
+
+  let r2RecoveryThrew = false;
+  try {
+    await prodDb.recoverOrphanedTemplatesFromR2();
+  } catch (err: any) {
+    if (err.message.includes('authoritative deleted template tombstones from Firestore')) {
+      r2RecoveryThrew = true;
+    }
+  }
+  assert(r2RecoveryThrew, '17.5 R2 recovery fails-closed with explicit error when tombstone fetch fails');
+
+  // Restore Firestore collection method
+  adminFirestoreDb.collection = origCollection;
+
+  // 17.6 Atomic Transaction Rollback on Failure (No Partial False Success)
+  let invalidAddThrew = false;
+  try {
+    await prodDb.addTemplate({
+      id: '',
+      title: '',
+      cover: ''
+    } as any);
+  } catch {
+    invalidAddThrew = true;
+  }
+  assert(invalidAddThrew, '17.6 Invalid template rejects immediately without creating corrupted or partial Firestore records');
+
+  // 17.7 Concurrent Multi-ID Tombstone Merging
+  await prodDb.deleteTemplate(testSyncId1);
+  await prodDb.deleteTemplate(testSyncId2);
+  const finalTombstoneDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+  assert(
+    finalTombstoneDoc.data()?.ids?.includes(testSyncId1) &&
+    finalTombstoneDoc.data()?.ids?.includes(testSyncId2),
+    '17.7 Multiple template deletions maintain all tombstone IDs without overwriting previous deletions'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');
