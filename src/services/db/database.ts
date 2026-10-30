@@ -42,7 +42,7 @@ export { adminFirestoreDb };
 
 export const isIsolatedTestEnv = process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test';
 
-class InMemoryFirestoreMock {
+export class InMemoryFirestoreMock {
   private collections: Map<string, Map<string, any>> = new Map();
 
   public settings(_opts: any) {}
@@ -54,6 +54,9 @@ class InMemoryFirestoreMock {
     const col = this.collections.get(name)!;
 
     const makeDocRef = (id: string) => ({
+      _colName: name,
+      _docId: id,
+      id,
       get: async () => {
         const exists = col.has(id);
         const data = exists ? JSON.parse(JSON.stringify(col.get(id))) : undefined;
@@ -117,7 +120,15 @@ class InMemoryFirestoreMock {
   }
 
   public async runTransaction(updateFunction: (transaction: any) => Promise<any>) {
-    const pendingWrites: Array<() => Promise<void>> = [];
+    interface StagedOp {
+      colName: string;
+      docId: string;
+      op: 'set' | 'update' | 'delete';
+      data?: any;
+      options?: { merge?: boolean };
+    }
+    const stagedOps: StagedOp[] = [];
+
     const t = {
       get: async (refOrQuery: any) => {
         if (typeof refOrQuery.get === 'function') {
@@ -126,25 +137,85 @@ class InMemoryFirestoreMock {
         return { exists: false, data: () => null, empty: true };
       },
       set: (docRef: any, data: any, options?: any) => {
-        pendingWrites.push(async () => {
-          await docRef.set(data, options);
+        stagedOps.push({
+          colName: docRef._colName || 'unknown',
+          docId: docRef._docId || (typeof docRef.id === 'string' ? docRef.id : 'unknown'),
+          op: 'set',
+          data,
+          options
         });
       },
       update: (docRef: any, data: any) => {
-        pendingWrites.push(async () => {
-          await docRef.set(data, { merge: true });
+        stagedOps.push({
+          colName: docRef._colName || 'unknown',
+          docId: docRef._docId || (typeof docRef.id === 'string' ? docRef.id : 'unknown'),
+          op: 'update',
+          data
         });
       },
       delete: (docRef: any) => {
-        pendingWrites.push(async () => {
-          await docRef.delete();
+        stagedOps.push({
+          colName: docRef._colName || 'unknown',
+          docId: docRef._docId || (typeof docRef.id === 'string' ? docRef.id : 'unknown'),
+          op: 'delete'
         });
       }
     };
+
+    // Phase 1: User update function
     const result = await updateFunction(t);
-    for (const write of pendingWrites) {
-      await write();
+
+    // Phase 2: Capture snapshot of affected documents for rollback guarantees
+    const rollbackSnapshots: Array<{ colName: string; docId: string; exists: boolean; data?: any }> = [];
+    for (const op of stagedOps) {
+      const col = this.collections.get(op.colName);
+      const exists = col ? col.has(op.docId) : false;
+      const data = exists ? JSON.parse(JSON.stringify(col!.get(op.docId))) : undefined;
+      rollbackSnapshots.push({ colName: op.colName, docId: op.docId, exists, data });
     }
+
+    // Phase 3: Atomic commit with rollback on simulated or real commit failure
+    try {
+      for (const op of stagedOps) {
+        if (!this.collections.has(op.colName)) {
+          this.collections.set(op.colName, new Map());
+        }
+        const col = this.collections.get(op.colName)!;
+
+        // Check if explicit simulated failure is requested in test data
+        if (op.data?.__simulateWriteFailure) {
+          throw new Error('Simulated write commit error in transaction');
+        }
+
+        if (op.op === 'set') {
+          if (op.options?.merge && col.has(op.docId)) {
+            const existing = col.get(op.docId);
+            col.set(op.docId, { ...existing, ...JSON.parse(JSON.stringify(op.data)) });
+          } else {
+            col.set(op.docId, JSON.parse(JSON.stringify(op.data)));
+          }
+        } else if (op.op === 'update') {
+          const existing = col.get(op.docId) || {};
+          col.set(op.docId, { ...existing, ...JSON.parse(JSON.stringify(op.data)) });
+        } else if (op.op === 'delete') {
+          col.delete(op.docId);
+        }
+      }
+    } catch (commitErr) {
+      // Revert completely! Restore exact previous document state
+      for (const snap of rollbackSnapshots) {
+        const col = this.collections.get(snap.colName);
+        if (col) {
+          if (snap.exists) {
+            col.set(snap.docId, snap.data);
+          } else {
+            col.delete(snap.docId);
+          }
+        }
+      }
+      throw commitErr;
+    }
+
     return result;
   }
 }
@@ -270,11 +341,49 @@ export interface PricingBannerConfig {
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const DB_FILE = isIsolatedTestEnv ? path.join(DATA_DIR, 'test_db.json') : path.join(DATA_DIR, 'db.json');
 
-class ProductionDatabase {
+export interface TemplateValidationResult {
+  isValid: boolean;
+  reason?: string;
+}
+
+export function validateTemplate(tpl: any): TemplateValidationResult {
+  if (!tpl || typeof tpl !== 'object') {
+    return { isValid: false, reason: 'Template record is missing or not an object' };
+  }
+  if (!tpl.id || typeof tpl.id !== 'string' || tpl.id.trim().length < 2) {
+    return { isValid: false, reason: 'Template is missing a valid non-empty id' };
+  }
+  if (!tpl.title || typeof tpl.title !== 'string' || tpl.title.trim().length < 2) {
+    return { isValid: false, reason: 'Template is missing a valid title' };
+  }
+  if (tpl.type !== 'photo' && tpl.type !== 'video') {
+    return { isValid: false, reason: `Template type '${tpl.type}' is invalid (must be 'photo' or 'video')` };
+  }
+  if (!tpl.cover || typeof tpl.cover !== 'string' || tpl.cover.trim().length < 5) {
+    return { isValid: false, reason: 'Template is missing a valid cover image URL' };
+  }
+  if (tpl.type === 'video') {
+    const videoUrl = tpl.preview || tpl.sampleResult;
+    if (!videoUrl || typeof videoUrl !== 'string' || videoUrl.trim().length < 5) {
+      return { isValid: false, reason: 'Video template is missing a valid preview URL' };
+    }
+  } else if (tpl.type === 'photo') {
+    const photoUrl = tpl.cover || tpl.sampleResult || tpl.sampleAfter || tpl.referenceImageUrl;
+    if (!photoUrl || typeof photoUrl !== 'string' || photoUrl.trim().length < 5) {
+      return { isValid: false, reason: 'Photo template is missing a valid sample or reference image' };
+    }
+  }
+  return { isValid: true };
+}
+
+export class ProductionDatabase {
   private db: ProductionDatabaseSchema;
+  private dbFilePath: string;
+  public quarantinedTemplates: Array<{ template: any; reason: string; quarantinedAt: string }> = [];
   public readyPromise: Promise<void>;
 
-  constructor() {
+  constructor(customDbFile?: string) {
+    this.dbFilePath = customDbFile || DB_FILE;
     this.db = this.init();
     if (adminFirestoreDb && !isIsolatedTestEnv) {
       this.readyPromise = this.loadAuthoritativeFromFirestore().catch((err: any) => {
@@ -392,16 +501,29 @@ class ProductionDatabase {
             firestoreTemplates.push(d.data() as Template);
           });
         }
-        // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates
+        // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates and quarantining incomplete templates
         const templateMap = new Map<string, Template>();
         SEED_TEMPLATES.forEach(t => {
-          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
         });
         (this.db.templates || []).forEach(t => {
-          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
         });
         firestoreTemplates.forEach(t => {
-          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+          if (!deletedIds.has(t.id)) {
+            const v = validateTemplate(t);
+            if (v.isValid) {
+              templateMap.set(t.id, t);
+            } else {
+              if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
+                this.quarantinedTemplates.push({
+                  template: t,
+                  reason: v.reason || 'Invalid remote template record',
+                  quarantinedAt: new Date().toISOString()
+                });
+              }
+            }
+          }
         });
         this.db.templates = Array.from(templateMap.values());
       } else {
@@ -496,13 +618,26 @@ class ProductionDatabase {
     }
     const templateMap = new Map<string, Template>();
     SEED_TEMPLATES.forEach(t => {
-      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
     });
     (this.db.templates || []).forEach(t => {
-      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
     });
     firestoreTemplates.forEach(t => {
-      if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+      if (!deletedIds.has(t.id)) {
+        const v = validateTemplate(t);
+        if (v.isValid) {
+          templateMap.set(t.id, t);
+        } else {
+          if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
+            this.quarantinedTemplates.push({
+              template: t,
+              reason: v.reason || 'Invalid remote template record',
+              quarantinedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
     });
     this.db.templates = Array.from(templateMap.values());
 
@@ -567,8 +702,8 @@ class ProductionDatabase {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      if (fs.existsSync(this.dbFilePath)) {
+        const raw = fs.readFileSync(this.dbFilePath, 'utf-8');
         const parsed = JSON.parse(raw);
         parsed.users = parsed.users || {};
         parsed.authIdentities = parsed.authIdentities || {};
@@ -582,10 +717,23 @@ class ProductionDatabase {
         const deletedIds = new Set(parsed.deletedTemplateIds || []);
         const tplMap = new Map<string, Template>();
         SEED_TEMPLATES.forEach(t => {
-          if (!deletedIds.has(t.id)) tplMap.set(t.id, t);
+          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) tplMap.set(t.id, t);
         });
         (parsed.templates || []).forEach((t: Template) => {
-          if (!deletedIds.has(t.id)) tplMap.set(t.id, t);
+          if (!deletedIds.has(t.id)) {
+            const v = validateTemplate(t);
+            if (v.isValid) {
+              tplMap.set(t.id, t);
+            } else {
+              if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
+                this.quarantinedTemplates.push({
+                  template: t,
+                  reason: v.reason || 'Invalid initial template record',
+                  quarantinedAt: new Date().toISOString()
+                });
+              }
+            }
+          }
         });
         parsed.templates = Array.from(tplMap.values());
         parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
@@ -642,9 +790,9 @@ class ProductionDatabase {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      const tempFile = path.join(DATA_DIR, `db_${Date.now()}_tmp.json`);
+      const tempFile = path.join(DATA_DIR, `db_${Date.now()}_tmp_${crypto.randomBytes(3).toString('hex')}.json`);
       fs.writeFileSync(tempFile, JSON.stringify(this.db, null, 2), 'utf-8');
-      fs.renameSync(tempFile, DB_FILE);
+      fs.renameSync(tempFile, this.dbFilePath);
     } catch (err) {
       console.error('[Database] Failed to save database:', err);
     }
@@ -1499,8 +1647,26 @@ class ProductionDatabase {
   ========================================================================= */
   public getTemplates(): Template[] {
     return this.db.templates
-      .filter(t => t.isActive !== false)
+      .filter(t => {
+        if (t.isActive === false) return false;
+        const v = validateTemplate(t);
+        if (!v.isValid) {
+          if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
+            this.quarantinedTemplates.push({
+              template: t,
+              reason: v.reason || 'Failed schema validation',
+              quarantinedAt: new Date().toISOString()
+            });
+          }
+          return false;
+        }
+        return true;
+      })
       .sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
+  }
+
+  public getQuarantinedTemplates() {
+    return this.quarantinedTemplates;
   }
 
   public getAllTemplatesAdmin(): Template[] {
@@ -1595,14 +1761,9 @@ class ProductionDatabase {
   }
 
   public async addTemplate(tpl: Template): Promise<Template> {
-    if (!tpl.id) {
-      throw new Error('Template must have a valid non-empty id');
-    }
-    if (!tpl.title || !tpl.title.trim()) {
-      throw new Error('Template must have a valid title');
-    }
-    if (!tpl.cover) {
-      throw new Error('Template must have a valid cover image');
+    const v = validateTemplate(tpl);
+    if (!v.isValid) {
+      throw new Error(`Cannot add invalid template: ${v.reason}`);
     }
 
     // Default isActive to true

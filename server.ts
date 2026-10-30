@@ -1081,6 +1081,14 @@ app.get('/api/admin/templates/unassigned-r2', requireAdmin, (_req, res) => {
   });
 });
 
+// Admin View Quarantined Templates (Incomplete or corrupted templates hidden from public gallery)
+app.get('/api/admin/templates/quarantined', requireAdmin, (_req, res) => {
+  res.json({
+    success: true,
+    quarantinedTemplates: prodDb.getQuarantinedTemplates()
+  });
+});
+
 // Admin View Server-Verified Test Generation Runs and Provider Costs
 app.get('/api/admin/test-runs', requireAdmin, (_req, res) => {
   const runs = prodDb.getAdminTestRuns(100);

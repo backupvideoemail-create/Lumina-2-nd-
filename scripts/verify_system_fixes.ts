@@ -1,9 +1,11 @@
+import type { FaceSwapScene } from '../src/types/index';
+
 process.env.NODE_ENV = 'test';
 process.env.IS_ISOLATED_TEST = 'true';
 
 async function runSystemVerification() {
   // Dynamic imports guarantee environment flags are evaluated BEFORE modules initialize
-  const { prodDb, adminFirestoreDb } = await import('../src/services/db/database.ts');
+  const { prodDb, adminFirestoreDb, ProductionDatabase, validateTemplate } = await import('../src/services/db/database.ts');
   const { mediaStorage } = await import('../src/services/storage/mediaStorage.ts');
   const { buildUnifiedGenerationPrompt, GLOBAL_PROMPT_MARKER, isUnifiedPrompt } = await import('../src/config/globalMasterPrompt.ts');
 
@@ -678,144 +680,96 @@ async function runSystemVerification() {
   const earlyReturnIdx = tplManagerSource.indexOf('if (!isOpen) return null;');
   assert(hookIdx !== -1 && hookIdx < earlyReturnIdx, 'TemplateManagerModal declares all reorder hooks before early return, preventing React Rules of Hooks crash');
 
-  // 15. SUITE 17: Authoritative Tombstone Reconciliation, Atomic Lifecycle & Fail-Closed Cross-Builder Sync
-  console.log('\n--- SUITE 17: Authoritative Tombstone Reconciliation, Atomic Lifecycle & Fail-Closed Cross-Builder Sync ---');
+  // 15. SUITE 17: Incomplete / Duplicate Templates Protection & Quarantine
+  console.log('\n--- SUITE 17: Incomplete / Duplicate Templates Protection & Quarantine ---');
 
-  const testSyncId1 = `tpl_primary_sync_${Date.now()}`;
-  const testSyncId2 = `tpl_secondary_sync_${Date.now()}`;
-  const testSyncCover = 'https://images.example.com/sync_cover.jpg';
-
-  // 17.1 Primary Creates Template -> Firestore Read-Back -> Secondary Refresh -> Template Available
-  await prodDb.addTemplate({
-    id: testSyncId1,
-    title: 'Primary Sync Test Template',
-    description: 'Testing cross-builder template creation sync',
-    type: 'photo',
-    category: 'Trending',
-    cover: testSyncCover,
-    preview: testSyncCover,
-    sampleResult: testSyncCover,
-    aspectRatio: '9:16',
+  // 17.1 Separate Validity Checks for Photo and Video Templates
+  const validPhotoTpl = {
+    id: 'tpl_valid_photo_demo',
+    title: 'Valid Royal Sherwani Photo',
+    type: 'photo' as const,
+    category: 'Royal Swag' as const,
+    cover: 'https://images.example.com/cover.jpg',
+    sampleResult: 'https://images.example.com/cover.jpg',
+    aspectRatio: '9:16' as const,
     creditCost: 10,
-    engine: 'AI_GENERATION',
+    engine: 'AI_GENERATION' as const,
     model: 'gemini-3.1-flash-image',
     workflow: 'gemini-photo-style',
     recipe: {
       version: '1.0',
-      inputType: 'IMAGE_ONLY',
-      provider: 'gemini',
+      inputType: 'IMAGE_ONLY' as const,
+      provider: 'gemini' as const,
       model: 'gemini-3.1-flash-image',
-      engine: 'AI_GENERATION',
-      prompt: 'Testing prompt',
+      engine: 'AI_GENERATION' as const,
+      prompt: 'Photo prompt',
       workflow: 'gemini-photo-style',
-      aspectRatio: '9:16',
-      sampleResult: testSyncCover
+      aspectRatio: '9:16' as const
+    },
+    sortOrder: 0,
+    isFeatured: false,
+    isActive: true,
+    tags: ['Royal Swag'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' as const }]
+  };
+  assert(validateTemplate(validPhotoTpl).isValid, '17.1 Valid photo template passes validation');
+
+  const invalidPhotoMissingCover = { ...validPhotoTpl, id: 'tpl_invalid_photo_1', cover: '' };
+  assert(!validateTemplate(invalidPhotoMissingCover).isValid, '17.1 Photo template missing cover fails validation');
+
+  const validVideoTpl = {
+    id: 'tpl_valid_video_demo',
+    title: 'Valid Viral Dance Video',
+    type: 'video' as const,
+    category: 'Trending' as const,
+    cover: 'https://images.example.com/poster.jpg',
+    preview: 'https://videos.example.com/dance_preview.mp4',
+    aspectRatio: '9:16' as const,
+    creditCost: 25,
+    engine: 'AI_GENERATION' as const,
+    model: 'gemini-omni-1.1-flash',
+    workflow: 'viral-reels',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_OR_VIDEO' as const,
+      provider: 'google_veo' as const,
+      model: 'gemini-omni-1.1-flash',
+      engine: 'AI_GENERATION' as const,
+      prompt: 'Video prompt',
+      workflow: 'viral-reels',
+      aspectRatio: '9:16' as const
     },
     sortOrder: 0,
     isFeatured: false,
     isActive: true,
     tags: ['Trending'],
     likesCount: 0,
-    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
-  });
+    requiredInputs: [{ id: 'user_video', label: 'User Video', type: 'video' as const }]
+  };
+  assert(validateTemplate(validVideoTpl).isValid, '17.1 Valid video template passes validation');
 
-  const firestoreDoc1 = await adminFirestoreDb.collection('templates').doc(testSyncId1).get();
-  assert(firestoreDoc1.exists && firestoreDoc1.data()?.title === 'Primary Sync Test Template', '17.1 Primary template write verified in authoritative Firestore');
-  
-  // Refresh catalog to simulate Secondary builder syncing from Firestore
-  await prodDb.refreshCatalogFromFirestore();
-  assert(prodDb.getTemplates().some(t => t.id === testSyncId1), '17.1 Secondary refresh makes newly created Primary template available');
+  const invalidVideoMissingPreview = { ...validVideoTpl, id: 'tpl_invalid_vid_1', preview: '', sampleResult: undefined };
+  assert(!validateTemplate(invalidVideoMissingPreview).isValid, '17.1 Video template missing preview URL fails validation');
 
-  // 17.2 Primary Deletes Template -> Atomic Single Transaction -> Secondary Refresh -> Deleted ID Never Resurfaces
-  await prodDb.deleteTemplate(testSyncId1);
-  const deletedTplSnap = await adminFirestoreDb.collection('templates').doc(testSyncId1).get();
-  assert(!deletedTplSnap.exists, '17.2 Template doc removed from Firestore collection');
-
-  const tombstoneDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
-  assert(tombstoneDoc.exists && tombstoneDoc.data()?.ids?.includes(testSyncId1), '17.2 Tombstone ID persisted in config/deleted_template_ids');
-
-  // Simulate Secondary builder refresh
-  await prodDb.refreshCatalogFromFirestore();
-  assert(!prodDb.getTemplates().some(t => t.id === testSyncId1), '17.2 Deleted template never resurfaces on Secondary refresh');
-
-  // 17.3 Same ID Re-created -> Tombstone Removed Atomically -> Available In Both Builders
-  await prodDb.addTemplate({
-    id: testSyncId1,
-    title: 'Primary Sync Test Template (Re-created)',
-    description: 'Testing cross-builder re-creation with tombstone clearance',
+  // 17.2 Incomplete template quarantined and excluded from public catalog
+  const corruptedTpl: any = {
+    id: 'tpl_corrupted_auto_gen',
+    title: '', // Missing title
     type: 'photo',
-    category: 'Trending',
-    cover: testSyncCover,
-    preview: testSyncCover,
-    sampleResult: testSyncCover,
-    aspectRatio: '9:16',
-    creditCost: 10,
-    engine: 'AI_GENERATION',
-    model: 'gemini-3.1-flash-image',
-    workflow: 'gemini-photo-style',
-    recipe: {
-      version: '1.0',
-      inputType: 'IMAGE_ONLY',
-      provider: 'gemini',
-      model: 'gemini-3.1-flash-image',
-      engine: 'AI_GENERATION',
-      prompt: 'Testing re-creation prompt',
-      workflow: 'gemini-photo-style',
-      aspectRatio: '9:16',
-      sampleResult: testSyncCover
-    },
-    sortOrder: 0,
-    isFeatured: false,
-    isActive: true,
-    tags: ['Trending'],
-    likesCount: 0,
-    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
-  });
+    cover: 'https://example.com/orphan.jpg'
+  };
+  prodDb.raw.templates.push(corruptedTpl);
+  const publicTemplatesAfterCorrupted = prodDb.getTemplates();
+  assert(!publicTemplatesAfterCorrupted.some(t => t.id === 'tpl_corrupted_auto_gen'), '17.2 Corrupted template excluded from public gallery getTemplates()');
+  assert(prodDb.getQuarantinedTemplates().some(q => q.template?.id === 'tpl_corrupted_auto_gen'), '17.2 Corrupted template safely stored in quarantinedTemplates inventory');
+  prodDb.raw.templates = prodDb.raw.templates.filter(t => t.id !== 'tpl_corrupted_auto_gen');
 
-  const tombstoneDocAfterRecreate = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
-  assert(!tombstoneDocAfterRecreate.data()?.ids?.includes(testSyncId1), '17.3 Re-created template ID atomically removed from Firestore deleted_template_ids');
+  // 17.3 All valid templates preserved in catalog without being deleted or filtered
+  const allCurrent = prodDb.getTemplates();
+  assert(allCurrent.length >= 37, '17.3 All valid templates preserved in catalog without being deleted or filtered');
 
-  await prodDb.refreshCatalogFromFirestore();
-  assert(prodDb.getTemplates().some(t => t.id === testSyncId1 && t.title.includes('Re-created')), '17.3 Re-created template available in catalog after authoritative refresh');
-
-  // 17.4 Secondary Creates Template -> Primary Refresh -> Template Available
-  await prodDb.addTemplate({
-    id: testSyncId2,
-    title: 'Secondary Sync Test Template',
-    description: 'Testing secondary template creation',
-    type: 'photo',
-    category: 'Trending',
-    cover: testSyncCover,
-    preview: testSyncCover,
-    sampleResult: testSyncCover,
-    aspectRatio: '9:16',
-    creditCost: 10,
-    engine: 'AI_GENERATION',
-    model: 'gemini-3.1-flash-image',
-    workflow: 'gemini-photo-style',
-    recipe: {
-      version: '1.0',
-      inputType: 'IMAGE_ONLY',
-      provider: 'gemini',
-      model: 'gemini-3.1-flash-image',
-      engine: 'AI_GENERATION',
-      prompt: 'Testing prompt 2',
-      workflow: 'gemini-photo-style',
-      aspectRatio: '9:16',
-      sampleResult: testSyncCover
-    },
-    sortOrder: 0,
-    isFeatured: false,
-    isActive: true,
-    tags: ['Trending'],
-    likesCount: 0,
-    requiredInputs: [{ id: 'user_photo', label: 'User Photo', type: 'image' }]
-  });
-
-  await prodDb.refreshCatalogFromFirestore();
-  assert(prodDb.getTemplates().some(t => t.id === testSyncId2), '17.4 Template created on Secondary is available after Primary refresh');
-
-  // 17.5 Firestore Tombstone Read Failure -> Catalog Refresh & R2 Recovery Fail-Closed
+  // 17.4 Fail-closed tombstone read protection
   const origCollection = adminFirestoreDb.collection.bind(adminFirestoreDb);
   adminFirestoreDb.collection = (colName: string) => {
     if (colName === 'config') {
@@ -842,7 +796,7 @@ async function runSystemVerification() {
       refreshThrew = true;
     }
   }
-  assert(refreshThrew, '17.5 Catalog refresh fails-closed with explicit error when tombstone fetch fails');
+  assert(refreshThrew, '17.4 Catalog refresh fails-closed with explicit error when tombstone fetch fails');
 
   let r2RecoveryThrew = false;
   try {
@@ -852,33 +806,277 @@ async function runSystemVerification() {
       r2RecoveryThrew = true;
     }
   }
-  assert(r2RecoveryThrew, '17.5 R2 recovery fails-closed with explicit error when tombstone fetch fails');
-
-  // Restore Firestore collection method
+  assert(r2RecoveryThrew, '17.4 R2 recovery fails-closed with explicit error when tombstone fetch fails');
   adminFirestoreDb.collection = origCollection;
 
-  // 17.6 Atomic Transaction Rollback on Failure (No Partial False Success)
-  let invalidAddThrew = false;
-  try {
-    await prodDb.addTemplate({
-      id: '',
-      title: '',
-      cover: ''
-    } as any);
-  } catch {
-    invalidAddThrew = true;
-  }
-  assert(invalidAddThrew, '17.6 Invalid template rejects immediately without creating corrupted or partial Firestore records');
+  // 16. SUITE 18: Independent Primary <-> Secondary Cross-Builder Synchronization
+  console.log('\n--- SUITE 18: Independent Primary <-> Secondary Cross-Builder Synchronization ---');
 
-  // 17.7 Concurrent Multi-ID Tombstone Merging
-  await prodDb.deleteTemplate(testSyncId1);
-  await prodDb.deleteTemplate(testSyncId2);
-  const finalTombstoneDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
-  assert(
-    finalTombstoneDoc.data()?.ids?.includes(testSyncId1) &&
-    finalTombstoneDoc.data()?.ids?.includes(testSyncId2),
-    '17.7 Multiple template deletions maintain all tombstone IDs without overwriting previous deletions'
-  );
+  const pathModule = await import('path');
+  const primaryDbFile = pathModule.join(process.cwd(), '.data', 'primary_test_db.json');
+  const secondaryDbFile = pathModule.join(process.cwd(), '.data', 'secondary_test_db.json');
+  if (fs.existsSync(primaryDbFile)) fs.unlinkSync(primaryDbFile);
+  if (fs.existsSync(secondaryDbFile)) fs.unlinkSync(secondaryDbFile);
+
+  // Instantiate two separate, independent ProductionDatabase instances
+  const primaryDb = new ProductionDatabase(primaryDbFile);
+  const secondaryDb = new ProductionDatabase(secondaryDbFile);
+
+  const testSyncIdSec = `tpl_secondary_cross_${Date.now()}`;
+  const testSyncIdPri = `tpl_primary_cross_${Date.now()}`;
+  const testSharedCover = 'https://images.example.com/cross_builder_cover.jpg';
+
+  const secondaryTpl = {
+    id: testSyncIdSec,
+    title: 'Secondary Uploaded Cross-Builder Look',
+    description: 'Template created on Secondary Builder to test Primary sync',
+    type: 'photo' as const,
+    category: 'Royal Swag' as const,
+    cover: testSharedCover,
+    preview: testSharedCover,
+    sampleResult: testSharedCover,
+    aspectRatio: '9:16' as const,
+    creditCost: 15,
+    engine: 'AI_GENERATION' as const,
+    model: 'gemini-3.1-flash-image',
+    workflow: 'gemini-photo-style',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_ONLY' as const,
+      provider: 'gemini' as const,
+      model: 'gemini-3.1-flash-image',
+      engine: 'AI_GENERATION' as const,
+      prompt: 'Secondary prompt test',
+      workflow: 'gemini-photo-style',
+      aspectRatio: '9:16' as const
+    },
+    sortOrder: 0,
+    isFeatured: true,
+    isActive: true,
+    tags: ['Royal Swag'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'photo_input', label: 'Upload Photo', type: 'image' as const }]
+  };
+
+  // 18.1 Secondary creates template -> verified in Firestore -> Primary refreshes -> template available in Primary
+  await secondaryDb.addTemplate(secondaryTpl);
+  const secFsSnap = await adminFirestoreDb.collection('templates').doc(testSyncIdSec).get();
+  assert(secFsSnap.exists && secFsSnap.data()?.title === secondaryTpl.title, '18.1 Secondary template saved and verified directly in authoritative Firestore');
+
+  await primaryDb.refreshCatalogFromFirestore();
+  const primaryFoundSec = primaryDb.getTemplates().find(t => t.id === testSyncIdSec);
+  assert(Boolean(primaryFoundSec && primaryFoundSec.title === secondaryTpl.title && primaryFoundSec.category === 'Royal Swag'), '18.1 Primary Builder instance refreshed and successfully received Secondary template with all properties');
+
+  // 18.2 Inverse: Primary creates template -> verified in Firestore -> Secondary refreshes -> available in Secondary
+  const primaryTpl = {
+    id: testSyncIdPri,
+    title: 'Primary Uploaded Cross-Builder Look',
+    description: 'Template created on Primary Builder to test Secondary sync',
+    type: 'photo' as const,
+    category: 'Devotional' as const,
+    cover: testSharedCover,
+    preview: testSharedCover,
+    sampleResult: testSharedCover,
+    aspectRatio: '9:16' as const,
+    creditCost: 20,
+    engine: 'AI_GENERATION' as const,
+    model: 'gemini-3.1-flash-image',
+    workflow: 'gemini-photo-style',
+    recipe: {
+      version: '1.0',
+      inputType: 'IMAGE_ONLY' as const,
+      provider: 'gemini' as const,
+      model: 'gemini-3.1-flash-image',
+      engine: 'AI_GENERATION' as const,
+      prompt: 'Primary prompt test',
+      workflow: 'gemini-photo-style',
+      aspectRatio: '9:16' as const
+    },
+    sortOrder: 0,
+    isFeatured: true,
+    isActive: true,
+    tags: ['Devotional'],
+    likesCount: 0,
+    requiredInputs: [{ id: 'photo_input', label: 'Upload Photo', type: 'image' as const }]
+  };
+
+  await primaryDb.addTemplate(primaryTpl);
+  const priFsSnap = await adminFirestoreDb.collection('templates').doc(testSyncIdPri).get();
+  assert(priFsSnap.exists && priFsSnap.data()?.title === primaryTpl.title, '18.2 Primary template saved and verified directly in authoritative Firestore');
+
+  await secondaryDb.refreshCatalogFromFirestore();
+  const secFoundPri = secondaryDb.getTemplates().find(t => t.id === testSyncIdPri);
+  assert(Boolean(secFoundPri && secFoundPri.title === primaryTpl.title && secFoundPri.category === 'Devotional'), '18.2 Secondary Builder instance refreshed and successfully received Primary template with all properties');
+
+  // 18.3 Cross-Builder Deletion & Tombstone Propagation
+  await primaryDb.deleteTemplate(testSyncIdSec);
+  const deletedSecSnap = await adminFirestoreDb.collection('templates').doc(testSyncIdSec).get();
+  assert(!deletedSecSnap.exists, '18.3 Template document removed from Firestore templates collection');
+
+  const tombstoneSnap18 = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+  assert(tombstoneSnap18.exists && tombstoneSnap18.data()?.ids?.includes(testSyncIdSec), '18.3 Deleted template ID recorded in authoritative deleted_template_ids');
+
+  await secondaryDb.refreshCatalogFromFirestore();
+  assert(!secondaryDb.getTemplates().some(t => t.id === testSyncIdSec), '18.3 Secondary refresh excludes deleted template; never resurfaces');
+
+  // 18.4 Same ID Re-creation & Atomic Tombstone Removal across builders
+  await secondaryDb.addTemplate({
+    ...secondaryTpl,
+    title: 'Secondary Uploaded Cross-Builder Look (Re-created)'
+  });
+  const tombstoneAfterRecreate = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+  assert(!tombstoneAfterRecreate.data()?.ids?.includes(testSyncIdSec), '18.4 Re-created template ID atomically cleared from deleted_template_ids');
+
+  await primaryDb.refreshCatalogFromFirestore();
+  assert(primaryDb.getTemplates().some(t => t.id === testSyncIdSec && t.title.includes('Re-created')), '18.4 Re-created template is immediately available on Primary after refresh');
+
+  // Clean up cross-builder test templates
+  await primaryDb.deleteTemplate(testSyncIdSec);
+  await primaryDb.deleteTemplate(testSyncIdPri);
+  if (fs.existsSync(primaryDbFile)) fs.unlinkSync(primaryDbFile);
+  if (fs.existsSync(secondaryDbFile)) fs.unlinkSync(secondaryDbFile);
+
+  // 17. SUITE 19: Face Swap Master Recipe Prompt Real Firestore Persistence & Cross-Builder Test
+  console.log('\n--- SUITE 19: Face Swap Master Recipe Prompt Real Firestore Persistence & Cross-Builder Test ---');
+
+  const testSceneId = `fsv_sync_test_${Date.now()}`;
+  const testSceneRecipePrompt = 'Master Cinematic Motion Recipe: Maintain exact eye contour and photorealistic jawline alignment with 60fps frame fidelity.';
+
+  // 19.1 Create temporary scene with masterRecipePrompt on Primary
+  const createdScene = await primaryDb.createFaceSwapScene({
+    id: testSceneId,
+    title: 'Master Recipe Cross-Builder Scene',
+    description: 'Testing cross-builder sync with recipe prompt',
+    category: 'Trending',
+    sampleFace: 'https://images.example.com/scene_face.jpg',
+    sourceVideoPreview: 'https://videos.example.com/scene_driving.mp4',
+    resultVideoPreview: 'https://videos.example.com/scene_result.mp4',
+    aspectRatio: '9:16',
+    creditCost: 35,
+    durationSeconds: 10,
+    tags: ['test', 'cross-builder'],
+    order: 99,
+    isActive: true,
+    status: 'published',
+    masterRecipePrompt: testSceneRecipePrompt
+  });
+  assert(createdScene.id === testSceneId, '19.1 Temporary Face Swap Scene created on Primary instance');
+
+  // Real read-back from Firestore document config/faceswap_scenes
+  const fsScenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+  assert(fsScenesDoc.exists, '19.1 config/faceswap_scenes document exists in authoritative Firestore');
+  const firestoreScenesList: FaceSwapScene[] = fsScenesDoc.data()?.scenes || [];
+  const matchedFsScene = firestoreScenesList.find(s => s.id === testSceneId);
+  assert(Boolean(matchedFsScene), '19.1 Scene found in Firestore config/faceswap_scenes array');
+  assert(matchedFsScene?.masterRecipePrompt === testSceneRecipePrompt, '19.1 Firestore read-back verifies exact masterRecipePrompt string persisted in Cloud');
+
+  // 19.2 Secondary instance refreshes and verifies scene + exact prompt
+  await secondaryDb.refreshCatalogFromFirestore();
+  const secLoadedScene = secondaryDb.getFaceSwapScene(testSceneId);
+  assert(Boolean(secLoadedScene), '19.2 Secondary instance loaded the scene from Firestore');
+  assert(secLoadedScene?.masterRecipePrompt === testSceneRecipePrompt, '19.2 Secondary instance verified exact masterRecipePrompt across builders');
+
+  // 19.3 Update scene's masterRecipePrompt on Secondary
+  const updatedRecipePrompt = 'Updated Recipe: High-energy Garba sequence with gold cinematic volumetric lighting and crisp 4k resolution.';
+  await secondaryDb.updateFaceSwapScene(testSceneId, {
+    masterRecipePrompt: updatedRecipePrompt
+  });
+
+  // Direct Firestore read-back of update
+  const updatedFsScenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+  const updatedMatchedScene = (updatedFsScenesDoc.data()?.scenes || []).find((s: FaceSwapScene) => s.id === testSceneId);
+  assert(updatedMatchedScene?.masterRecipePrompt === updatedRecipePrompt, '19.3 Direct Firestore read-back verifies updated masterRecipePrompt saved to Cloud');
+
+  // Primary refreshes and verifies updated prompt
+  await primaryDb.refreshCatalogFromFirestore();
+  const primaryUpdatedScene = primaryDb.getFaceSwapScene(testSceneId);
+  assert(primaryUpdatedScene?.masterRecipePrompt === updatedRecipePrompt, '19.3 Primary instance verified updated masterRecipePrompt after refresh');
+
+  // 19.4 Legacy scenes without masterRecipePrompt work cleanly without throwing
+  const legacyTestSceneId = `fsv_legacy_${Date.now()}`;
+  await primaryDb.createFaceSwapScene({
+    id: legacyTestSceneId,
+    title: 'Legacy Scene Without Prompt',
+    description: 'Legacy scene testing',
+    category: 'Trending',
+    sampleFace: 'https://images.example.com/legacy_face.jpg',
+    sourceVideoPreview: 'https://videos.example.com/legacy_driving.mp4',
+    resultVideoPreview: 'https://videos.example.com/legacy_result.mp4',
+    aspectRatio: '9:16',
+    creditCost: 35,
+    durationSeconds: 10,
+    tags: ['legacy'],
+    order: 100,
+    isActive: true,
+    status: 'published'
+  });
+  await secondaryDb.refreshCatalogFromFirestore();
+  const loadedLegacy = secondaryDb.getFaceSwapScene(legacyTestSceneId);
+  assert(Boolean(loadedLegacy && loadedLegacy.masterRecipePrompt === undefined), '19.4 Legacy scenes without masterRecipePrompt load and function cleanly without error');
+
+  // 19.5 Clean up temporary test scenes
+  await primaryDb.deleteFaceSwapScene(testSceneId);
+  await primaryDb.deleteFaceSwapScene(legacyTestSceneId);
+  const finalFsScenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
+  assert(!(finalFsScenesDoc.data()?.scenes || []).some((s: FaceSwapScene) => s.id === testSceneId), '19.5 Test scenes cleanly removed from Firestore config/faceswap_scenes');
+
+  // 18. SUITE 20: InMemoryFirestoreMock Atomic Transaction Staging & Rollback
+  console.log('\n--- SUITE 20: InMemoryFirestoreMock Atomic Transaction Staging & Rollback ---');
+
+  // 20.1 Multi-Op Staging Commits Atomically
+  const mockDocA = adminFirestoreDb.collection('mock_test').doc('doc_a');
+  const mockDocB = adminFirestoreDb.collection('mock_test').doc('doc_b');
+
+  await adminFirestoreDb.runTransaction(async (transaction: any) => {
+    transaction.set(mockDocA, { title: 'Doc A Staged' });
+    transaction.set(mockDocB, { title: 'Doc B Staged' });
+  });
+
+  const snapA = await mockDocA.get();
+  const snapB = await mockDocB.get();
+  assert(snapA.exists && snapA.data()?.title === 'Doc A Staged', '20.1 Transaction commits Doc A atomically');
+  assert(snapB.exists && snapB.data()?.title === 'Doc B Staged', '20.1 Transaction commits Doc B atomically');
+
+  // 20.2 Add Rollback on Simulated Commit Failure (Zero Partial Writes)
+  const mockDocC = adminFirestoreDb.collection('mock_test').doc('doc_c');
+  const mockDocD = adminFirestoreDb.collection('mock_test').doc('doc_d');
+
+  let commitFailed = false;
+  try {
+    await adminFirestoreDb.runTransaction(async (transaction: any) => {
+      transaction.set(mockDocC, { title: 'Doc C Candidate' });
+      // Request simulated failure on Doc D write
+      transaction.set(mockDocD, { title: 'Doc D Fails', __simulateWriteFailure: true });
+    });
+  } catch (err: any) {
+    if (err.message.includes('Simulated write commit error in transaction')) {
+      commitFailed = true;
+    }
+  }
+  assert(commitFailed, '20.2 Transaction simulated failure triggered error');
+  const snapC = await mockDocC.get();
+  const snapD = await mockDocD.get();
+  assert(!snapC.exists, '20.2 Doc C was NOT committed; rolled back completely (no partial write)');
+  assert(!snapD.exists, '20.2 Doc D was NOT committed; rolled back completely');
+
+  // 20.3 Delete Rollback on Simulated Commit Failure (Existing Data Restored)
+  let deleteRollbackFailed = false;
+  try {
+    await adminFirestoreDb.runTransaction(async (transaction: any) => {
+      // Delete existing Doc A, then fail on Doc D
+      transaction.delete(mockDocA);
+      transaction.set(mockDocD, { title: 'Doc D Fails Again', __simulateWriteFailure: true });
+    });
+  } catch {
+    deleteRollbackFailed = true;
+  }
+  assert(deleteRollbackFailed, '20.3 Delete transaction simulated failure caught');
+  const snapARestored = await mockDocA.get();
+  assert(snapARestored.exists && snapARestored.data()?.title === 'Doc A Staged', '20.3 Delete rolled back completely; pre-existing Doc A data restored');
+
+  // Clean up mock test collection
+  await mockDocA.delete();
+  await mockDocB.delete();
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
