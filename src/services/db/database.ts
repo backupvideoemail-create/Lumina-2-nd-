@@ -353,36 +353,42 @@ class ProductionDatabase {
 
       // 11. Templates (Authoritative sync with tombstone filtering)
       // 11a. Fetch deleted_template_ids doc from Firestore first
+      let tombstoneFetchSuccess = false;
       try {
         const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
         if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
           const remoteDeleted = deletedDoc.data()!.ids;
           this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
         }
+        tombstoneFetchSuccess = true;
       } catch (delErr: any) {
-        console.warn('[Database] Fetch deleted_template_ids note:', delErr.message);
+        console.error('[Database Critical] Failed to fetch authoritative deleted template tombstones from Firestore during startup:', delErr.message);
       }
-      const deletedIds = new Set(this.db.deletedTemplateIds || []);
 
-      const tplSnap = await adminFirestoreDb.collection('templates').get();
-      const firestoreTemplates: Template[] = [];
-      if (!tplSnap.empty) {
-        tplSnap.forEach((d: any) => {
-          firestoreTemplates.push(d.data() as Template);
+      if (tombstoneFetchSuccess) {
+        const deletedIds = new Set(this.db.deletedTemplateIds || []);
+        const tplSnap = await adminFirestoreDb.collection('templates').get();
+        const firestoreTemplates: Template[] = [];
+        if (!tplSnap.empty) {
+          tplSnap.forEach((d: any) => {
+            firestoreTemplates.push(d.data() as Template);
+          });
+        }
+        // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates
+        const templateMap = new Map<string, Template>();
+        SEED_TEMPLATES.forEach(t => {
+          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
         });
+        (this.db.templates || []).forEach(t => {
+          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+        });
+        firestoreTemplates.forEach(t => {
+          if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
+        });
+        this.db.templates = Array.from(templateMap.values());
+      } else {
+        console.warn('[Database] Preserving existing safe in-memory template catalog without merging seeds to prevent reviving deleted templates.');
       }
-      // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates
-      const templateMap = new Map<string, Template>();
-      SEED_TEMPLATES.forEach(t => {
-        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
-      });
-      (this.db.templates || []).forEach(t => {
-        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
-      });
-      firestoreTemplates.forEach(t => {
-        if (!deletedIds.has(t.id)) templateMap.set(t.id, t);
-      });
-      this.db.templates = Array.from(templateMap.values());
 
       // Note: We intentionally DO NOT auto-run recoverOrphanedTemplatesFromR2() on startup.
       // Orphan recovery is strictly run manually via Admin "Scan & Recover R2" to prevent resurrecting deleted templates.
@@ -457,7 +463,8 @@ class ProductionDatabase {
         this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
       }
     } catch (delErr: any) {
-      console.warn('[Database] Fetch deleted_template_ids note during refresh:', delErr.message);
+      console.error('[Database Critical] Fetch deleted_template_ids error during refresh:', delErr.message);
+      throw new Error(`Failed to fetch authoritative deleted template tombstones from Firestore: ${delErr.message}. Catalog refresh halted to prevent reviving deleted templates.`);
     }
     const deletedIds = new Set(this.db.deletedTemplateIds || []);
 
@@ -1610,24 +1617,67 @@ class ProductionDatabase {
       }
     }
 
-    // Update local in-memory catalog ONLY after verified Firestore persistence
+    // If template was previously tombstoned, remove it from config/deleted_template_ids in Firestore with read-back verification
+    if (adminFirestoreDb) {
+      try {
+        const docRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
+        let neededRemoval = false;
+        if (typeof adminFirestoreDb.runTransaction === 'function') {
+          await adminFirestoreDb.runTransaction(async (transaction: any) => {
+            const snap = await transaction.get(docRef);
+            if (snap.exists && Array.isArray(snap.data()?.ids)) {
+              const currentIds: string[] = snap.data().ids;
+              if (currentIds.includes(tpl.id)) {
+                neededRemoval = true;
+                const filtered = currentIds.filter(id => id !== tpl.id);
+                transaction.set(docRef, {
+                  ids: filtered,
+                  updatedAt: new Date().toISOString()
+                }, { merge: true });
+              }
+            }
+          });
+        } else {
+          const snap = await docRef.get();
+          if (snap.exists && Array.isArray(snap.data()?.ids)) {
+            const currentIds: string[] = snap.data().ids;
+            if (currentIds.includes(tpl.id)) {
+              neededRemoval = true;
+              const filtered = currentIds.filter(id => id !== tpl.id);
+              await docRef.set({
+                ids: filtered,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+          }
+        }
+
+        if (neededRemoval) {
+          // Read-back verification that tombstone was strictly removed
+          const verifyTombstoneDoc = await docRef.get();
+          if (verifyTombstoneDoc.exists && Array.isArray(verifyTombstoneDoc.data()?.ids)) {
+            if (verifyTombstoneDoc.data()!.ids.includes(tpl.id)) {
+              throw new Error(`Firestore tombstone removal verification failed: ID '${tpl.id}' is still present in config/deleted_template_ids.`);
+            }
+            this.db.deletedTemplateIds = verifyTombstoneDoc.data()!.ids;
+          }
+        }
+      } catch (tombstoneErr: any) {
+        console.error(`[Database Critical] Failed to remove tombstone for re-created template ${tpl.id}:`, tombstoneErr.message);
+        throw new Error(`Firestore tombstone removal failed for template ${tpl.id}: ${tombstoneErr.message}`);
+      }
+    }
+
+    if (this.db.deletedTemplateIds) {
+      this.db.deletedTemplateIds = this.db.deletedTemplateIds.filter(id => id !== tpl.id);
+    }
+
+    // Update local in-memory catalog ONLY after verified Firestore persistence and tombstone clearance
     const existingIdx = this.db.templates.findIndex(t => t.id === tpl.id);
     if (existingIdx !== -1) {
       this.db.templates[existingIdx] = tpl;
     } else {
       this.db.templates.unshift(tpl);
-    }
-    // If template was previously tombstoned, remove it from deletedTemplateIds
-    if (this.db.deletedTemplateIds && this.db.deletedTemplateIds.includes(tpl.id)) {
-      this.db.deletedTemplateIds = this.db.deletedTemplateIds.filter(id => id !== tpl.id);
-      if (adminFirestoreDb) {
-        try {
-          await adminFirestoreDb.collection('config').doc('deleted_template_ids').set({
-            ids: this.db.deletedTemplateIds,
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
-        } catch {}
-      }
     }
     this.save();
     return tpl;
@@ -1686,9 +1736,55 @@ class ProductionDatabase {
         console.error(`[Database Critical] Failed to delete template ${id} from Firestore:`, err.message);
         throw new Error(`Firestore template delete failed: ${err.message}`);
       }
+
+      // Safe transactional update of deleted_template_ids in Firestore
+      try {
+        const docRef = adminFirestoreDb.collection('config').doc('deleted_template_ids');
+        if (typeof adminFirestoreDb.runTransaction === 'function') {
+          await adminFirestoreDb.runTransaction(async (transaction: any) => {
+            const snap = await transaction.get(docRef);
+            let currentIds: string[] = [];
+            if (snap.exists && Array.isArray(snap.data()?.ids)) {
+              currentIds = snap.data().ids;
+            }
+            if (!currentIds.includes(id)) {
+              currentIds.push(id);
+            }
+            transaction.set(docRef, {
+              ids: currentIds,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          });
+        } else {
+          const snap = await docRef.get();
+          let currentIds: string[] = [];
+          if (snap.exists && Array.isArray(snap.data()?.ids)) {
+            currentIds = snap.data().ids;
+          }
+          if (!currentIds.includes(id)) {
+            currentIds.push(id);
+          }
+          await docRef.set({
+            ids: currentIds,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        }
+
+        // Verification read-back of tombstone persistence
+        const verifyTombstoneDoc = await docRef.get();
+        if (!verifyTombstoneDoc.exists || !Array.isArray(verifyTombstoneDoc.data()?.ids) || !verifyTombstoneDoc.data()!.ids.includes(id)) {
+          throw new Error(`Firestore tombstone verification failed: ID '${id}' is not present in config/deleted_template_ids after write.`);
+        }
+
+        // Update local state with the verified remote IDs
+        this.db.deletedTemplateIds = verifyTombstoneDoc.data()!.ids;
+      } catch (tombstoneErr: any) {
+        console.error(`[Database Critical] Failed to persist tombstone for template ${id}:`, tombstoneErr.message);
+        throw new Error(`Firestore tombstone persistence failed for template ${id}: ${tombstoneErr.message}`);
+      }
     }
 
-    // Remove from local list only after Firestore confirms deletion
+    // Remove from local list only after Firestore confirms deletion and tombstone write
     if (index !== -1) {
       this.db.templates.splice(index, 1);
     }
@@ -1697,14 +1793,6 @@ class ProductionDatabase {
       this.db.deletedTemplateIds.push(id);
     }
     this.save();
-    if (adminFirestoreDb) {
-      try {
-        await adminFirestoreDb.collection('config').doc('deleted_template_ids').set({
-          ids: this.db.deletedTemplateIds,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch {}
-    }
     return true;
   }
 
@@ -1893,8 +1981,19 @@ class ProductionDatabase {
         }
       }
 
-      const recoveredTemplates: Template[] = [];
+      if (adminFirestoreDb) {
+        try {
+          const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+          if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
+            const remoteDeleted = deletedDoc.data()!.ids;
+            this.db.deletedTemplateIds = Array.from(new Set([...(this.db.deletedTemplateIds || []), ...remoteDeleted]));
+          }
+        } catch (delErr: any) {
+          console.warn('[Database] Fetch deleted_template_ids note during R2 recovery:', delErr.message);
+        }
+      }
       const deletedIds = new Set(this.db.deletedTemplateIds || []);
+      const recoveredTemplates: Template[] = [];
 
       for (const [tplId, group] of templateGroups.entries()) {
         const proposedId = tplId.startsWith('tpl_') ? tplId : `tpl_${tplId}`;

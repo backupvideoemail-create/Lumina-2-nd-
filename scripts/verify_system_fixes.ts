@@ -536,8 +536,8 @@ async function runSystemVerification() {
 
   // 14.5 TemplateDetailModal Video UX & Photo Slider preservation
   const detailModalSource = fs.readFileSync('src/components/TemplateDetailModal.tsx', 'utf-8');
-  assert(detailModalSource.includes('Original Video (Before)'), 'TemplateDetailModal has Original Video (Before) tab');
-  assert(detailModalSource.includes('AI Result (After)'), 'TemplateDetailModal has AI Result (After) tab');
+  assert(detailModalSource.includes('BEFORE — ORIGINAL'), 'TemplateDetailModal has BEFORE — ORIGINAL tab');
+  assert(detailModalSource.includes('AFTER — AI RESULT'), 'TemplateDetailModal has AFTER — AI RESULT tab');
   assert(detailModalSource.includes('aspect-[9/16] max-h-[75vh] sm:max-h-[82vh]'), 'TemplateDetailModal has responsive near full-screen mobile height');
   assert(detailModalSource.includes('clipPath: `polygon(${sliderPosition}% 0, 100% 0, 100% 100%, ${sliderPosition}% 100%)`'), 'TemplateDetailModal preserves photo before/after slider with polygon clipPath');
   assert(detailModalSource.includes('custom-instructions-input'), 'TemplateDetailModal includes customer custom instructions input');
