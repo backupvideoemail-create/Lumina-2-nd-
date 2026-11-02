@@ -110,6 +110,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          PROD_SERVER_URL: ${{ secrets.PROD_SERVER_URL }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "Keystore secret detected. Decoding release.keystore..."

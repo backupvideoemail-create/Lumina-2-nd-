@@ -6,36 +6,131 @@ data class UserProfile(
     @SerializedName("id") val id: String,
     @SerializedName("email") val email: String?,
     @SerializedName("name") val name: String?,
-    @SerializedName("picture") val picture: String?,
-    @SerializedName("role") val role: String?,
+    @SerializedName("avatar") val avatar: String? = null,
+    @SerializedName("picture") val picture: String? = null,
+    @SerializedName("role") val role: String? = null,
     @SerializedName("credits") val credits: Int = 0,
     @SerializedName("subscriptionStatus") val subscriptionStatus: String? = null
-)
+) {
+    val displayAvatar: String?
+        get() = avatar?.takeIf { it.isNotBlank() } ?: picture
+}
 
 data class Wallet(
-    @SerializedName("userId") val userId: String,
-    @SerializedName("credits") val credits: Int = 0,
-    @SerializedName("totalEarned") val totalEarned: Int = 0,
-    @SerializedName("totalSpent") val totalSpent: Int = 0
-)
+    @SerializedName("userId") val userId: String = "",
+    @SerializedName("balance") val balance: Int = 0,
+    @SerializedName("credits") val legacyCredits: Int = 0,
+    @SerializedName("lifetimeCredits") val lifetimeCredits: Int = 0,
+    @SerializedName("spentCredits") val spentCredits: Int = 0
+) {
+    val effectiveBalance: Int
+        get() = if (balance > 0) balance else legacyCredits
+}
 
 data class UserSubscription(
-    @SerializedName("id") val id: String,
-    @SerializedName("userId") val userId: String,
-    @SerializedName("planId") val planId: String,
-    @SerializedName("planName") val planName: String,
-    @SerializedName("status") val status: String,
+    @SerializedName("id") val id: String = "",
+    @SerializedName("userId") val userId: String = "",
+    @SerializedName("planId") val planId: String = "",
+    @SerializedName("planName") val planName: String = "",
+    @SerializedName("status") val status: String = "inactive",
+    @SerializedName("renewsAt") val renewsAt: String? = null,
     @SerializedName("nextChargeAt") val nextChargeAt: String? = null
 )
 
 data class TemplateItem(
     @SerializedName("id") val id: String,
     @SerializedName("title") val title: String,
-    @SerializedName("category") val category: String,
-    @SerializedName("thumbnail") val thumbnail: String,
+    @SerializedName("category") val category: String = "Trending",
+    @SerializedName("coverImage") val coverImage: String? = null,
+    @SerializedName("thumbnail") val thumbnail: String? = null,
+    @SerializedName("previewVideo") val previewVideo: String? = null,
     @SerializedName("demoVideo") val demoVideo: String? = null,
-    @SerializedName("creditsCost") val creditsCost: Int = 10,
-    @SerializedName("badge") val badge: String? = null
+    @SerializedName("costCredits") val costCredits: Int? = null,
+    @SerializedName("creditsCost") val creditsCost: Int? = null,
+    @SerializedName("badge") val badge: String? = null,
+    @SerializedName("type") val type: String? = null
+) {
+    val displayImage: String
+        get() = coverImage?.takeIf { it.isNotBlank() } ?: thumbnail ?: ""
+
+    val displayCredits: Int
+        get() = costCredits ?: creditsCost ?: 10
+}
+
+data class TemplatesResponse(
+    @SerializedName("templates") val templates: List<TemplateItem> = emptyList()
+)
+
+data class FirebaseSessionRequest(
+    @SerializedName("idToken") val idToken: String,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("avatar") val avatar: String? = null
+)
+
+data class FirebaseSessionResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("user") val user: UserProfile? = null,
+    @SerializedName("wallet") val wallet: Wallet? = null,
+    @SerializedName("token") val token: String? = null,
+    @SerializedName("subscription") val subscription: UserSubscription? = null,
+    @SerializedName("isNewUser") val isNewUser: Boolean = false,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("error") val error: String? = null
+)
+
+data class MeResponse(
+    @SerializedName("user") val user: UserProfile? = null,
+    @SerializedName("wallet") val wallet: Wallet? = null,
+    @SerializedName("activeSubscription") val activeSubscription: UserSubscription? = null,
+    @SerializedName("hasActivePlan") val hasActivePlan: Boolean = false,
+    @SerializedName("canTopUp") val canTopUp: Boolean = false,
+    @SerializedName("isIntroEligible") val isIntroEligible: Boolean = false
+)
+
+data class UploadMediaRequest(
+    @SerializedName("mediaBase64") val mediaBase64: String,
+    @SerializedName("filename") val filename: String = "upload.jpg"
+)
+
+data class UploadMediaResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("fileId") val fileId: String? = null,
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("mimeType") val mimeType: String? = null,
+    @SerializedName("sizeBytes") val sizeBytes: Long = 0,
+    @SerializedName("error") val error: String? = null
+)
+
+data class CreateGenerationRequest(
+    @SerializedName("templateId") val templateId: String,
+    @SerializedName("mediaFileId") val mediaFileId: String,
+    @SerializedName("customerPrompt") val customerPrompt: String? = null,
+    @SerializedName("inputType") val inputType: String = "photo",
+    @SerializedName("aspectRatio") val aspectRatio: String = "9:16"
+)
+
+data class CreateGenerationResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("generationId") val generationId: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("creditsDeducted") val creditsDeducted: Int = 0,
+    @SerializedName("balanceRemaining") val balanceRemaining: Int = 0,
+    @SerializedName("error") val error: String? = null
+)
+
+data class GenerationStatusDetails(
+    @SerializedName("id") val id: String,
+    @SerializedName("status") val status: String,
+    @SerializedName("outputUrl") val outputUrl: String? = null,
+    @SerializedName("progress") val progress: Int = 0,
+    @SerializedName("error") val error: String? = null,
+    @SerializedName("thumbnailUrl") val thumbnailUrl: String? = null
+)
+
+data class GenerationStatusResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("generation") val generation: GenerationStatusDetails? = null,
+    @SerializedName("error") val error: String? = null
 )
 
 data class GooglePlayVerifyRequest(
@@ -46,18 +141,30 @@ data class GooglePlayVerifyRequest(
 )
 
 data class GooglePlayVerifyResponse(
-    @SerializedName("success") val success: Boolean,
-    @SerializedName("message") val message: String?,
-    @SerializedName("creditsAdded") val creditsAdded: Int = 0,
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("verified") val verified: Boolean = false,
+    @SerializedName("message") val message: String? = null,
     @SerializedName("wallet") val wallet: Wallet? = null,
-    @SerializedName("subscription") val subscription: UserSubscription? = null
+    @SerializedName("subscription") val subscription: UserSubscription? = null,
+    @SerializedName("error") val error: String? = null
 )
 
-data class GoogleAuthRequest(
-    @SerializedName("idToken") val idToken: String
+data class DeleteAccountResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("error") val error: String? = null
 )
 
-data class AuthResponse(
-    @SerializedName("token") val token: String,
-    @SerializedName("user") val user: UserProfile
+data class ReportRequest(
+    @SerializedName("generationId") val generationId: String? = null,
+    @SerializedName("templateId") val templateId: String? = null,
+    @SerializedName("reason") val reason: String,
+    @SerializedName("details") val details: String? = null
+)
+
+data class ReportResponse(
+    @SerializedName("success") val success: Boolean = false,
+    @SerializedName("reportId") val reportId: String? = null,
+    @SerializedName("message") val message: String? = null,
+    @SerializedName("error") val error: String? = null
 )

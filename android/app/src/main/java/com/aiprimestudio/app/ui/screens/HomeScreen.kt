@@ -35,8 +35,11 @@ fun HomeScreen(
     onNavigateToSubscription: () -> Unit
 ) {
     val user by repository.currentUser.collectAsState()
+    val wallet by repository.currentWallet.collectAsState()
     var templates by remember { mutableStateOf<List<TemplateItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+
+    val displayCredits = wallet?.effectiveBalance ?: user?.credits ?: 0
 
     LaunchedEffect(Unit) {
         val result = repository.fetchTemplates()
@@ -95,7 +98,7 @@ fun HomeScreen(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "${user?.credits ?: 0}",
+                        text = "$displayCredits",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
@@ -222,7 +225,7 @@ fun TemplateCard(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             AsyncImage(
-                model = template.thumbnail,
+                model = template.displayImage,
                 contentDescription = template.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -279,7 +282,7 @@ fun TemplateCard(
                         modifier = Modifier.size(12.dp)
                     )
                     Text(
-                        text = "${template.creditsCost} credits",
+                        text = "${template.displayCredits} credits",
                         fontSize = 10.sp,
                         color = TextSecondary
                     )

@@ -1,11 +1,11 @@
 # AI Prime Studio — Android App & Google Play Store Release Guide
-## Package: `com.aiprimestudio.app` | Target SDK: API 36 | Play Billing: v9.1.0
+## Package: `com.aiprimestudio.app` | Target SDK: API 36 | Play Billing: v8.0.0
 
 ---
 
 ## 🇮🇳 हिंदी में पूरी गाइड (Step-by-Step)
 
-मेरे भाई, आपकी ऐप का पूरा **Native Kotlin + Jetpack Compose** कोड `android/` फोल्डर में Google Play Store की नवीनतम आवश्यकताओं (Target SDK 36, Google Play Billing 9.1.0) के साथ पूरी तरह तैयार है।
+मेरे भाई, आपकी ऐप का पूरा **Native Kotlin + Jetpack Compose** कोड `android/` फोल्डर में Google Play Store की नवीनतम आवश्यकताओं (Target SDK 36, Google Play Billing 8.0.0) के साथ पूरी तरह तैयार है।
 
 ### 1. Google Play Console अकाउंट (दूसरी Gmail से बनाना)
 > **सवाल:** क्या Google Play Console अकाउंट दूसरी Gmail ID से बना सकते हैं?  
@@ -80,7 +80,7 @@ Play Console के **Monetize > Subscriptions** और **In-app products** म�
 - **Target SDK**: API 36 (Android 16 compatible)
 - **Min SDK**: API 26 (Android 8.0+)
 - **Framework**: Native Android Kotlin + Jetpack Compose Material 3
-- **Billing**: Google Play Billing Library v9.1.0 (`BillingManager.kt`) with `PendingPurchasesParams` & auto-reconnect
+- **Billing**: Google Play Billing Library v8.0.0 (`BillingManager.kt`) with `PendingPurchasesParams` & auto-reconnect
 - **Logging**: Level.NONE in release builds (zero leakage of bearer or purchase tokens)
 - **Signing**: Safe Release Signing config reading from environment / keystore file
 - **Icons**: Adaptive vector launcher icons included in `res/mipmap-anydpi-v26`

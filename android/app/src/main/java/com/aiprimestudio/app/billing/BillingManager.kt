@@ -10,9 +10,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Google Play Billing Manager (Play Billing Library 7.1.1 compliant)
+ * Google Play Billing Manager (Play Billing Library 8.0.0 compliant)
  * Handles:
  * 1. Subscriptions:
  *    - sub_double_bonanza_weekly: Weekly recurring subscription with verified ₹1 24h introductory offer
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
  *    - sub_monthly_creator: Monthly recurring subscription (₹998 / 1200 credits)
  * 2. In-App Consumable Products:
  *    - topup_49, topup_99, topup_199, topup_399 (Credits never expire)
+ * 3. Pending purchase handling, Restore Purchases, and server-side verification with idempotency.
  */
 class BillingManager(
     private val context: Context,
@@ -41,6 +43,9 @@ class BillingManager(
     private val _purchaseStatus = MutableStateFlow<String?>(null)
     val purchaseStatus: StateFlow<String?> = _purchaseStatus.asStateFlow()
 
+    // Deduplication map to prevent double-processing in-flight tokens
+    private val processedTokens = ConcurrentHashMap.newKeySet<String>()
+
     init {
         startConnection()
     }
@@ -53,22 +58,23 @@ class BillingManager(
         if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
             _isReady.value = true
             queryAllProducts()
+            restorePurchases()
         }
     }
 
     override fun onBillingServiceDisconnected() {
         _isReady.value = false
-        // Reconnect when disconnected in Play Billing 7
+        // Reconnect when disconnected
         startConnection()
     }
 
     /**
-     * Query both Subscriptions and One-Time Products using PBL 7.1.1 ProductDetailsResponseListener
+     * Query both Subscriptions and One-Time Products using PBL 8.0.0
      */
-    private fun queryAllProducts() {
+    fun queryAllProducts() {
         val allFetched = mutableListOf<ProductDetails>()
 
-        // 1. In-App Consumable Products (Top-Ups only)
+        // 1. In-App Consumable Products (Top-Ups)
         val inAppProducts = listOf(
             QueryProductDetailsParams.Product.newBuilder()
                 .setProductId("topup_49")
@@ -142,7 +148,6 @@ class BillingManager(
     /**
      * Launch purchase flow for either a Subscription or a One-Time Product.
      * For Double Bonanza: strictly requires the verified ₹1 (1,000,000 micros) introductory offer token.
-     * Never silently falls back to ₹499 base plan token if the user clicked ₹1 intro pass.
      */
     fun launchBillingFlow(activity: Activity, productDetails: ProductDetails) {
         val productDetailsParamsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
@@ -172,13 +177,44 @@ class BillingManager(
             }
             productDetailsParamsBuilder.setOfferToken(offerToken)
         }
-        // In PBL 7.1.1, INAPP (one-time purchases such as top-up packs) do not require setOfferToken
 
         val billingFlowParams = BillingFlowParams.newBuilder()
             .setProductDetailsParamsList(listOf(productDetailsParamsBuilder.build()))
             .build()
 
         billingClient.launchBillingFlow(activity, billingFlowParams)
+    }
+
+    /**
+     * Restores active subscriptions and unconsumed top-ups from Google Play.
+     */
+    fun restorePurchases() {
+        if (!_isReady.value) return
+        scope.launch(Dispatchers.IO) {
+            val subsParams = QueryPurchasesParams.newBuilder()
+                .setProductType(BillingClient.ProductType.SUBS)
+                .build()
+
+            billingClient.queryPurchasesAsync(subsParams) { result, purchases ->
+                if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                    for (purchase in purchases) {
+                        handlePurchase(purchase)
+                    }
+                }
+            }
+
+            val inAppParams = QueryPurchasesParams.newBuilder()
+                .setProductType(BillingClient.ProductType.INAPP)
+                .build()
+
+            billingClient.queryPurchasesAsync(inAppParams) { result, purchases ->
+                if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                    for (purchase in purchases) {
+                        handlePurchase(purchase)
+                    }
+                }
+            }
+        }
     }
 
     override fun onPurchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
@@ -195,6 +231,12 @@ class BillingManager(
 
     private fun handlePurchase(purchase: Purchase) {
         if (purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
+            val token = purchase.purchaseToken
+            if (processedTokens.contains(token)) {
+                return
+            }
+            processedTokens.add(token)
+
             val productId = purchase.products.firstOrNull() ?: "sub_double_bonanza_weekly"
 
             scope.launch(Dispatchers.IO) {
@@ -230,6 +272,7 @@ class BillingManager(
                         }
                     }
                 } else {
+                    processedTokens.remove(token)
                     _purchaseStatus.value = "Verification error: ${result.exceptionOrNull()?.message}"
                 }
             }

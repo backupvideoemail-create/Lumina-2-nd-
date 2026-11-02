@@ -310,7 +310,20 @@ fun SubscriptionScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        TextButton(
+            onClick = { billingManager.restorePurchases() }
+        ) {
+            Text(
+                text = "Restore Purchases",
+                fontSize = 12.sp,
+                color = TextSecondary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         Text(
             text = "Google Play Subscriptions auto-renew unless cancelled at least 24 hours prior to renewal in your Google Play account (Settings > Payments & Subscriptions). Unused subscription credits do not rollover.",

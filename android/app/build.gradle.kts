@@ -10,12 +10,12 @@ if (file("google-services.json").exists()) {
 
 android {
     namespace = "com.aiprimestudio.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.aiprimestudio.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
 
@@ -46,6 +46,20 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            val prodServerUrl = (project.findProperty("PROD_SERVER_URL") as? String)
+                ?: System.getenv("PROD_SERVER_URL")
+                ?: ""
+
+            val isBuildingRelease = gradle.startParameter.taskNames.any {
+                it.contains("Release", ignoreCase = true) || it.contains("bundle", ignoreCase = true)
+            }
+            if (prodServerUrl.isBlank() && isBuildingRelease) {
+                logger.warn("WARNING: Release build running without verified PROD_SERVER_URL. Set -PPROD_SERVER_URL or PROD_SERVER_URL env var before Play Store deployment.")
+            }
+
+            buildConfigField("String", "SERVER_URL", "\"${if (prodServerUrl.isNotBlank()) prodServerUrl else "https://UNCONFIGURED_PROD_SERVER_URL"}\"")
+
             // Production release signing configuration: strictly use release keystore (never sign production AAB with debug key)
             val releaseConfig = signingConfigs.findByName("release")
             if (releaseConfig?.storeFile?.exists() == true) {
@@ -55,6 +69,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
+            buildConfigField("String", "SERVER_URL", "\"https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app\"")
         }
     }
 
@@ -106,8 +121,12 @@ dependencies {
     // Image loading with Coil
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // Google Play Billing Library (v7.1.1 - official stable PBL compatible with Kotlin 1.9 toolchain)
-    implementation("com.android.billingclient:billing-ktx:7.1.1")
+    // Google Play Billing Library (v8.0.0 official stable PBL)
+    implementation("com.android.billingclient:billing-ktx:8.0.0")
+
+    // Firebase Auth BOM & SDK (For Google ID Token -> Firebase ID Token exchange)
+    implementation(platform("com.google.firebase:firebase-bom:33.1.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
 
     // Google Sign-In & Credential Manager
     implementation("androidx.credentials:credentials:1.3.0")

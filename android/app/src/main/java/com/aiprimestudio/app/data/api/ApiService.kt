@@ -1,5 +1,6 @@
 package com.aiprimestudio.app.data.api
 
+import com.aiprimestudio.app.BuildConfig
 import com.aiprimestudio.app.data.model.*
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -11,18 +12,46 @@ import java.util.concurrent.TimeUnit
 
 interface ApiService {
 
-    @POST("/api/auth/google")
-    suspend fun authenticateWithGoogle(
-        @Body request: GoogleAuthRequest
-    ): Response<AuthResponse>
+    @POST("/api/auth/firebase-session")
+    suspend fun authenticateFirebaseSession(
+        @Body request: FirebaseSessionRequest
+    ): Response<FirebaseSessionResponse>
 
-    @GET("/api/user/profile")
-    suspend fun getProfile(
+    @GET("/api/auth/me")
+    suspend fun getAuthMe(
         @Header("Authorization") bearerToken: String
-    ): Response<UserProfile>
+    ): Response<MeResponse>
 
     @GET("/api/templates")
-    suspend fun getTemplates(): Response<List<TemplateItem>>
+    suspend fun getTemplates(): Response<TemplatesResponse>
+
+    @POST("/api/media/upload")
+    suspend fun uploadMedia(
+        @Header("Authorization") bearerToken: String,
+        @Body request: UploadMediaRequest
+    ): Response<UploadMediaResponse>
+
+    @POST("/api/generations/create")
+    suspend fun createGeneration(
+        @Header("Authorization") bearerToken: String,
+        @Body request: CreateGenerationRequest
+    ): Response<CreateGenerationResponse>
+
+    @GET("/api/generations/{id}/status")
+    suspend fun getGenerationStatus(
+        @Header("Authorization") bearerToken: String,
+        @Path("id") id: String
+    ): Response<GenerationStatusResponse>
+
+    @DELETE("/api/auth/account")
+    suspend fun deleteAccount(
+        @Header("Authorization") bearerToken: String
+    ): Response<DeleteAccountResponse>
+
+    @POST("/api/reports")
+    suspend fun reportContent(
+        @Body request: ReportRequest
+    ): Response<ReportResponse>
 
     @POST("/api/billing/googleplay/verify")
     suspend fun verifyGooglePlayPurchase(
@@ -31,12 +60,9 @@ interface ApiService {
     ): Response<GooglePlayVerifyResponse>
 
     companion object {
-        // Base URL targeting production / dev backend
-        private const val BASE_URL = "https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app"
-
         fun create(): ApiService {
             val logging = HttpLoggingInterceptor().apply {
-                level = if (com.aiprimestudio.app.BuildConfig.DEBUG) {
+                level = if (BuildConfig.DEBUG) {
                     HttpLoggingInterceptor.Level.BASIC
                 } else {
                     HttpLoggingInterceptor.Level.NONE
@@ -46,11 +72,15 @@ interface ApiService {
             val client = OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
                 .addInterceptor(logging)
                 .build()
 
+            val rawServerUrl = BuildConfig.SERVER_URL
+            val baseUrl = if (rawServerUrl.endsWith("/")) rawServerUrl else "$rawServerUrl/"
+
             return Retrofit.Builder()
-                .baseUrl(BASE_URL)
+                .baseUrl(baseUrl)
                 .client(client)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build()

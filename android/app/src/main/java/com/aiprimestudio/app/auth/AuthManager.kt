@@ -6,17 +6,25 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.CustomCredential
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
 import com.aiprimestudio.app.data.repository.AppRepository
+import kotlinx.coroutines.tasks.await
 
 class AuthManager(
     private val context: Context,
     private val repository: AppRepository
 ) {
     private val credentialManager = CredentialManager.create(context)
+    private val firebaseAuth = FirebaseAuth.getInstance()
 
     // Web Client ID from Google Cloud Console / Firebase Console
     private val serverClientId = "221269328833-s3a664qbbk8ppggmup39jb15u4fo8qjl.apps.googleusercontent.com"
 
+    /**
+     * Authenticates the user using Android Credential Manager, exchanges the Google OAuth ID Token
+     * for a genuine Firebase ID Token via FirebaseAuth SDK, and synchronizes the session with the backend.
+     */
     suspend fun signInWithGoogle(): Result<Unit> {
         return try {
             val googleIdOption = GetGoogleIdOption.Builder()
@@ -37,20 +45,46 @@ class AuthManager(
             val credential = result.credential
             if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                val idToken = googleIdTokenCredential.idToken
-                
-                // Exchange token with backend for unified user profile & balance
-                val authResult = repository.loginWithGoogle(idToken)
-                if (authResult.isSuccess) {
+                val googleIdToken = googleIdTokenCredential.idToken
+
+                // 1. Convert Google OAuth ID Token into a Firebase Auth Credential
+                val firebaseCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
+
+                // 2. Sign in to Firebase on the Android client
+                val authResult = firebaseAuth.signInWithCredential(firebaseCredential).await()
+                val firebaseUser = authResult.user
+                    ?: return Result.failure(Exception("Firebase authentication returned empty user"))
+
+                // 3. Acquire the cryptographically signed Firebase ID Token (JWT)
+                val tokenResult = firebaseUser.getIdToken(true).await()
+                val firebaseIdToken = tokenResult.token
+                    ?: return Result.failure(Exception("Failed to acquire valid Firebase ID Token"))
+
+                // 4. Send Firebase ID Token to backend POST /api/auth/firebase-session
+                val sessionResult = repository.loginWithFirebaseSession(
+                    firebaseIdToken = firebaseIdToken,
+                    name = firebaseUser.displayName,
+                    avatar = firebaseUser.photoUrl?.toString()
+                )
+
+                if (sessionResult.isSuccess) {
                     Result.success(Unit)
                 } else {
-                    Result.failure(authResult.exceptionOrNull() ?: Exception("Backend auth error"))
+                    Result.failure(sessionResult.exceptionOrNull() ?: Exception("Backend session creation failed"))
                 }
             } else {
-                Result.failure(Exception("Unsupported credential type"))
+                Result.failure(Exception("Unsupported credential type: ${credential.javaClass.simpleName}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    fun signOut() {
+        try {
+            firebaseAuth.signOut()
+        } catch (_: Exception) {
+        }
+        repository.logout()
     }
 }
