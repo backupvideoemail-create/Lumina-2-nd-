@@ -67,7 +67,7 @@ class AppRepository(
                 _currentSubscription.value = me.activeSubscription
                 Result.success(me)
             } else {
-                Result.failure(Exception("Failed to fetch profile: HTTP ${response.code()}"))
+                Result.failure(Exception("Failed to fetch profile: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -78,9 +78,12 @@ class AppRepository(
         return try {
             val response = apiService.getTemplates()
             if (response.isSuccessful && response.body() != null) {
-                Result.success(response.body()!!.templates)
+                val templatesList = response.body()!!.templates
+                Result.success(templatesList)
             } else {
-                Result.success(emptyList())
+                val code = response.code()
+                val msg = response.message()
+                Result.failure(Exception("Server returned HTTP $code: ${if (msg.isNotBlank()) msg else "Check server URL"}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -94,13 +97,13 @@ class AppRepository(
             val response = apiService.uploadMedia("Bearer $currentToken", req)
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
-                if (body.success && body.fileId != null) {
+                if (body.success && (body.url != null || body.fileId != null)) {
                     Result.success(body)
                 } else {
                     Result.failure(Exception(body.error ?: "Media upload rejected by server"))
                 }
             } else {
-                Result.failure(Exception("Upload failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Upload failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -109,28 +112,27 @@ class AppRepository(
 
     suspend fun createGeneration(
         templateId: String,
-        mediaFileId: String,
-        customerPrompt: String? = null
+        inputMediaUrl: String,
+        customPrompt: String? = null
     ): Result<CreateGenerationResponse> {
         val currentToken = _token.value ?: return Result.failure(Exception("Sign in required to create generation"))
         return try {
             val req = CreateGenerationRequest(
                 templateId = templateId,
-                mediaFileId = mediaFileId,
-                customerPrompt = customerPrompt
+                inputMediaUrl = inputMediaUrl,
+                customPrompt = customPrompt
             )
             val response = apiService.createGeneration("Bearer $currentToken", req)
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
-                if (body.success && body.generationId != null) {
-                    // Refresh balance
+                if (body.generation != null) {
                     refreshProfile()
                     Result.success(body)
                 } else {
                     Result.failure(Exception(body.error ?: "Generation job rejected by server"))
                 }
             } else {
-                Result.failure(Exception("Job creation failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Job creation failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -144,7 +146,7 @@ class AppRepository(
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
-                Result.failure(Exception("Status check failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Status check failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -159,7 +161,7 @@ class AppRepository(
                 logout()
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Account deletion failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Account deletion failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -183,7 +185,7 @@ class AppRepository(
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!.reportId ?: "Report received")
             } else {
-                Result.failure(Exception("Report failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Report failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -212,7 +214,7 @@ class AppRepository(
                     Result.failure(Exception(result.error ?: result.message ?: "Verification rejected"))
                 }
             } else {
-                Result.failure(Exception("Purchase verification failed: HTTP ${response.code()}"))
+                Result.failure(Exception("Purchase verification failed: HTTP ${response.code()} ${response.message()}"))
             }
         } catch (e: Exception) {
             Result.failure(e)

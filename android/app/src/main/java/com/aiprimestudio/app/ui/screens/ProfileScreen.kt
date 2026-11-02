@@ -178,22 +178,42 @@ fun ProfileScreen(
                 Divider(color = CardBorder)
                 Spacer(modifier = Modifier.height(12.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CloudDone,
-                        contentDescription = null,
-                        tint = EmeraldSuccess,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Cloud Synced: Active on Website & Android",
-                        fontSize = 11.sp,
-                        color = EmeraldSuccess,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                if (user != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDone,
+                            contentDescription = null,
+                            tint = EmeraldSuccess,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Cloud Synced: Active on Website & Android",
+                            fontSize = 11.sp,
+                            color = EmeraldSuccess,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Guest Mode: Sign in with Google to sync across Web & App",
+                            fontSize = 11.sp,
+                            color = TextSecondary,
+                            fontWeight = FontWeight.Normal
+                        )
+                    }
                 }
             }
         }

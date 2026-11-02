@@ -266,17 +266,18 @@ fun StudioScreen(
                             return@launch
                         }
 
-                        val fileId = uploadResult.getOrNull()?.fileId ?: ""
-                        uploadedFileId = fileId
+                        val uploadData = uploadResult.getOrNull()
+                        val mediaUrl = uploadData?.url ?: uploadData?.fileId?.let { "/api/media/$it" } ?: ""
+                        uploadedFileId = uploadData?.fileId
 
                         // 3. Create generation job
                         statusMessage = "Creating AI generation job..."
                         generationProgress = 40
-                        val targetTemplateId = selectedTemplateId ?: "template_trending_01"
+                        val targetTemplateId = selectedTemplateId ?: "tpl_full_swag_1"
                         val createResult = repository.createGeneration(
                             templateId = targetTemplateId,
-                            mediaFileId = fileId,
-                            customerPrompt = prompt
+                            inputMediaUrl = mediaUrl,
+                            customPrompt = prompt
                         )
 
                         if (createResult.isFailure) {
@@ -298,21 +299,21 @@ fun StudioScreen(
                             pollCount++
                             val statusRes = repository.getGenerationStatus(genId)
                             if (statusRes.isSuccess) {
-                                val details = statusRes.getOrNull()?.generation
-                                if (details != null) {
-                                    if (details.status == "completed" && details.outputUrl != null) {
-                                        generatedOutputUrl = details.outputUrl
-                                        generationProgress = 100
-                                        statusMessage = "Generation complete!"
-                                        isFinished = true
-                                    } else if (details.status == "failed") {
-                                        statusMessage = "Generation failed: ${details.error ?: "Internal error"}"
-                                        isFinished = true
-                                    } else {
-                                        val p = details.progress
-                                        generationProgress = if (p > 55) p else 55 + (pollCount * 2).coerceAtMost(35)
-                                        statusMessage = "Rendering cinematic visuals... ($generationProgress%)"
-                                    }
+                                val statusResponse = statusRes.getOrNull()
+                                val resultUrl = statusResponse?.effectiveResultUrl
+                                val currentStatus = statusResponse?.currentStatus ?: "processing"
+
+                                if (currentStatus == "completed" && resultUrl != null) {
+                                    generatedOutputUrl = resultUrl
+                                    generationProgress = 100
+                                    statusMessage = "Generation complete!"
+                                    isFinished = true
+                                } else if (currentStatus == "failed") {
+                                    statusMessage = "Generation failed: ${statusResponse?.error ?: "Internal error"}"
+                                    isFinished = true
+                                } else {
+                                    generationProgress = 55 + (pollCount * 2).coerceAtMost(35)
+                                    statusMessage = "Rendering cinematic visuals... ($generationProgress%)"
                                 }
                             }
                         }

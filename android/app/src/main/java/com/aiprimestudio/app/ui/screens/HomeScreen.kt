@@ -11,7 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,12 +21,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.aiprimestudio.app.data.model.TemplateItem
 import com.aiprimestudio.app.data.repository.AppRepository
 import com.aiprimestudio.app.ui.theme.*
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -34,19 +36,32 @@ fun HomeScreen(
     onNavigateToStudio: (String) -> Unit,
     onNavigateToSubscription: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     val user by repository.currentUser.collectAsState()
     val wallet by repository.currentWallet.collectAsState()
     var templates by remember { mutableStateOf<List<TemplateItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     val displayCredits = wallet?.effectiveBalance ?: user?.credits ?: 0
 
-    LaunchedEffect(Unit) {
-        val result = repository.fetchTemplates()
-        if (result.isSuccess) {
-            templates = result.getOrDefault(emptyList())
+    fun loadTemplates() {
+        isLoading = true
+        errorMessage = null
+        scope.launch {
+            val result = repository.fetchTemplates()
+            if (result.isSuccess) {
+                templates = result.getOrDefault(emptyList())
+                errorMessage = null
+            } else {
+                errorMessage = result.exceptionOrNull()?.message ?: "Failed to load templates"
+            }
+            isLoading = false
         }
-        isLoading = false
+    }
+
+    LaunchedEffect(Unit) {
+        loadTemplates()
     }
 
     Column(
@@ -185,24 +200,101 @@ fun HomeScreen(
             modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 8.dp)
         )
 
-        // Template Grid
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = AmberPrimary)
+        // Template Grid / Error / Loading States
+        when {
+            isLoading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(color = AmberGold, strokeWidth = 3.dp)
+                        Text(
+                            text = "Loading curated templates...",
+                            fontSize = 12.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
             }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(templates) { template ->
-                    TemplateCard(
-                        template = template,
-                        onClick = { onNavigateToStudio(template.id) }
+            errorMessage != null -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = CardSurface),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, CardBorder, RoundedCornerShape(16.dp))
+                            .padding(16.dp)
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Unable to Load Templates",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = errorMessage!!,
+                                fontSize = 12.sp,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(
+                                onClick = { loadTemplates() },
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberGold),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.Black)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Retry", color = Color.Black, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+            templates.isEmpty() -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No templates currently available.",
+                        fontSize = 13.sp,
+                        color = TextSecondary
                     )
+                }
+            }
+            else -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(templates) { template ->
+                        TemplateCard(
+                            template = template,
+                            onClick = { onNavigateToStudio(template.id) }
+                        )
+                    }
                 }
             }
         }

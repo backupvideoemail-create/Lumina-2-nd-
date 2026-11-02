@@ -1,5 +1,6 @@
 package com.aiprimestudio.app.data.model
 
+import com.aiprimestudio.app.BuildConfig
 import com.google.gson.annotations.SerializedName
 
 data class UserProfile(
@@ -41,20 +42,42 @@ data class TemplateItem(
     @SerializedName("id") val id: String,
     @SerializedName("title") val title: String,
     @SerializedName("category") val category: String = "Trending",
-    @SerializedName("coverImage") val coverImage: String? = null,
+    @SerializedName("cover") val cover: String? = null,
+    @SerializedName("coverImage") val legacyCoverImage: String? = null,
     @SerializedName("thumbnail") val thumbnail: String? = null,
+    @SerializedName("sampleResult") val sampleResult: String? = null,
+    @SerializedName("sampleAfter") val sampleAfter: String? = null,
+    @SerializedName("sampleBefore") val sampleBefore: String? = null,
+    @SerializedName("preview") val preview: String? = null,
     @SerializedName("previewVideo") val previewVideo: String? = null,
     @SerializedName("demoVideo") val demoVideo: String? = null,
+    @SerializedName("creditCost") val creditCost: Int? = null,
     @SerializedName("costCredits") val costCredits: Int? = null,
     @SerializedName("creditsCost") val creditsCost: Int? = null,
     @SerializedName("badge") val badge: String? = null,
     @SerializedName("type") val type: String? = null
 ) {
     val displayImage: String
-        get() = coverImage?.takeIf { it.isNotBlank() } ?: thumbnail ?: ""
+        get() {
+            val raw = cover?.takeIf { it.isNotBlank() }
+                ?: sampleResult?.takeIf { it.isNotBlank() }
+                ?: sampleAfter?.takeIf { it.isNotBlank() }
+                ?: legacyCoverImage?.takeIf { it.isNotBlank() }
+                ?: thumbnail?.takeIf { it.isNotBlank() }
+                ?: preview?.takeIf { it.isNotBlank() }
+                ?: ""
+            if (raw.isBlank()) return ""
+            return if (raw.startsWith("http://") || raw.startsWith("https://")) {
+                raw
+            } else {
+                val base = BuildConfig.SERVER_URL.trimEnd('/')
+                val path = if (raw.startsWith("/")) raw else "/$raw"
+                "$base$path"
+            }
+        }
 
     val displayCredits: Int
-        get() = costCredits ?: creditsCost ?: 10
+        get() = creditCost ?: costCredits ?: creditsCost ?: 10
 }
 
 data class TemplatesResponse(
@@ -103,35 +126,59 @@ data class UploadMediaResponse(
 
 data class CreateGenerationRequest(
     @SerializedName("templateId") val templateId: String,
-    @SerializedName("mediaFileId") val mediaFileId: String,
-    @SerializedName("customerPrompt") val customerPrompt: String? = null,
-    @SerializedName("inputType") val inputType: String = "photo",
-    @SerializedName("aspectRatio") val aspectRatio: String = "9:16"
+    @SerializedName("inputMediaUrl") val inputMediaUrl: String,
+    @SerializedName("customPrompt") val customPrompt: String? = null
 )
 
 data class CreateGenerationResponse(
     @SerializedName("success") val success: Boolean = false,
-    @SerializedName("generationId") val generationId: String? = null,
-    @SerializedName("status") val status: String? = null,
-    @SerializedName("creditsDeducted") val creditsDeducted: Int = 0,
-    @SerializedName("balanceRemaining") val balanceRemaining: Int = 0,
+    @SerializedName("generation") val generation: GenerationStatusDetails? = null,
+    @SerializedName("remainingCredits") val remainingCredits: Int? = null,
     @SerializedName("error") val error: String? = null
-)
+) {
+    val generationId: String?
+        get() = generation?.id
+}
 
 data class GenerationStatusDetails(
     @SerializedName("id") val id: String,
     @SerializedName("status") val status: String,
-    @SerializedName("outputUrl") val outputUrl: String? = null,
-    @SerializedName("progress") val progress: Int = 0,
+    @SerializedName("resultMediaUrl") val resultMediaUrl: String? = null,
+    @SerializedName("outputUrl") val legacyOutputUrl: String? = null,
     @SerializedName("error") val error: String? = null,
-    @SerializedName("thumbnailUrl") val thumbnailUrl: String? = null
-)
+    @SerializedName("elapsedSeconds") val elapsedSeconds: Int? = null
+) {
+    val displayResultUrl: String?
+        get() {
+            val raw = resultMediaUrl?.takeIf { it.isNotBlank() }
+                ?: legacyOutputUrl?.takeIf { it.isNotBlank() }
+                ?: return null
+            return if (raw.startsWith("http://") || raw.startsWith("https://")) {
+                raw
+            } else {
+                val base = BuildConfig.SERVER_URL.trimEnd('/')
+                val path = if (raw.startsWith("/")) raw else "/$raw"
+                "$base$path"
+            }
+        }
+}
 
 data class GenerationStatusResponse(
     @SerializedName("success") val success: Boolean = false,
     @SerializedName("generation") val generation: GenerationStatusDetails? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("resultMediaUrl") val resultMediaUrl: String? = null,
     @SerializedName("error") val error: String? = null
-)
+) {
+    val effectiveResultUrl: String?
+        get() = generation?.displayResultUrl ?: resultMediaUrl?.let { raw ->
+            if (raw.startsWith("http://") || raw.startsWith("https://")) raw
+            else "${BuildConfig.SERVER_URL.trimEnd('/')}/${raw.trimStart('/')}"
+        }
+
+    val currentStatus: String
+        get() = status ?: generation?.status ?: "processing"
+}
 
 data class GooglePlayVerifyRequest(
     @SerializedName("productId") val productId: String,
