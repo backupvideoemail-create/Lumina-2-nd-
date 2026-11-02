@@ -344,7 +344,8 @@ fun ProfileScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app/privacy"))
+                            val url = "${com.aiprimestudio.app.BuildConfig.SERVER_URL.trimEnd('/')}/privacy"
+                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                             context.startActivity(browserIntent)
                         },
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -360,13 +361,31 @@ fun ProfileScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app/terms"))
+                            val url = "${com.aiprimestudio.app.BuildConfig.SERVER_URL.trimEnd('/')}/terms"
+                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                             context.startActivity(browserIntent)
                         },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Terms of Service", color = TextSecondary, fontSize = 12.sp)
+                    Icon(Icons.Default.OpenInNew, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                }
+
+                Divider(color = CardBorder)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val url = "${com.aiprimestudio.app.BuildConfig.SERVER_URL.trimEnd('/')}/delete-account"
+                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            context.startActivity(browserIntent)
+                        },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Web Account & Data Deletion Portal", color = TextSecondary, fontSize = 12.sp)
                     Icon(Icons.Default.OpenInNew, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                 }
             }

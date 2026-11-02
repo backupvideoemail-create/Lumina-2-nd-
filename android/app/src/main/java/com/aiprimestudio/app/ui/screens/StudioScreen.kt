@@ -1,11 +1,14 @@
 package com.aiprimestudio.app.ui.screens
 
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Environment
 import android.util.Base64
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,6 +16,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.aiprimestudio.app.data.model.GenerationItem
 import com.aiprimestudio.app.data.repository.AppRepository
 import com.aiprimestudio.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +43,25 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+
+fun downloadMediaToDevice(context: Context, mediaUrl: String, filename: String = "AI_Prime_Creation.mp4") {
+    try {
+        val uri = Uri.parse(mediaUrl)
+        val request = DownloadManager.Request(uri).apply {
+            setTitle("AI Prime Studio")
+            setDescription("Downloading video to gallery...")
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "AI_Prime_${System.currentTimeMillis()}_$filename")
+            setAllowedOverMetered(true)
+            setAllowedOverRoaming(true)
+        }
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+        dm?.enqueue(request)
+        Toast.makeText(context, "Download started. Saving to Downloads folder...", Toast.LENGTH_SHORT).show()
+    } catch (e: Exception) {
+        Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
 
 @Composable
 fun StudioScreen(
@@ -54,12 +79,26 @@ fun StudioScreen(
     var uploadedFileId by remember { mutableStateOf<String?>(null) }
 
     var isGenerating by remember { mutableStateOf(false) }
-    var generationProgress by remember { mutableStateOf(0) }
+    var currentStep by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var generatedOutputUrl by remember { mutableStateOf<String?>(null) }
     var currentGenerationId by remember { mutableStateOf<String?>(null) }
     var showReportDialog by remember { mutableStateOf(false) }
     var reportReason by remember { mutableStateOf("Inappropriate Content") }
+
+    var myCreations by remember { mutableStateOf<List<GenerationItem>>(emptyList()) }
+
+    // Refresh creations list when user logs in
+    LaunchedEffect(user) {
+        if (user != null) {
+            val res = repository.fetchMyCreations()
+            if (res.isSuccess) {
+                myCreations = res.getOrNull() ?: emptyList()
+            }
+        } else {
+            myCreations = emptyList()
+        }
+    }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -243,7 +282,7 @@ fun StudioScreen(
                 scope.launch {
                     try {
                         isGenerating = true
-                        generationProgress = 10
+                        currentStep = "Compressing"
                         statusMessage = "Compressing & preparing image..."
 
                         // 1. Read and encode image to Base64
@@ -257,11 +296,12 @@ fun StudioScreen(
                         }
 
                         // 2. Upload media
+                        currentStep = "Uploading"
                         statusMessage = "Uploading image to secure storage..."
-                        generationProgress = 25
                         val uploadResult = repository.uploadMedia("data:image/jpeg;base64,$base64", "customer_photo.jpg")
                         if (uploadResult.isFailure) {
                             isGenerating = false
+                            currentStep = null
                             statusMessage = "Upload failed: ${uploadResult.exceptionOrNull()?.message}"
                             return@launch
                         }
@@ -271,8 +311,8 @@ fun StudioScreen(
                         uploadedFileId = uploadData?.fileId
 
                         // 3. Create generation job
-                        statusMessage = "Creating AI generation job..."
-                        generationProgress = 40
+                        currentStep = "Queued"
+                        statusMessage = "Submitting generation job to GPU..."
                         val targetTemplateId = selectedTemplateId ?: "tpl_full_swag_1"
                         val createResult = repository.createGeneration(
                             templateId = targetTemplateId,
@@ -282,16 +322,17 @@ fun StudioScreen(
 
                         if (createResult.isFailure) {
                             isGenerating = false
+                            currentStep = null
                             statusMessage = "Job creation failed: ${createResult.exceptionOrNull()?.message}"
                             return@launch
                         }
 
                         val genId = createResult.getOrNull()?.generationId ?: ""
                         currentGenerationId = genId
+                        currentStep = "Processing"
                         statusMessage = "Processing generation on cloud GPU..."
-                        generationProgress = 55
 
-                        // 4. Polling loop
+                        // 4. Polling loop with real backend status
                         var isFinished = false
                         var pollCount = 0
                         while (!isFinished && pollCount < 40) {
@@ -305,15 +346,21 @@ fun StudioScreen(
 
                                 if (currentStatus == "completed" && resultUrl != null) {
                                     generatedOutputUrl = resultUrl
-                                    generationProgress = 100
+                                    currentStep = null
                                     statusMessage = "Generation complete!"
                                     isFinished = true
+                                    // Refresh creations list
+                                    val updatedCreations = repository.fetchMyCreations()
+                                    if (updatedCreations.isSuccess) {
+                                        myCreations = updatedCreations.getOrNull() ?: emptyList()
+                                    }
                                 } else if (currentStatus == "failed") {
+                                    currentStep = null
                                     statusMessage = "Generation failed: ${statusResponse?.error ?: "Internal error"}"
                                     isFinished = true
                                 } else {
-                                    generationProgress = 55 + (pollCount * 2).coerceAtMost(35)
-                                    statusMessage = "Rendering cinematic visuals... ($generationProgress%)"
+                                    currentStep = currentStatus.replaceFirstChar { it.uppercase() }
+                                    statusMessage = "Status: $currentStep..."
                                 }
                             }
                         }
@@ -321,6 +368,7 @@ fun StudioScreen(
                         isGenerating = false
                     } catch (e: Exception) {
                         isGenerating = false
+                        currentStep = null
                         statusMessage = "Error: ${e.message}"
                     }
                 }
@@ -351,7 +399,7 @@ fun StudioScreen(
                 }
                 Text(
                     text = when {
-                        isGenerating -> "Generating... ($generationProgress%)"
+                        isGenerating -> "${currentStep ?: "Processing"}..."
                         availableCredits < 10 -> "Get Credits to Generate"
                         else -> "Generate 4K Video"
                     },
@@ -408,6 +456,18 @@ fun StudioScreen(
                     ) {
                         Button(
                             onClick = {
+                                downloadMediaToDevice(context, generatedOutputUrl!!)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = AmberGold),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, tint = Color.Black)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Save", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
                                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                     type = "text/plain"
                                     putExtra(Intent.EXTRA_TEXT, "Look what I made on AI Prime Studio: $generatedOutputUrl")
@@ -430,6 +490,66 @@ fun StudioScreen(
                             Icon(Icons.Default.Flag, contentDescription = null, tint = TextMuted)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Report", color = TextMuted)
+                        }
+                    }
+                }
+            }
+        }
+
+        // My Creations Section
+        if (myCreations.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(28.dp))
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "MY RECENT CREATIONS",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AmberGold,
+                    letterSpacing = 0.5.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(myCreations) { item ->
+                        val url = item.effectiveResultUrl
+                        if (url != null) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = CardSurface),
+                                modifier = Modifier
+                                    .width(140.dp)
+                                    .height(200.dp)
+                                    .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        generatedOutputUrl = url
+                                    }
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    AsyncImage(
+                                        model = url,
+                                        contentDescription = "Creation",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    IconButton(
+                                        onClick = { downloadMediaToDevice(context, url) },
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(4.dp)
+                                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                            .size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Download,
+                                            contentDescription = "Download",
+                                            tint = AmberGold,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

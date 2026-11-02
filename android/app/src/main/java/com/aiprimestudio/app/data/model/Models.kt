@@ -215,3 +215,31 @@ data class ReportResponse(
     @SerializedName("message") val message: String? = null,
     @SerializedName("error") val error: String? = null
 )
+
+data class GenerationsListResponse(
+    @SerializedName("generations") val generations: List<GenerationItem> = emptyList()
+)
+
+data class GenerationItem(
+    @SerializedName("id") val id: String,
+    @SerializedName("status") val status: String = "completed",
+    @SerializedName("resultMediaUrl") val resultMediaUrl: String? = null,
+    @SerializedName("resultVideoPreview") val resultVideoPreview: String? = null,
+    @SerializedName("createdAt") val createdAt: String? = null,
+    @SerializedName("templateId") val templateId: String? = null
+) {
+    val effectiveResultUrl: String?
+        get() {
+            val raw = resultMediaUrl?.takeIf { it.isNotBlank() }
+                ?: resultVideoPreview?.takeIf { it.isNotBlank() }
+                ?: return null
+            return if (raw.startsWith("http://") || raw.startsWith("https://")) {
+                raw
+            } else {
+                val base = BuildConfig.SERVER_URL.trimEnd('/')
+                val path = if (raw.startsWith("/")) raw else "/$raw"
+                "$base$path"
+            }
+        }
+}
+

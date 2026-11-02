@@ -104,6 +104,11 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      - name: Verify Debug Signing Fingerprint
+        run: |
+          cd android
+          keytool -list -v -keystore app/debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:" || true
+
       - name: Build Release Bundle (AAB) if Signing Secret is Present
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -112,15 +117,19 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           PROD_SERVER_URL: ${{ secrets.PROD_SERVER_URL }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Keystore secret detected. Decoding release.keystore..."
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$PROD_SERVER_URL" ]; then
+            echo "Release secrets detected. Decoding release.keystore..."
             echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
             export KEYSTORE_FILE="release.keystore"
             cd android
-            ./gradlew bundleRelease --stacktrace
+            ./gradlew bundleRelease -PPROD_SERVER_URL="$PROD_SERVER_URL" --stacktrace
             echo "RELEASE_AAB_BUILT=true" >> $GITHUB_ENV
+          elif [ -n "$KEYSTORE_BASE64" ] && [ -z "$PROD_SERVER_URL" ]; then
+            echo "::error title=Missing PROD_SERVER_URL::KEYSTORE_BASE64 is present but PROD_SERVER_URL secret is missing. Release build cannot proceed without a verified production URL."
+            echo "RELEASE_AAB_BUILT=false" >> $GITHUB_ENV
+            exit 1
           else
-            echo "::notice title=Release Signing Status::KEYSTORE_BASE64 secret is not configured in GitHub Repository Secrets. Debug APK built successfully; Release AAB build is pending user keystore."
+            echo "::notice title=Release Signing Status::KEYSTORE_BASE64 and/or PROD_SERVER_URL secrets are not configured in GitHub Repository Secrets. Debug APK built successfully; Release AAB build is pending user release secrets."
             echo "RELEASE_AAB_BUILT=false" >> $GITHUB_ENV
           fi
 

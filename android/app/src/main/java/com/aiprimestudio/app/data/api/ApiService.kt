@@ -48,6 +48,11 @@ interface ApiService {
         @Header("Authorization") bearerToken: String
     ): Response<DeleteAccountResponse>
 
+    @GET("/api/generations")
+    suspend fun getGenerations(
+        @Header("Authorization") bearerToken: String
+    ): Response<GenerationsListResponse>
+
     @POST("/api/reports")
     suspend fun reportContent(
         @Body request: ReportRequest

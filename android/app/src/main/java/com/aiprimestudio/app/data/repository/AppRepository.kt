@@ -221,6 +221,20 @@ class AppRepository(
         }
     }
 
+    suspend fun fetchMyCreations(): Result<List<GenerationItem>> {
+        val currentToken = _token.value ?: return Result.failure(Exception("Sign in required to view creations"))
+        return try {
+            val response = apiService.getGenerations("Bearer $currentToken")
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!.generations)
+            } else {
+                Result.failure(Exception("Failed to load creations: HTTP ${response.code()} ${response.message()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun logout() {
         _token.value = null
         _currentUser.value = null

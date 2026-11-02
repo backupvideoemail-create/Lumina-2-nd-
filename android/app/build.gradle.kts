@@ -26,6 +26,15 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            val debugKeystore = file("debug.keystore")
+            if (debugKeystore.exists()) {
+                storeFile = debugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
             val keystorePath = System.getenv("KEYSTORE_FILE") ?: "release.keystore"
             val keystoreFile = file(keystorePath)
@@ -54,11 +63,22 @@ android {
             val isBuildingRelease = gradle.startParameter.taskNames.any {
                 it.contains("Release", ignoreCase = true) || it.contains("bundle", ignoreCase = true)
             }
-            if (prodServerUrl.isBlank() && isBuildingRelease) {
-                logger.warn("WARNING: Release build running without verified PROD_SERVER_URL. Set -PPROD_SERVER_URL or PROD_SERVER_URL env var before Play Store deployment.")
+
+            val isInvalidUrl = prodServerUrl.isBlank() ||
+                prodServerUrl.contains("ais-dev", ignoreCase = true) ||
+                prodServerUrl.contains("UNCONFIGURED", ignoreCase = true) ||
+                prodServerUrl.contains("example.com", ignoreCase = true) ||
+                !prodServerUrl.startsWith("https://")
+
+            if (isBuildingRelease && isInvalidUrl) {
+                throw GradleException(
+                    "CRITICAL RELEASE ERROR: Release build requires a verified, production 'PROD_SERVER_URL'. " +
+                    "Got: '$prodServerUrl'. You must supply a valid https production URL via -PPROD_SERVER_URL or PROD_SERVER_URL environment variable. " +
+                    "Development/staging URLs (ais-dev) and unconfigured placeholders are strictly forbidden in production release bundles."
+                )
             }
 
-            buildConfigField("String", "SERVER_URL", "\"${if (prodServerUrl.isNotBlank()) prodServerUrl else "https://UNCONFIGURED_PROD_SERVER_URL"}\"")
+            buildConfigField("String", "SERVER_URL", "\"$prodServerUrl\"")
 
             // Production release signing configuration: strictly use release keystore (never sign production AAB with debug key)
             val releaseConfig = signingConfigs.findByName("release")
@@ -69,6 +89,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
             buildConfigField("String", "SERVER_URL", "\"https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app\"")
         }
     }

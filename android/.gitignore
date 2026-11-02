@@ -10,7 +10,8 @@ keystore.properties
 *.iml
 .DS_Store
 
-# Explicitly track app/google-services.json and debug variant
+# Explicitly track app/google-services.json, debug variant, and stable debug.keystore
 !app/google-services.json
 !app/src/debug/google-services.json
+!app/debug.keystore
 !google-services.json.example
