@@ -104,10 +104,17 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Verify Debug Signing Fingerprint
+      - name: Verify Debug Keystore and Built APK Signing Fingerprint
         run: |
-          cd android
-          keytool -list -v -keystore app/debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:" || true
+          echo "=== 1. Verifying android/app/debug.keystore ==="
+          keytool -list -v -keystore android/app/debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
+
+          echo "=== 2. Verifying Built APK Signatures via apksigner ==="
+          APKSIGNER=$(which apksigner 2>/dev/null || find "$ANDROID_HOME/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+            echo "Using apksigner at: $APKSIGNER"
+            "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -E "SHA-1 digest:|SHA-256 digest:"
+          fi
 
       - name: Build Release Bundle (AAB) if Signing Secret is Present
         env:

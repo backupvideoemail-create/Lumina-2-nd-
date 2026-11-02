@@ -80,6 +80,33 @@ class AuthManager(
         }
     }
 
+    /**
+     * Seamlessly restores an existing backend session after app relaunch or restart.
+     * Checks if FirebaseAuth has an active user, refreshes the cryptographically signed
+     * Firebase ID Token, and synchronizes the session with the backend.
+     */
+    suspend fun restoreSession(): Result<UserProfile> {
+        return try {
+            val currentUser = firebaseAuth.currentUser
+                ?: return Result.failure(Exception("No active Firebase session"))
+
+            // 1. Acquire valid Firebase ID Token (JWT)
+            val tokenResult = currentUser.getIdToken(false).await()
+            val firebaseIdToken = tokenResult.token
+                ?: return Result.failure(Exception("Failed to acquire valid Firebase ID Token"))
+
+            // 2. Synchronize and restore session with backend
+            val sessionResult = repository.loginWithFirebaseSession(
+                firebaseIdToken = firebaseIdToken,
+                name = currentUser.displayName,
+                avatar = currentUser.photoUrl?.toString()
+            )
+            sessionResult
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     fun signOut() {
         try {
             firebaseAuth.signOut()

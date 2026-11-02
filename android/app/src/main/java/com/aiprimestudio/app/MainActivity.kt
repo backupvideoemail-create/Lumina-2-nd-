@@ -21,17 +21,25 @@ import com.aiprimestudio.app.ui.theme.AmberGold
 import com.aiprimestudio.app.ui.theme.CardSurface
 import com.aiprimestudio.app.ui.theme.TextMuted
 
+import kotlinx.coroutines.launch
+
 class MainActivity : ComponentActivity() {
 
-    private val repository = AppRepository()
+    private lateinit var repository: AppRepository
     private lateinit var billingManager: BillingManager
     private lateinit var authManager: AuthManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        repository = AppRepository(applicationContext)
         billingManager = BillingManager(this, repository, lifecycleScope)
         authManager = AuthManager(this, repository)
+
+        // Seamless startup session restoration on app relaunch
+        lifecycleScope.launch {
+            authManager.restoreSession()
+        }
 
         setContent {
             AIPrimeStudioTheme {

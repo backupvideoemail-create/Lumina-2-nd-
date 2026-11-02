@@ -1,14 +1,20 @@
 package com.aiprimestudio.app.data.repository
 
+import android.content.Context
 import com.aiprimestudio.app.data.api.ApiService
 import com.aiprimestudio.app.data.model.*
+import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 class AppRepository(
+    context: Context? = null,
     private val apiService: ApiService = ApiService.create()
 ) {
+    private val prefs = context?.getSharedPreferences("ai_prime_auth_session", Context.MODE_PRIVATE)
+    private val gson = Gson()
+
     private val _currentUser = MutableStateFlow<UserProfile?>(null)
     val currentUser: StateFlow<UserProfile?> = _currentUser.asStateFlow()
 
@@ -20,6 +26,28 @@ class AppRepository(
 
     private val _token = MutableStateFlow<String?>(null)
     val token: StateFlow<String?> = _token.asStateFlow()
+
+    init {
+        // Restore cached session on startup for instant, flicker-free app relaunch
+        prefs?.getString("auth_token", null)?.let { savedToken ->
+            _token.value = savedToken
+        }
+        prefs?.getString("user_profile_json", null)?.let { userJson ->
+            try {
+                _currentUser.value = gson.fromJson(userJson, UserProfile::class.java)
+            } catch (_: Exception) {}
+        }
+        prefs?.getString("wallet_json", null)?.let { walletJson ->
+            try {
+                _currentWallet.value = gson.fromJson(walletJson, Wallet::class.java)
+            } catch (_: Exception) {}
+        }
+        prefs?.getString("subscription_json", null)?.let { subJson ->
+            try {
+                _currentSubscription.value = gson.fromJson(subJson, UserSubscription::class.java)
+            } catch (_: Exception) {}
+        }
+    }
 
     suspend fun loginWithFirebaseSession(
         firebaseIdToken: String,
@@ -40,6 +68,16 @@ class AppRepository(
                     _currentUser.value = body.user
                     _currentWallet.value = body.wallet
                     _currentSubscription.value = body.subscription
+
+                    // Persist session to disk
+                    prefs?.edit()?.apply {
+                        putString("auth_token", body.token)
+                        putString("user_profile_json", gson.toJson(body.user))
+                        putString("wallet_json", gson.toJson(body.wallet))
+                        putString("subscription_json", gson.toJson(body.subscription))
+                        apply()
+                    }
+
                     Result.success(body.user ?: UserProfile(id = "", email = null, name = name))
                 } else {
                     Result.failure(Exception(body.error ?: body.message ?: "Firebase authentication failed"))
@@ -240,5 +278,6 @@ class AppRepository(
         _currentUser.value = null
         _currentWallet.value = null
         _currentSubscription.value = null
+        prefs?.edit()?.clear()?.apply()
     }
 }
