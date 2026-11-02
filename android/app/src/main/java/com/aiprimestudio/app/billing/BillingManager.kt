@@ -98,9 +98,11 @@ class BillingManager(
             .setProductList(inAppProducts)
             .build()
 
-        billingClient.queryProductDetailsAsync(inAppParams) { inAppResult, productDetailsList ->
-            if (inAppResult.responseCode == BillingClient.BillingResponseCode.OK && productDetailsList != null) {
-                allFetched.addAll(productDetailsList)
+        billingClient.queryProductDetailsAsync(inAppParams) { inAppResult, queryResult ->
+            if (inAppResult.responseCode == BillingClient.BillingResponseCode.OK && queryResult != null) {
+                queryResult.productDetailsList?.let { details ->
+                    allFetched.addAll(details)
+                }
             }
 
             // 2. Subscriptions: Double Bonanza Weekly + Creator Weekly + Creator Monthly
@@ -123,9 +125,11 @@ class BillingManager(
                 .setProductList(subProducts)
                 .build()
 
-            billingClient.queryProductDetailsAsync(subParams) { subResult, subProductDetailsList ->
-                if (subResult.responseCode == BillingClient.BillingResponseCode.OK && subProductDetailsList != null) {
-                    allFetched.addAll(subProductDetailsList)
+            billingClient.queryProductDetailsAsync(subParams) { subResult, subQueryResult ->
+                if (subResult.responseCode == BillingClient.BillingResponseCode.OK && subQueryResult != null) {
+                    subQueryResult.productDetailsList?.let { details ->
+                        allFetched.addAll(details)
+                    }
                 }
                 _productDetailsList.value = allFetched.toList()
             }
