@@ -8,11 +8,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+import com.aiprimestudio.app.data.security.SecureTokenManager
+
 class AppRepository(
     context: Context? = null,
     private val apiService: ApiService = ApiService.create()
 ) {
     private val prefs = context?.getSharedPreferences("ai_prime_auth_session", Context.MODE_PRIVATE)
+    private val secureTokenManager = SecureTokenManager()
     private val gson = Gson()
 
     private val _currentUser = MutableStateFlow<UserProfile?>(null)
@@ -29,8 +32,11 @@ class AppRepository(
 
     init {
         // Restore cached session on startup for instant, flicker-free app relaunch
-        prefs?.getString("auth_token", null)?.let { savedToken ->
-            _token.value = savedToken
+        prefs?.getString("encrypted_auth_token", null)?.let { encToken ->
+            val decrypted = secureTokenManager.decryptToken(encToken)
+            if (decrypted != null) {
+                _token.value = decrypted
+            }
         }
         prefs?.getString("user_profile_json", null)?.let { userJson ->
             try {
@@ -69,9 +75,13 @@ class AppRepository(
                     _currentWallet.value = body.wallet
                     _currentSubscription.value = body.subscription
 
-                    // Persist session to disk
+                    // Encrypt bearer token with Android Keystore hardware key before persisting
+                    val encryptedToken = secureTokenManager.encryptToken(body.token)
                     prefs?.edit()?.apply {
-                        putString("auth_token", body.token)
+                        if (encryptedToken != null) {
+                            putString("encrypted_auth_token", encryptedToken)
+                        }
+                        remove("auth_token") // Purge any legacy unencrypted token key
                         putString("user_profile_json", gson.toJson(body.user))
                         putString("wallet_json", gson.toJson(body.wallet))
                         putString("subscription_json", gson.toJson(body.subscription))

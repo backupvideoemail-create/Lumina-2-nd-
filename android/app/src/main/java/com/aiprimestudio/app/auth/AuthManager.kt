@@ -8,6 +8,7 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
+import com.aiprimestudio.app.data.model.UserProfile
 import com.aiprimestudio.app.data.repository.AppRepository
 import kotlinx.coroutines.tasks.await
 

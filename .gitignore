@@ -8,12 +8,13 @@ coverage/
 !.env.example
 .data/
 
-# Android Keystore & Secret signing files
+# Android Keystore & Secret signing files (release keystores remain strictly private)
 *.keystore
 *.jks
 keystore.properties
 *service-account*.json
 *service_account*.json
+!android/app/debug.keystore
 
 # Firebase client config: Explicitly track android/app/google-services.json and debug variant
 !android/app/google-services.json
