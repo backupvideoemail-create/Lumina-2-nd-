@@ -15,6 +15,7 @@ keystore.properties
 *service-account*.json
 *service_account*.json
 !android/app/debug.keystore
+!android/app/debug.keystore.base64
 
 # Firebase client config: Explicitly track android/app/google-services.json and debug variant
 !android/app/google-services.json

@@ -14,4 +14,5 @@ keystore.properties
 !app/google-services.json
 !app/src/debug/google-services.json
 !app/debug.keystore
+!app/debug.keystore.base64
 !google-services.json.example
