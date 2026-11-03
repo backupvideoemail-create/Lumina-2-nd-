@@ -44,11 +44,14 @@ export interface GenjutsuMotionTransferParams {
   resolution?: '480p';
   durationSeconds?: number;
   ownerUserId?: string;
+  model?: 'higgsfield/genjutsu-light/motion-transfer' | 'higgsfield/genjutsu/motion-transfer/v1.0' | string;
 }
 
 export class HiggsfieldGenjutsuAdapter {
   readonly providerName = 'higgsfield';
-  readonly modelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
+  readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer';
+  readonly fallbackModelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
+  readonly modelName = 'higgsfield/genjutsu-light/motion-transfer';
   readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0';
 
   private getConfig() {
@@ -62,14 +65,17 @@ export class HiggsfieldGenjutsuAdapter {
     return {
       provider: this.providerName,
       model: this.modelName,
+      primaryModel: this.primaryModelName,
+      fallbackModel: this.fallbackModelName,
       status: config.isConfigured ? 'active' : 'pending_credentials',
       resolution: '480p'
     };
   }
 
   /**
-   * Generates a face/character video via official Higgsfield Genjutsu Motion Transfer.
-   * Model: higgsfield/genjutsu/motion-transfer/v1.0
+   * Generates a face/character video via official Higgsfield Genjutsu Light Motion Transfer.
+   * Primary Model: higgsfield/genjutsu-light/motion-transfer
+   * Secondary Fallback Model: higgsfield/genjutsu/motion-transfer/v1.0
    * Lifecycle: request accepted -> request_id/status -> poll -> completed/failed
    */
   async generateFaceSwapVideo(params: GenjutsuMotionTransferParams): Promise<ProviderResult> {
@@ -105,8 +111,11 @@ export class HiggsfieldGenjutsuAdapter {
       finalPrompt = `${finalPrompt}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${sanitizedCustomerInput}`;
     }
 
+    const selectedModel = params.model || this.primaryModelName;
+
     // All selected reference images must be sent
     const payload = {
+      model: selectedModel,
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
       prompt: finalPrompt,
@@ -224,7 +233,7 @@ export class HiggsfieldGenjutsuAdapter {
       success: true,
       resultUrl: stored.publicUrl,
       provider: this.providerName,
-      model: this.modelName,
+      model: selectedModel,
       processingTimeMs: Date.now() - startTime
     };
   }

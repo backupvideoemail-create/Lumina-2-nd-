@@ -2072,6 +2072,52 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     });
   };
 
+  // Helper to extract first frame from video as automatic thumbnail poster
+  const extractFirstFrameFromVideo = async (videoSource: string): Promise<string> => {
+    return new Promise((resolve) => {
+      try {
+        const video = document.createElement('video');
+        video.crossOrigin = 'anonymous';
+        video.muted = true;
+        video.playsInline = true;
+        video.src = videoSource;
+
+        const timeout = setTimeout(() => resolve(''), 5000);
+
+        video.onloadeddata = () => {
+          video.currentTime = 0.1;
+        };
+
+        video.onseeked = () => {
+          clearTimeout(timeout);
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth || 480;
+            canvas.height = video.videoHeight || 854;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.85));
+            } else {
+              resolve('');
+            }
+          } catch {
+            resolve('');
+          }
+        };
+
+        video.onerror = () => {
+          clearTimeout(timeout);
+          resolve('');
+        };
+
+        video.load();
+      } catch {
+        resolve('');
+      }
+    });
+  };
+
   const handleSaveFaceSwapScene = async (targetStatus: 'published' | 'draft' = 'published') => {
     setDetailedError(null);
     setUploadStageInfo(null);
@@ -2080,16 +2126,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       showNotification('Scene title is required', 'error');
       return;
     }
-    if (!sceneSampleFace) {
-      showNotification('Sample Face Photo is required (upload from phone or paste URL)', 'error');
-      return;
-    }
     if (!sceneSourceVideo) {
-      showNotification('Original / Before Video is required (upload from phone or paste URL)', 'error');
-      return;
-    }
-    if (!sceneResultVideo) {
-      showNotification('Swapped Face / After Video is required (upload from phone or paste URL)', 'error');
+      showNotification('Original Driving Video is required (upload from phone or paste URL)', 'error');
       return;
     }
 
@@ -2099,20 +2137,33 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     let finalResultVideo = sceneResultVideo;
     let lastStorageProvider = 'local';
 
+    // Automatic First-Frame Extraction if Sample Face is not manually provided
+    if (!finalSampleFace && finalSourceVideo) {
+      try {
+        setUploadStageInfo({ step: 'Step 1 of 4', message: 'Extracting first frame from video...' });
+        const extracted = await extractFirstFrameFromVideo(finalSourceVideo);
+        if (extracted) {
+          finalSampleFace = extracted;
+        }
+      } catch {
+        // Fallback gracefully
+      }
+    }
+
     try {
       const headers = getAdminHeaders();
 
       // ========================================================
-      // STAGE 1: SAMPLE FACE PHOTO UPLOAD
+      // STAGE 1: SAMPLE FACE PHOTO UPLOAD (Optional Poster)
       // ========================================================
-      if (sceneSampleFace.startsWith('data:')) {
+      if (finalSampleFace && finalSampleFace.startsWith('data:')) {
         setUploadStageInfo({ step: 'Step 1 of 4', message: 'Uploading Sample Face Photo...' });
         let upRes: Response;
         try {
           upRes = await fetch('/api/admin/upload-media', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ mediaBase64: sceneSampleFace, filename: 'sample_face' })
+            body: JSON.stringify({ mediaBase64: finalSampleFace, filename: 'sample_face' })
           });
         } catch (netErr: any) {
           setIsSubmitting(false);
@@ -2215,16 +2266,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       }
 
       // ========================================================
-      // STAGE 3: SWAPPED FACE / AFTER VIDEO UPLOAD
+      // STAGE 3: SWAPPED FACE / AFTER VIDEO UPLOAD (Optional Demo)
       // ========================================================
-      if (sceneResultVideo.startsWith('data:')) {
+      if (finalResultVideo && finalResultVideo.startsWith('data:')) {
         setUploadStageInfo({ step: 'Step 3 of 4', message: 'Uploading Swapped Face / After Video...' });
         let upRes: Response;
         try {
           upRes = await fetch('/api/admin/upload-media', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ mediaBase64: sceneResultVideo, filename: 'result_video' })
+            body: JSON.stringify({ mediaBase64: finalResultVideo, filename: 'result_video' })
           });
         } catch (netErr: any) {
           setIsSubmitting(false);
@@ -2279,9 +2330,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         creditCost: Number(sceneCreditCost) || 45,
         durationSeconds: Number(sceneDurationSeconds) || 8,
         aspectRatio: sceneAspectRatio,
-        sampleFace: finalSampleFace,
+        sampleFace: finalSampleFace || undefined,
         sourceVideoPreview: finalSourceVideo,
-        resultVideoPreview: finalResultVideo,
+        resultVideoPreview: finalResultVideo || undefined,
         masterRecipePrompt: sceneMasterRecipePrompt.trim() || undefined,
         isActive: sceneIsActive,
         status: targetStatus,

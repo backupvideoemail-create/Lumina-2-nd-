@@ -1487,31 +1487,25 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'Scene title is required', code: 'MISSING_TITLE' });
     }
-    if (!sampleFace) {
-      return res.status(400).json({ error: 'Sample Face Photo is required', code: 'MISSING_SAMPLE_FACE' });
-    }
     if (!sourceVideoPreview) {
       return res.status(400).json({ error: 'Original / Before Video is required', code: 'MISSING_SOURCE_VIDEO' });
     }
-    if (!resultVideoPreview) {
-      return res.status(400).json({ error: 'Swapped Face / After Video is required', code: 'MISSING_RESULT_VIDEO' });
-    }
 
     // Defensive check: Ensure database NEVER stores raw base64 data URIs
-    let cleanSampleFace = sampleFace.trim();
-    if (cleanSampleFace.startsWith('data:')) {
-      const stored = await mediaStorage.saveMedia(cleanSampleFace, 'fsv_face', `face_${Date.now()}`, undefined, true);
-      cleanSampleFace = stored.publicUrl;
-    }
-
     let cleanSourceVideo = sourceVideoPreview.trim();
     if (cleanSourceVideo.startsWith('data:')) {
       const stored = await mediaStorage.saveMedia(cleanSourceVideo, 'fsv_source', `source_${Date.now()}`, undefined, true);
       cleanSourceVideo = stored.publicUrl;
     }
 
-    let cleanResultVideo = resultVideoPreview.trim();
-    if (cleanResultVideo.startsWith('data:')) {
+    let cleanSampleFace = sampleFace ? sampleFace.trim() : '';
+    if (cleanSampleFace && cleanSampleFace.startsWith('data:')) {
+      const stored = await mediaStorage.saveMedia(cleanSampleFace, 'fsv_face', `face_${Date.now()}`, undefined, true);
+      cleanSampleFace = stored.publicUrl;
+    }
+
+    let cleanResultVideo = resultVideoPreview ? resultVideoPreview.trim() : '';
+    if (cleanResultVideo && cleanResultVideo.startsWith('data:')) {
       const stored = await mediaStorage.saveMedia(cleanResultVideo, 'fsv_result', `result_${Date.now()}`, undefined, true);
       cleanResultVideo = stored.publicUrl;
     }
@@ -1520,9 +1514,9 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       id: `fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       title: title.trim(),
       description: (description || title).trim(),
-      sampleFace: cleanSampleFace,
+      sampleFace: cleanSampleFace || undefined,
       sourceVideoPreview: cleanSourceVideo,
-      resultVideoPreview: cleanResultVideo,
+      resultVideoPreview: cleanResultVideo || undefined,
       creditCost: Number(creditCost) || 45,
       durationSeconds: Number(durationSeconds) || 8,
       aspectRatio: aspectRatio as any,

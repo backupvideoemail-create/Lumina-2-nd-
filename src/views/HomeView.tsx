@@ -188,11 +188,11 @@ export const HomeView: React.FC = () => {
 
       {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 6.0 seconds) */}
       <section
-        className="px-3.5 pt-2 pb-2 relative"
+        className="px-3.5 pt-2 pb-2 relative flex justify-center"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
-        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-[16/9] w-full max-h-[380px] bg-black group">
+        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
@@ -203,7 +203,7 @@ export const HomeView: React.FC = () => {
               onClick={() => handleBannerClick(activeBanner)}
               className="absolute inset-0 cursor-pointer"
             >
-              {/* Background Media: Supports both Video and Image with Blurred Ambient Backdrop */}
+              {/* Media Container: 1:1 Square Theater Frame on Clean Black Canvas with Zero Blurred Duplicate Video */}
               {Boolean(
                 activeBanner.mediaType === 'video' ||
                 activeBanner.videoUrl ||
@@ -212,17 +212,6 @@ export const HomeView: React.FC = () => {
                 activeBanner.image?.startsWith('data:video/')
               ) ? (
                 <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
-                  {/* Ambient dynamic background blur for full frame theater experience */}
-                  <video
-                    key={`hero_bg_${activeBanner.id}_${activeBanner.videoUrl || activeBanner.image}`}
-                    src={activeBanner.videoUrl || activeBanner.image}
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                    aria-hidden="true"
-                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-40 scale-110 pointer-events-none select-none"
-                  />
                   <video
                     key={`hero_fg_${activeBanner.id}_${activeBanner.videoUrl || activeBanner.image}`}
                     src={activeBanner.videoUrl || activeBanner.image}
@@ -236,12 +225,6 @@ export const HomeView: React.FC = () => {
                 </div>
               ) : (
                 <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
-                  <img
-                    src={activeBanner.image}
-                    alt={activeBanner.title}
-                    aria-hidden="true"
-                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-40 scale-110 pointer-events-none select-none"
-                  />
                   <img
                     src={activeBanner.image}
                     alt={activeBanner.title}

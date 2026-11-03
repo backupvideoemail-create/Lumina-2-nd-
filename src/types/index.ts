@@ -286,9 +286,9 @@ export interface FaceSwapScene {
   id: string;
   title: string;
   description: string;
-  sourceVideoPreview: string; // Original / Before Video
-  resultVideoPreview: string; // Swapped Face / After Video
-  sampleFace: string; // Sample Face Photo
+  sourceVideoPreview: string; // Original / Before Video (Required Driving Video)
+  resultVideoPreview?: string; // Optional Swapped Face / After Video Demo
+  sampleFace?: string; // Optional Sample Face Photo / Poster Thumbnail
   creditCost: number;
   durationSeconds: number;
   aspectRatio: AspectRatio;
