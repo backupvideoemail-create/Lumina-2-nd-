@@ -296,6 +296,7 @@ export interface FaceSwapScene {
   tags: string[];
   demoVideoUrl?: string;
   masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Motion Transfer Recipe)
+  coverSource?: 'auto' | 'original' | 'after'; // Gallery Cover Source: auto (after if present, else original), original, or after
   isActive?: boolean;
   status?: 'published' | 'draft';
   isFeatured?: boolean;

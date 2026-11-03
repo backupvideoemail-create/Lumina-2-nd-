@@ -1,5 +1,8 @@
 import type { FaceSwapScene } from '../types/index.ts';
 
+export const LIP_SYNC_MASTER_RECIPE_PROMPT =
+  "Lip-sync and natural dialogue delivery scene recipe: Match natural mouth movement, phoneme-level lip synchronization, expressive facial articulation, and realistic jaw motion with the underlying dialogue and expressions of the driving sequence while strictly preserving the person's facial identity, skin tone, natural eye-gaze, and head orientation.";
+
 export const SEED_FACE_SWAP_SCENES: FaceSwapScene[] = [
   {
     id: 'fsv_trending_dance_stage',
@@ -13,6 +16,8 @@ export const SEED_FACE_SWAP_SCENES: FaceSwapScene[] = [
     aspectRatio: '9:16',
     category: 'Dance & Viral',
     tags: ['Face Swap', 'Dance', 'Instagram Reels', 'TikTok Dance', 'Viral Trend'],
+    masterRecipePrompt: LIP_SYNC_MASTER_RECIPE_PROMPT,
+    coverSource: 'auto',
     demoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-party-with-lights-40915-large.mp4'
   },
   {

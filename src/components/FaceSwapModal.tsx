@@ -56,8 +56,8 @@ export const FaceSwapModal: React.FC = () => {
     }
   }, [activeScene]);
 
-  // 2. Video Duration Trimmer (Clamped between 4 and 15 seconds)
-  const [durationSeconds, setDurationSeconds] = useState<number>(5);
+  // 2. Video Duration Trimmer (Clamped between 4 and 15 seconds, default 4s)
+  const [durationSeconds, setDurationSeconds] = useState<number>(4);
   const [detectedVideoDuration, setDetectedVideoDuration] = useState<number | null>(null);
 
   // 3. Face Reference Images (1 to 8 photos, recommended 4-5, starts strictly with 0 customer references)
@@ -66,9 +66,9 @@ export const FaceSwapModal: React.FC = () => {
   // 4. Custom Instructions (Optional, Hindi/English/Hinglish)
   const [customInstructions, setCustomInstructions] = useState<string>('');
 
-  // 5. Dynamic Credit Calculation
-  const [calculatedCredits, setCalculatedCredits] = useState<number>(214); // 5s default
-  const [costUsd, setCostUsd] = useState<number>(1.59);
+  // 5. Dynamic Credit Calculation (Genjutsu Light 480p @ $0.05/sec + 40% markup)
+  const [calculatedCredits, setCalculatedCredits] = useState<number>(27); // 4s default
+  const [costUsd, setCostUsd] = useState<number>(0.20);
   const [isCalculating, setIsCalculating] = useState<boolean>(false);
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
@@ -105,9 +105,9 @@ export const FaceSwapModal: React.FC = () => {
           }
         }
       } catch {
-        // Fallback formula: duration * $0.318 * 96.3 * 1.40
-        const usd = durationSeconds * 0.318;
-        const creds = Math.ceil(usd * 96.3 * 1.4);
+        // Fallback formula: duration * $0.05 * 96.3 * 1.40
+        const usd = durationSeconds * 0.05;
+        const creds = Math.round(usd * 96.3 * 1.4);
         if (isMounted) {
           setCalculatedCredits(creds);
           setCostUsd(Number(usd.toFixed(2)));
@@ -277,7 +277,7 @@ export const FaceSwapModal: React.FC = () => {
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
           <h1 className="text-xs sm:text-sm font-bold text-white font-display tracking-wider uppercase">
-            Face & Character Video (Genjutsu v1.0)
+            Face & Character Video (Genjutsu Light v1.0)
           </h1>
         </div>
 
@@ -293,10 +293,10 @@ export const FaceSwapModal: React.FC = () => {
         <section className="p-4 rounded-3xl bg-gradient-to-r from-amber-950/30 via-[#18161f] to-stone-900 border border-[#d4af37]/30 shadow-lg space-y-2">
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#d4af37] text-black text-[10px] font-black uppercase tracking-wider">
-              Higgsfield Genjutsu
+              Higgsfield Genjutsu Light
             </span>
             <span className="text-[10px] text-amber-200/90 font-mono font-bold">
-              480p High-Speed Transfer · $0.318/sec
+              480p Motion Transfer · $0.05/sec
             </span>
           </div>
           <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
@@ -375,7 +375,10 @@ export const FaceSwapModal: React.FC = () => {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
               {faceSwapScenes.map((scene) => {
                 const isSelected = activeScene?.id === scene.id || selectedPresetVideo === scene.sourceVideoPreview;
-                const candidateMedia = scene.resultVideoPreview || scene.sourceVideoPreview;
+                const candidateMedia =
+                  scene.coverSource === 'original'
+                    ? scene.sourceVideoPreview
+                    : (scene.resultVideoPreview || scene.sourceVideoPreview);
                 const isVideo = isVideoMedia(candidateMedia);
 
                 return (
@@ -543,7 +546,7 @@ export const FaceSwapModal: React.FC = () => {
               <span>Authoritative Credit Cost</span>
             </span>
             <span className="text-[11px] font-mono text-stone-400">
-              480p @ $0.318/s + 40% Markup
+              480p @ $0.05/s + 40% Markup (Genjutsu Light)
             </span>
           </div>
 

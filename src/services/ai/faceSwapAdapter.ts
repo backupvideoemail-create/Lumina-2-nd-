@@ -49,10 +49,10 @@ export interface GenjutsuMotionTransferParams {
 
 export class HiggsfieldGenjutsuAdapter {
   readonly providerName = 'higgsfield';
-  readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer';
+  readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
   readonly fallbackModelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
-  readonly modelName = 'higgsfield/genjutsu-light/motion-transfer';
-  readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu/motion-transfer/v1.0';
+  readonly modelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
+  readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
 
   private getConfig() {
     const apiKey = process.env.HIGGSFIELD_API_KEY || process.env.HF_API_KEY_ID || '';
@@ -113,9 +113,9 @@ export class HiggsfieldGenjutsuAdapter {
 
     const selectedModel = params.model || this.primaryModelName;
 
-    // All selected reference images must be sent
+    // Official documented Higgsfield Genjutsu payload.
+    // The model is selected directly by the REST endpoint path.
     const payload = {
-      model: selectedModel,
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
       prompt: finalPrompt,
@@ -165,8 +165,8 @@ export class HiggsfieldGenjutsuAdapter {
     const requestId = data.request_id || data.id;
 
     if (!resultVideoUrl && (data.status_url || requestId)) {
-      // Official status polling endpoint: status_url returned by provider, or canonical /v1/generations/{id}
-      const pollEndpoint = data.status_url || `https://api.higgsfield.ai/v1/generations/${requestId}`;
+      // Official status polling endpoint: status_url returned by provider, with fallback to https://api.higgsfield.ai/requests/{request_id}/status
+      const pollEndpoint = data.status_url || `https://api.higgsfield.ai/requests/${requestId}/status`;
       let attempts = 0;
       const maxAttempts = 60; // 5 minutes max (5s interval)
 

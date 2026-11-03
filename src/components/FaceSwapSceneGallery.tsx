@@ -30,13 +30,18 @@ export const FaceSwapSceneGallery: React.FC = () => {
     if (existingTemplate) {
       setSelectedTemplate(existingTemplate);
     } else {
+      const sceneCover =
+        scene.coverSource === 'original'
+          ? scene.sourceVideoPreview
+          : (scene.resultVideoPreview || scene.sourceVideoPreview);
+
       const sceneTemplate: Template = {
         id: scene.id,
         title: scene.title,
         type: 'video',
         category: 'Trending',
-        cover: scene.resultVideoPreview || scene.sourceVideoPreview,
-        preview: scene.resultVideoPreview || scene.sourceVideoPreview,
+        cover: sceneCover,
+        preview: sceneCover,
         sampleFaceThumbnail: scene.sampleFace,
         sampleBefore: scene.sourceVideoPreview,
         sampleResult: scene.resultVideoPreview,
@@ -107,7 +112,10 @@ export const FaceSwapSceneGallery: React.FC = () => {
             selectedTemplate?.faceSwapSceneId === scene.id ||
             selectedTemplate?.id === scene.id ||
             selectedFaceSwapScene?.id === scene.id;
-          const previewMedia = scene.resultVideoPreview || scene.sourceVideoPreview;
+          const previewMedia =
+            scene.coverSource === 'original'
+              ? scene.sourceVideoPreview
+              : (scene.resultVideoPreview || scene.sourceVideoPreview);
           const isVideo = isVideoMedia(previewMedia);
 
           return (

@@ -508,6 +508,67 @@ export class MediaStorageService {
   }
 
   /**
+   * Generates a short-lived, authorized HTTPS GET URL for external AI providers (e.g. Higgsfield)
+   * to download private customer assets (face photos, driving videos) without exposing them to public.
+   * 
+   * If R2 is configured: Generates Cloudflare R2 S3-presigned GET URL (1-hour expiry).
+   * If local storage: Generates a secure HMAC-signed proxy URL (/api/media/signed/:token).
+   * Privacy: NEVER log signed URLs or private user data.
+   */
+  public async generateProviderSignedUrl(
+    mediaUrlOrName: string,
+    expiresInSeconds: number = 3600,
+    serverBaseUrl?: string
+  ): Promise<string> {
+    if (!mediaUrlOrName || typeof mediaUrlOrName !== 'string') {
+      return '';
+    }
+
+    const trimmed = mediaUrlOrName.trim();
+
+    // If already an external third-party public URL (e.g. Unsplash, Mixkit, external CDN), return as-is
+    if (
+      (trimmed.startsWith('https://') || trimmed.startsWith('http://')) &&
+      !trimmed.includes('/api/media/') &&
+      !trimmed.includes('localhost') &&
+      !trimmed.includes('127.0.0.1')
+    ) {
+      return trimmed;
+    }
+
+    // Extract file name
+    let fileName = trimmed;
+    if (trimmed.includes('/api/media/')) {
+      fileName = trimmed.split('/api/media/')[1].split('?')[0];
+    } else if (trimmed.includes('/')) {
+      fileName = path.basename(trimmed.split('?')[0]);
+    }
+    const safeName = path.basename(fileName);
+
+    // 1. If stored in Cloudflare R2, generate R2 presigned GET URL
+    const meta = await this.getMetadata(safeName);
+    if (this.s3Client && this.r2Config.bucketName && meta?.r2Key) {
+      try {
+        const command = new GetObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: meta.r2Key
+        });
+        const r2PresignedUrl = await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+        if (r2PresignedUrl) {
+          return r2PresignedUrl;
+        }
+      } catch {
+        // Fall back to signed local proxy
+      }
+    }
+
+    // 2. Generate secure HMAC-signed proxy token for local disk storage
+    const token = createSignedMediaToken(safeName, expiresInSeconds);
+    const hostBase = (process.env.PROD_SERVER_URL || process.env.APP_URL || serverBaseUrl || '').replace(/\/$/, '');
+    return hostBase ? `${hostBase}/api/media/signed/${token}` : `/api/media/signed/${token}`;
+  }
+
+  /**
    * Streams media directly from authoritative R2 storage with user isolation enforcement.
    */
   public async getAuthorizedObjectStream(
@@ -747,3 +808,71 @@ export class MediaStorageService {
 }
 
 export const mediaStorage = new MediaStorageService();
+
+/**
+ * Secret key used to sign and verify temporary media proxy tokens.
+ */
+const SIGNED_MEDIA_SECRET =
+  process.env.SESSION_SECRET || process.env.ADMIN_SECRET_KEY || 'lumina-secure-signed-media-secret-2026';
+
+/**
+ * Creates a tamper-proof, time-limited HMAC-SHA256 signed token for external provider media access.
+ */
+export function createSignedMediaToken(fileName: string, expiresInSeconds: number = 3600): string {
+  const safeName = path.basename(fileName);
+  const expiresAt = Math.floor(Date.now() / 1000) + Math.max(60, expiresInSeconds);
+  const payload = `${safeName}:${expiresAt}`;
+  const hmac = crypto
+    .createHmac('sha256', SIGNED_MEDIA_SECRET)
+    .update(payload)
+    .digest('hex');
+  // Format: base64(fileName:expiresAt:hmac)
+  return Buffer.from(`${payload}:${hmac}`).toString('base64url');
+}
+
+/**
+ * Verifies a temporary HMAC-SHA256 signed media token.
+ */
+export function verifySignedMediaToken(token: string): {
+  valid: boolean;
+  fileName?: string;
+  error?: string;
+} {
+  try {
+    if (!token || typeof token !== 'string') {
+      return { valid: false, error: 'Missing token' };
+    }
+    const decoded = Buffer.from(token, 'base64url').toString('utf-8');
+    const parts = decoded.split(':');
+    if (parts.length !== 3) {
+      return { valid: false, error: 'Malformed token format' };
+    }
+    const [fileName, expiresAtStr, providedHmac] = parts;
+    const expiresAt = parseInt(expiresAtStr, 10);
+    if (isNaN(expiresAt)) {
+      return { valid: false, error: 'Invalid expiry timestamp' };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (now > expiresAt) {
+      return { valid: false, error: 'Signed media link has expired' };
+    }
+    const payload = `${fileName}:${expiresAtStr}`;
+    const expectedHmac = crypto
+      .createHmac('sha256', SIGNED_MEDIA_SECRET)
+      .update(payload)
+      .digest('hex');
+
+    if (
+      !crypto.timingSafeEqual(
+        Buffer.from(providedHmac, 'hex'),
+        Buffer.from(expectedHmac, 'hex')
+      )
+    ) {
+      return { valid: false, error: 'Invalid token signature' };
+    }
+
+    return { valid: true, fileName: path.basename(fileName) };
+  } catch (err: any) {
+    return { valid: false, error: err.message || 'Token verification failed' };
+  }
+}

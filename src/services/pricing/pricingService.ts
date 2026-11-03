@@ -119,9 +119,9 @@ export function calculateAuthoritativeTemplateCost(
     providerCostUsd?: number;
   }
 ): number {
-  // 1. Face Swap: Dynamic calculation based on duration ($0.318/sec @ 480p + 40% markup)
+  // 1. Face Swap: Dynamic calculation based on duration ($0.05/sec @ 480p + 40% markup)
   if (template.isFaceSwap || template.model?.includes('genjutsu') || template.model?.includes('faceswap')) {
-    return calculateFaceSwapCredits(template.durationSeconds || 5).credits;
+    return calculateFaceSwapCredits(template.durationSeconds || 4).credits;
   }
 
   // 2. Video Templates: Server-authoritative dynamic calculation based on model, duration, and resolution
@@ -166,19 +166,19 @@ export function calculateAuthoritativeTemplateCost(
 }
 
 /**
- * Authoritative Face/Character Video Cost Calculation (Higgsfield Genjutsu Motion Transfer).
- * Rate: 480p = $0.318 per source-video second.
- * Formula: Duration (sec) × $0.318 × USD/INR Rate × 1.40 (+40% Business Markup) -> Required Customer Credits.
+ * Authoritative Face/Character Video Cost Calculation (Higgsfield Genjutsu Light Motion Transfer).
+ * Rate: 480p = $0.05 per source-video second list price.
+ * Formula: Duration (sec) × $0.05 × USD/INR Rate × 1.40 (+40% Business Markup) -> Required Customer Credits.
  */
-export function calculateFaceSwapCredits(durationSeconds: number): {
+export function calculateFaceSwapCredits(durationSeconds: number = 4): {
   durationSeconds: number;
   providerRatePerSecondUsd: number;
   costUsd: number;
   credits: number;
 } {
   // Clamped duration: minimum 4 seconds, maximum 15 seconds
-  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(durationSeconds || 5)));
-  const providerRatePerSecondUsd = 0.318;
+  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(durationSeconds || 4)));
+  const providerRatePerSecondUsd = 0.05;
   const costUsd = Number((clampedDuration * providerRatePerSecondUsd).toFixed(3));
   const credits = calculateCreditsFromUsd(costUsd);
   return {

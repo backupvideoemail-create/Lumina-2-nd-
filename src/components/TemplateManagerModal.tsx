@@ -105,10 +105,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [sceneStatus, setSceneStatus] = useState<'published' | 'draft'>('published');
   const [sceneIsFeatured, setSceneIsFeatured] = useState<boolean>(false);
   const [sceneOrder, setSceneOrder] = useState<number>(0);
+  const [sceneCoverSource, setSceneCoverSource] = useState<'auto' | 'original' | 'after'>('auto');
 
   // DEFAULT RECIPE PROMPTS (Standardized across Admin and Engine)
   const DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT =
-    "High aesthetic cinematic neural motion transfer. Seamlessly map target facial identity onto the main character in this driving sequence, preserving facial micro-expressions, skin tone, natural eye-gaze, lighting integration, hair structure, and fluid body choreography without distortion or artifacts.";
+    "Lip-sync and natural dialogue delivery scene recipe: Match natural mouth movement, phoneme-level lip synchronization, expressive facial articulation, and realistic jaw motion with the underlying dialogue and expressions of the driving sequence while strictly preserving the person's facial identity, skin tone, natural eye-gaze, and head orientation.";
   const DEFAULT_PHOTO_RECIPE_PROMPT =
     "Hyper-realistic commercial studio portrait, 8k resolution, photorealistic skin textures, dramatic softbox lighting, perfect face identity mapping, authentic color grading.";
   const DEFAULT_VIDEO_RECIPE_PROMPT =
@@ -1984,6 +1985,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneStatus('published');
     setSceneIsFeatured(false);
     setSceneOrder(0);
+    setSceneCoverSource('auto');
 
     setSceneSampleFace('');
     setSceneSampleFaceName('');
@@ -2009,6 +2011,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneStatus(scene.status || 'published');
     setSceneIsFeatured(Boolean(scene.isFeatured));
     setSceneOrder(scene.order || 0);
+    setSceneCoverSource(scene.coverSource || 'auto');
 
     setSceneSampleFace(scene.sampleFace || '');
     setSceneSampleFaceName(scene.sampleFace ? 'Current sample face' : '');

@@ -2498,6 +2498,19 @@ export class ProductionDatabase {
     return item;
   }
 
+  public updatePricingBannerItem(id: string, updates: Partial<PricingBannerItem>): PricingBannerItem | null {
+    const currentConfig = this.getPricingBanner();
+    if (!currentConfig || !currentConfig.items) return null;
+    const item = currentConfig.items.find(i => i.id === id);
+    if (!item) return null;
+    Object.assign(item, updates);
+    currentConfig.updatedAt = new Date().toISOString();
+    this.db.pricingBanner = currentConfig;
+    this.save();
+    this.syncToFirestore('config', 'pricing_banner', currentConfig);
+    return item;
+  }
+
   public setPricingBanner(banner: {
     mediaUrl: string;
     mediaType: 'image' | 'video';

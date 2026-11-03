@@ -21,7 +21,7 @@ import {
   calculateFaceSwapCredits
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
-import { mediaStorage } from './src/services/storage/mediaStorage.ts';
+import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import { prodDb, adminFirestoreDb } from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
@@ -221,6 +221,51 @@ app.get('/api/media/:fileId', async (req, res) => {
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to retrieve media' });
+  }
+});
+
+// Authorized signed media stream for external AI provider downloads (e.g. Higgsfield Genjutsu Light)
+app.get('/api/media/signed/:token', async (req, res) => {
+  const { token } = req.params;
+  const verification = verifySignedMediaToken(token);
+  if (!verification.valid || !verification.fileName) {
+    return res.status(403).json({ error: verification.error || 'Invalid or expired signed media link' });
+  }
+
+  const fileId = verification.fileName;
+  try {
+    const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
+    if (fs.existsSync(localPath)) {
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.sendFile(localPath, { acceptRanges: true });
+    }
+
+    const rangeHeader = req.headers.range;
+    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, undefined, rangeHeader);
+    if (authResult.error || !authResult.body) {
+      const status = authResult.statusCode || 404;
+      return res.status(status).json({ error: authResult.error || 'Media file not found' });
+    }
+
+    if (authResult.statusCode) {
+      res.status(authResult.statusCode);
+    }
+    if (authResult.contentRange) {
+      res.setHeader('Content-Range', authResult.contentRange);
+    }
+    if (authResult.contentLength !== undefined) {
+      res.setHeader('Content-Length', authResult.contentLength);
+    }
+    res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    if (typeof authResult.body.pipe === 'function') {
+      authResult.body.pipe(res);
+    } else {
+      res.send(authResult.body);
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to stream signed media' });
   }
 });
 
@@ -1360,6 +1405,57 @@ app.post('/api/admin/pricing-banners', requireAdmin, async (req, res) => {
   }
 });
 
+app.put('/api/admin/pricing-banners/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { mediaBase64, mediaUrl, mediaType = 'image', posterBase64, posterUrl, isEnabled, altText } = req.body;
+    const updates: any = {};
+
+    if (altText !== undefined) updates.altText = String(altText).trim();
+    if (isEnabled !== undefined) updates.isEnabled = Boolean(isEnabled);
+    if (mediaType) updates.mediaType = mediaType === 'video' ? 'video' : 'image';
+
+    if (mediaBase64 && typeof mediaBase64 === 'string') {
+      if (mediaBase64.startsWith('data:')) {
+        const ext = mediaType === 'video' ? 'mp4' : 'jpg';
+        const stored = await mediaStorage.saveMedia(
+          mediaBase64,
+          'asset',
+          `pricing_banner_${Date.now()}.${ext}`,
+          undefined,
+          true
+        );
+        updates.mediaUrl = stored.publicUrl;
+      } else if (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/')) {
+        updates.mediaUrl = mediaBase64;
+      }
+    } else if (mediaUrl) {
+      updates.mediaUrl = mediaUrl;
+    }
+
+    if (posterBase64 && typeof posterBase64 === 'string' && posterBase64.startsWith('data:')) {
+      const storedPoster = await mediaStorage.saveMedia(
+        posterBase64,
+        'asset',
+        `pricing_poster_${Date.now()}.jpg`,
+        undefined,
+        true
+      );
+      updates.posterUrl = storedPoster.publicUrl;
+    } else if (posterUrl !== undefined) {
+      updates.posterUrl = posterUrl || undefined;
+    }
+
+    const updated = prodDb.updatePricingBannerItem(id, updates);
+    if (!updated) {
+      return res.status(404).json({ error: 'Pricing banner not found' });
+    }
+    res.json({ success: true, banner: updated, allBanners: prodDb.getPricingBannerPool() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update pricing banner' });
+  }
+});
+
 app.put('/api/admin/pricing-banners/:id/toggle', requireAdmin, (req, res) => {
   const { id } = req.params;
   const { isEnabled } = req.body;
@@ -1478,6 +1574,7 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       aspectRatio = '9:16',
       category = 'Viral & Trending',
       tags = ['Face Swap', 'Viral'],
+      coverSource = 'auto',
       isActive = true,
       status = 'published',
       isFeatured = false,
@@ -1523,6 +1620,7 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       category: (category || 'Viral & Trending').trim(),
       tags: Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean),
       masterRecipePrompt: req.body.masterRecipePrompt ? String(req.body.masterRecipePrompt).trim() : undefined,
+      coverSource: ['auto', 'original', 'after'].includes(coverSource) ? (coverSource as any) : 'auto',
       isActive: Boolean(isActive),
       status: status === 'draft' ? 'draft' : 'published',
       isFeatured: Boolean(isFeatured),
@@ -1548,6 +1646,9 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     if (req.body.description !== undefined) updates.description = String(req.body.description).trim();
     if (req.body.masterRecipePrompt !== undefined) {
       updates.masterRecipePrompt = req.body.masterRecipePrompt ? String(req.body.masterRecipePrompt).trim() : undefined;
+    }
+    if (req.body.coverSource !== undefined) {
+      updates.coverSource = ['auto', 'original', 'after'].includes(req.body.coverSource) ? req.body.coverSource : 'auto';
     }
     
     if (req.body.sampleFace !== undefined) {
@@ -3264,20 +3365,20 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   })();
 });
 
-// Calculate Face Swap Credits Dynamically based on trimmed duration (4-15 seconds)
+// Calculate Face Swap Credits Dynamically based on trimmed duration (4-15 seconds, default 4s)
 app.post('/api/faceswap/calculate-cost', (req, res) => {
-  const { durationSeconds = 5 } = req.body;
-  const pricing = calculateFaceSwapCredits(Number(durationSeconds) || 5);
+  const { durationSeconds = 4 } = req.body;
+  const pricing = calculateFaceSwapCredits(Number(durationSeconds) || 4);
   res.json(pricing);
 });
 
-// Final Face / Character Video Generation Route (Higgsfield Genjutsu Motion Transfer with Physical Video Trimming)
+// Final Face / Character Video Generation Route (Higgsfield Genjutsu Light Motion Transfer with Physical Video Trimming)
 app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const {
     sourceVideoUrl,
     sourceVideoBase64,
-    durationSeconds = 5,
+    durationSeconds = 4,
     faceReferenceUrls = [],
     faceReferenceBase64List = [],
     customInstructions,
@@ -3317,8 +3418,8 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     }
   }
 
-  // 1. Duration Validation: Clamped strictly between 4 and 15 seconds
-  const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 5)));
+  // 1. Duration Validation: Clamped strictly between 4 and 15 seconds (default 4s)
+  const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 4)));
 
   // 2. Physical Video Trimming via FFmpeg
   let trimmedVideoUrl = '';
@@ -3439,7 +3540,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     inputMediaUrl: allReferenceUrls[0],
     creditCost: requiredCredits,
     engine: 'AI_GENERATION',
-    model: 'higgsfield/genjutsu/motion-transfer/v1.0',
+    model: 'higgsfield/genjutsu-light/motion-transfer/v1.0',
     workflow: 'neural-motion-transfer-480p',
     createdAt: new Date().toISOString(),
     isAiGenerated: true
@@ -3453,13 +3554,21 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     remainingCredits: prodDb.getWallet(user.id).balance
   });
 
-  // 7. Execute Real Higgsfield Genjutsu Generation Asynchronously with Trimmed Video URL
+  // 7. Execute Real Higgsfield Genjutsu Light Generation Asynchronously with Provider Signed URLs
   (async () => {
     try {
       const sanitizedInstructions = customInstructions ? String(customInstructions).trim().slice(0, 300) : undefined;
+
+      // Generate temporary authorized signed URLs for provider download without exposing private customer media
+      // Privacy safeguard: NEVER log signed URLs or private customer data into server logs
+      const providerVideoUrl = await mediaStorage.generateProviderSignedUrl(trimmedVideoUrl, 3600);
+      const providerReferenceUrls = await Promise.all(
+        allReferenceUrls.map((url) => mediaStorage.generateProviderSignedUrl(url, 3600))
+      );
+
       const result = await faceSwapAdapter.generateFaceSwapVideo({
-        videoUrl: trimmedVideoUrl,
-        imageUrls: allReferenceUrls, // ALL reference images sent
+        videoUrl: providerVideoUrl,
+        imageUrls: providerReferenceUrls, // ALL reference images sent
         masterRecipePrompt: selectedScene?.masterRecipePrompt,
         customInstructions: sanitizedInstructions,
         resolution: '480p',
