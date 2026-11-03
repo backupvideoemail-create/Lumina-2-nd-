@@ -1303,6 +1303,34 @@ async function runSystemVerification() {
   assert(pricingServiceContent.includes('providerRatePerSecondUsd = 0.05') || pricingServiceContent.includes('0.05'), '23.5 pricingService defines Genjutsu Light $0.05/sec list price');
   assert(pricingServiceContent.includes('40') && pricingServiceContent.includes('markupPercent'), '23.5 pricingService applies dynamic 40% markup on provider costs');
 
+  // 24. Hero Banner Edge-to-Edge Display, Full Video Player Modal & Couple 2-Photo Upload
+  console.log('\n--- SUITE 24: Hero Banner Edge-to-Edge, Full Video Player & Couple 2-Photo System ---');
+
+  // 24.1 Edge-to-Edge Hero Banner display with object-cover
+  assert(homeViewContent.includes('object-cover object-center'), '24.1 Hero banner uses object-cover to eliminate black side bars');
+
+  // 24.2 Fullscreen Video Player Modal with controls
+  assert(homeViewContent.includes('fullVideoBanner'), '24.2 HomeView maintains fullVideoBanner modal state');
+  assert(homeViewContent.includes('closeFullVideoPlayer'), '24.2 HomeView contains closeFullVideoPlayer handler');
+  assert(homeViewContent.includes('isFullVideoMuted'), '24.2 Full video player starts muted by default');
+  assert(homeViewContent.includes('videoCurrentTime'), '24.2 Full video player provides scrubber and time tracking');
+
+  // 24.3 Couple 2-Photo Upload Boxes in TemplateDetailModal
+  const detailModalContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf-8');
+  assert(detailModalContent.includes("tpl.category === 'Couple'"), '24.3 TemplateDetailModal detects Couple category');
+  assert(detailModalContent.includes('partner_1') && detailModalContent.includes('partner_2'), '24.3 TemplateDetailModal defines partner_1 and partner_2 slots');
+  assert(detailModalContent.includes('Trash2'), '24.3 TemplateDetailModal includes Trash2 icon for removing photos individually');
+  assert(detailModalContent.includes('Upload Partner Photo to Continue'), '24.3 CTA button indicates missing partner photo');
+
+  // 24.4 Admin Couple Category Dynamic Input Slots
+  assert(tplManagerContent.includes('partner_1') && tplManagerContent.includes('partner_2'), '24.4 TemplateManagerModal configures partner_1 and partner_2 default slots');
+  assert(tplManagerContent.includes('Alt: Boy / Person A'), '24.4 TemplateManagerModal provides alternative label presets');
+
+  // 24.5 Templates Data Couple Catalog (Both Photo & Video)
+  const tplsDataSuite24 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/data/templatesData.ts'), 'utf-8');
+  assert(tplsDataSuite24.includes('tpl_couple_sunset_silhouette'), '24.5 Couple photo template exists in seed templates');
+  assert(tplsDataSuite24.includes('tpl_couple_cinematic_waltz'), '24.5 Couple video template exists in seed templates');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

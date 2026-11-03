@@ -860,8 +860,8 @@ export const SEED_TEMPLATES: Template[] = [
     description: 'Cinematic beach golden hour sunset portrait combining both your photos into a romantic dream setting.',
     aspectRatio: '9:16',
     requiredInputs: [
-      { id: 'partner_1', label: 'Photo 1 (Your Photo)', type: 'image', description: 'Your clear portrait photo' },
-      { id: 'partner_2', label: 'Photo 2 (Partner Photo)', type: 'image', description: 'Partner portrait photo' }
+      { id: 'partner_1', slotId: 'partner_1', label: 'Upload Your Photo', type: 'image', isRequired: true, description: 'आपकी स्पष्ट सेल्फी या फ़ोटो (Person A)' },
+      { id: 'partner_2', slotId: 'partner_2', label: 'Upload Partner Photo', type: 'image', isRequired: true, description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो (Person B)' }
     ],
     creditCost: 35,
     engine: 'AI_GENERATION',
@@ -873,6 +873,35 @@ export const SEED_TEMPLATES: Template[] = [
     tags: ['Couple', 'Love', 'Romantic', 'Sunset', 'Anniversary'],
     likesCount: 162000,
     resolutionLabel: '4K Ultra HD',
+    badge: 'COUPLE'
+  },
+  {
+    id: 'tpl_couple_cinematic_waltz',
+    title: 'Romantic Couple Slow Dance Reel',
+    type: 'video',
+    mediaType: 'video',
+    category: 'Couple',
+    cover: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=900&q=80',
+    preview: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=900&q=80',
+    sampleBefore: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80',
+    sampleResult: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=900&q=80',
+    description: 'Cinematic slow-motion 60FPS romantic evening waltz combining both partners into a dreamy starlit ballroom.',
+    aspectRatio: '9:16',
+    requiredInputs: [
+      { id: 'partner_1', slotId: 'partner_1', label: 'Upload Your Photo', type: 'image', isRequired: true, description: 'आपकी स्पष्ट सेल्फी या फ़ोटो (Person A)' },
+      { id: 'partner_2', slotId: 'partner_2', label: 'Upload Partner Photo', type: 'image', isRequired: true, description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो (Person B)' }
+    ],
+    creditCost: 45,
+    engine: 'AI_GENERATION',
+    model: 'gemini-omni-1.1-flash',
+    workflow: 'couple-waltz-cinema',
+    sortOrder: 27.5,
+    isFeatured: true,
+    isActive: true,
+    tags: ['Couple', 'Video', 'Romantic', 'Dance', 'Reels'],
+    musicTrack: { name: 'Moonlight Romantic Waltz', author: 'Symphony Love' },
+    likesCount: 148000,
+    resolutionLabel: '1080p 60FPS',
     badge: 'COUPLE'
   },
   {

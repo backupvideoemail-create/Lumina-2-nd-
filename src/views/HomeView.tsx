@@ -15,7 +15,12 @@ import {
   Cake,
   HeartHandshake,
   Music2,
-  Crown
+  Crown,
+  X,
+  Pause,
+  Volume2,
+  VolumeX,
+  ArrowLeft
 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 import { TemplateCard } from '../components/TemplateCard';
@@ -54,8 +59,22 @@ export const HomeView: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [timerResetKey, setTimerResetKey] = useState(0);
 
+  // Fullscreen / Responsive Video Player for Hero Banner Videos
+  const [fullVideoBanner, setFullVideoBanner] = useState<HomeBannerItem | null>(null);
+  const [isPlayingFullVideo, setIsPlayingFullVideo] = useState(true);
+  const [isFullVideoMuted, setIsFullVideoMuted] = useState(true);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const fullVideoRef = useRef<HTMLVideoElement>(null);
+
   const resetTimer = () => {
     setTimerResetKey((k) => k + 1);
+  };
+
+  const closeFullVideoPlayer = () => {
+    setFullVideoBanner(null);
+    setIsPaused(false);
+    resetTimer();
   };
 
   // Fetch live admin-managed banners dynamically
@@ -86,12 +105,33 @@ export const HomeView: React.FC = () => {
   const activeBanner: HomeBannerItem = banners[currentBannerIndex] || banners[0] || HOME_HERO_BANNERS[0];
 
   const handleBannerClick = (banner: HomeBannerItem) => {
-    const targetTpl = templates.find((t) => t.id === banner.targetTemplateId);
-    if (targetTpl) {
-      setSelectedTemplate(targetTpl);
+    const isVideo = Boolean(
+      banner.mediaType === 'video' ||
+      banner.videoUrl ||
+      banner.image?.endsWith('.mp4') ||
+      banner.image?.endsWith('.webm') ||
+      banner.image?.startsWith('data:video/')
+    );
+    if (isVideo) {
+      setFullVideoBanner(banner);
+      setIsPlayingFullVideo(true);
+      setIsFullVideoMuted(true); // Rule 4: Must start muted
+      setIsPaused(true); // Rule 2 & 3: Pause carousel auto-slide while player is open
     } else {
-      setSelectedCategory(banner.category);
+      const targetTpl = templates.find((t) => t.id === banner.targetTemplateId);
+      if (targetTpl) {
+        setSelectedTemplate(targetTpl);
+      } else {
+        setSelectedCategory(banner.category);
+      }
     }
+  };
+
+  const formatTime = (seconds: number) => {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
   // Dynamic Data-Driven Category Rails
@@ -220,7 +260,7 @@ export const HomeView: React.FC = () => {
                     muted
                     loop
                     playsInline
-                    className="relative z-10 w-full h-full object-contain object-center"
+                    className="relative z-10 w-full h-full object-cover object-center"
                   />
                 </div>
               ) : (
@@ -228,7 +268,7 @@ export const HomeView: React.FC = () => {
                   <img
                     src={activeBanner.image}
                     alt={activeBanner.title}
-                    className="relative z-10 w-full h-full object-contain object-center"
+                    className="relative z-10 w-full h-full object-cover object-center"
                   />
                 </div>
               )}
@@ -457,6 +497,189 @@ export const HomeView: React.FC = () => {
           })
         )}
       </div>
+
+      {/* FULLSCREEN / RESPONSIVE HERO BANNER VIDEO MODAL */}
+      <AnimatePresence>
+        {fullVideoBanner && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/95 backdrop-blur-2xl flex flex-col justify-between"
+            onClick={closeFullVideoPlayer}
+          >
+            {/* Header Bar */}
+            <div
+              className="flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/80 to-transparent z-20 shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={closeFullVideoPlayer}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition-all cursor-pointer"
+                aria-label="Back to carousel"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back</span>
+              </button>
+
+              <div className="flex flex-col items-center max-w-[200px] truncate text-center">
+                <span className="text-xs font-bold text-white truncate">{fullVideoBanner.title}</span>
+                <span className="text-[10px] text-amber-300 font-semibold">{fullVideoBanner.badge || 'PRO REEL'}</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (fullVideoRef.current) {
+                      fullVideoRef.current.muted = !isFullVideoMuted;
+                      setIsFullVideoMuted(!isFullVideoMuted);
+                    }
+                  }}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer"
+                  title={isFullVideoMuted ? 'Unmute' : 'Mute'}
+                >
+                  {isFullVideoMuted ? <VolumeX className="w-4 h-4 text-amber-300" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={closeFullVideoPlayer}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer"
+                  aria-label="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Main Video Viewport (Full original aspect ratio without any crop) */}
+            <div
+              className="relative flex-1 flex items-center justify-center overflow-hidden p-2"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <video
+                ref={fullVideoRef}
+                src={fullVideoBanner.videoUrl || fullVideoBanner.image}
+                poster={fullVideoBanner.coverMedia}
+                autoPlay
+                playsInline
+                loop
+                muted={isFullVideoMuted}
+                onTimeUpdate={() => {
+                  if (fullVideoRef.current) {
+                    setVideoCurrentTime(fullVideoRef.current.currentTime);
+                    setVideoDuration(fullVideoRef.current.duration || 0);
+                  }
+                }}
+                onLoadedMetadata={() => {
+                  if (fullVideoRef.current) {
+                    setVideoDuration(fullVideoRef.current.duration || 0);
+                  }
+                }}
+                onClick={() => {
+                  if (!fullVideoRef.current) return;
+                  if (fullVideoRef.current.paused) {
+                    fullVideoRef.current.play().catch(() => {});
+                    setIsPlayingFullVideo(true);
+                  } else {
+                    fullVideoRef.current.pause();
+                    setIsPlayingFullVideo(false);
+                  }
+                }}
+                className="max-h-full max-w-full object-contain rounded-2xl shadow-2xl cursor-pointer"
+              />
+
+              {/* Center Play/Pause Overlay Indicator when paused */}
+              {!isPlayingFullVideo && (
+                <div
+                  onClick={() => {
+                    if (fullVideoRef.current) {
+                      fullVideoRef.current.play().catch(() => {});
+                      setIsPlayingFullVideo(true);
+                    }
+                  }}
+                  className="absolute inset-0 flex items-center justify-center bg-black/40 cursor-pointer"
+                >
+                  <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center text-white border border-white/30 shadow-2xl">
+                    <Play className="w-8 h-8 fill-white ml-1" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Controls Bar (Play/Pause, Scrubber, Time, CTA) */}
+            <div
+              className="p-4 bg-gradient-to-t from-black via-black/90 to-transparent z-20 space-y-3 shrink-0 max-w-lg mx-auto w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Scrubber & Time */}
+              <div className="space-y-1">
+                <input
+                  type="range"
+                  min={0}
+                  max={videoDuration || 100}
+                  step={0.1}
+                  value={videoCurrentTime}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setVideoCurrentTime(val);
+                    if (fullVideoRef.current) {
+                      fullVideoRef.current.currentTime = val;
+                    }
+                  }}
+                  className="w-full accent-[#ff9f00] cursor-pointer h-1.5 bg-white/20 rounded-lg"
+                />
+                <div className="flex items-center justify-between text-[11px] text-stone-400 font-mono">
+                  <span>{formatTime(videoCurrentTime)}</span>
+                  <span className="text-[10px] text-stone-500 font-sans">{isFullVideoMuted ? 'Muted Preview' : 'Audio On'}</span>
+                  <span>{formatTime(videoDuration)}</span>
+                </div>
+              </div>
+
+              {/* Control Actions */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!fullVideoRef.current) return;
+                      if (fullVideoRef.current.paused) {
+                        fullVideoRef.current.play().catch(() => {});
+                        setIsPlayingFullVideo(true);
+                      } else {
+                        fullVideoRef.current.pause();
+                        setIsPlayingFullVideo(false);
+                      }
+                    }}
+                    className="p-3 rounded-2xl bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer"
+                    title={isPlayingFullVideo ? 'Pause' : 'Play'}
+                  >
+                    {isPlayingFullVideo ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white ml-0.5" />}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetTpl = templates.find((t) => t.id === fullVideoBanner.targetTemplateId);
+                    closeFullVideoPlayer();
+                    if (targetTpl) {
+                      setSelectedTemplate(targetTpl);
+                    } else {
+                      setSelectedCategory(fullVideoBanner.category);
+                    }
+                  }}
+                  className="flex-1 py-3 px-5 rounded-2xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-amber-500/25 hover:brightness-110 active:scale-95 transition-all cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 fill-black" />
+                  <span>Create with This Template</span>
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

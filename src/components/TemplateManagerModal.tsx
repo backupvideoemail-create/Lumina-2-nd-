@@ -950,8 +950,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       setTplRequiredInputs(tpl.requiredInputs);
     } else if (tpl.category === 'Couple') {
       setTplRequiredInputs([
-        { id: 'slot_person_1', label: 'आपकी Photo (Person A)', type: 'image', description: 'आपकी स्पष्ट सेल्फी या फ़ोटो' },
-        { id: 'slot_person_2', label: 'Partner की Photo (Person B)', type: 'image', description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो' }
+        { id: 'partner_1', slotId: 'partner_1', label: 'आपकी Photo', type: 'image', isRequired: true, description: 'Boy / Person A clear face photo' },
+        { id: 'partner_2', slotId: 'partner_2', label: 'Partner की Photo', type: 'image', isRequired: true, description: 'Girl / Person B clear face photo' }
       ]);
     } else {
       setTplRequiredInputs([]);
@@ -3848,7 +3848,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       <label className="text-xs font-bold text-stone-300">Category</label>
                       <select
                         value={tplCategory}
-                        onChange={(e) => setTplCategory(e.target.value)}
+                        onChange={(e) => {
+                          const newCat = e.target.value;
+                          setTplCategory(newCat);
+                          if (newCat === 'Couple' && tplRequiredInputs.length === 0) {
+                            setTplRequiredInputs([
+                              { id: 'partner_1', slotId: 'partner_1', label: 'आपकी Photo', type: 'image', isRequired: true, description: 'Boy / Person A clear face photo' },
+                              { id: 'partner_2', slotId: 'partner_2', label: 'Partner की Photo', type: 'image', isRequired: true, description: 'Girl / Person B clear face photo' }
+                            ]);
+                          }
+                        }}
                         className="w-full mt-1.5 px-3 py-2.5 rounded-xl bg-stone-900 border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       >
                         {allKnownCategories.map((cat) => (
@@ -4018,8 +4027,62 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           </div>
 
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                            <div className="sm:col-span-2">
-                              <label className="text-[9.5px] font-semibold text-stone-400">Display Label</label>
+                            <div className="sm:col-span-2 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[9.5px] font-semibold text-stone-400">Display Label</label>
+                                {sIdx === 0 && (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = [...tplRequiredInputs];
+                                        updated[sIdx] = { ...updated[sIdx], label: 'आपकी Photo' };
+                                        setTplRequiredInputs(updated);
+                                      }}
+                                      className="text-[9px] text-pink-300 hover:text-white px-1.5 py-0.5 rounded bg-white/5 cursor-pointer"
+                                    >
+                                      Default: आपकी Photo
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = [...tplRequiredInputs];
+                                        updated[sIdx] = { ...updated[sIdx], label: 'Boy / Person A' };
+                                        setTplRequiredInputs(updated);
+                                      }}
+                                      className="text-[9px] text-amber-300 hover:text-white px-1.5 py-0.5 rounded bg-white/5 cursor-pointer"
+                                    >
+                                      Alt: Boy / Person A
+                                    </button>
+                                  </div>
+                                )}
+                                {sIdx === 1 && (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = [...tplRequiredInputs];
+                                        updated[sIdx] = { ...updated[sIdx], label: 'Partner की Photo' };
+                                        setTplRequiredInputs(updated);
+                                      }}
+                                      className="text-[9px] text-pink-300 hover:text-white px-1.5 py-0.5 rounded bg-white/5 cursor-pointer"
+                                    >
+                                      Default: Partner की Photo
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = [...tplRequiredInputs];
+                                        updated[sIdx] = { ...updated[sIdx], label: 'Girl / Person B' };
+                                        setTplRequiredInputs(updated);
+                                      }}
+                                      className="text-[9px] text-amber-300 hover:text-white px-1.5 py-0.5 rounded bg-white/5 cursor-pointer"
+                                    >
+                                      Alt: Girl / Person B
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                               <input
                                 type="text"
                                 value={slot.label}
@@ -4028,7 +4091,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                                   updated[sIdx] = { ...updated[sIdx], label: e.target.value };
                                   setTplRequiredInputs(updated);
                                 }}
-                                placeholder="e.g. आपकी Photo (Person A)"
+                                placeholder={sIdx === 0 ? 'e.g. आपकी Photo (Boy / Person A)' : 'e.g. Partner की Photo (Girl / Person B)'}
                                 className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
                               />
                             </div>

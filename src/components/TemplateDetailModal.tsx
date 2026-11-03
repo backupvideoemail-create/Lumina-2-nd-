@@ -19,7 +19,9 @@ import {
   Copy,
   ShieldCheck,
   RefreshCw,
-  Wallet
+  Wallet,
+  Trash2,
+  Users
 } from 'lucide-react';
 import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
@@ -241,25 +243,32 @@ export const TemplateDetailModal: React.FC = () => {
   // Derive required upload slots by prioritizing explicit requiredInputs first,
   // then configured inputType / recipe.inputType, avoiding defaulting to video slot solely because tpl.type === 'video'
   const requiredSlots: TemplateInputDef[] = (() => {
-    if (tpl.requiredInputs && tpl.requiredInputs.length > 0) {
-      return tpl.requiredInputs;
-    }
     // Couple category defaults to 2 separate customer photos
     if (tpl.category === 'Couple') {
+      if (tpl.requiredInputs && tpl.requiredInputs.length >= 2) {
+        return tpl.requiredInputs;
+      }
       return [
         {
-          id: 'slot_person_1',
-          label: 'आपकी Photo (Person A)',
+          id: 'partner_1',
+          slotId: 'partner_1',
+          label: 'Upload Your Photo',
           type: 'image',
-          description: 'आपकी स्पष्ट सेल्फी या फ़ोटो'
+          isRequired: true,
+          description: 'आपकी Photo (Person A / Boy)'
         },
         {
-          id: 'slot_person_2',
-          label: 'Partner की Photo (Person B)',
+          id: 'partner_2',
+          slotId: 'partner_2',
+          label: 'Upload Partner Photo',
           type: 'image',
-          description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो'
+          isRequired: true,
+          description: 'Partner की Photo (Person B / Girl)'
         }
       ];
+    }
+    if (tpl.requiredInputs && tpl.requiredInputs.length > 0) {
+      return tpl.requiredInputs;
     }
     // Check configured inputType
     const configuredType = tpl.inputType || tpl.recipe?.inputType;
@@ -378,7 +387,11 @@ export const TemplateDetailModal: React.FC = () => {
 
   const handleGenerateClick = async () => {
     if (!isAllInputsReady) {
-      setUploadError(`Please add all required inputs (${filledSlotsCount}/${totalSlots} added).`);
+      if (tpl.category === 'Couple') {
+        setUploadError(`Couple template requires both photos: "Upload Your Photo" and "Upload Partner Photo". Please add both photos.`);
+      } else {
+        setUploadError(`Please add all required inputs (${filledSlotsCount}/${totalSlots} added).`);
+      }
       return;
     }
 
@@ -972,22 +985,39 @@ export const TemplateDetailModal: React.FC = () => {
                         </span>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenPicker(slot);
-                        }}
-                        className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-stone-300 text-[10px] font-bold"
-                      >
-                        Change
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenPicker(slot);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-stone-200 text-[10px] font-bold transition-colors cursor-pointer"
+                        >
+                          Replace
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInputSlots((prev) => {
+                              const next = { ...prev };
+                              delete next[slot.id];
+                              return next;
+                            });
+                          }}
+                          className="p-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 text-[10px] font-bold transition-colors cursor-pointer"
+                          title="Remove photo"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </>
                   ) : (
                     <>
-                      {/* Plus icon placeholder */}
+                      {/* Plus / Users icon placeholder */}
                       <div className="w-11 h-11 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0 text-amber-300">
-                        <Plus className="w-5 h-5 stroke-[2.5]" />
+                        {totalSlots > 1 ? <Users className="w-5 h-5 stroke-[2]" /> : <Plus className="w-5 h-5 stroke-[2.5]" />}
                       </div>
 
                       <div className="flex-1 min-w-0">
@@ -995,7 +1025,7 @@ export const TemplateDetailModal: React.FC = () => {
                           {slot.label || (slot.type === 'video' ? `Add Video ${index + 1}` : `Add Photo ${index + 1}`)}
                         </span>
                         <span className="text-[10px] text-stone-400 block truncate">
-                          Tap to select
+                          {slot.description || 'Tap to select photo from phone'}
                         </span>
                       </div>
                     </>
@@ -1162,7 +1192,9 @@ export const TemplateDetailModal: React.FC = () => {
                   <span>
                     {isAllInputsReady
                       ? (tpl.isFaceSwap ? 'Swap Face Now' : (isVideo ? 'Create Video Now' : 'Create Photo Now'))
-                      : (tpl.isFaceSwap ? 'Add Photo to Swap Face' : `Add ${totalSlots - filledSlotsCount} More ${hasVideoSlots ? 'Video' : 'Photo'}`)}
+                      : (tpl.category === 'Couple'
+                          ? (filledSlotsCount === 0 ? 'Upload 2 Photos to Continue' : 'Upload Partner Photo to Continue')
+                          : (tpl.isFaceSwap ? 'Add Photo to Swap Face' : `Add ${totalSlots - filledSlotsCount} More ${hasVideoSlots ? 'Video' : 'Photo'}`))}
                   </span>
                 </>
               )}

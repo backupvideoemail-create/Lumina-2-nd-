@@ -3359,6 +3359,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         workflow: template.workflow,
         inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
         inputMediaUrls: mediaList,
+        inputMedia: Array.isArray(req.body.inputMedia) ? req.body.inputMedia : undefined,
         referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
         sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
         sampleResultUrl: resolvedRefImage,
