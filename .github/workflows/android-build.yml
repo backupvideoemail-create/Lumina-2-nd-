@@ -64,6 +64,10 @@ jobs:
                   console.error("Missing required client: com.aiprimestudio.app");
                   process.exit(1);
                 }
+                if (!packageNames.includes("com.aiprimestudio.app.debug")) {
+                  console.error("Missing required client: com.aiprimestudio.app.debug");
+                  process.exit(1);
+                }
               } catch (e) {
                 console.error("Failed to parse GOOGLE_SERVICES_JSON as valid JSON:", e.message);
                 process.exit(1);
@@ -91,6 +95,21 @@ jobs:
           if [ -f "android/app/src/debug/google-services.json" ]; then
             echo "Debug google-services.json (com.aiprimestudio.app.debug) is present."
           fi
+          node -e '
+            const fs = require("fs");
+            const raw = fs.readFileSync("android/app/google-services.json", "utf8");
+            const parsed = JSON.parse(raw);
+            const packageNames = (parsed.client || []).map(c => c.client_info?.android_client_info?.package_name).filter(Boolean);
+            console.log("Verified client packages in google-services.json:", packageNames.join(", "));
+            if (!packageNames.includes("com.aiprimestudio.app")) {
+              console.error("Missing required client: com.aiprimestudio.app");
+              process.exit(1);
+            }
+            if (!packageNames.includes("com.aiprimestudio.app.debug")) {
+              console.error("Missing required client: com.aiprimestudio.app.debug");
+              process.exit(1);
+            }
+          '
 
       - name: Ensure Canonical Stable Debug Keystore is Present
         run: |

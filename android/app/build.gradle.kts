@@ -90,7 +90,16 @@ android {
             applicationIdSuffix = ".debug"
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
-            buildConfigField("String", "SERVER_URL", "\"https://ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app\"")
+
+            // Debug backend URL: Configurable via Gradle property (-PANDROID_DEBUG_SERVER_URL=...) or env var ANDROID_DEBUG_SERVER_URL.
+            // Defaults to verified production Cloud Run URL for immediate owner QA when no separate staging endpoint is configured.
+            val debugServerUrl = (project.findProperty("ANDROID_DEBUG_SERVER_URL") as? String)
+                ?: System.getenv("ANDROID_DEBUG_SERVER_URL")
+                ?: (project.findProperty("PROD_SERVER_URL") as? String)
+                ?: System.getenv("PROD_SERVER_URL")
+                ?: "https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app"
+
+            buildConfigField("String", "SERVER_URL", "\"$debugServerUrl\"")
         }
     }
 

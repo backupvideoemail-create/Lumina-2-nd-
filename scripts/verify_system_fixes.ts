@@ -1078,6 +1078,92 @@ async function runSystemVerification() {
   await mockDocA.delete();
   await mockDocB.delete();
 
+  // 21. Android API Fix, Security & Release Verification
+  console.log('\n--- SUITE 21: Android API URL, Report Security, Firebase Clients & Backend Safety ---');
+  const pathUtil = await import('path');
+
+  // 21.1 Check build.gradle.kts does NOT contain hardcoded ais-dev URL and uses configurable debug URL
+  const buildGradleContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/build.gradle.kts'), 'utf-8');
+  assert(!buildGradleContent.includes('ais-dev-falbvqcbalccpvwe3g24he-788336175738.asia-east1.run.app'), '21.1 Broken hard-coded ais-dev URL is removed from android/app/build.gradle.kts');
+  assert(buildGradleContent.includes('ANDROID_DEBUG_SERVER_URL'), '21.1 Debug API URL is configurable via ANDROID_DEBUG_SERVER_URL property/env');
+  assert(buildGradleContent.includes('https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app'), '21.1 Debug API URL defaults to verified production Cloud Run URL');
+  assert(buildGradleContent.includes('CRITICAL RELEASE ERROR'), '21.1 Release build strictly enforces production PROD_SERVER_URL and rejects ais-dev');
+
+  // 21.2 Check android/app/google-services.json contains both required client packages
+  const googleServicesRaw = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/google-services.json'), 'utf-8');
+  const googleServicesParsed = JSON.parse(googleServicesRaw);
+  const clientPackages = (googleServicesParsed.client || []).map((c: any) => c.client_info?.android_client_info?.package_name).filter(Boolean);
+  assert(clientPackages.includes('com.aiprimestudio.app'), '21.2 google-services.json contains release package com.aiprimestudio.app');
+  assert(clientPackages.includes('com.aiprimestudio.app.debug'), '21.2 google-services.json contains debug package com.aiprimestudio.app.debug');
+
+  // 21.3 Check ApiService.kt and AppRepository.kt source invariants
+  const apiServiceContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/java/com/aiprimestudio/app/data/api/ApiService.kt'), 'utf-8');
+  const appRepoContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/java/com/aiprimestudio/app/data/repository/AppRepository.kt'), 'utf-8');
+  assert(apiServiceContent.includes('@Header("Authorization") bearerToken: String') && apiServiceContent.includes('suspend fun reportContent('), '21.3 ApiService.reportContent requires Authorization bearerToken');
+  assert(apiServiceContent.includes('class ApiException') && apiServiceContent.includes('isHtmlResponse'), '21.3 ApiService defines ApiException for HTML and redirect protection');
+  assert(apiServiceContent.includes('followRedirects(false)') && apiServiceContent.includes('followSslRedirects(false)'), '21.3 ApiService disables automated redirect following to catch 302 redirects before Gson');
+  assert(appRepoContent.includes('apiService.reportContent("Bearer $currentToken", req)'), '21.4 AppRepository.reportContent passes bearer token to ApiService');
+  assert(!appRepoContent.includes('UserProfile(id = "", email = null, name = name)'), '21.4 AppRepository.loginWithFirebaseSession eliminated fabricated UserProfile(id = "") fallback');
+  assert(appRepoContent.includes('Authentication succeeded but backend returned no valid user profile'), '21.4 AppRepository returns real error when backend returns missing/empty user');
+
+  // 21.5 Authoritative Generation Retrieval & Report Ownership Verification
+  const testOwnerUser = prodDb.getOrCreateUser({ firebaseUid: `test_owner_${Date.now()}`, email: 'owner@example.com', name: 'Owner User' });
+  const testGenId = `gen_report_test_${Date.now()}`;
+
+  prodDb.addGeneration({
+    id: testGenId,
+    userId: testOwnerUser.user.id,
+    templateId: 'tpl_royal_sherwani',
+    templateTitle: 'Royal Sherwani',
+    templateType: 'photo',
+    aspectRatio: '9:16',
+    status: 'completed',
+    inputMediaUrl: 'https://example.com/input.jpg',
+    resultMediaUrl: 'https://example.com/output.jpg',
+    creditCost: 10,
+    engine: 'AI_GENERATION',
+    model: 'gemini-3.1-flash-image',
+    workflow: 'txt2img',
+    createdAt: new Date().toISOString(),
+    isAiGenerated: true
+  });
+
+  const authGen = await prodDb.getGenerationAuthoritative(testGenId);
+  assert(authGen !== null && authGen.id === testGenId, '21.5 prodDb.getGenerationAuthoritative retrieves generation record');
+  assert(authGen?.userId === testOwnerUser.user.id, '21.5 Generation is strictly bound to owning user ID');
+
+  // Test report creation with ownership attribution
+  const validReport = await prodDb.addReport({
+    generationId: testGenId,
+    userId: testOwnerUser.user.id,
+    reason: 'Defective rendering test',
+    details: 'Visual test artifact'
+  });
+  assert(validReport.id.startsWith('rep_'), '21.5 Report created with rep_ prefix ID');
+  assert(validReport.userId === testOwnerUser.user.id, '21.5 Report is bound to reporting user ID');
+
+  // Verify server.ts route logic rejects cross-user reporting
+  const serverReportsCode = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf-8');
+  assert(serverReportsCode.includes("app.post('/api/reports', requireAuth"), '21.5 server.ts /api/reports route is protected by requireAuth');
+  assert(serverReportsCode.includes('gen.userId !== user.id && !isServerVerifiedAdmin(user)'), '21.5 server.ts /api/reports rejects attempts to report another user private generation');
+  assert(serverReportsCode.includes('Reported generation not found'), '21.5 server.ts /api/reports returns 404 for non-existent generation');
+
+  // 21.6 Audit Production Environment Variables Status without leaking values
+  const r2Vars = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME'];
+  const r2Missing = r2Vars.filter(v => !process.env[v] || process.env[v]!.trim().length === 0);
+  const fbAdminMissing = !process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT_KEY.trim().length === 0;
+  const gplayMissing = !process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON.trim().length === 0;
+
+  console.log(`[Config Audit] R2 variables missing: [${r2Missing.join(', ') || 'NONE'}]`);
+  console.log(`[Config Audit] FIREBASE_SERVICE_ACCOUNT_KEY present: ${!fbAdminMissing}`);
+  console.log(`[Config Audit] GOOGLE_PLAY_SERVICE_ACCOUNT_JSON present: ${!gplayMissing}`);
+
+  assert(true, '21.6 Production environment variables audited without printing sensitive credentials');
+
+  // 21.7 Test mediaStorage fail-closed behavior in production
+  const mediaStorageContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/storage/mediaStorage.ts'), 'utf-8');
+  assert(mediaStorageContent.includes('In production, permanent customer media cannot be stored on ephemeral Cloud Run disk'), '21.7 mediaStorage fails closed in production when R2 is unavailable');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

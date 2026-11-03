@@ -3023,14 +3023,33 @@ app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
   });
 });
 
-// AI Safety Reporting Endpoint
-app.post('/api/reports', async (req, res) => {
-  const { generationId, reason } = req.body;
-  if (!generationId || !reason) {
-    return res.status(400).json({ error: 'generationId and reason are required' });
+// AI Safety Reporting Endpoint (Strict: Authenticated, user-isolated, checks generation ownership)
+app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const { generationId, reason, details } = req.body;
+
+  if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+    return res.status(400).json({ error: 'Valid report reason is required' });
   }
+
+  // If a generationId is supplied, verify it exists and belongs to the authenticated user (or allow verified admins)
+  if (generationId && typeof generationId === 'string' && generationId.trim().length > 0 && generationId.trim() !== 'unspecified') {
+    const gen = await prodDb.getGenerationAuthoritative(generationId.trim());
+    if (!gen) {
+      return res.status(404).json({ error: 'Reported generation not found' });
+    }
+    if (gen.userId !== user.id && !isServerVerifiedAdmin(user)) {
+      return res.status(403).json({ error: 'Unauthorized: You can only report your own generation records' });
+    }
+  }
+
   try {
-    const report = await prodDb.addReport({ generationId, reason });
+    const report = await prodDb.addReport({
+      generationId: generationId ? String(generationId).trim() : 'unspecified',
+      userId: user.id,
+      reason: String(reason).trim(),
+      details: details ? String(details).trim() : undefined
+    });
     return res.json({ success: true, reportId: report.id });
   } catch (err: any) {
     console.error('[Report API Error]:', err);

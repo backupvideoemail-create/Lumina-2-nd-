@@ -1602,6 +1602,40 @@ export class ProductionDatabase {
     return this.db.generations.find(g => g.id === id) || null;
   }
 
+  public async getGenerationAuthoritative(id: string): Promise<Generation | null> {
+    const local = this.getGeneration(id);
+    if (local) return local;
+
+    if (fs.existsSync(this.dbFilePath)) {
+      try {
+        const diskDb = JSON.parse(fs.readFileSync(this.dbFilePath, 'utf-8'));
+        const diskGen = (diskDb.generations || []).find((g: any) => g.id === id);
+        if (diskGen) {
+          if (!this.db.generations.some(g => g.id === diskGen.id)) {
+            this.db.generations.unshift(diskGen);
+          }
+          return diskGen;
+        }
+      } catch {}
+    }
+
+    if (adminFirestoreDb) {
+      try {
+        const docSnap = await adminFirestoreDb.collection('generations').doc(id).get();
+        if (docSnap.exists) {
+          const gen = docSnap.data() as Generation;
+          if (!this.db.generations.some(g => g.id === gen.id)) {
+            this.db.generations.unshift(gen);
+          }
+          return gen;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getGenerationAuthoritative lookup note:', err.message);
+      }
+    }
+    return null;
+  }
+
   public getUserGenerations(userId: string): Generation[] {
     return this.db.generations.filter(g => g.userId === userId);
   }
@@ -2853,12 +2887,19 @@ export class ProductionDatabase {
   /* =========================================================================
      AI SAFETY REPORTS
   ========================================================================= */
-  public async addReport(params: { generationId: string; reason: string }): Promise<{ id: string; generationId: string; reason: string; timestamp: string }> {
+  public async addReport(params: {
+    generationId: string;
+    userId?: string;
+    reason: string;
+    details?: string;
+  }): Promise<{ id: string; generationId: string; userId?: string; reason: string; details?: string; timestamp: string }> {
     const reportId = `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const record = {
       id: reportId,
       generationId: params.generationId,
+      userId: params.userId,
       reason: params.reason,
+      details: params.details,
       timestamp: new Date().toISOString()
     };
     if (!this.db.reports) this.db.reports = [];

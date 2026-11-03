@@ -446,6 +446,9 @@ export class MediaStorageService {
       if (prefix.startsWith('tpl_') && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
         throw new Error(`Cloudflare R2 storage is not configured. Template media assets require verified permanent R2 storage.`);
       }
+      if (process.env.NODE_ENV === 'production' && !process.env.IS_ISOLATED_TEST) {
+        throw new Error('Cloudflare R2 storage is not configured. In production, permanent customer media cannot be stored on ephemeral Cloud Run disk.');
+      }
       provider = 'local';
     }
 

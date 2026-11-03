@@ -18,9 +18,13 @@ export const ReportModal: React.FC = () => {
     setSubmitting(true);
     setErrorMessage(null);
     try {
+      const token = localStorage.getItem('lumina_session_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch('/api/reports', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           generationId: reportModalGenId,
           reason: `${reason}: ${details.trim() || 'No additional details'}`
