@@ -85,6 +85,8 @@ export interface TemplateInputDef {
   label: string;
   type: 'image' | 'video';
   description?: string;
+  isRequired?: boolean;
+  slotId?: string;
 }
 
 export interface Template {

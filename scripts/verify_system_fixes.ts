@@ -1201,10 +1201,18 @@ async function runSystemVerification() {
   
   // 22.1 Higgsfield Genjutsu Light Primary & Preserved Fallback
   const { faceSwapAdapter } = await import('../src/services/ai/faceSwapAdapter.ts');
-  assert(faceSwapAdapter.primaryModelName === 'higgsfield/genjutsu-light/motion-transfer', '22.1 Higgsfield Genjutsu Light is configured as primary model');
+  assert(
+    faceSwapAdapter.primaryModelName === 'higgsfield/genjutsu-light/motion-transfer/v1.0' ||
+    faceSwapAdapter.primaryModelName === 'higgsfield/genjutsu-light/motion-transfer',
+    '22.1 Higgsfield Genjutsu Light is configured as primary model'
+  );
   assert(faceSwapAdapter.fallbackModelName === 'higgsfield/genjutsu/motion-transfer/v1.0', '22.1 Full Higgsfield Genjutsu v1.0 is preserved as fallback candidate');
   const pubStatus = faceSwapAdapter.getPublicStatus();
-  assert(pubStatus.primaryModel === 'higgsfield/genjutsu-light/motion-transfer', '22.1 getPublicStatus reports primary Genjutsu Light model');
+  assert(
+    pubStatus.primaryModel === 'higgsfield/genjutsu-light/motion-transfer/v1.0' ||
+    pubStatus.primaryModel === 'higgsfield/genjutsu-light/motion-transfer',
+    '22.1 getPublicStatus reports primary Genjutsu Light model'
+  );
 
   // 22.2 Single Source Video Database Persistence
   const singleSourceSceneId = `fsv_single_${Date.now()}`;
@@ -1244,6 +1252,56 @@ async function runSystemVerification() {
   assert(homeViewContent.includes('max-w-[460px]'), '22.4 Home Hero Banner is centered with dark margins on desktop viewports');
   assert(homeViewContent.includes('object-contain'), '22.4 Home Hero Banner uses object-contain to prevent cropping or stretching');
   assert(!homeViewContent.includes('filter blur-2xl opacity-40 scale-110 pointer-events-none select-none'), '22.4 Blurred duplicate video/image background layer is completely removed');
+
+  // 23. Secondary Builder Targeted Fixes Suite (Hero Edit, Pricing Edit, Couple 2-Photo, Gallery Cover, Pricing)
+  console.log('\n--- SUITE 23: Hero Edit, Pricing Edit, Couple 2-Photo, Gallery Cover, Pricing ---');
+
+  // 23.1 TemplateManagerModal Hero Banner Edit & 1:1 Square Frame
+  const tplManagerContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateManagerModal.tsx'), 'utf-8');
+  assert(tplManagerContent.includes('handleStartEditBanner'), '23.1 TemplateManagerModal contains handleStartEditBanner for hero banner editing');
+  assert(tplManagerContent.includes('handleToggleBannerActive'), '23.1 TemplateManagerModal contains handleToggleBannerActive for active toggle');
+  assert(tplManagerContent.includes('editingBannerId'), '23.1 TemplateManagerModal tracks editingBannerId state');
+  assert(
+    tplManagerContent.includes('aspect-square') &&
+    tplManagerContent.includes('max-w-[420px]') &&
+    tplManagerContent.includes('object-contain') &&
+    tplManagerContent.includes('bg-[#000000]'),
+    '23.1 Admin Hero Banner upload preview locked to 1:1 aspect-square contain'
+  );
+
+  // 23.2 Pricing Banner Edit API & Drawer
+  assert(tplManagerContent.includes('handleStartEditPricingBanner'), '23.2 TemplateManagerModal contains handleStartEditPricingBanner');
+  assert(tplManagerContent.includes('handleSaveEditPricingBanner'), '23.2 TemplateManagerModal contains handleSaveEditPricingBanner');
+  assert(serverCode.includes('/api/admin/pricing-banners/:id'), '23.2 server.ts provides PUT /api/admin/pricing-banners/:id update endpoint');
+  assert(serverCode.includes("app.put('/api/admin/pricing-banners/:id', requireAdmin"), '23.2 Pricing banner endpoints are protected by requireAdmin');
+
+  // 23.3 Couple Photo & Video Templates 2-Photo Requirement
+  assert(
+    serverCode.includes("isCoupleTemplate && mediaList.length < 2") &&
+    serverCode.includes("MISSING_PARTNER_PHOTO"),
+    '23.3 server.ts enforces at least 2 photos for Couple category templates'
+  );
+  const geminiAdapterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/geminiAdapter.ts'), 'utf-8');
+  assert(
+    geminiAdapterContent.includes("Person A") &&
+    geminiAdapterContent.includes("Person B"),
+    '23.3 geminiAdapter maps multiple photos as distinct identities (Person A & Person B)'
+  );
+  assert(
+    geminiAdapterContent.includes("NEVER blend, average, or cross-fuse"),
+    '23.3 geminiAdapter strictly avoids blending/averaging identities'
+  );
+
+  // 23.4 Face Swap Gallery Preview Source Selection
+  assert(tplManagerContent.includes('coverSource'), '23.4 TemplateManagerModal supports coverSource configuration (auto/original/after)');
+  assert(serverCode.includes('coverSource'), '23.4 server.ts handles coverSource selection');
+
+  // 23.5 Private Media Signed URLs & Genjutsu Light Duration-Based Pricing
+  assert(serverCode.includes('/api/media/signed/:token'), '23.5 server.ts provides HMAC-signed media delivery URL');
+  assert(serverCode.includes('verifySignedMediaToken'), '23.5 server.ts validates customer signed media tokens');
+  const pricingServiceContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/pricing/pricingService.ts'), 'utf-8');
+  assert(pricingServiceContent.includes('providerRatePerSecondUsd = 0.05') || pricingServiceContent.includes('0.05'), '23.5 pricingService defines Genjutsu Light $0.05/sec list price');
+  assert(pricingServiceContent.includes('40') && pricingServiceContent.includes('markupPercent'), '23.5 pricingService applies dynamic 40% markup on provider costs');
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

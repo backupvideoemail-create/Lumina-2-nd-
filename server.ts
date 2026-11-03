@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -3158,14 +3159,33 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
 
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const { templateId, inputMediaUrl, customPrompt } = req.body;
+  const { templateId, customPrompt } = req.body;
   const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
 
   const template = prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
   }
-  if (!inputMediaUrl) {
+
+  // Normalize customer inputs: support array inputMediaUrls, structured inputMedia, or legacy string inputMediaUrl
+  const rawInputMedia = req.body.inputMedia;
+  const rawInputMediaUrls = req.body.inputMediaUrls;
+  const rawInputMediaUrl = req.body.inputMediaUrl;
+
+  let mediaList: string[] = [];
+  if (Array.isArray(rawInputMediaUrls)) {
+    mediaList = rawInputMediaUrls.filter((u: any) => typeof u === 'string' && u.trim().length > 0);
+  } else if (Array.isArray(rawInputMedia)) {
+    mediaList = rawInputMedia
+      .map((m: any) => m?.mediaUrl || m?.media || m?.url)
+      .filter((u: any) => typeof u === 'string' && u.trim().length > 0);
+  } else if (typeof rawInputMediaUrl === 'string' && rawInputMediaUrl.trim()) {
+    mediaList = rawInputMediaUrl.includes('|||')
+      ? rawInputMediaUrl.split('|||').map((s: string) => s.trim()).filter(Boolean)
+      : [rawInputMediaUrl.trim()];
+  }
+
+  if (mediaList.length === 0) {
     return res.status(400).json({ error: 'Please upload media to generate', code: 'MISSING_MEDIA', stage: 'validation' });
   }
 
@@ -3178,7 +3198,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     return clean.endsWith('.mp4') || clean.endsWith('.mov') || clean.endsWith('.webm') || clean.endsWith('.m4v');
   };
 
-  const primaryMedia = inputMediaUrl.includes('|||') ? inputMediaUrl.split('|||')[0] : inputMediaUrl;
+  const primaryMedia = mediaList[0];
   const detectedInputType: 'image' | 'video' = isVideoMedia(primaryMedia) ? 'video' : 'image';
 
   // Input Contract Enforcement: Prioritize requiredInputs first, then configured inputType
@@ -3190,21 +3210,36 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     ? template.requiredInputs.every((s) => s.type === 'video')
     : (template.inputType === 'VIDEO_ONLY');
 
-  if (requiresImageOnly && detectedInputType === 'video') {
+  // Validate Couple templates: require 2 distinct customer photos
+  const isCoupleTemplate = template.category === 'Couple';
+  if (isCoupleTemplate && mediaList.length < 2) {
     return res.status(400).json({
-      error: 'This template accepts photo inputs only. Please upload a photo (JPG, PNG, WEBP).',
-      code: 'INVALID_INPUT_TYPE',
+      error: 'Couple templates require 2 distinct photos (आपकी Photo और Partner की Photo). Please provide both photos.',
+      code: 'MISSING_PARTNER_PHOTO',
       stage: 'validation'
     });
   }
 
-  if (requiresVideoOnly && detectedInputType === 'image') {
-    return res.status(400).json({
-      error: 'This template accepts video inputs only. Please upload a video (MP4, MOV).',
-      code: 'INVALID_INPUT_TYPE',
-      stage: 'validation'
-    });
+  // Validate each media input separately
+  for (let idx = 0; idx < mediaList.length; idx++) {
+    const isItemVideo = isVideoMedia(mediaList[idx]);
+    if (requiresImageOnly && isItemVideo) {
+      return res.status(400).json({
+        error: `Input ${idx + 1} requires a photo (JPG, PNG, WEBP). Please upload an image.`,
+        code: 'INVALID_INPUT_TYPE',
+        stage: 'validation'
+      });
+    }
+    if (requiresVideoOnly && !isItemVideo) {
+      return res.status(400).json({
+        error: `Input ${idx + 1} requires a video (MP4, MOV). Please upload a video clip.`,
+        code: 'INVALID_INPUT_TYPE',
+        stage: 'validation'
+      });
+    }
   }
+
+  const inputMediaUrl = mediaList.join('|||');
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 
@@ -3323,6 +3358,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         engine: template.engine,
         workflow: template.workflow,
         inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
+        inputMediaUrls: mediaList,
         referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
         sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
         sampleResultUrl: resolvedRefImage,
@@ -4067,9 +4103,15 @@ async function startServer() {
     console.warn('[Server] Initial Firestore sync notice:', err.message);
   }
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
+    const isHmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: isHmrDisabled ? false : { server: httpServer }
+      },
       appType: 'spa'
     });
     app.use(vite.middlewares);
@@ -4083,7 +4125,7 @@ async function startServer() {
     }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`AI PRIME STUDIO production server running on http://0.0.0.0:${PORT}`);
   });
 }

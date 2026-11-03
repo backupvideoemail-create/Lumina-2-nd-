@@ -85,13 +85,21 @@ export class AIRouter {
         ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
         : basePrompt;
 
+    // Extract all candidate customer media URLs
+    const customerMediaUrls =
+      params.inputMediaUrls && params.inputMediaUrls.length > 0
+        ? params.inputMediaUrls
+        : params.inputMediaUrl.includes('|||')
+        ? params.inputMediaUrl.split('|||').map((s) => s.trim()).filter(Boolean)
+        : [params.inputMediaUrl];
+
     // 3. Reference / Driving Video Support:
     // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
     // Receives full combined prompt (Global Master Prompt + Category context + recipe + customer instructions)
     if (drivingVideoUrl && isInputImage) {
       return await this.generateFaceSwapVideo({
         videoUrl: drivingVideoUrl,
-        imageUrls: [params.inputMediaUrl],
+        imageUrls: customerMediaUrls,
         customInstructions: combinedPrompt,
         ownerUserId: params.ownerUserId
       });
@@ -107,7 +115,8 @@ export class AIRouter {
       return await this.generateVideo({
         prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,
-        userImageUrl: params.inputMediaUrl,
+        userImageUrl: customerMediaUrls[0] || params.inputMediaUrl,
+        userImageUrls: customerMediaUrls,
         referenceImageUrl: params.referenceImageUrl,
         sampleBeforeUrl,
         sampleResultUrl: params.sampleResultUrl,
@@ -128,7 +137,8 @@ export class AIRouter {
 
       return await this.generateImage({
         prompt: combinedPrompt,
-        userImageUrl: params.inputMediaUrl,
+        userImageUrl: customerMediaUrls[0] || params.inputMediaUrl,
+        userImageUrls: customerMediaUrls,
         referenceImageUrl,
         sampleBeforeUrl,
         sampleResultUrl: referenceImageUrl,

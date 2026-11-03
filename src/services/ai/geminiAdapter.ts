@@ -85,18 +85,29 @@ export class GeminiAdapter {
     // Build parts array
     const parts: any[] = [];
 
-    // 1. Attach user image (CUSTOMER_SOURCE_PHOTO: determines primary facial identity)
-    if (params.userImageUrl) {
+    // 1. Attach user images (CUSTOMER_SOURCE_PHOTOS: determines primary facial identity)
+    const rawUserImages: string[] =
+      params.userImageUrls && params.userImageUrls.length > 0
+        ? params.userImageUrls
+        : params.userImageUrl
+        ? (params.userImageUrl.includes('|||') ? params.userImageUrl.split('|||').map((s) => s.trim()).filter(Boolean) : [params.userImageUrl])
+        : [];
+
+    let attachedUserCount = 0;
+    for (let i = 0; i < rawUserImages.length; i++) {
+      const uImg = rawUserImages[i];
+      if (!uImg) continue;
       try {
-        const imagePayload = await this.resolveImagePayload(params.userImageUrl);
+        const imagePayload = await this.resolveImagePayload(uImg);
         parts.push({
           inlineData: {
             mimeType: imagePayload.mimeType,
             data: imagePayload.data
           }
         });
+        attachedUserCount++;
       } catch (err: any) {
-        throw new Error(`Failed to resolve supplied customer photo (CUSTOMER_SOURCE_PHOTO): ${err.message}`);
+        throw new Error(`Failed to resolve supplied customer photo ${i + 1} (CUSTOMER_SOURCE_PHOTO): ${err.message}`);
       }
     }
 
@@ -120,7 +131,7 @@ export class GeminiAdapter {
 
     // 3. Attach optional TEMPLATE_BEFORE_REFERENCE (supporting context if provided and distinct)
     let hasBeforeReference = false;
-    if (params.sampleBeforeUrl && params.sampleBeforeUrl !== targetRefUrl && params.sampleBeforeUrl !== params.userImageUrl) {
+    if (params.sampleBeforeUrl && params.sampleBeforeUrl !== targetRefUrl && !rawUserImages.includes(params.sampleBeforeUrl)) {
       try {
         const beforePayload = await this.resolveImagePayload(params.sampleBeforeUrl);
         parts.push({
@@ -136,23 +147,37 @@ export class GeminiAdapter {
     }
 
     // 4. Construct authoritative prompt:
-    // When prompt already contains the unified prompt constitution, use it directly with role mappings.
+    const isCoupleMode = attachedUserCount >= 2;
+    const coupleMappingInstructions = isCoupleMode
+      ? `\n\n--- CRITICAL DUAL-IDENTITY MAPPING (COUPLE TEMPLATE) ---\n` +
+        `- Image 1 represents Person A (Primary Customer). Accurately preserve Person A's exact facial features, bone structure, and identity for the primary subject in the couple scene.\n` +
+        `- Image 2 represents Person B (Partner). Accurately preserve Person B's exact facial features, bone structure, and identity for the partner subject in the couple scene.\n` +
+        `- Strictly maintain two distinct, authentic identities. NEVER blend, average, or cross-fuse Person A and Person B's faces into one.`
+      : '';
+
     let promptText: string;
     if (params.prompt && isUnifiedPrompt(params.prompt)) {
-      promptText = `${params.prompt}\n\nSupplied Multimodal Inputs:\n- Image 1: CUSTOMER_SOURCE_PHOTO (Preserve customer facial identity and structure)\n- Image 2: TEMPLATE_AFTER_REFERENCE (Recreate scene, pose, attire, atmosphere, and visual composition)${hasBeforeReference ? '\n- Image 3: TEMPLATE_BEFORE_REFERENCE (Starting appearance context)' : ''}\n\nAspect ratio: ${params.aspectRatio || '9:16'}.`;
+      promptText = `${params.prompt}${coupleMappingInstructions}\n\nSupplied Multimodal Inputs:\n${
+        isCoupleMode
+          ? '- Image 1: CUSTOMER_SOURCE_PHOTO (Person A)\n- Image 2: CUSTOMER_SOURCE_PHOTO (Person B Partner)\n- Image 3: TEMPLATE_AFTER_REFERENCE (Recreate couple pose, attire, atmosphere, and visual composition)'
+          : '- Image 1: CUSTOMER_SOURCE_PHOTO (Preserve customer facial identity and structure)\n- Image 2: TEMPLATE_AFTER_REFERENCE (Recreate scene, pose, attire, atmosphere, and visual composition)'
+      }${hasBeforeReference ? `\n- Image ${attachedUserCount + 2}: TEMPLATE_BEFORE_REFERENCE (Starting appearance context)` : ''}\n\nAspect ratio: ${params.aspectRatio || '9:16'}.`;
     } else if (hasReferenceImage) {
       const promptSegments = [
         params.prompt && params.prompt.trim() ? params.prompt.trim() : 'Transform customer photo to match template style.',
-        `\n\nMultimodal Input Instructions:`,
-        `- Image 1 (CUSTOMER_SOURCE_PHOTO): Preserve this person's authentic facial identity, facial structure, skin tone, and likeness.`,
-        `- Image 2 (TEMPLATE_AFTER_REFERENCE): Recreate this exact artistic scene, pose, wardrobe, lighting setup, color grade, and background atmosphere.`,
-        hasBeforeReference ? `- Image 3 (TEMPLATE_BEFORE_REFERENCE): Supporting starting example.` : '',
-        `- Synthesize a new photorealistic, 8k ultra-sharp master photograph depicting the person from Image 1 in the target scene of Image 2.`,
+        coupleMappingInstructions,
+        `\nMultimodal Input Instructions:`,
+        isCoupleMode
+          ? `- Image 1 (CUSTOMER_SOURCE_PHOTO Person A): Preserve Person A's authentic facial identity, structure, skin tone, and likeness.\n- Image 2 (CUSTOMER_SOURCE_PHOTO Person B): Preserve Person B's authentic facial identity, structure, skin tone, and likeness.`
+          : `- Image 1 (CUSTOMER_SOURCE_PHOTO): Preserve this person's authentic facial identity, facial structure, skin tone, and likeness.`,
+        `- Image ${attachedUserCount + 1} (TEMPLATE_AFTER_REFERENCE): Recreate this exact artistic scene, pose, wardrobe, lighting setup, color grade, and background atmosphere.`,
+        hasBeforeReference ? `- Image ${attachedUserCount + 2} (TEMPLATE_BEFORE_REFERENCE): Supporting starting example.` : '',
+        `- Synthesize a new photorealistic, 8k ultra-sharp master photograph depicting the subjects in the target scene.`,
         `Aspect ratio: ${params.aspectRatio || '9:16'}.`
       ];
       promptText = promptSegments.filter(Boolean).join('\n');
     } else {
-      promptText = `High-end cinematic photography: ${params.prompt}. Workflow style: ${params.styleWorkflow || 'cinematic portrait'}. Maintain pristine subject identity, realistic facial geometry, 8k resolution, studio lighting, sharp focus, aesthetic color grading. Aspect ratio: ${params.aspectRatio || '9:16'}.`;
+      promptText = `High-end cinematic photography: ${params.prompt}.${coupleMappingInstructions} Maintain pristine subject identities, realistic facial geometry, 8k resolution, studio lighting, sharp focus, aesthetic color grading. Aspect ratio: ${params.aspectRatio || '9:16'}.`;
     }
     parts.push({ text: promptText });
 

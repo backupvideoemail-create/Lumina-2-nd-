@@ -38,7 +38,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { Template, TemplateInputType, TemplateExecutionRecipe, FaceSwapScene } from '../types';
+import { Template, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
 import { HomeBannerItem } from '../config/homeBannersConfig';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
@@ -90,6 +90,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [isLoadingPricingBanner, setIsLoadingPricingBanner] = useState<boolean>(false);
   const [isSavingPricingBanner, setIsSavingPricingBanner] = useState<boolean>(false);
   const [isTestingRefresh, setIsTestingRefresh] = useState<boolean>(false);
+  const [editingPricingBanner, setEditingPricingBanner] = useState<any | null>(null);
+  const [editPricingBannerAltText, setEditPricingBannerAltText] = useState<string>('');
+  const [editPricingBannerPreview, setEditPricingBannerPreview] = useState<string>('');
+  const [editPricingBannerType, setEditPricingBannerType] = useState<'image' | 'video'>('image');
+  const [editPricingBannerPosterPreview, setEditPricingBannerPosterPreview] = useState<string>('');
+  const [editPricingBannerIsEnabled, setEditPricingBannerIsEnabled] = useState<boolean>(true);
+  const [isUpdatingPricingBanner, setIsUpdatingPricingBanner] = useState<boolean>(false);
 
   // FACE SWAP SCENES ADMIN STATE
   const [adminFaceSwapScenes, setAdminFaceSwapScenes] = useState<FaceSwapScene[]>([]);
@@ -183,6 +190,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   // Input Type Enforcement: 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO'
   const [tplInputType, setTplInputType] = useState<TemplateInputType>('IMAGE_OR_VIDEO');
+  const [tplRequiredInputs, setTplRequiredInputs] = useState<TemplateInputDef[]>([]);
 
   // BULK PHOTO IMPORT & CATEGORY-LEVEL PROMPTS STATE
   const [categoryPromptsMap, setCategoryPromptsMap] = useState<Record<string, string>>(DEFAULT_CATEGORY_PROMPTS);
@@ -662,6 +670,55 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     });
   };
 
+  const handleStartEditPricingBanner = (banner: any) => {
+    setEditingPricingBanner(banner);
+    setEditPricingBannerAltText(banner.altText || '');
+    setEditPricingBannerPreview(banner.mediaUrl || '');
+    setEditPricingBannerType(banner.mediaType || 'image');
+    setEditPricingBannerPosterPreview(banner.posterUrl || '');
+    setEditPricingBannerIsEnabled(banner.isEnabled !== false);
+  };
+
+  const handleSaveEditPricingBanner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPricingBanner) return;
+    setIsUpdatingPricingBanner(true);
+    try {
+      const res = await fetch(`/api/admin/pricing-banners/${editingPricingBanner.id}`, {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          altText: editPricingBannerAltText.trim() || 'AI Prime Studio VIP Pass',
+          mediaBase64: editPricingBannerPreview.startsWith('data:') ? editPricingBannerPreview : undefined,
+          mediaUrl: !editPricingBannerPreview.startsWith('data:') ? editPricingBannerPreview : undefined,
+          mediaType: editPricingBannerType,
+          posterBase64: editPricingBannerPosterPreview.startsWith('data:') ? editPricingBannerPosterPreview : undefined,
+          posterUrl: !editPricingBannerPosterPreview.startsWith('data:') ? editPricingBannerPosterPreview : undefined,
+          isEnabled: editPricingBannerIsEnabled
+        })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (res.ok && resData.success) {
+        showNotification('प्राइसिंग बैनर सफलतापूर्वक अपडेट किया गया!');
+        if (Array.isArray(resData.pool)) {
+          setPricingBannerPool(resData.pool);
+          if (testRotatedBanner?.id === editingPricingBanner.id) {
+            setTestRotatedBanner(resData.item || resData.pool[0]);
+          }
+        } else {
+          await fetchPricingBannerConfig();
+        }
+        setEditingPricingBanner(null);
+      } else {
+        showNotification(resData.error || 'अपडेट करने में विफल', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err.message || 'नेटवर्क त्रुटि हुई', 'error');
+    } finally {
+      setIsUpdatingPricingBanner(false);
+    }
+  };
+
   const handleTestRandomRefresh = async () => {
     setIsTestingRefresh(true);
     try {
@@ -889,6 +946,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTplSampleBefore(tpl.sampleBefore || '');
     setTplDetectedType(tpl.type);
     setTplInputType(tpl.inputType || (tpl.type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'));
+    if (tpl.requiredInputs && tpl.requiredInputs.length > 0) {
+      setTplRequiredInputs(tpl.requiredInputs);
+    } else if (tpl.category === 'Couple') {
+      setTplRequiredInputs([
+        { id: 'slot_person_1', label: 'आपकी Photo (Person A)', type: 'image', description: 'आपकी स्पष्ट सेल्फी या फ़ोटो' },
+        { id: 'slot_person_2', label: 'Partner की Photo (Person B)', type: 'image', description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो' }
+      ]);
+    } else {
+      setTplRequiredInputs([]);
+    }
     setImportNotice(null);
 
     if (tpl.recipe) {
@@ -935,7 +1002,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
       sampleFaceThumbnail: tplSampleFaceThumbnail || undefined,
       sampleBefore: tplSampleBefore || undefined,
-      sampleResult: tplSampleResultPreview || undefined
+      sampleResult: tplSampleResultPreview || undefined,
+      requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined
     };
 
     try {
@@ -956,6 +1024,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           model: recipeModel,
           engine: 'AI_GENERATION',
           recipe: recipePayload,
+          requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
           providerCostUsd: Number(tplCostUsd) || 0.25
         };
 
@@ -1064,6 +1133,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             model: recipeModel,
             engine: 'AI_GENERATION',
             recipe: recipePayload,
+            requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
             providerCostUsd: Number(tplCostUsd) || 0.25
           })
         });
@@ -1600,7 +1670,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       showNotification('Banner title is required', 'error');
       return;
     }
-    if (!bannerMediaPreview) {
+    if (!editingBannerId && !bannerMediaPreview) {
       showNotification('Please upload an image or video for the banner', 'error');
       return;
     }
@@ -1609,7 +1679,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     try {
       // 1. Upload media if new base64
       let mediaUrl = bannerMediaPreview;
-      if (bannerMediaPreview.startsWith('data:')) {
+      if (bannerMediaPreview && bannerMediaPreview.startsWith('data:')) {
         const uploadRes = await fetch('/api/admin/upload-media', {
           method: 'POST',
           headers: getAdminHeaders(),
@@ -1715,6 +1785,40 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       headers: getAdminHeaders(),
       body: JSON.stringify({ banners: updated })
     });
+  };
+
+  const handleStartEditBanner = (b: HomeBannerItem) => {
+    setEditingBannerId(b.id);
+    setBannerTitle(b.title || '');
+    setBannerSubtitle(b.subtitle || '');
+    setBannerBadge(b.badge || 'VIRAL NOW');
+    setBannerCategory(b.category || 'Trending');
+    setBannerTargetId(b.targetTemplateId || '');
+    setBannerMediaPreview(b.coverMedia || b.image || '');
+    setBannerIsActive(b.isActive !== false);
+    setSubTab('add');
+  };
+
+  const handleToggleBannerActive = async (b: HomeBannerItem) => {
+    const nextStatus = b.isActive === false;
+    const updatedList = banners.map((item) =>
+      item.id === b.id ? { ...item, isActive: nextStatus } : item
+    );
+    try {
+      const res = await fetch('/api/admin/banners', {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ banners: updatedList })
+      });
+      if (res.ok) {
+        setBanners(updatedList);
+        showNotification(`बैनर ${nextStatus ? 'Active (सक्रिय)' : 'Disabled (निष्क्रिय)'} कर दिया गया`);
+      } else {
+        showNotification('बैनर स्थिति बदलने में विफल', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
   };
 
   // --- DEMO VIDEO HANDLERS ---
@@ -2340,7 +2444,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         isActive: sceneIsActive,
         status: targetStatus,
         isFeatured: sceneIsFeatured,
-        order: Number(sceneOrder) || 0
+        order: Number(sceneOrder) || 0,
+        coverSource: sceneCoverSource || 'auto'
       };
 
       const url = editingScene
@@ -3823,6 +3928,147 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </div>
                 </div>
 
+                {/* Step 5: Customer Required Input Slots (e.g. Couple 2-Photo Support) */}
+                <div className="space-y-3 p-3 rounded-2xl bg-stone-900/90 border border-white/10">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded-full bg-pink-500 text-white text-[10px] font-black flex items-center justify-center">5</span>
+                      <span>Customer Required Inputs ({tplRequiredInputs.length} Slots)</span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      {tplCategory === 'Couple' && tplRequiredInputs.length !== 2 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTplRequiredInputs([
+                              { id: 'user_photo_a', slotId: 'user_photo_a', label: 'आपकी Photo (Person A)', type: 'image', isRequired: true, description: 'First partner face photo' },
+                              { id: 'user_photo_b', slotId: 'user_photo_b', label: 'Partner की Photo (Person B)', type: 'image', isRequired: true, description: 'Second partner face photo' }
+                            ]);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-pink-500/20 text-pink-300 border border-pink-500/30 text-[10px] font-bold hover:bg-pink-500/30 cursor-pointer"
+                        >
+                          Couple Preset (2 Photos)
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextIdx = tplRequiredInputs.length + 1;
+                          setTplRequiredInputs([
+                            ...tplRequiredInputs,
+                            {
+                              id: `input_${Date.now()}_${nextIdx}`,
+                              slotId: `slot_${nextIdx}`,
+                              label: `Customer Photo ${nextIdx}`,
+                              type: 'image',
+                              isRequired: true,
+                              description: `Required photo slot ${nextIdx}`
+                            }
+                          ]);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Slot</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-stone-400">
+                    Couple templates require 2 separate customer photos (Person A & Person B). Each slot is prompted separately with zero face averaging. Default templates use 1 customer photo.
+                  </p>
+
+                  {tplRequiredInputs.length === 0 ? (
+                    <div className="p-3 rounded-xl bg-black/40 border border-dashed border-white/10 text-center">
+                      <span className="text-[11px] text-stone-400">Default Single Input (1 customer photo/video required)</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {tplRequiredInputs.map((slot, sIdx) => (
+                        <div key={slot.id || sIdx} className="p-2.5 rounded-xl bg-black/50 border border-white/10 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-black text-pink-400 flex items-center gap-1">
+                              <span>Slot #{sIdx + 1}</span>
+                              <span className="text-stone-500 text-[10px]">({slot.slotId || `slot_${sIdx + 1}`})</span>
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <label className="flex items-center gap-1 text-[10px] text-stone-300 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={slot.isRequired !== false}
+                                  onChange={(e) => {
+                                    const updated = [...tplRequiredInputs];
+                                    updated[sIdx] = { ...updated[sIdx], isRequired: e.target.checked };
+                                    setTplRequiredInputs(updated);
+                                  }}
+                                  className="rounded accent-pink-500 w-3 h-3"
+                                />
+                                <span>Required</span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTplRequiredInputs(tplRequiredInputs.filter((_, i) => i !== sIdx));
+                                }}
+                                className="p-1 rounded-lg hover:bg-red-500/20 text-stone-400 hover:text-red-400 transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div className="sm:col-span-2">
+                              <label className="text-[9.5px] font-semibold text-stone-400">Display Label</label>
+                              <input
+                                type="text"
+                                value={slot.label}
+                                onChange={(e) => {
+                                  const updated = [...tplRequiredInputs];
+                                  updated[sIdx] = { ...updated[sIdx], label: e.target.value };
+                                  setTplRequiredInputs(updated);
+                                }}
+                                placeholder="e.g. आपकी Photo (Person A)"
+                                className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[9.5px] font-semibold text-stone-400">Media Type</label>
+                              <select
+                                value={slot.type}
+                                onChange={(e) => {
+                                  const updated = [...tplRequiredInputs];
+                                  updated[sIdx] = { ...updated[sIdx], type: e.target.value as any };
+                                  setTplRequiredInputs(updated);
+                                }}
+                                className="w-full mt-0.5 px-2 py-1.5 rounded-lg bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
+                              >
+                                <option value="image">Image (Photo)</option>
+                                <option value="video">Video</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[9.5px] font-semibold text-stone-400">Role / Helper Description</label>
+                            <input
+                              type="text"
+                              value={slot.description || ''}
+                              onChange={(e) => {
+                                const updated = [...tplRequiredInputs];
+                                updated[sIdx] = { ...updated[sIdx], description: e.target.value };
+                                setTplRequiredInputs(updated);
+                              }}
+                              placeholder="e.g. Person A clear portrait / Partner clear selfie"
+                              className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg bg-stone-900 border border-white/10 text-stone-300 text-[11px] focus:border-pink-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 {/* Submit Button */}
                 <button
                   type="submit"
@@ -3864,48 +4110,104 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 </div>
 
                 <div className="space-y-2">
-                  {banners.map((b, idx) => (
-                    <div
-                      key={b.id}
-                      className="p-3 rounded-2xl bg-stone-900/60 border border-white/10 flex items-center justify-between gap-3"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        {b.mediaType === 'video' ? (
-                          <video src={b.coverMedia} className="w-16 h-10 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0" muted loop autoPlay />
-                        ) : (
-                          <img src={b.coverMedia} alt={b.title} className="w-16 h-10 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0" />
-                        )}
-                        <div className="min-w-0">
-                          <h4 className="text-xs font-bold text-white truncate">{b.title}</h4>
-                          <p className="text-[10px] text-stone-400 truncate">{b.subtitle}</p>
-                          <span className="text-[9px] font-bold text-pink-400">{b.badge}</span>
+                  {banners.map((b, idx) => {
+                    const isBannerActive = b.isActive !== false;
+                    return (
+                      <div
+                        key={b.id}
+                        className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition-all ${
+                          isBannerActive
+                            ? 'bg-stone-900/60 border-white/10'
+                            : 'bg-stone-900/30 border-white/5 opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {b.mediaType === 'video' ? (
+                            <video src={b.coverMedia} className="w-16 h-16 rounded-xl object-contain border border-white/10 bg-black flex-shrink-0" muted loop autoPlay />
+                          ) : (
+                            <img src={b.coverMedia} alt={b.title} className="w-16 h-16 rounded-xl object-contain border border-white/10 bg-black flex-shrink-0" />
+                          )}
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-xs font-bold text-white truncate">{b.title}</h4>
+                              <span
+                                className={`text-[8.5px] font-bold px-1.5 py-0.2 rounded-md ${
+                                  isBannerActive
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-stone-700 text-stone-400'
+                                }`}
+                              >
+                                {isBannerActive ? 'Active ON' : 'Disabled OFF'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-stone-400 truncate">{b.subtitle || 'No subtitle'}</p>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] font-bold text-pink-400">{b.badge || 'HOT'}</span>
+                              <span className="text-[9px] text-stone-500">· {b.category || 'Trending'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {/* Active ON/OFF Toggle */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBannerActive(b)}
+                            title={isBannerActive ? 'बैनर बंद करें' : 'बैनर चालू करें'}
+                            className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                              isBannerActive
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                                : 'bg-white/5 text-stone-400 border-white/10 hover:text-white'
+                            }`}
+                          >
+                            {isBannerActive ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          </button>
+
+                          {/* Edit Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditBanner(b)}
+                            className="p-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 transition-all cursor-pointer"
+                            title="बैनर संपादित करें (Edit)"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Move Up */}
+                          <button
+                            type="button"
+                            onClick={() => handleMoveBanner(idx, 'up')}
+                            disabled={idx === 0}
+                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 text-stone-300 cursor-pointer"
+                            title="ऊपर ले जाएं"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Move Down */}
+                          <button
+                            type="button"
+                            onClick={() => handleMoveBanner(idx, 'down')}
+                            disabled={idx === banners.length - 1}
+                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 text-stone-300 cursor-pointer"
+                            title="नीचे ले जाएं"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Delete */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteBanner(b.id)}
+                            className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 cursor-pointer"
+                            title="हटाएं"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => handleMoveBanner(idx, 'up')}
-                          disabled={idx === 0}
-                          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 text-stone-300"
-                        >
-                          <ArrowUp className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleMoveBanner(idx, 'down')}
-                          disabled={idx === banners.length - 1}
-                          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-30 text-stone-300"
-                        >
-                          <ArrowDown className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteBanner(b.id)}
-                          className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ) : (
@@ -3913,20 +4215,28 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               <form onSubmit={handleSaveBanner} className="space-y-4">
                 <div className="flex items-center justify-between border-b border-white/10 pb-2">
                   <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                    Upload Hero Banner from Phone
+                    {editingBannerId ? 'Edit Hero Banner' : 'Upload Hero Banner from Phone'}
                   </h4>
                   <button
                     type="button"
-                    onClick={() => setSubTab('list')}
-                    className="text-xs text-stone-400 hover:text-white"
+                    onClick={() => {
+                      setSubTab('list');
+                      setEditingBannerId(null);
+                    }}
+                    className="text-xs text-stone-400 hover:text-white cursor-pointer"
                   >
                     Back to List
                   </button>
                 </div>
 
-                {/* Media Upload */}
+                {/* Media Upload (Exact 1:1 Square Frame matching Customer Home View) */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-stone-300">Banner Image or Video *</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-stone-300">
+                      Banner Image or Video {editingBannerId ? '(Optional on Edit)' : '*'}
+                    </label>
+                    <span className="text-[10px] text-pink-400 font-bold">1:1 Square Ratio · No Cropping</span>
+                  </div>
                   <input
                     ref={bannerFileRef}
                     type="file"
@@ -3936,18 +4246,29 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   />
                   <div
                     onClick={() => bannerFileRef.current?.click()}
-                    className="relative w-full aspect-[21/9] rounded-2xl border-2 border-dashed border-white/20 hover:border-pink-500 bg-black/40 flex flex-col items-center justify-center p-3 cursor-pointer overflow-hidden group"
+                    className="relative w-full max-w-[420px] mx-auto aspect-square rounded-2xl border-2 border-dashed border-white/20 hover:border-pink-500 bg-[#000000] flex flex-col items-center justify-center p-2 cursor-pointer overflow-hidden group shadow-inner"
                   >
                     {bannerMediaPreview ? (
-                      bannerMediaPreview.includes('video') || bannerMediaPreview.endsWith('.mp4') ? (
-                        <video src={bannerMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
-                      ) : (
-                        <img src={bannerMediaPreview} alt="Preview" className="w-full h-full object-cover" />
-                      )
+                      <>
+                        {bannerMediaPreview.includes('video') || bannerMediaPreview.endsWith('.mp4') ? (
+                          <video src={bannerMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-contain" />
+                        ) : (
+                          <img src={bannerMediaPreview} alt="Preview" className="w-full h-full object-contain" />
+                        )}
+                        <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/90 to-transparent flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-pink-300">1:1 Square Frame</span>
+                          <span className="px-2 py-0.5 rounded-lg bg-pink-500 text-white text-[10px] font-black">
+                            Replace Media
+                          </span>
+                        </div>
+                      </>
                     ) : (
-                      <div className="flex flex-col items-center text-center">
-                        <Upload className="w-6 h-6 text-pink-400 mb-1" />
+                      <div className="flex flex-col items-center text-center p-4">
+                        <Upload className="w-8 h-8 text-pink-400 mb-2" />
                         <span className="text-xs font-bold text-white">Tap to Choose Banner Media from Phone</span>
+                        <span className="text-[10px] text-stone-400 mt-1">
+                          1:1 Square aspect-ratio · Object-contain · Black background (#000000)
+                        </span>
                       </div>
                     )}
                   </div>
@@ -3967,14 +4288,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs font-bold text-stone-300">Subtitle</label>
-                    <input
-                      type="text"
-                      value={bannerSubtitle}
-                      onChange={(e) => setBannerSubtitle(e.target.value)}
-                      placeholder="e.g. Create 80s Disco Reels"
+                    <label className="text-xs font-bold text-stone-300">Category</label>
+                    <select
+                      value={bannerCategory}
+                      onChange={(e) => setBannerCategory(e.target.value)}
                       className="w-full mt-1.5 px-3 py-2.5 rounded-xl bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
-                    />
+                    >
+                      {allKnownCategories.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
@@ -3990,6 +4313,17 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 </div>
 
                 <div>
+                  <label className="text-xs font-bold text-stone-300">Subtitle</label>
+                  <input
+                    type="text"
+                    value={bannerSubtitle}
+                    onChange={(e) => setBannerSubtitle(e.target.value)}
+                    placeholder="e.g. Create 80s Disco Reels"
+                    className="w-full mt-1.5 px-3 py-2.5 rounded-xl bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
                   <label className="text-xs font-bold text-stone-300">Target Template ID (Optional)</label>
                   <input
                     type="text"
@@ -4000,13 +4334,24 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   />
                 </div>
 
+                {/* Active Switch */}
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-white p-3 rounded-xl bg-stone-900 border border-white/10">
+                  <input
+                    type="checkbox"
+                    checked={bannerIsActive}
+                    onChange={(e) => setBannerIsActive(e.target.checked)}
+                    className="rounded accent-pink-500 w-4 h-4 cursor-pointer"
+                  />
+                  <span>Active Live (Show banner on customer home carousel)</span>
+                </label>
+
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="w-full py-3 rounded-xl bg-pink-500 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-50"
+                  className="w-full py-3 rounded-xl bg-pink-500 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg shadow-pink-500/20"
                 >
                   {isSubmitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span>Save & Publish Banner</span>
+                  <span>{editingBannerId ? 'Update Hero Banner' : 'Save & Publish Banner'}</span>
                 </button>
               </form>
             )}
@@ -4339,7 +4684,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             </p>
                           </div>
 
-                          {/* Toggle & Delete Buttons */}
+                          {/* Toggle, Edit & Delete Buttons */}
                           <div className="flex items-center gap-1.5 pt-2">
                             <button
                               type="button"
@@ -4352,7 +4697,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                               title={isActive ? 'बैनर बंद करें' : 'बैनर चालू करें'}
                             >
                               {isActive ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                              <span>{isActive ? 'निष्क्रिय करें' : 'सक्रिय करें'}</span>
+                              <span>{isActive ? 'निष्क्रिय' : 'सक्रिय'}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditPricingBanner(banner)}
+                              className="p-1.5 rounded-xl bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25 transition-all cursor-pointer"
+                              title="बैनर संपादित करें (Edit text, replace media/poster)"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
                             </button>
 
                             <button
@@ -4368,6 +4722,135 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* EDIT PRICING BANNER DRAWER / FORM */}
+              {editingPricingBanner && (
+                <div className="mt-4 p-4 rounded-2xl bg-black/90 border-2 border-cyan-500/50 space-y-3 shadow-2xl animate-in fade-in">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <h5 className="text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>प्राइसिंग बैनर संपादित करें (Edit Pricing Banner #{editingPricingBanner.id})</span>
+                    </h5>
+                    <button
+                      type="button"
+                      onClick={() => setEditingPricingBanner(null)}
+                      className="p-1 text-stone-400 hover:text-white rounded-lg cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Media Preview & Replace */}
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-bold text-stone-300 block">
+                      बैनर मीडिया (फ़ोटो या वीडियो बदलें)
+                    </label>
+                    <div className="relative rounded-2xl overflow-hidden border border-cyan-500/30 bg-black max-h-56 w-full flex items-center justify-center p-2">
+                      {editPricingBannerType === 'video' ? (
+                        <video
+                          src={editPricingBannerPreview}
+                          poster={editPricingBannerPosterPreview || undefined}
+                          muted
+                          loop
+                          autoPlay
+                          playsInline
+                          className="max-h-52 w-full object-contain"
+                        />
+                      ) : (
+                        <img
+                          src={editPricingBannerPreview}
+                          alt="Edit Preview"
+                          className="max-h-52 w-full object-contain"
+                        />
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold flex items-center justify-center gap-1.5 border border-white/15 cursor-pointer">
+                        <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>नई फ़ोटो या वीडियो चुनें</span>
+                        <input
+                          type="file"
+                          accept="image/*,video/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            const isVid = file.type.startsWith('video');
+                            setEditPricingBannerType(isVid ? 'video' : 'image');
+                            const reader = new FileReader();
+                            reader.onload = () => setEditPricingBannerPreview(reader.result as string);
+                            reader.readAsDataURL(file);
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {editPricingBannerType === 'video' && (
+                        <label className="py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-stone-200 text-xs font-bold flex items-center justify-center gap-1.5 border border-white/15 cursor-pointer">
+                          <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+                          <span>पोस्टर बदलें</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = () => setEditPricingBannerPosterPreview(reader.result as string);
+                              reader.readAsDataURL(file);
+                            }}
+                            className="hidden"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Alt Text Input */}
+                  <div>
+                    <label className="text-[11px] font-bold text-stone-300 block mb-1">
+                      पहचान / Alt Text (Label)
+                    </label>
+                    <input
+                      type="text"
+                      value={editPricingBannerAltText}
+                      onChange={(e) => setEditPricingBannerAltText(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-stone-900 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+
+                  {/* Active ON/OFF */}
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-white p-2.5 rounded-xl bg-stone-900 border border-white/10">
+                    <input
+                      type="checkbox"
+                      checked={editPricingBannerIsEnabled}
+                      onChange={(e) => setEditPricingBannerIsEnabled(e.target.checked)}
+                      className="rounded accent-cyan-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span>सक्रिय रखें (Active in Rotation Pool)</span>
+                  </label>
+
+                  {/* Buttons */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPricingBanner(null)}
+                      className="py-2.5 px-4 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-bold cursor-pointer"
+                    >
+                      रद्द करें (Cancel)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveEditPricingBanner}
+                      disabled={isUpdatingPricingBanner}
+                      className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 text-stone-950 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {isUpdatingPricingBanner ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>बदलाव सेव करें (Update Banner)</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -5127,6 +5610,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             <option value="16:9">16:9 (Landscape)</option>
                             <option value="1:1">1:1 (Square)</option>
                             <option value="4:5">4:5 (Portrait Feed)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-stone-400 block mb-0.5">
+                            Gallery Cover Preview
+                          </label>
+                          <select
+                            value={sceneCoverSource}
+                            onChange={(e) => setSceneCoverSource(e.target.value as any)}
+                            className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="auto">Auto (After if present, else Original)</option>
+                            <option value="original">Original Driving Video</option>
+                            <option value="after">After Swapped Demo Video</option>
                           </select>
                         </div>
 

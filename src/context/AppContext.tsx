@@ -74,7 +74,15 @@ interface AppContextType {
   loadingGenerations: boolean;
   activeGeneration: Generation | null;
   setActiveGeneration: (gen: Generation | null) => void;
-  createGeneration: (templateId: string, inputMediaUrl: string, customPrompt?: string) => Promise<GenerationResult>;
+  createGeneration: (
+    templateId: string,
+    inputMediaUrl: string,
+    customPrompt?: string,
+    mediaDetails?: {
+      inputMediaUrls?: string[];
+      inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+    }
+  ) => Promise<GenerationResult>;
   deleteGeneration: (id: string) => Promise<void>;
   refreshGenerations: () => Promise<void>;
 
@@ -475,7 +483,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const createGeneration = async (
     templateId: string,
     inputMediaUrl: string,
-    customPrompt?: string
+    customPrompt?: string,
+    mediaDetails?: {
+      inputMediaUrls?: string[];
+      inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+    }
   ): Promise<GenerationResult> => {
     if (!user) {
       setPendingAction({ type: 'generate', templateId, inputMediaUrl, customPrompt });
@@ -490,7 +502,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'Content-Type': 'application/json',
           ...getAuthHeaders()
         },
-        body: JSON.stringify({ templateId, inputMediaUrl, customPrompt })
+        body: JSON.stringify({
+          templateId,
+          inputMediaUrl,
+          customPrompt,
+          inputMediaUrls: mediaDetails?.inputMediaUrls,
+          inputMedia: mediaDetails?.inputMedia
+        })
       });
 
       const data = await res.json();

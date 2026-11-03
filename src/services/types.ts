@@ -4,6 +4,7 @@ export interface ImageGenerationParams {
   prompt: string;
   sourceImageUrl?: string;
   userImageUrl?: string;
+  userImageUrls?: string[];
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
@@ -17,6 +18,7 @@ export interface VideoGenerationParams {
   prompt: string;
   sourceMediaUrl?: string;
   userImageUrl?: string;
+  userImageUrls?: string[];
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
@@ -48,6 +50,8 @@ export interface TemplateProcessParams {
   templateType: 'photo' | 'video';
   engine: 'SMART_TEMPLATE' | 'AI_GENERATION';
   inputMediaUrl: string;
+  inputMediaUrls?: string[];
+  inputMedia?: Array<{ slotId?: string; type?: string; media?: string; mediaUrl?: string }>;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;

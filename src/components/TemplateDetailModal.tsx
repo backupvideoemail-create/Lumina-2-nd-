@@ -244,6 +244,23 @@ export const TemplateDetailModal: React.FC = () => {
     if (tpl.requiredInputs && tpl.requiredInputs.length > 0) {
       return tpl.requiredInputs;
     }
+    // Couple category defaults to 2 separate customer photos
+    if (tpl.category === 'Couple') {
+      return [
+        {
+          id: 'slot_person_1',
+          label: 'आपकी Photo (Person A)',
+          type: 'image',
+          description: 'आपकी स्पष्ट सेल्फी या फ़ोटो'
+        },
+        {
+          id: 'slot_person_2',
+          label: 'Partner की Photo (Person B)',
+          type: 'image',
+          description: 'पार्टनर की स्पष्ट सेल्फी या फ़ोटो'
+        }
+      ];
+    }
     // Check configured inputType
     const configuredType = tpl.inputType || tpl.recipe?.inputType;
     if (configuredType === 'IMAGE_ONLY') {
@@ -365,9 +382,17 @@ export const TemplateDetailModal: React.FC = () => {
       return;
     }
 
-    // Pack media: if single slot, send as is. If multiple slots, pack with delimiter '|||'
+    // Pack media: send both delimited string (for legacy backends) and structured array
     const slotValues = requiredSlots.map((s) => inputSlots[s.id]).filter(Boolean);
     const combinedPayload = slotValues.join('|||');
+    const structuredMedia = {
+      inputMediaUrls: slotValues,
+      inputMedia: requiredSlots.map((s) => ({
+        slotId: s.id,
+        type: s.type,
+        media: inputSlots[s.id] || ''
+      })).filter((m) => Boolean(m.media))
+    };
 
     if (!user) {
       triggerHighIntentAction({
@@ -391,7 +416,7 @@ export const TemplateDetailModal: React.FC = () => {
     setIsGenerating(true);
     setUploadError(null);
     setDiagnosticDetails(null);
-    const res = await createGeneration(tpl.id, combinedPayload, customPrompt.trim() || undefined);
+    const res = await createGeneration(tpl.id, combinedPayload, customPrompt.trim() || undefined, structuredMedia);
     setIsGenerating(false);
 
     if (res.success) {
