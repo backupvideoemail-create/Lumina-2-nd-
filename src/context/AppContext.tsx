@@ -83,6 +83,12 @@ interface AppContextType {
     mediaDetails?: {
       inputMediaUrls?: string[];
       inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+    },
+    options?: {
+      resolution?: string;
+      durationSeconds?: number;
+      model?: string;
+      wardrobeSource?: string;
     }
   ) => Promise<GenerationResult>;
   deleteGeneration: (id: string) => Promise<void>;
@@ -517,6 +523,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     mediaDetails?: {
       inputMediaUrls?: string[];
       inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+    },
+    options?: {
+      resolution?: string;
+      durationSeconds?: number;
+      model?: string;
+      wardrobeSource?: string;
     }
   ): Promise<GenerationResult> => {
     if (!user) {
@@ -537,7 +549,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           inputMediaUrl,
           customPrompt,
           inputMediaUrls: mediaDetails?.inputMediaUrls,
-          inputMedia: mediaDetails?.inputMedia
+          inputMedia: mediaDetails?.inputMedia,
+          resolution: options?.resolution,
+          durationSeconds: options?.durationSeconds,
+          model: options?.model,
+          wardrobeSource: options?.wardrobeSource
         })
       });
 

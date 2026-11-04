@@ -17,6 +17,7 @@ import { geminiAdapter } from './geminiAdapter.ts';
 import { videoProviderAdapter } from './videoProviderAdapter.ts';
 import { faceSwapAdapter } from './faceSwapAdapter.ts';
 import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
+import { MODEL_REGISTRY } from '../pricing/pricingService.ts';
 
 export class AIRouter {
   // 1. Unified Image Generation
@@ -120,6 +121,9 @@ export class AIRouter {
       recipe?.sampleBefore;
 
     if (provider === 'google_veo' || params.templateType === 'video' || isInputVideo) {
+      if (selectedModel && MODEL_REGISTRY[selectedModel]?.isEvaluationOnly) {
+        throw new Error(`MODEL_EVALUATION_ONLY: Model '${selectedModel}' is configured for internal evaluation only and is guarded from production customer generation.`);
+      }
       return await this.generateVideo({
         prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,

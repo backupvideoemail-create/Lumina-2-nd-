@@ -46,16 +46,17 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const [mediaError, setMediaError] = React.useState(false);
   const [isNearViewport, setIsNearViewport] = React.useState(false);
 
-  // Reliable Poster extraction: Never use a video URL as an image source
+  // Reliable Poster extraction: Prioritize admin cover/after assets; Never use stock portraits
   const isCoverVideo = isVideoMedia(template.cover);
   const isPreviewVideo = isVideoMedia(template.preview);
   const resolvedPoster =
+    template.coverImage ||
+    (!isCoverVideo && template.cover ? template.cover : undefined) ||
     template.sampleResult ||
     template.sampleAfter ||
+    (!isPreviewVideo && template.preview ? template.preview : undefined) ||
     template.sampleFaceThumbnail ||
-    (!isCoverVideo ? template.cover : undefined) ||
-    (!isPreviewVideo ? template.preview : undefined) ||
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80';
+    '';
 
   // True Lazy Loading: Only attach video src when card is within 150px of viewport
   useEffect(() => {
@@ -164,10 +165,10 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             preload="none"
             draggable={false}
             onLoadedData={() => setIsMediaLoaded(true)}
-            onError={() => { setIsMediaLoaded(true); }}
+            onError={() => { setMediaError(true); }}
             onContextMenu={(e) => e.preventDefault()}
             className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
-              isMediaLoaded ? 'opacity-100' : 'opacity-0'
+              isMediaLoaded && !mediaError ? 'opacity-100' : 'opacity-0'
             }`}
           />
         )}

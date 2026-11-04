@@ -216,6 +216,14 @@ export interface Generation {
   error?: string;
   isAiGenerated: boolean;
   watermarkRemoved?: boolean;
+  resolution?: string;
+  durationSeconds?: number;
+  wardrobeSource?: string;
+  sourceVideoDurationSeconds?: number;
+  requestedOutputDurationSeconds?: number;
+  actualOutputDurationSeconds?: number;
+  actualBillableDurationSeconds?: number;
+  reconciledCostCredits?: number;
 }
 
 export type SubscriptionStatus =

@@ -458,7 +458,18 @@ export const TemplateDetailModal: React.FC = () => {
     setIsGenerating(true);
     setUploadError(null);
     setDiagnosticDetails(null);
-    const res = await createGeneration(tpl.id, combinedPayload, finalPrompt || undefined, structuredMedia);
+    const res = await createGeneration(
+      tpl.id,
+      combinedPayload,
+      finalPrompt || undefined,
+      structuredMedia,
+      {
+        resolution: selectedResolution,
+        durationSeconds: selectedDuration,
+        model: tpl.model,
+        wardrobeSource
+      }
+    );
     setIsGenerating(false);
 
     if (res.success) {

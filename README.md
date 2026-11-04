@@ -32,8 +32,8 @@ A modern, high-performance AI video and photo template creation studio built wit
 ### 1. Clone & Install Dependencies
 
 ```bash
-git clone https://github.com/backupvideoemail-create/lumina-ai-studio.git
-cd lumina-ai-studio
+git clone https://github.com/backupvideoemail-create/Lumina-2-nd-.git
+cd Lumina-2-nd-
 npm install
 ```
 

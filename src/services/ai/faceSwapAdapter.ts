@@ -156,7 +156,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
       'Authorization': authHeaderValue
     };
 
-    const response = await fetch(this.endpoint, {
+    const response = await fetch(targetEndpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload)

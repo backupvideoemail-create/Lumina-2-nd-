@@ -1420,6 +1420,38 @@ async function runSystemVerification() {
   // 25.9 Generation Screen Credits Only (Zero INR in Customer Flow)
   assert(!detailModalContent.includes('₹'), '25.9 Customer TemplateDetailModal has zero INR currency symbols');
 
+  // 25.10 TargetEndpoint routing in faceSwapAdapter.ts
+  assert(faceSwapAdapterContent.includes('fetch(targetEndpoint,'), '25.10 faceSwapAdapter fetches dynamically routed targetEndpoint');
+
+  // 25.11 Generation options wired through TemplateDetailModal, AppContext, and server.ts
+  assert(serverCode.includes('requestedResolution') && serverCode.includes('requestedDuration'), '25.11 server.ts dynamically evaluates customer requestedResolution and requestedDuration');
+  assert(serverCode.includes('UNSUPPORTED_RESOLUTION'), '25.11 server.ts validates requested resolution against model tariff');
+  assert(serverCode.includes('outputType: template.type'), '25.11 server.ts wires full Prompt Standard v1.1 options into buildUnifiedGenerationPrompt');
+
+  // 25.12 Four-tier duration tracking fields in Generation type & server update
+  const typesContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/types/index.ts'), 'utf-8');
+  assert(typesContent.includes('sourceVideoDurationSeconds?: number'), '25.12 Generation interface includes sourceVideoDurationSeconds');
+  assert(typesContent.includes('requestedOutputDurationSeconds?: number'), '25.12 Generation interface includes requestedOutputDurationSeconds');
+  assert(typesContent.includes('actualOutputDurationSeconds?: number'), '25.12 Generation interface includes actualOutputDurationSeconds');
+  assert(typesContent.includes('actualBillableDurationSeconds?: number'), '25.12 Generation interface includes actualBillableDurationSeconds');
+  assert(serverCode.includes('actualOutputDurationSeconds: actualOutputDuration'), '25.12 server.ts records probed duration and billable duration on completion');
+
+  // 25.13 HD Media Download Queue Module
+  const hdQueuePath = pathUtil.resolve(process.cwd(), 'src/services/media/hdDownloadQueue.ts');
+  assert(fs.existsSync(hdQueuePath), '25.13 hdDownloadQueue.ts exists in codebase');
+  const hdQueueContent = fs.readFileSync(hdQueuePath, 'utf-8');
+  assert(hdQueueContent.includes('isDataSaverActive') && hdQueueContent.includes('queueHdDownload'), '25.13 hdDownloadQueue implements data saver and priority queuing');
+
+  // 25.14 Omni model evaluation-only guard in AIRouter
+  const aiRouterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/aiRouter.ts'), 'utf-8');
+  assert(aiRouterContent.includes('MODEL_EVALUATION_ONLY'), '25.14 aiRouter guards evaluation-only models from production customer generation');
+
+  // 25.15 Protected Payment & Financial Systems Zero Modification Assertion
+  const razorpayContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/payments/razorpayAdapter.ts'), 'utf-8');
+  const cashfreeContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/payments/cashfreeAdapter.ts'), 'utf-8');
+  assert(razorpayContent.includes('RazorpayAdapter'), '25.15 Protected Razorpay payment adapter is intact');
+  assert(cashfreeContent.includes('CashfreeAdapter'), '25.15 Protected Cashfree payment adapter is intact');
+
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

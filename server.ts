@@ -19,7 +19,8 @@ import {
   calculateAuthoritativeTemplateCost,
   calculateCreditsFromUsd,
   calculateCustomerPrice,
-  calculateFaceSwapCredits
+  calculateFaceSwapCredits,
+  MODEL_REGISTRY
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
@@ -3225,12 +3226,31 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
 
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const { templateId, customPrompt } = req.body;
+  const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource } = req.body;
   const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
 
   const template = prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
+  }
+
+  // Determine effective model and requested options
+  const effectiveModel = (typeof model === 'string' && model.trim()) ? model.trim() : (template.model || 'hf_mult_motion_control_flash');
+  const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
+    ? resolution
+    : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
+  const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
+
+  // Validate resolution support against Model Registry
+  if (resolution && MODEL_REGISTRY[effectiveModel]) {
+    const tariff = MODEL_REGISTRY[effectiveModel].resolutionTariffs[resolution as '480p' | '720p' | '1080p'];
+    if (tariff && tariff.supportStatus === 'UNSUPPORTED') {
+      return res.status(400).json({
+        error: `Resolution ${resolution} is not supported by model ${effectiveModel}.`,
+        code: 'UNSUPPORTED_RESOLUTION',
+        stage: 'validation'
+      });
+    }
   }
 
   // Normalize customer inputs: support array inputMediaUrls, structured inputMedia, or legacy string inputMediaUrl
@@ -3323,7 +3343,14 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         try {
           const signed = await mediaStorage.generateProviderSignedUrl(stored.r2Key, 3600);
           if (signed) effectiveUrl = signed;
-        } catch {}
+        } catch (storageErr: any) {
+          console.error('[Storage Error] Failed to generate signed provider URL for customer media:', storageErr);
+          return res.status(500).json({
+            error: 'Failed to prepare private customer media for AI generation provider.',
+            code: 'STORAGE_SIGN_FAILED',
+            stage: 'storage'
+          });
+        }
       }
       persistentMediaList.push(effectiveUrl);
     } else {
@@ -3335,8 +3362,13 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 
-  // Server-Authoritative Cost Calculation (40% Markup Rule)
-  const requiredCredits = calculateAuthoritativeTemplateCost(template);
+  // Server-Authoritative Dynamic Cost Calculation (40% Markup Rule)
+  const requiredCredits = calculateAuthoritativeTemplateCost({
+    ...template,
+    model: effectiveModel,
+    durationSeconds: requestedDuration,
+    resolutionLabel: requestedResolution
+  }) || template.creditCost;
   const wallet = prodDb.getWallet(user.id);
 
   if (!isAuthorizedAdmin && wallet.balance < requiredCredits) {
@@ -3362,12 +3394,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       adminEmail: user.email || 'admin',
       templateId: template.id,
       templateTitle: template.title,
-      model: template.model,
+      model: effectiveModel,
       providerCostUsd: Number(template.providerCostUsd) || 0.25
     });
   }
 
-  // 2. Record generation record
+  // 2. Record generation record with four-tier duration tracking fields
   const generation: Generation = {
     id: genId,
     userId: user.id,
@@ -3379,10 +3411,15 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
     inputMediaUrl,
     engine: 'AI_GENERATION',
-    model: template.model,
+    model: effectiveModel,
     workflow: template.workflow,
     createdAt: new Date().toISOString(),
-    isAiGenerated: true
+    isAiGenerated: true,
+    resolution: requestedResolution,
+    durationSeconds: requestedDuration,
+    requestedOutputDurationSeconds: requestedDuration,
+    sourceVideoDurationSeconds: detectedInputType === 'video' ? requestedDuration : undefined,
+    wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined
   };
 
   prodDb.addGeneration(generation);
@@ -3409,7 +3446,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
       }
 
-      // 2. Authoritative Prompt Construction:
+      // 2. Authoritative Prompt Construction (Prompt Standard v1.1 Modality Hierarchy)
       // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
       const categoryPrompt = prodDb.getCategoryPrompt(template.category);
       const recipePrompt = template.recipe?.prompt?.trim();
@@ -3420,7 +3457,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         templateTitle: template.title,
         templateCategory: template.category,
         hasAfterReference: Boolean(resolvedRefImage),
-        hasBeforeReference: Boolean(template.sampleBefore)
+        hasBeforeReference: Boolean(template.sampleBefore),
+        outputType: template.type,
+        workflow: template.workflow,
+        isCouple: template.category === 'Couple',
+        hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
+        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
       });
 
       const effectiveRecipe = template.recipe ? {
@@ -3433,7 +3475,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         version: '1.0',
         inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
         provider: template.type === 'photo' ? 'gemini' : 'google_veo',
-        model: template.model || (template.type === 'photo' ? 'gemini-3.1-flash-image' : 'gemini-omni-1.1-flash'),
+        model: effectiveModel,
         engine: template.engine || 'AI_GENERATION',
         prompt: effectivePrompt,
         workflow: template.workflow,
@@ -3475,9 +3517,24 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         throw new Error('AI provider returned empty result media URL');
       }
 
+      // Duration probing & four-tier duration tracking
+      let actualOutputDuration: number | undefined;
+      let actualBillableDuration: number | undefined;
+      try {
+        if (template.type === 'video' || isVideoMedia(result.resultUrl)) {
+          actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl);
+          actualBillableDuration = actualOutputDuration;
+        }
+      } catch (probeErr) {
+        console.warn('[Duration Probe] Failed to probe video duration:', probeErr);
+      }
+
       prodDb.updateGeneration(genId, {
         status: 'completed',
         resultMediaUrl: result.resultUrl,
+        actualOutputDurationSeconds: actualOutputDuration,
+        actualBillableDurationSeconds: actualBillableDuration,
+        reconciledCostCredits: isAuthorizedAdmin ? 0 : requiredCredits,
         completedAt: new Date().toISOString()
       });
     } catch (err: any) {

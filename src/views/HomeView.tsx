@@ -43,6 +43,8 @@ export const HomeView: React.FC = () => {
     setPlansModalOpen,
     selectedCategory,
     setSelectedCategory,
+    selectedCategories,
+    setSelectedCategories,
     searchQuery,
     setSearchQuery,
     filterType,
@@ -233,23 +235,32 @@ export const HomeView: React.FC = () => {
             >
               {/* Media Container: 1:1 Square Theater Frame on Clean Black Canvas with Zero Blurred Duplicate Video */}
               {(() => {
+                const linkedTpl = (activeBanner.type === 'LINKED_TEMPLATE' && activeBanner.targetTemplateId)
+                  ? templates.find((t) => t.id === activeBanner.targetTemplateId)
+                  : null;
+                const effectiveVideoUrl = activeBanner.videoUrl || (linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl.cover : undefined);
+                const effectiveImage = activeBanner.image || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || linkedTpl?.preview || '';
+                const effectivePoster = activeBanner.coverMedia || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || '';
+
                 const cropStyle: React.CSSProperties = activeBanner.crop ? {
                   transform: `scale(${activeBanner.crop.zoom || 1}) translate(${activeBanner.crop.positionX || 0}%, ${activeBanner.crop.positionY || 0}%)`,
                   transformOrigin: 'center center'
                 } : {};
 
-                return Boolean(
+                const isVideoBanner = Boolean(
                   activeBanner.mediaType === 'video' ||
-                  activeBanner.videoUrl ||
-                  activeBanner.image?.endsWith('.mp4') ||
-                  activeBanner.image?.endsWith('.webm') ||
-                  activeBanner.image?.startsWith('data:video/')
-                ) ? (
+                  effectiveVideoUrl ||
+                  effectiveImage?.endsWith('.mp4') ||
+                  effectiveImage?.endsWith('.webm') ||
+                  effectiveImage?.startsWith('data:video/')
+                );
+
+                return isVideoBanner ? (
                   <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
                     <video
-                      key={`hero_fg_${activeBanner.id}_${activeBanner.videoUrl || activeBanner.image}`}
-                      src={activeBanner.videoUrl || activeBanner.image}
-                      poster={activeBanner.coverMedia || (activeBanner.image?.endsWith('.mp4') ? undefined : activeBanner.image)}
+                      key={`hero_fg_${activeBanner.id}_${effectiveVideoUrl || effectiveImage}`}
+                      src={effectiveVideoUrl || effectiveImage}
+                      poster={effectivePoster || (effectiveImage?.endsWith('.mp4') ? undefined : effectiveImage)}
                       autoPlay
                       muted
                       loop
@@ -261,7 +272,7 @@ export const HomeView: React.FC = () => {
                 ) : (
                   <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
                     <img
-                      src={activeBanner.image}
+                      src={effectiveImage}
                       alt={activeBanner.title}
                       style={cropStyle}
                       className="relative z-10 w-full h-full object-cover object-center"
@@ -272,7 +283,7 @@ export const HomeView: React.FC = () => {
 
               {/* Multi-layer Cinematic Scrims */}
               <div
-                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/85 via-black/40 to-transparent'}`}
+                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/60 via-black/20 to-transparent'}`}
               />
               <div className="absolute inset-0 z-15 bg-gradient-to-t from-[#070609] via-transparent to-black/30" />
 
@@ -408,6 +419,11 @@ export const HomeView: React.FC = () => {
                 key={cat}
                 onClick={() => {
                   setSelectedCategory(cat);
+                  if (cat === 'All') {
+                    setSelectedCategories([]);
+                  } else {
+                    setSelectedCategories([cat]);
+                  }
                 }}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all shrink-0 cursor-pointer ${
                   isSelected
