@@ -1,176 +1,327 @@
-# AI Prime Studio — Comprehensive Production Stability & Precision Media Plan (Safety Revised)
+# Strict Implementation Plan: AI Prime Studio Lumina — Authoritative Multi-Resolution Costing, Verified Adapter Audit & Progressive Media Architecture
 
-Deliver a verified, production-hardened implementation plan for AI Prime Studio that enforces strict data safety, exact payment endpoint integration, server-side verified Admin testing, reliable template asset recovery, and an authentic cancellation flow.
+## 1. Executive Summary & Strict Constraints
+This plan reconciles all platform requirements with direct, verified facts from the current codebase and runtime environment.
 
----
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following core safeguards have been locked based on your explicit review:
-
-1. **R2 Asset Safety & Zero-Guessing Policy**:
-   - Assets in Cloudflare R2 are **never merged merely because filenames or prefixes look similar**.
-   - Automatic grouping into a single `Template` record occurs **only when a reliable shared template ID and explicit asset-role mapping** (Face Thumbnail, BEFORE sample, AFTER result/cover) confirm the relationship.
-   - Ambiguous or unlinked legacy assets are preserved in an **Unassigned Recovery Inventory** (`unassignedRecoveryAssets`) accessible to the Admin; **no files are ever guessed or deleted**.
-2. **Existing Payment Route Integrity**:
-   - Strictly reuse the confirmed existing endpoints in `server.ts`:
-     - `POST /api/payments/checkout/order` (Order initiation)
-     - `POST /api/payments/verify` (Multi-index payment verification and activation)
-     - `POST /api/payments/webhook` & `/api/razorpay/webhook` (Gateway webhooks)
-     - `POST /api/subscription/cancel` (Subscription & mandate cancellation)
-   - Do **not** create duplicate payment routes.
-   - Preserve the live Razorpay plan `plan_TjsjORpnQrwUzl` (₹499 weekly renewal, 400 credits) without unnecessary changes.
-3. **Server-Verified Admin Free Testing**:
-   - Admin authentication verifies the Firebase Auth ID token server-side via `adminAuth.verifyIdToken(token)`—**client-supplied emails in request bodies or custom headers are never trusted**.
-   - Only for the verified email `ai.prime.studio.pro@gmail.com`, the server bypasses the user credit balance check and payment requirements for generation.
-   - Real AI provider token/image generation costs are recorded in the server audit log (`admin_test_runs`); customer payment validation and wallet balances remain 100% strict and secure.
-4. **Verifiable Cancellation in Account Settings**:
-   - Integrate the existing backend cancellation endpoint (`POST /api/subscription/cancel`) and frontend hook `cancelSubscription()` directly into the **Account & Wallet view (`TransactionLedgerModal.tsx`)**.
-   - Disclose the exact verified billing terms in `PlansModal.tsx`:
-     - *"₹1 Intro Offer for 24 hours (40 credits), then renews at ₹499/week (400 credits per weekly renewal). Manage or cancel auto-renewal anytime in Account & Wallet Settings."*
-     - No unverified "100% money-back guarantee" claims, no misleading strikethroughs, and no fake countdown timers.
+### Strict Non-Negotiable Rules:
+- **No False Verification**: No model, tariff, duration, adapter, or sync capability is labeled `VERIFIED` without verified empirical proof. Unproven entries are strictly marked `UNKNOWN`, `PENDING_QUOTE`, or `NOT_TESTED`.
+- **Pre-Generation vs. Post-Generation Cost Separation**:
+  - `estimatedProviderCostUsd` & `estimatedCustomerCredits` (pre-generation quote based on verified rates and requested inputs).
+  - `actualProviderCostUsd` & `actualCostReconciliation` (post-generation actual measured billing).
+  - The pre-generation quote never claims to be "Actual Cost".
+- **Customer Screen Guarantee**: Generation screen displays **only Required Credits** (e.g., `⚡ 12 Credits`). No INR or currency figures appear on generation screens.
+- **Strict File-Level Change Allowlist**: Payment gateways, wallet deduction/top-up logic, webhooks, and subscriptions are 100% frozen. Any modification to these protected files fails verification.
+- **No Unauthorized Paid Runs**: Passive connection checks do not call paid APIs. Live paid tests require explicit Owner approval and a verified cost quote.
+- **Sandbox Environment Transparency**: `.git` directory is absent in this runtime (`fatal: not a git repository`). Git sync is honestly marked `NOT_VERIFIED (GIT_DIRECTORY_ABSENT)`.
 
 ---
 
-## 1. Overview & Core Concept
+## 2. File-Level Change Allowlist & Protected Systems Freeze
 
-AI Prime Studio is an AI photo and video transformation studio designed for high conversion and photorealistic results.
+### A. Strictly Frozen Files (100% Read-Only — Zero Modifications Allowed)
+The following files and systems are **PROTECTED**. Any edits to these files are prohibited:
+1. `src/services/payments/razorpayAdapter.ts` (Frozen)
+2. `src/services/payments/cashfreeAdapter.ts` (Frozen)
+3. `src/services/billing/googlePlayService.ts` (Frozen)
+4. `src/config/pricingConfig.ts` (Frozen — top-up pack definitions and INR prices)
+5. `src/services/db/prodDb.ts` (Payment, wallet, refund, and subscription methods are Frozen)
+6. `server.ts` (Existing routes `/api/payments/*`, `/api/billing/*`, `/api/webhooks/*` are Frozen)
 
-This implementation stabilizes the full-stack system:
-1. **Interactive Draggable BEFORE/AFTER Slider**: Full-frame comparison in `TemplateDetailModal.tsx` allowing customers to inspect before vs. after styling, with a compact display-only Face Thumbnail.
-2. **End-to-End Asset Role Integrity**:
-   - `CUSTOMER_SOURCE_PHOTO`: Customer's uploaded photo is the sole facial identity anchor.
-   - `TEMPLATE_AFTER_REFERENCE`: Visual target for scene, pose, attire, and atmosphere (reused as Cover).
-   - `TEMPLATE_BEFORE_REFERENCE`: Optional starting appearance context.
-   - `TEMPLATE_FACE_THUMBNAIL`: Admin example face for display only; never replaces customer photo.
-3. **Data Safety & Reliable Persistence**: Authoritative Firestore storage with local backup, zero-deletion policy, and strict ID-based orphan recovery.
-4. **Transparent Billing & Real Cancellation**: Verifiable ₹1 trial / ₹499 weekly renewal with working in-app cancellation.
-
----
-
-## 2. User Experience & Visual Design
-
-### 2.1 Interactive Draggable BEFORE/AFTER Split Slider (`TemplateDetailModal.tsx`)
-- **Container**: Responsive aspect-ratio container (`aspect-[9/16] sm:aspect-[3/4] rounded-3xl overflow-hidden relative select-none touch-none`).
-- **Split Mechanics**:
-  - Base layer: Full-frame BEFORE image.
-  - Top layer: Transformed AFTER sample clipped dynamically via:
-    `clipPath: polygon(0 0, ${sliderPosition}% 0, ${sliderPosition}% 100%, 0 100%)`.
-  - Ergonomic draggable vertical divider with a circular tactile knob containing dual arrows (`◄ ►`).
-  - Pointer/touch tracking (`onPointerDown`, `onPointerMove`, `onPointerUp`) with `setPointerCapture` for smooth performance on mobile and desktop.
-- **Labels**: Semi-transparent floating chips:
-  - Left: "BEFORE (Original)" in sky-blue typography.
-  - Right: "AFTER (AI Result)" in amber/emerald typography.
-- **Face Thumbnail Badge**:
-  - Bottom-left corner floating badge (`w-14 h-16 rounded-2xl border border-white/20 shadow-xl overflow-hidden`).
-  - Clear caption: "Face Sample · Admin Example".
-
-### 2.2 Transparent Pricing & Real Cancellation (`PlansModal.tsx` & `TransactionLedgerModal.tsx`)
-- **Plans Modal (`PlansModal.tsx`)**:
-  - Card 1: "1-Day Intro Pass" with prominent **₹1** headline.
-  - Disclosed terms: "Includes 40 credits for 24 hours. Renews at ₹499/week (400 credits/cycle) via Razorpay AutoPay. Cancel anytime in Account & Wallet Settings."
-  - Removed misleading crossed-out ₹499 and removed fake countdown timer.
-- **Account & Wallet View (`TransactionLedgerModal.tsx`)**:
-  - Displays active subscription status (e.g. "Active · Trial Offer · Renews in X days").
-  - Provides a verified "Cancel Auto-Renewal" button that invokes `cancelSubscription()` via `POST /api/subscription/cancel`.
-  - Shows success toast and updates subscription status to `cancelled` without revoking remaining paid days.
-
-### 2.3 Off-Screen Media Viewport Optimization
-- `TemplateCard.tsx` and detail views maintain `IntersectionObserver` logic:
-  - Videos autoplay only when $\ge 50\%$ visible within the active viewport, pausing immediately when scrolled away.
-  - All preview videos load `muted={true}` and `playsInline={true}`.
+### B. Explicit Change Allowlist (Only These Files May Be Modified)
+1. `src/config/globalMasterPrompt.ts`: Add Prompt Standard v1.1 modular branches (`PHOTO_GLOBAL_PROMPT`, `VIDEO_SOURCE_PRESERVING_PROMPT`, `MOTION_TRANSFER_PROMPT`, `VIDEO_EDIT_PROMPT`, `IMAGE_TO_VIDEO_PROMPT`, `COUPLE_PHOTO_MAPPING`, `COUPLE_VIDEO_MAPPING`).
+2. `src/services/pricing/pricingService.ts`: Implement `MODEL_REGISTRY` with `UNKNOWN`/`PENDING_QUOTE` statuses; implement 4-stage cost functions.
+3. `src/services/ai/faceSwapAdapter.ts`: Add `hf_mult_motion_control_flash` and `hf_mult_replace_object_flash` endpoint mappings; pass untruncated recipe parameter.
+4. `src/services/ai/aiRouter.ts`: Route `MOTION_TRANSFER` vs `OBJECT_SWAP` vs `VIDEO_EDIT` vs `PHOTO` without conflating workflows.
+5. `src/components/TemplateCard.tsx`: Staged progressive loading (poster first, lazy preview with `preload="none"`, Data Saver detection, in-place HD upgrade).
+6. `src/components/TemplateDetailModal.tsx`: Add wardrobe selector (“कपड़े किससे लेने हैं?”), couple 2-photo upload boxes with independent remove/replace, and live credit recalculation (Credits only, zero INR).
+7. `src/components/TemplateManagerModal.tsx`: Add Cover Media selector for every template, 1:1 client-side crop/zoom editor, and extend existing Testing tab.
+8. `src/views/HomeView.tsx`: Apply 1:1 square CSS crop to carousel cards; uncropped native player (`object-contain`); conditional CTA (`SHOWCASE_ONLY` has no CTA; `LINKED_TEMPLATE` has CTA); respect `filterType` on rails.
+9. `src/views/TemplatesView.tsx`: Support multi-category selection (`selectedCategories: string[]`) with OR logic across categories and AND logic with Photo/Video type filter.
+10. `server.ts` (Targeted sections only): Convert customer uploads to private R2 signed URLs in `/api/generations/create`; fix `category !== 'Trending'` query bug in `/api/templates`; add banner crop metadata endpoints. Payment/billing routes remain 100% untouched.
+11. `scripts/verify_system_fixes.ts`: Add Suite 25 automated tests and regression checks.
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## 3. Model Registry & Resolution Tariff Matrix (Correction 1)
 
-### 3.1 Strict R2 Asset Grouping vs. Unassigned Inventory
-- **Decision**: Group R2 assets into a template **only when they share a reliable template ID** in their filename or metadata (e.g., `tpl_<id>_face`, `tpl_<id>_before`, `tpl_<id>_after`).
-- **Ambiguous Assets**: Any R2 assets that do not possess a verifiable template ID are routed to an `unassignedRecoveryAssets` list in the Admin Template Manager. No files are deleted or guessed into existing templates.
+### Target File: `src/services/pricing/pricingService.ts`
+- **Renamed to `MODEL_REGISTRY`**: No unsupported `VERIFIED` or hardcoded `isSupported: true` tags.
+- **Capabilities Matrix**:
+  ```ts
+  export type SupportStatus = 'SUPPORTED' | 'UNSUPPORTED' | 'UNKNOWN';
+  export type VerificationStatus = 'VERIFIED' | 'PENDING_QUOTE' | 'NOT_TESTED';
 
-### 3.2 Server-Side Firebase Auth for Admin Bypass
-- **Decision**: Authenticate the user via `adminAuth.verifyIdToken(token)` inside `requireAuth`.
-- **Admin Verification**: Check `decodedToken.email === 'ai.prime.studio.pro@gmail.com'`.
-  - If verified, the server bypasses wallet credit deduction and payment checks for generation.
-  - Logs model ID, prompt, and actual provider token/image cost to `admin_test_runs`.
-  - Client-supplied emails in request bodies or headers are ignored for authorization.
+  export interface ResolutionTariff {
+    resolution: '480p' | '720p' | '1080p';
+    publishedListPricePerSecondUsd: number;
+    accountQuotePerSecondUsd?: number;
+    supportStatus: SupportStatus;
+    renderingTestStatus: VerificationStatus;
+  }
 
-### 3.3 Authoritative Single-Call Prompt Assembly
-- **Decision**: Standardize prompt generation in `src/config/globalMasterPrompt.ts`:
-  $$\text{Unified Prompt} = \text{GLOBAL\_MASTER\_PROMPT} + \text{CATEGORY\_PROMPT} + \text{TEMPLATE\_RECIPE} + \text{USER\_INSTRUCTIONS}$$
-- **Routing**: `aiRouter.ts` passes `CUSTOMER_SOURCE_PHOTO` as Image 1, `TEMPLATE_AFTER_REFERENCE` as Image 2, and optional `TEMPLATE_BEFORE_REFERENCE` as Image 3 to the provider adapter.
+  export interface ModelRegistryEntry {
+    modelId: string;
+    provider: 'higgsfield' | 'gemini' | 'smart_template';
+    workflow: 'VIDEO_FACE_REPLACEMENT' | 'OBJECT_SWAP' | 'MOTION_TRANSFER' | 'VIDEO_EDIT' | 'IMAGE_TO_VIDEO' | 'PHOTO_EDIT' | 'PHOTO_GENERATION';
+    resolutionTariffs: Record<'480p' | '720p' | '1080p', ResolutionTariff>;
+    appDefaultResolution?: '480p' | '720p' | '1080p';
+    minDurationSeconds?: number;
+    maxDurationSeconds?: number;
+    appDefaultDurationSeconds?: number;
+    billsSourceVideo: boolean | 'UNKNOWN';
+    endpointVerificationStatus: VerificationStatus;
+    generationTestStatus: VerificationStatus;
+  }
+
+  export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
+    'hf_mult_motion_control_flash': {
+      modelId: 'hf_mult_motion_control_flash',
+      provider: 'higgsfield',
+      workflow: 'MOTION_TRANSFER',
+      resolutionTariffs: {
+        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      },
+      // Defaults kept disabled/unassigned until exact endpoint and account support are verified
+      appDefaultResolution: undefined,
+      appDefaultDurationSeconds: undefined,
+      billsSourceVideo: 'UNKNOWN',
+      endpointVerificationStatus: 'PENDING_QUOTE',
+      generationTestStatus: 'NOT_TESTED'
+    },
+    'hf_mult_replace_object_flash': {
+      modelId: 'hf_mult_replace_object_flash',
+      provider: 'higgsfield',
+      workflow: 'OBJECT_SWAP',
+      resolutionTariffs: {
+        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      },
+      appDefaultResolution: undefined,
+      appDefaultDurationSeconds: undefined,
+      billsSourceVideo: 'UNKNOWN',
+      endpointVerificationStatus: 'PENDING_QUOTE',
+      generationTestStatus: 'NOT_TESTED'
+    },
+    'gemini-3.1-flash-lite-image': {
+      modelId: 'gemini-3.1-flash-lite-image',
+      provider: 'gemini',
+      workflow: 'PHOTO_GENERATION',
+      resolutionTariffs: {
+        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      },
+      billsSourceVideo: false,
+      endpointVerificationStatus: 'PENDING_QUOTE',
+      generationTestStatus: 'NOT_TESTED'
+    },
+    'gemini-omni-1.1-flash': {
+      modelId: 'gemini-omni-1.1-flash',
+      provider: 'gemini',
+      workflow: 'VIDEO_EDIT',
+      resolutionTariffs: {
+        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      },
+      billsSourceVideo: false,
+      endpointVerificationStatus: 'PENDING_QUOTE',
+      generationTestStatus: 'NOT_TESTED' // Evaluation-only
+    },
+    'smart_canvas_ffmpeg': {
+      modelId: 'smart_canvas_ffmpeg',
+      provider: 'smart_template',
+      workflow: 'VIDEO_EDIT',
+      resolutionTariffs: {
+        // FFmpeg binary installed, but individual rendering resolutions are NOT_TESTED until test render executes
+        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      },
+      billsSourceVideo: false,
+      endpointVerificationStatus: 'VERIFIED', // Local binary detected
+      generationTestStatus: 'NOT_TESTED'
+    }
+  };
+  ```
 
 ---
 
-## 4. Technical Architecture & Data Strategy
+## 4. Four-Stage Duration & Cost Tracking (Correction 2)
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          CLIENT FRONTEND (React SPA)                        │
-│                                                                             │
-│  ┌───────────────────────┐  ┌─────────────────────────┐  ┌───────────────┐ │
-│  │   Template Detail     │  │  Account & Wallet Modal │  │  Plans Modal  │ │
-│  │(Draggable Split View) │  │ (Active Sub & Cancel Btn)│  │(₹1/wk Clean UX)│ │
-│  └───────────┬───────────┘  └────────────┬────────────┘  └───────┬───────┘ │
-└──────────────┼───────────────────────────┼───────────────────────┼─────────┘
-               │                           │                       │
-               ▼                           ▼                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       EXPRESS SERVER PROXY (server.ts)                      │
-│                                                                             │
-│  • POST /api/generate ──> Admin Bypass Check (Verified Firebase Auth Token) │
-│  • POST /api/payments/checkout/order ──> Standard Order Creation            │
-│  • POST /api/payments/verify ──> Multi-Index Lookup & ₹1 Activation          │
-│  • POST /api/subscription/cancel ──> Razorpay Mandate Cancellation         │
-│  • GET  /api/media/:filename ──> Real MIME & Cache-Control Stream           │
-└──────────────┬───────────────────────────┬──────────────────────────────────┘
-               │                           │
-               ▼                           ▼
-┌───────────────────────────────┐   ┌─────────────────────────────────────────┐
-│     CLOUDFLARE R2 STORAGE     │   │      FIRESTORE & LOCAL DATABASE         │
-│                               │   │                                         │
-│ • /public/tpl_face_{id}       │   │ • templates/{templateId}                │
-│ • /public/tpl_before_{id}     │   │ • users/{userId} & wallets/{userId}     │
-│ • /public/tpl_after_{id}      │   │ • payments/{orderId}                    │
-│ • Unassigned Recovery List    │   │ • subscriptions/{userId}                │
-└───────────────────────────────┘   └─────────────────────────────────────────┘
-```
+#### Target Files: `src/services/pricing/pricingService.ts`, `server.ts`
+- **Four Distinct Duration Metrics**:
+  1. `sourceVideoDurationSeconds`: Probed from input driving video via FFprobe.
+  2. `requestedOutputDurationSeconds`: Requested by customer (slider) or template configuration.
+  3. `actualOutputDurationSeconds`: Measured from the actual generated output video file via FFprobe after generation.
+  4. `actualBillableDurationSeconds`: Determined from provider transaction response and verified billing rules.
 
-### 4.1 Step-by-Step Implementation Flow
+- **Four Distinct Cost Stages**:
+  ```ts
+  // 1. Pre-Generation Estimated Provider Cost
+  export function calculateEstimatedProviderCostUsd(params: {
+    modelId: string;
+    resolution: '480p' | '720p' | '1080p';
+    sourceVideoDurationSeconds?: number;
+    requestedOutputDurationSeconds: number;
+  }): { status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED'; estimatedProviderCostUsd?: number; reason?: string } {
+    const entry = MODEL_REGISTRY[params.modelId];
+    if (!entry) return { status: 'UNSUPPORTED', reason: 'Model not registered.' };
 
-1. **Step 1: Backup & Protect Existing Data**
-   - Verify existing records in `data/database/` and Firestore. Ensure zero data deletion.
+    const tariff = entry.resolutionTariffs[params.resolution];
+    if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
+      return { status: 'UNSUPPORTED', reason: `Resolution ${params.resolution} is unsupported by ${params.modelId}.` };
+    }
 
-2. **Step 2: Interactive Draggable BEFORE/AFTER Slider (`src/components/TemplateDetailModal.tsx`)**
-   - Replace floating before thumbnail with a full-frame interactive split comparison.
-   - Implement pointer-driven horizontal slider with touch capture.
-   - Display compact floating Face Reference badge with "Display Only" clarity.
+    const rate = tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd;
+    if (rate === undefined || rate <= 0 && entry.provider !== 'smart_template') {
+      return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
+    }
 
-3. **Step 3: Account Settings Cancellation & Plans UX (`src/components/TransactionLedgerModal.tsx` & `src/components/PlansModal.tsx`)**
-   - Add "Active Subscription & Cancel Auto-Renewal" section in `TransactionLedgerModal.tsx` wired to `cancelSubscription()`.
-   - Update `PlansModal.tsx` to display verified terms: "₹1 First Day Trial, renews at ₹499/week (400 credits/week)". Remove fake countdown, fake strike-through, and unverified refund claims.
+    if (entry.billsSourceVideo === true) {
+      if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
+        return { status: 'PENDING_QUOTE', reason: 'Source video duration is required for dual-duration quote.' };
+      }
+      const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
+      return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate };
+    }
 
-4. **Step 4: Durable Persistence & Multi-Asset Recovery Audit (`src/services/db/database.ts`)**
-   - Update `recoverOrphanedTemplatesFromR2()` to group assets only when a reliable shared template ID confirms the link.
-   - Route ambiguous assets to an `unassignedRecoveryAssets` inventory without deleting them.
+    return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate };
+  }
 
-5. **Step 5: Authoritative Prompt Hierarchy & Input Roles (`src/services/ai/aiRouter.ts` & `geminiAdapter.ts`)**
-   - Ensure prompt is built once via `buildUnifiedGenerationPrompt()`.
-   - Route `CUSTOMER_SOURCE_PHOTO` as Image 1, `TEMPLATE_AFTER_REFERENCE` as Image 2, and optional `TEMPLATE_BEFORE_REFERENCE` as Image 3.
-   - Validate required inputs prior to calling external APIs.
+  // 2. Pre-Generation Estimated Customer Credits (Credits only, zero INR on UI)
+  export function calculateEstimatedCustomerCredits(
+    estimatedProviderCostUsd: number,
+    config: CentralPricingConfig
+  ): number {
+    const estimatedCostInr = estimatedProviderCostUsd * config.usdToInrRate;
+    const billedInr = estimatedCostInr * (1 + config.markupPercent / 100);
+    return Math.ceil(billedInr * config.creditsPerInr);
+  }
 
-6. **Step 6: Server-Side Verified Admin Free Testing (`server.ts`)**
-   - In `/api/generate` and `/api/faceswap/generate`, verify admin identity strictly via server-decoded Firebase Auth token (`req.user.email === 'ai.prime.studio.pro@gmail.com'`).
-   - Bypass wallet credit deduction for verified admin; record actual provider cost in `admin_test_runs`.
+  // 3. Post-Generation Actual Provider Cost
+  export function measureActualProviderCostUsd(params: {
+    modelId: string;
+    resolution: '480p' | '720p' | '1080p';
+    actualBillableDurationSeconds: number;
+    providerTransactionCostUsd?: number;
+  }): number {
+    if (params.providerTransactionCostUsd !== undefined) {
+      return params.providerTransactionCostUsd;
+    }
+    const entry = MODEL_REGISTRY[params.modelId];
+    const tariff = entry?.resolutionTariffs[params.resolution];
+    const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
+    return params.actualBillableDurationSeconds * rate;
+  }
 
-7. **Step 7: Payment Verification & Reconciliation (`server.ts`)**
-   - Keep existing `/api/payments/verify` endpoint with multi-index lookup (`orderId`, `subscriptionId`, `paymentId`) to ensure ₹1 payments activate 40 credits reliably.
+  // 4. Actual Cost Reconciliation
+  export function reconcileCostOnCompletion(params: {
+    reservedCredits: number;
+    actualProviderCostUsd: number;
+    config: CentralPricingConfig;
+    isFailed: boolean;
+  }): { finalChargeCredits: number; refundCredits: number } {
+    if (params.isFailed) {
+      return { finalChargeCredits: 0, refundCredits: params.reservedCredits };
+    }
+    // Customer is never charged more than the pre-generation quote
+    return { finalChargeCredits: params.reservedCredits, refundCredits: 0 };
+  }
+  ```
 
-8. **Step 8: Google Sign-In Branding Guidance**
-   - Provide exact Google Cloud Console OAuth Consent Screen configuration instructions to display "AI Prime Studio" instead of GCP project numbers.
+---
 
-9. **Step 9: Testing & Verification**
-   - Run `lint_applet` and `compile_applet`.
-   - Verify server startup and endpoint health on port 3000.
-   - Present final Requirement Ledger table with status, evidence, and remaining actions.
+## 5. Comprehensive Adapter Audit Discovered from Codebase (Correction 3)
+
+### Discovered Registered Adapters Inventory:
+
+| Provider Name | Adapter File | Exact Model IDs | Supported Workflows | Required Secret Names | Current Sandbox Secret Status | Connection Test | Model/Endpoint Availability | Pricing Evidence | Generation Test Status |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| **Higgsfield Motion Transfer** | `src/services/ai/faceSwapAdapter.ts` | `hf_mult_motion_control_flash` | `MOTION_TRANSFER`, `VIDEO_FACE_REPLACEMENT` | `HIGGSFIELD_API_KEY`, `HIGGSFIELD_API_SECRET` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Published list: $0.05 (480p), $0.10 (720p), $0.20 (1080p) | NOT_TESTED |
+| **Higgsfield Object Swap** | `src/services/ai/faceSwapAdapter.ts` | `hf_mult_replace_object_flash` | `OBJECT_SWAP` | `HIGGSFIELD_API_KEY`, `HIGGSFIELD_API_SECRET` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Published list: $0.10 (720p), $0.20 (1080p) | NOT_TESTED |
+| **Google Gemini Image** | `src/services/ai/geminiAdapter.ts` | `gemini-3.1-flash-lite-image` | `PHOTO_GENERATION`, `PHOTO_EDIT`, `PHOTO_IDENTITY_EDIT`, `COUPLE_PHOTO_MAPPING` | `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Token-based official tariff (Pending Quote) | NOT_TESTED |
+| **Google Gemini Omni Flash** | `src/services/ai/videoProviderAdapter.ts` | `gemini-omni-1.1-flash` | `VIDEO_EDIT`, `IMAGE_TO_VIDEO` | `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Per-second official tariff (Pending Quote) | EVALUATION_ONLY |
+| **Smart Template Engine** | `src/services/video/videoTrimmer.ts` | `smart_canvas_ffmpeg` | `VIDEO_EDIT`, Overlays, Text, Transitions | None (Local binary) | INSTALLED (Local binary) | PASS (Binary detected) | Local system | $0.00 (Zero AI cost) | NOT_TESTED (Per-resolution rendering tests pending) |
+
+- **Admin Gallery Test Extension**:
+  - Leverages the existing Testing tab in `TemplateManagerModal.tsx`.
+  - Displays accurate statuses: `MISSING_SECRET`, `NOT_TESTED`, `CONFIGURED`.
+  - A passive ping or binary check is **never** presented as an actual generation test.
+  - Paid generation tests require explicit Admin modal confirmation: *"Running live generation test consumes ~X credits ($Y USD). Proceed?"*
+
+---
+
+## 6. Real Builder Synchronization & Environment Facts (Correction 4)
+
+### A. Git & Repository Status (Fact-Based)
+- **Current Runtime Status**:
+  - The AI Studio sandbox container does not mount a `.git` directory (`git rev-parse` returns `fatal: not a git repository`).
+  - Consequently, live `git status`, local commit SHA comparison, or git diffs cannot be executed inside this container.
+  - Git synchronization status: **NOT_VERIFIED (GIT_DIRECTORY_ABSENT)**.
+  - Historical reference commits from task prompts: `08702c5` and `68916c3` on branch `main` at `https://github.com/ai-prime-studio/ai-prime-studio-lumina.git`.
+
+### B. Firestore Synchronization Evidence (Suite 18 Verification)
+- **Database ID**: `ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f`.
+- **Suite 18 Execution Log**:
+  - `[PASS] 18.1 Secondary template saved and verified directly in authoritative Firestore`
+  - `[PASS] 18.1 Primary Builder instance refreshed and successfully received Secondary template with all properties`
+  - `[PASS] 18.2 Primary template saved and verified directly in authoritative Firestore`
+  - `[PASS] 18.2 Secondary Builder instance refreshed and successfully received Primary template with all properties`
+  - `[PASS] 18.3 Template document removed from Firestore templates collection`
+  - `[PASS] 18.3 Deleted template ID recorded in authoritative deleted_template_ids`
+  - `[PASS] 18.3 Secondary refresh excludes deleted template; never resurfaces`
+  - `[PASS] 18.4 Re-created template ID atomically cleared from deleted_template_ids`
+  - `[PASS] 18.4 Re-created template is immediately available on Primary after refresh`
+- **Cross-Instance Status**: When verified in dual local simulated instances connected to Firestore, tests 18.1–18.4 pass. Remote multi-runner cross-instance logs are not accessible from within this single sandbox; marked **VERIFIED_LOCAL_SIMULATION / NOT_VERIFIED_REMOTE_RUNNER**.
+
+### C. Cloudflare R2 Storage Status
+- In the current sandbox container, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET_NAME` are missing (`false`).
+- Local filesystem fallback is active.
+- R2 Cloud Sync Status: **NOT_VERIFIED (SECRETS_ABSENT, LOCAL_FALLBACK_ACTIVE)**.
+
+---
+
+## 7. Multi-Category Filtering, Cover Media & Hero Banner 1:1 System
+
+### A. Multi-Category & Combined Filtering (Target: `AppContext.tsx`, `TemplatesView.tsx`, `server.ts`)
+- `selectedCategories: string[]` in AppContext.
+- Filter Logic:
+  - Categories: **OR logic** (matches if template belongs to any of the selected categories).
+  - Media Type: **AND logic** with `filterType` (`all` | `photo` | `video`).
+  - Search: **AND logic** with keyword query.
+- Fix in `server.ts`: Remove `category !== 'Trending'` exclusion; support comma-separated multi-category queries (`?categories=Trending,Devotional`).
+- Fix in `HomeView.tsx`: Filter horizontal rails by active `filterType`.
+
+### B. Template Cover Media for Every Template (Target: `TemplateManagerModal.tsx`, `server.ts`)
+- Explicit Cover Media selector in Template Manager (Cover Image or Cover Video).
+- Used on gallery cards and as default hero display media when linked to Hero Banner.
+- `drivingVideoUrl` strictly preserved as an internal AI generation asset; never automatically assigned as display media.
+
+### C. Home Hero Banner Dual Types & 1:1 Client-Side Crop (Target: `HomeView.tsx`, `TemplateManagerModal.tsx`)
+- `SHOWCASE_ONLY`: Full-screen player has **no CTA**.
+- `LINKED_TEMPLATE`: Full-screen player presents **"Use This Template" CTA** opening the generation flow.
+- 1:1 Square Carousel Card styled via `crop: { aspectRatio: '1:1', positionX, positionY, zoom }` (zero server transcoding).
+- Native Aspect Ratio Full-Screen Player: 100% uncropped media (`object-contain`). Crop/zoom settings do not apply in full-screen mode. Starts muted, pauses carousel timer on open, and resumes from same slide on close.
+- 1:1 Crop Editor in Admin allows interactive drag pan and zoom (1.0x–3.0x).
+
+---
+
+## 8. Verification & Regression Plan
+
+### Automated Test Suite: `scripts/verify_system_fixes.ts`
+Add **Suite 25** covering:
+1. **Model Registry Integrity**: Verified absence of unsupported `VERIFIED` and `isSupported: true` tags; unproven entries marked `UNKNOWN`/`NOT_TESTED`.
+2. **Four-Tier Duration Tracking**: Probed duration, requested duration, output duration, and billable duration separated cleanly.
+3. **Four-Stage Cost Calculation**: `estimatedProviderCostUsd`, `estimatedCustomerCredits`, `actualProviderCostUsd`, and `reconcileCostOnCompletion` functions verified.
+4. **Adapter Audit Status**: Accurate representation of missing secrets in current runtime.
+5. **Multi-Category Filters**: OR logic across categories, AND logic with Photo/Video type filter.
+6. **Template Cover Media**: Dedicated cover selection; protection of `drivingVideoUrl`.
+7. **Hero Banner 1:1 System**: `SHOWCASE_ONLY` (no CTA) vs `LINKED_TEMPLATE` (with CTA); 1:1 client-side transform metadata; uncropped native player.
+8. **Protected System Regression Checks**:
+   - Verification that `src/services/payments/*`, `src/services/billing/*`, and payment routes in `server.ts` are identical to pre-task baseline.
+   - Idempotent wallet reservation and 100% refund on failure verified.
+   - Customer UI verified to show Credits only (zero INR).
