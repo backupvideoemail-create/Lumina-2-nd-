@@ -12,6 +12,8 @@ export const TemplatesView: React.FC = () => {
     loadingTemplates,
     selectedCategory,
     setSelectedCategory,
+    selectedCategories,
+    setSelectedCategories,
     searchQuery,
     setSearchQuery,
     filterType,
@@ -48,16 +50,33 @@ export const TemplatesView: React.FC = () => {
     return result;
   }, [templates]);
 
-  // If current category has no active templates, default to first available active category
-  React.useEffect(() => {
-    if (activeCategories.length > 0 && !activeCategories.includes(selectedCategory)) {
-      setSelectedCategory(activeCategories[0]);
+  const handleToggleCategory = (cat: string) => {
+    if (cat === 'All') {
+      setSelectedCategories([]);
+      return;
     }
-  }, [activeCategories, selectedCategory, setSelectedCategory]);
+    const exists = selectedCategories.includes(cat);
+    if (exists) {
+      const next = selectedCategories.filter((c) => c !== cat);
+      setSelectedCategories(next);
+    } else {
+      setSelectedCategories([...selectedCategories, cat]);
+    }
+  };
 
-  // Filter templates
+  // Filter templates with AND logic across Type/Aspect/Search, and OR logic across selected Categories
   let displayList = templates.filter((tpl) => {
+    if (tpl.isActive === false) return false;
+    if (filterType !== 'all' && tpl.type !== filterType) return false;
+    if (selectedCategories.length > 0 && !selectedCategories.includes(tpl.category)) return false;
     if (aspectFilter !== 'all' && tpl.aspectRatio !== aspectFilter) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = tpl.title.toLowerCase().includes(q);
+      const matchCat = tpl.category.toLowerCase().includes(q);
+      const matchTag = tpl.tags && tpl.tags.some((t) => t.toLowerCase().includes(q));
+      if (!matchTitle && !matchCat && !matchTag) return false;
+    }
     return true;
   });
 
@@ -150,14 +169,26 @@ export const TemplatesView: React.FC = () => {
           </div>
         </div>
 
-        {/* Horizontally scrollable Category Chips (Only categories with active templates) */}
+        {/* Horizontally scrollable Category Chips (All + categories with active templates) */}
         <div className="max-w-4xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar pt-3">
+          {/* 'All' Category Reset Pill */}
+          <button
+            onClick={() => handleToggleCategory('All')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+              selectedCategories.length === 0
+                ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
+                : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'
+            }`}
+          >
+            <span>All Categories</span>
+          </button>
+
           {activeCategories.map((cat) => {
-            const isSelected = selectedCategory === cat;
+            const isSelected = selectedCategories.includes(cat);
             return (
               <button
                 key={cat}
-                onClick={() => setSelectedCategory(cat)}
+                onClick={() => handleToggleCategory(cat)}
                 className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
                   isSelected
                     ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
@@ -166,7 +197,12 @@ export const TemplatesView: React.FC = () => {
               >
                 {cat === 'Dance' && <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />}
                 <span>{cat}</span>
-                {cat === 'Dance' && (
+                {isSelected && (
+                  <span className="text-[9px] w-3.5 h-3.5 rounded-full bg-stone-950/30 text-stone-950 font-black flex items-center justify-center">
+                    ✓
+                  </span>
+                )}
+                {cat === 'Dance' && !isSelected && (
                   <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
                     HOT
                   </span>

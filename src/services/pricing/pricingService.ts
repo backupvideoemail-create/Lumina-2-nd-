@@ -37,6 +37,192 @@ export interface PricingSettings {
   providerCostsUsd: ProviderCostUsdCatalog;
 }
 
+export type SupportStatus = 'SUPPORTED' | 'UNSUPPORTED' | 'UNKNOWN';
+export type VerificationStatus = 'VERIFIED' | 'PENDING_QUOTE' | 'NOT_TESTED';
+
+export interface ResolutionTariff {
+  resolution: '480p' | '720p' | '1080p';
+  publishedListPricePerSecondUsd: number;
+  accountQuotePerSecondUsd?: number;
+  supportStatus: SupportStatus;
+  renderingTestStatus: VerificationStatus;
+}
+
+export interface ModelRegistryEntry {
+  modelId: string;
+  provider: 'higgsfield' | 'gemini' | 'smart_template';
+  workflow: 'VIDEO_FACE_REPLACEMENT' | 'OBJECT_SWAP' | 'MOTION_TRANSFER' | 'VIDEO_EDIT' | 'IMAGE_TO_VIDEO' | 'PHOTO_EDIT' | 'PHOTO_GENERATION';
+  resolutionTariffs: Record<'480p' | '720p' | '1080p', ResolutionTariff>;
+  appDefaultResolution?: '480p' | '720p' | '1080p';
+  minDurationSeconds?: number;
+  maxDurationSeconds?: number;
+  appDefaultDurationSeconds?: number;
+  billsSourceVideo: boolean | 'UNKNOWN';
+  endpointVerificationStatus: VerificationStatus;
+  generationTestStatus: VerificationStatus;
+  isEvaluationOnly?: boolean;
+}
+
+/**
+ * Authoritative Model Registry.
+ * Explicitly separates published list prices from verified account quotes.
+ * Entries without live verification are labeled PENDING_QUOTE, UNKNOWN, or NOT_TESTED.
+ */
+export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
+  'hf_mult_motion_control_flash': {
+    modelId: 'hf_mult_motion_control_flash',
+    provider: 'higgsfield',
+    workflow: 'MOTION_TRANSFER',
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+    },
+    appDefaultResolution: undefined,
+    appDefaultDurationSeconds: undefined,
+    billsSourceVideo: 'UNKNOWN',
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED'
+  },
+  'hf_mult_replace_object_flash': {
+    modelId: 'hf_mult_replace_object_flash',
+    provider: 'higgsfield',
+    workflow: 'OBJECT_SWAP',
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+    },
+    appDefaultResolution: undefined,
+    appDefaultDurationSeconds: undefined,
+    billsSourceVideo: 'UNKNOWN',
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED'
+  },
+  'gemini-3.1-flash-lite-image': {
+    modelId: 'gemini-3.1-flash-lite-image',
+    provider: 'gemini',
+    workflow: 'PHOTO_GENERATION',
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+    },
+    billsSourceVideo: false,
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED'
+  },
+  'gemini-omni-1.1-flash': {
+    modelId: 'gemini-omni-1.1-flash',
+    provider: 'gemini',
+    workflow: 'VIDEO_EDIT',
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+    },
+    billsSourceVideo: false,
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED',
+    isEvaluationOnly: true
+  },
+  'smart_canvas_ffmpeg': {
+    modelId: 'smart_canvas_ffmpeg',
+    provider: 'smart_template',
+    workflow: 'VIDEO_EDIT',
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+    },
+    billsSourceVideo: false,
+    endpointVerificationStatus: 'VERIFIED',
+    generationTestStatus: 'NOT_TESTED'
+  }
+};
+
+/**
+ * Stage 1: Pre-Generation Estimated Provider Cost (USD)
+ */
+export function calculateEstimatedProviderCostUsd(params: {
+  modelId: string;
+  resolution: '480p' | '720p' | '1080p';
+  sourceVideoDurationSeconds?: number;
+  requestedOutputDurationSeconds: number;
+}): { status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED'; estimatedProviderCostUsd?: number; reason?: string } {
+  const entry = MODEL_REGISTRY[params.modelId];
+  if (!entry) return { status: 'UNSUPPORTED', reason: 'Model not registered.' };
+
+  const tariff = entry.resolutionTariffs[params.resolution];
+  if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
+    return { status: 'UNSUPPORTED', reason: `Resolution ${params.resolution} is unsupported by ${params.modelId}.` };
+  }
+
+  const rate = tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd;
+  if ((rate === undefined || rate <= 0) && entry.provider !== 'smart_template') {
+    return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
+  }
+
+  if (entry.billsSourceVideo === true) {
+    if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
+      return { status: 'PENDING_QUOTE', reason: 'Source video duration is required for dual-duration quote.' };
+    }
+    const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
+    return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate };
+  }
+
+  return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate };
+}
+
+/**
+ * Stage 2: Pre-Generation Estimated Customer Credits
+ * Strictly applies +40% business markup once. Customer UI shows Credits only, zero INR.
+ */
+export function calculateEstimatedCustomerCredits(
+  estimatedProviderCostUsd: number,
+  rate = CENTRAL_PRICING_CONFIG.usdToInrRate,
+  markupPercent = CENTRAL_PRICING_CONFIG.markupPercent,
+  creditsPerInr = CENTRAL_PRICING_CONFIG.creditsPerInr
+): number {
+  const inrProviderCost = estimatedProviderCostUsd * rate;
+  const customerBasePrice = inrProviderCost * (1 + markupPercent / 100);
+  return Math.ceil(customerBasePrice * creditsPerInr);
+}
+
+/**
+ * Stage 3: Post-Generation Actual Provider Cost (USD)
+ */
+export function measureActualProviderCostUsd(params: {
+  modelId: string;
+  resolution: '480p' | '720p' | '1080p';
+  actualBillableDurationSeconds: number;
+  providerTransactionCostUsd?: number;
+}): number {
+  if (params.providerTransactionCostUsd !== undefined) {
+    return params.providerTransactionCostUsd;
+  }
+  const entry = MODEL_REGISTRY[params.modelId];
+  const tariff = entry?.resolutionTariffs[params.resolution];
+  const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
+  return params.actualBillableDurationSeconds * rate;
+}
+
+/**
+ * Stage 4: Actual Cost Reconciliation
+ */
+export function reconcileCostOnCompletion(params: {
+  reservedCredits: number;
+  actualProviderCostUsd: number;
+  rate?: number;
+  markupPercent?: number;
+  isFailed: boolean;
+}): { finalChargeCredits: number; refundCredits: number } {
+  if (params.isFailed) {
+    return { finalChargeCredits: 0, refundCredits: params.reservedCredits };
+  }
+  return { finalChargeCredits: params.reservedCredits, refundCredits: 0 };
+}
+
 export const CENTRAL_PRICING_CONFIG: PricingSettings = {
   usdToInrRate: 96.3, // Current standard USD/INR conversion
   markupPercent: 40,  // +40% Business Markup Rule (cost * 1.40)

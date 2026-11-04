@@ -123,10 +123,16 @@ export interface Template {
   };
   likesCount?: number;
   resolutionLabel?: string;
+  durationSeconds?: number;
   isFaceSwap?: boolean;
   faceSwapSceneId?: string;
   badge?: string;
   providerCostUsd?: number;
+  coverImage?: string;
+  coverVideo?: string;
+  allowWardrobeChoice?: boolean;
+  defaultWardrobeSource?: 'auto' | 'my_photo' | 'template';
+  crop?: { aspectRatio: '1:1'; positionX: number; positionY: number; zoom: number };
 }
 
 export interface UserProfile {

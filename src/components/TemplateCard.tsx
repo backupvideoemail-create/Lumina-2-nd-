@@ -44,24 +44,40 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
   const [mediaError, setMediaError] = React.useState(false);
+  const [isNearViewport, setIsNearViewport] = React.useState(false);
 
-  // Viewport-aware video playback: play ONLY when in viewport, pause when off-screen
+  // Reliable Poster extraction: Never use a video URL as an image source
+  const isCoverVideo = isVideoMedia(template.cover);
+  const isPreviewVideo = isVideoMedia(template.preview);
+  const resolvedPoster =
+    template.sampleResult ||
+    template.sampleAfter ||
+    template.sampleFaceThumbnail ||
+    (!isCoverVideo ? template.cover : undefined) ||
+    (!isPreviewVideo ? template.preview : undefined) ||
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80';
+
+  // True Lazy Loading: Only attach video src when card is within 150px of viewport
   useEffect(() => {
     const cardEl = cardRef.current;
-    const videoEl = videoRef.current;
-    if (!cardEl || !videoEl || !isVideo) return;
+    if (!cardEl || !isVideo) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting && entry.intersectionRatio >= 0.35) {
-            videoEl.play().catch(() => {});
+          if (entry.isIntersecting) {
+            setIsNearViewport(true);
+            const videoEl = videoRef.current;
+            if (videoEl && entry.intersectionRatio >= 0.35) {
+              videoEl.play().catch(() => {});
+            }
           } else {
-            videoEl.pause();
+            const videoEl = videoRef.current;
+            if (videoEl) videoEl.pause();
           }
         });
       },
-      { threshold: [0.1, 0.35, 0.7] }
+      { threshold: [0.05, 0.35, 0.7], rootMargin: '150px' }
     );
 
     observer.observe(cardEl);
@@ -119,33 +135,38 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           </div>
         )}
 
-        {/* Full-Bleed Media Canvas */}
-        {isVideo ? (
+        {/* Guaranteed Underlying Poster Image: Prevents Black/Blank Box on Initial Paint or while Video Buffers */}
+        <img
+          src={resolvedPoster}
+          alt={template.title}
+          loading="lazy"
+          draggable={false}
+          onLoad={() => setIsMediaLoaded(true)}
+          onError={() => {
+            if (!isVideo) {
+              setIsMediaLoaded(true);
+              setMediaError(true);
+            }
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+          className="absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[1]"
+        />
+
+        {/* Viewport-Aware Video Layer: Attached only when near viewport with preload="none" */}
+        {isVideo && isNearViewport && (
           <video
             ref={videoRef}
             src={candidateMedia}
+            poster={resolvedPoster}
             loop
             muted
             playsInline
-            preload="metadata"
+            preload="none"
             draggable={false}
             onLoadedData={() => setIsMediaLoaded(true)}
-            onError={() => { setIsMediaLoaded(true); setMediaError(true); }}
+            onError={() => { setIsMediaLoaded(true); }}
             onContextMenu={(e) => e.preventDefault()}
-            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none ${
-              isMediaLoaded ? 'opacity-100' : 'opacity-0'
-            }`}
-          />
-        ) : (
-          <img
-            src={template.cover || template.sampleResult || template.preview}
-            alt={template.title}
-            loading="lazy"
-            draggable={false}
-            onLoad={() => setIsMediaLoaded(true)}
-            onError={() => { setIsMediaLoaded(true); setMediaError(true); }}
-            onContextMenu={(e) => e.preventDefault()}
-            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none ${
+            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
               isMediaLoaded ? 'opacity-100' : 'opacity-0'
             }`}
           />

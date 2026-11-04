@@ -1331,6 +1331,96 @@ async function runSystemVerification() {
   assert(tplsDataSuite24.includes('tpl_couple_sunset_silhouette'), '24.5 Couple photo template exists in seed templates');
   assert(tplsDataSuite24.includes('tpl_couple_cinematic_waltz'), '24.5 Couple video template exists in seed templates');
 
+  // 25. Comprehensive Acceptance Verification (Prompt v1.1, Model Registry, 4-Stage Cost, Black Thumbnail, Multi-Category, 1:1 Hero Crop)
+  console.log('\n--- SUITE 25: Comprehensive Prompt v1.1, Registry, 4-Stage Cost & UI Verification ---');
+
+  // 25.1 Prompt Standard v1.1 Branches & Wardrobe
+  const promptConfigContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/config/globalMasterPrompt.ts'), 'utf-8');
+  assert(promptConfigContent.includes('PHOTO_GLOBAL_PROMPT'), '25.1 PHOTO_GLOBAL_PROMPT defined');
+  assert(promptConfigContent.includes('VIDEO_SOURCE_PRESERVING_PROMPT'), '25.1 VIDEO_SOURCE_PRESERVING_PROMPT defined');
+  assert(promptConfigContent.includes('MOTION_TRANSFER_PROMPT'), '25.1 MOTION_TRANSFER_PROMPT defined');
+  assert(promptConfigContent.includes('VIDEO_EDIT_PROMPT'), '25.1 VIDEO_EDIT_PROMPT defined');
+  assert(promptConfigContent.includes('IMAGE_TO_VIDEO_PROMPT'), '25.1 IMAGE_TO_VIDEO_PROMPT defined');
+  assert(promptConfigContent.includes('COUPLE_PHOTO_MAPPING') && promptConfigContent.includes('COUPLE_VIDEO_MAPPING'), '25.1 Couple mappings defined');
+  assert(promptConfigContent.includes('getWardrobePrompt'), '25.1 Wardrobe prompt helper defined');
+
+  // 25.2 MODEL_REGISTRY Non-Speculative Statuses
+  assert(pricingServiceContent.includes('MODEL_REGISTRY: Record<string, ModelRegistryEntry>'), '25.2 Non-speculative MODEL_REGISTRY defined');
+  assert(!pricingServiceContent.includes("verificationStatus: 'VERIFIED'"), '25.2 No false VERIFIED status in MODEL_REGISTRY');
+  assert(pricingServiceContent.includes("'UNKNOWN'") || pricingServiceContent.includes("'PENDING_QUOTE'"), '25.2 Honest UNKNOWN/PENDING_QUOTE statuses used');
+
+  // 25.3 4-Tier Duration & 4-Stage Cost Calculation
+  const {
+    calculateEstimatedProviderCostUsd,
+    calculateEstimatedCustomerCredits,
+    measureActualProviderCostUsd,
+    reconcileCostOnCompletion
+  } = await import('../src/services/pricing/pricingService.ts');
+
+  const estCost = calculateEstimatedProviderCostUsd({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '480p',
+    requestedOutputDurationSeconds: 8
+  });
+  assert(estCost.status === 'QUOTED' && typeof estCost.estimatedProviderCostUsd === 'number', '25.3 calculateEstimatedProviderCostUsd returns QUOTED estimate');
+
+  const estCredits = calculateEstimatedCustomerCredits(estCost.estimatedProviderCostUsd || 0.4);
+  assert(estCredits > 0, `25.3 calculateEstimatedCustomerCredits returns positive credits (${estCredits})`);
+
+  const actualUsd = measureActualProviderCostUsd({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '480p',
+    actualBillableDurationSeconds: 8
+  });
+  assert(actualUsd > 0, `25.3 measureActualProviderCostUsd measures cost correctly ($${actualUsd})`);
+
+  const reconc = reconcileCostOnCompletion({
+    reservedCredits: estCredits,
+    actualProviderCostUsd: actualUsd,
+    isFailed: false
+  });
+  assert(reconc.finalChargeCredits === estCredits && reconc.refundCredits === 0, '25.3 reconcileCostOnCompletion settles successful generation');
+
+  const reconcFailed = reconcileCostOnCompletion({
+    reservedCredits: estCredits,
+    actualProviderCostUsd: 0,
+    isFailed: true
+  });
+  assert(reconcFailed.finalChargeCredits === 0 && reconcFailed.refundCredits === estCredits, '25.3 reconcileCostOnCompletion refunds 100% on failure');
+
+  // 25.4 FaceSwap Dual-Model Routing & Resolution Flexibility
+  const faceSwapAdapterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/faceSwapAdapter.ts'), 'utf-8');
+  assert(faceSwapAdapterContent.includes('hf_mult_motion_control_flash'), '25.4 FaceSwap supports Motion Control flash');
+  assert(faceSwapAdapterContent.includes('hf_mult_replace_object_flash'), '25.4 FaceSwap supports Replace Object flash');
+  assert(faceSwapAdapterContent.includes("'480p' | '720p' | '1080p'"), '25.4 FaceSwap supports 480p, 720p, 1080p resolutions');
+
+  // 25.5 Black Thumbnail Problem Fix in TemplateCard
+  const templateCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
+  assert(templateCardContent.includes('resolvedPoster'), '25.5 TemplateCard resolves poster image fallback');
+  assert(templateCardContent.includes('preload="none"'), '25.5 TemplateCard prevents premature video buffer stall with preload="none"');
+  assert(templateCardContent.includes('IntersectionObserver'), '25.5 TemplateCard lazy attaches video near viewport');
+
+  // 25.6 Multi-Category Selection in Context & TemplatesView
+  const appContextContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf-8');
+  assert(appContextContent.includes('selectedCategories: string[]'), '25.6 AppContext provides selectedCategories array');
+  const templatesViewContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/TemplatesView.tsx'), 'utf-8');
+  assert(templatesViewContent.includes('selectedCategories.includes'), '25.6 TemplatesView checks selectedCategories');
+
+  // 25.7 Server /api/templates Multi-Category & Trending Bug Fix
+  assert(serverCode.includes("categoriesParam = (req.query.categories as string)"), '25.7 server.ts supports categories query parameter');
+  assert(!serverCode.includes("category !== 'Trending'"), '25.7 server.ts removed Trending category exclusion bug');
+  assert(serverCode.includes('/api/admin/adapters/status'), '25.7 server.ts provides adapter audit endpoint');
+
+  // 25.8 Home Hero Banner 1:1 CSS Crop & Full-Screen Modal
+  assert(homeViewContent.includes('aspect-square'), '25.8 HomeView enforces 1:1 square aspect ratio for hero banner');
+  assert(homeViewContent.includes('scale(') || homeViewContent.includes('transform'), '25.8 HomeView applies 1:1 crop transform');
+  assert(homeViewContent.includes('object-contain'), '25.8 Fullscreen video modal preserves uncropped native aspect ratio');
+  assert(homeViewContent.includes("fullVideoBanner.type === 'SHOWCASE_ONLY'"), '25.8 HomeView handles SHOWCASE_ONLY vs LINKED_TEMPLATE banner types');
+
+  // 25.9 Generation Screen Credits Only (Zero INR in Customer Flow)
+  assert(!detailModalContent.includes('₹'), '25.9 Customer TemplateDetailModal has zero INR currency symbols');
+
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

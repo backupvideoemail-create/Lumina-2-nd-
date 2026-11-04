@@ -37,7 +37,7 @@ export interface FaceSwapParams {
   imageUrls?: string[];
   sceneTitle?: string;
   customInstructions?: string;
-  resolution?: '480p';
+  resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   customParameters?: Record<string, any>;
@@ -63,6 +63,7 @@ export interface TemplateProcessParams {
   detectedInputType?: 'image' | 'video';
   recipe?: any;
   drivingVideoUrl?: string;
+  model?: string;
 }
 
 export interface ProviderResult {

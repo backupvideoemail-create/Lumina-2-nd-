@@ -39,12 +39,13 @@ export const HIGGSFIELD_BASE_IDENTITY_PROMPT =
 export interface GenjutsuMotionTransferParams {
   videoUrl: string;
   imageUrls: string[];
-  masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Motion Transfer Recipe)
+  masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Untruncated)
   customInstructions?: string; // Optional Customer Instructions (sensible max 300 chars)
-  resolution?: '480p';
+  resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
   ownerUserId?: string;
-  model?: 'higgsfield/genjutsu-light/motion-transfer' | 'higgsfield/genjutsu/motion-transfer/v1.0' | string;
+  model?: 'hf_mult_motion_control_flash' | 'hf_mult_replace_object_flash' | 'higgsfield/genjutsu-light/motion-transfer/v1.0' | string;
+  isCouple?: boolean;
 }
 
 export class HiggsfieldGenjutsuAdapter {
@@ -52,6 +53,8 @@ export class HiggsfieldGenjutsuAdapter {
   readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
   readonly fallbackModelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
   readonly modelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
+  readonly motionControlModel = 'hf_mult_motion_control_flash';
+  readonly replaceObjectModel = 'hf_mult_replace_object_flash';
   readonly endpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
 
   private getConfig() {
@@ -67,16 +70,17 @@ export class HiggsfieldGenjutsuAdapter {
       model: this.modelName,
       primaryModel: this.primaryModelName,
       fallbackModel: this.fallbackModelName,
+      motionControlModel: this.motionControlModel,
+      replaceObjectModel: this.replaceObjectModel,
       status: config.isConfigured ? 'active' : 'pending_credentials',
-      resolution: '480p'
+      supportedResolutions: ['480p', '720p', '1080p']
     };
   }
 
   /**
-   * Generates a face/character video via official Higgsfield Genjutsu Light Motion Transfer.
-   * Primary Model: higgsfield/genjutsu-light/motion-transfer
-   * Secondary Fallback Model: higgsfield/genjutsu/motion-transfer/v1.0
-   * Lifecycle: request accepted -> request_id/status -> poll -> completed/failed
+   * Generates a face/character video via official Higgsfield Genjutsu Light endpoints.
+   * Motion Control: hf_mult_motion_control_flash / genjutsu-light/motion-transfer
+   * Object Swap: hf_mult_replace_object_flash / genjutsu-light/object-swap
    */
   async generateFaceSwapVideo(params: GenjutsuMotionTransferParams): Promise<ProviderResult> {
     const startTime = Date.now();
@@ -98,11 +102,16 @@ export class HiggsfieldGenjutsuAdapter {
       throw new Error('At least 1 face reference image is required (4-5 recommended from different angles).');
     }
 
-    // Build protected prompt strictly composed without duplication:
-    // 1. HIGGSFIELD_BASE_IDENTITY_PROMPT (Global Identity Preservation)
-    // 2. SCENE_RECIPE_PROMPT (Scene-level motion transfer recipe)
-    // 3. USER_CUSTOM_INSTRUCTIONS (Optional customer custom guidance, max 300 chars)
-    let finalPrompt = HIGGSFIELD_BASE_IDENTITY_PROMPT;
+    // Build prompt according to workflow & couple identity
+    let basePrompt = HIGGSFIELD_BASE_IDENTITY_PROMPT;
+    if (params.isCouple) {
+      basePrompt = `COUPLE DUAL IDENTITY TRANSFORMATION:
+Slot 1 Image maps strictly to Person A. Slot 2 Image maps strictly to Person B.
+Maintain two separate recognizable human identities throughout the entire video.
+Never blend, average, cross-apply, or fuse their faces.`;
+    }
+
+    let finalPrompt = basePrompt;
     if (params.masterRecipePrompt && params.masterRecipePrompt.trim()) {
       finalPrompt = `${finalPrompt}\n\nSCENE_RECIPE_PROMPT:\n${params.masterRecipePrompt.trim()}`;
     }
@@ -112,14 +121,22 @@ export class HiggsfieldGenjutsuAdapter {
     }
 
     const selectedModel = params.model || this.primaryModelName;
+    const requestedResolution = params.resolution || '480p';
+
+    // Route endpoint by model
+    let targetEndpoint = this.endpoint;
+    if (selectedModel === 'hf_mult_replace_object_flash') {
+      targetEndpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/object-swap/v1.0';
+    } else if (selectedModel === 'hf_mult_motion_control_flash') {
+      targetEndpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
+    }
 
     // Official documented Higgsfield Genjutsu payload.
-    // The model is selected directly by the REST endpoint path.
     const payload = {
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
       prompt: finalPrompt,
-      resolution: '480p'
+      resolution: requestedResolution
     };
 
     // Official Higgsfield Authorization: "Key ${keyId}:${keySecret}" or "Key ${apiKey}"

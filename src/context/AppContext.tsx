@@ -51,6 +51,8 @@ interface AppContextType {
   setSelectedTemplate: (tpl: Template | null) => void;
   selectedCategory: string;
   setSelectedCategory: (cat: string) => void;
+  selectedCategories: string[];
+  setSelectedCategories: (cats: string[]) => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   filterType: 'all' | 'photo' | 'video';
@@ -135,7 +137,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [templates, setTemplates] = useState<Template[]>(SEED_TEMPLATES);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string>('Trending');
+  const [selectedCategoryState, setSelectedCategoryState] = useState<string>('Trending');
+  const [selectedCategoriesState, setSelectedCategoriesState] = useState<string[]>(['Trending']);
+
+  const selectedCategory = selectedCategoryState;
+  const selectedCategories = selectedCategoriesState;
+
+  const setSelectedCategory = useCallback((cat: string) => {
+    setSelectedCategoryState(cat);
+    if (cat === 'All') {
+      setSelectedCategoriesState([]);
+    } else {
+      setSelectedCategoriesState([cat]);
+    }
+  }, []);
+
+  const setSelectedCategories = useCallback((cats: string[]) => {
+    setSelectedCategoriesState(cats);
+    if (cats.length === 1) {
+      setSelectedCategoryState(cats[0]);
+    } else if (cats.length === 0) {
+      setSelectedCategoryState('All');
+    } else {
+      setSelectedCategoryState(cats[0]);
+    }
+  }, []);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterType, setFilterType] = useState<'all' | 'photo' | 'video'>('all');
   const [likedTemplates, setLikedTemplates] = useState<string[]>([]);
@@ -219,7 +245,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setLoadingTemplates(true);
       const params = new URLSearchParams();
       if (filterType !== 'all') params.append('type', filterType);
-      if (selectedCategory && selectedCategory !== 'All') params.append('category', selectedCategory);
+      if (selectedCategories.length > 0) {
+        params.append('categories', selectedCategories.join(','));
+      } else if (selectedCategory && selectedCategory !== 'All') {
+        params.append('category', selectedCategory);
+      }
       if (searchQuery.trim()) params.append('search', searchQuery.trim());
 
       const res = await fetch(`/api/templates?${params.toString()}`);
@@ -800,6 +830,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedTemplate,
         selectedCategory,
         setSelectedCategory,
+        selectedCategories,
+        setSelectedCategories,
         searchQuery,
         setSearchQuery,
         filterType,

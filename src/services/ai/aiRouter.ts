@@ -29,8 +29,8 @@ export class AIRouter {
     return await videoProviderAdapter.generateVideo(params);
   }
 
-  // 3. Unified Face Swap Video (Higgsfield Genjutsu Motion Transfer)
-  async generateFaceSwapVideo(params: FaceSwapParams): Promise<ProviderResult> {
+  // 3. Unified Face Swap Video (Higgsfield Genjutsu Motion Transfer / Object Swap)
+  async generateFaceSwapVideo(params: FaceSwapParams & { masterRecipePrompt?: string; model?: string; resolution?: '480p' | '720p' | '1080p'; isCouple?: boolean }): Promise<ProviderResult> {
     const videoUrl = params.videoUrl || params.targetVideoUrl || '';
     const imageUrls =
       params.imageUrls && params.imageUrls.length > 0
@@ -42,9 +42,12 @@ export class AIRouter {
     return await faceSwapAdapter.generateFaceSwapVideo({
       videoUrl,
       imageUrls,
+      masterRecipePrompt: params.masterRecipePrompt,
       customInstructions: params.customInstructions,
-      resolution: '480p',
-      durationSeconds: params.durationSeconds
+      resolution: params.resolution || '480p',
+      durationSeconds: params.durationSeconds,
+      model: params.model,
+      isCouple: params.isCouple
     });
   }
 
@@ -67,9 +70,9 @@ export class AIRouter {
     const provider = activeWorkflowConfig?.provider || (params.templateType === 'video' ? 'google_veo' : 'gemini');
     const workflowName = activeWorkflowConfig?.workflow || params.workflow;
     const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
+    const selectedModel = activeWorkflowConfig?.model || params.model;
 
     // 2. Prompt Construction: Combine protected template prompt + optional user custom instructions
-    // Assembled authoritatively before any execution branch so all routes receive the unified prompt exactly once
     const basePrompt =
       activeWorkflowConfig?.prompt ||
       (params.templateType === 'video'
@@ -93,15 +96,20 @@ export class AIRouter {
         ? params.inputMediaUrl.split('|||').map((s) => s.trim()).filter(Boolean)
         : [params.inputMediaUrl];
 
+    const isCouple = customerMediaUrls.length >= 2 || (params.inputMedia && params.inputMedia.length >= 2);
+
     // 3. Reference / Driving Video Support:
     // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
-    // Receives full combined prompt (Global Master Prompt + Category context + recipe + customer instructions)
     if (drivingVideoUrl && isInputImage) {
       return await this.generateFaceSwapVideo({
         videoUrl: drivingVideoUrl,
         imageUrls: customerMediaUrls,
-        customInstructions: combinedPrompt,
-        ownerUserId: params.ownerUserId
+        masterRecipePrompt: basePrompt,
+        customInstructions: params.customPrompt,
+        ownerUserId: params.ownerUserId,
+        model: selectedModel || (workflowName === 'MOTION_TRANSFER' ? 'hf_mult_motion_control_flash' : 'hf_mult_replace_object_flash'),
+        resolution: (params.aspectRatio as any) === '1080p' ? '1080p' : '720p',
+        isCouple
       });
     }
 

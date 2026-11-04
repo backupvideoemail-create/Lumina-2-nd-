@@ -480,9 +480,17 @@ app.get('/api/templates', (req, res) => {
     results = results.filter((t) => t.type === type);
   }
 
-  if (category && category !== 'All' && category !== 'Trending') {
+  const categoriesParam = (req.query.categories as string) || '';
+  const categoryParam = (req.query.category as string) || '';
+
+  if (categoriesParam) {
+    const catList = categoriesParam.split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
+    if (catList.length > 0 && !catList.includes('all')) {
+      results = results.filter((t) => catList.includes((t.category || '').toLowerCase()));
+    }
+  } else if (categoryParam && categoryParam !== 'All') {
     results = results.filter(
-      (t) => t.category.toLowerCase() === (category as string).toLowerCase()
+      (t) => (t.category || '').toLowerCase() === categoryParam.toLowerCase()
     );
   }
 
@@ -536,6 +544,64 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
       r2MissingEnvVars: storageStatus.missingEnvVars,
       activeStorageDriver: storageStatus.activeDriver
     }
+  });
+});
+
+// Admin Adapter Audit Endpoint (Honest connection and capability audit without paid calls)
+app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
+  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
+  const hasHiggsfieldKey = Boolean(process.env.HIGGSFIELD_API_KEY && process.env.HIGGSFIELD_API_KEY.trim().length > 0);
+  const hasVeoKey = Boolean(process.env.GOOGLE_VEO_KEY && process.env.GOOGLE_VEO_KEY.trim().length > 0);
+  const storageStatus = mediaStorage.getStatus();
+
+  const adapters = [
+    {
+      id: 'geminiAdapter',
+      name: 'Google Gemini Image Adapter',
+      model: 'gemini-2.5-flash-image',
+      status: hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      secretName: 'GEMINI_API_KEY',
+      supportedResolutions: ['1:1', '9:16', '16:9', '4:5'],
+      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+    },
+    {
+      id: 'faceSwapAdapter',
+      name: 'Higgsfield Video Motion & Object Swap',
+      models: ['hf_mult_motion_control_flash', 'hf_mult_replace_object_flash'],
+      status: hasHiggsfieldKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      secretName: 'HIGGSFIELD_API_KEY',
+      supportedResolutions: ['480p', '720p', '1080p'],
+      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+    },
+    {
+      id: 'videoProviderAdapter',
+      name: 'Google Veo Video Provider Adapter',
+      model: 'gemini-omni-1.1-flash',
+      status: (hasVeoKey || hasGeminiKey) ? 'CONFIGURED' : 'MISSING_SECRET',
+      secretName: 'GOOGLE_VEO_KEY',
+      supportedResolutions: ['720p', '1080p'],
+      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+    },
+    {
+      id: 'videoTrimmer',
+      name: 'Video Trimmer / Smart FFmpeg',
+      status: 'CONFIGURED',
+      note: 'In-memory / safe duration chunking',
+      supportedResolutions: ['Flexible (Model-Dependent)'],
+      pricingStatus: 'FREE_LOCAL'
+    },
+    {
+      id: 'mediaStorage',
+      name: 'Media Storage Driver',
+      status: storageStatus.r2Configured ? 'CONFIGURED (R2 Authoritative)' : 'LOCAL_FALLBACK',
+      details: storageStatus
+    }
+  ];
+
+  res.json({
+    success: true,
+    adapters,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -3239,7 +3305,33 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
   }
 
-  const inputMediaUrl = mediaList.join('|||');
+  // Convert customer base64 inputs to persistent mediaStorage to provide provider-compatible URLs
+  const persistentMediaList: string[] = [];
+  for (let mIdx = 0; mIdx < mediaList.length; mIdx++) {
+    const rawItem = mediaList[mIdx];
+    if (rawItem && rawItem.startsWith('data:')) {
+      const ext = isVideoMedia(rawItem) ? 'mp4' : 'jpg';
+      const stored = await mediaStorage.saveMedia(
+        rawItem,
+        'user_gen',
+        `${user.id}_gen_${Date.now()}_${mIdx}.${ext}`,
+        user.id,
+        false
+      );
+      let effectiveUrl = stored.publicUrl;
+      if (stored.r2Key) {
+        try {
+          const signed = await mediaStorage.generateProviderSignedUrl(stored.r2Key, 3600);
+          if (signed) effectiveUrl = signed;
+        } catch {}
+      }
+      persistentMediaList.push(effectiveUrl);
+    } else {
+      persistentMediaList.push(rawItem);
+    }
+  }
+  const inputMediaUrl = persistentMediaList.join('|||');
+  mediaList = persistentMediaList;
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 

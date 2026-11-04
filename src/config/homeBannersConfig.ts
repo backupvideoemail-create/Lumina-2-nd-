@@ -1,5 +1,17 @@
+export type HeroBannerType = 'SHOWCASE_ONLY' | 'LINKED_TEMPLATE';
+
+export interface HomeBannerCropSettings {
+  aspectRatio: '1:1';
+  positionX: number; // percentage offset -50% to 50%
+  positionY: number; // percentage offset -50% to 50%
+  zoom: number;      // scale factor 1.0 to 3.0
+}
+
 export interface HomeBannerItem {
   id: string;
+  type?: HeroBannerType;
+  linkedTemplateId?: string;
+  crop?: HomeBannerCropSettings;
   title: string;
   highlightText?: string;
   subtitle: string;

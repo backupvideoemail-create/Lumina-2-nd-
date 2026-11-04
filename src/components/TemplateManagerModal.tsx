@@ -75,7 +75,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     refreshFaceSwapScenes
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'pricing_banner' | 'demo'>('templates');
+  const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'pricing_banner' | 'demo' | 'adapters'>('templates');
   const [subTab, setSubTab] = useState<'list' | 'add' | 'edit' | 'bulk'>('list');
   const [faceSwapSection, setFaceSwapSection] = useState<'scenes' | 'demo'>('scenes');
   const [faceSwapSubTab, setFaceSwapSubTab] = useState<'list' | 'add' | 'edit'>('list');
@@ -370,6 +370,33 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [bannerMediaPreview, setBannerMediaPreview] = useState('');
   const [bannerIsActive, setBannerIsActive] = useState(true);
   const [editingBannerId, setEditingBannerId] = useState<string | null>(null);
+  const [bannerType, setBannerType] = useState<'SHOWCASE_ONLY' | 'LINKED_TEMPLATE'>('SHOWCASE_ONLY');
+  const [bannerCropX, setBannerCropX] = useState<number>(0);
+  const [bannerCropY, setBannerCropY] = useState<number>(0);
+  const [bannerCropZoom, setBannerCropZoom] = useState<number>(1);
+  const [tplAllowWardrobeChoice, setTplAllowWardrobeChoice] = useState<boolean>(false);
+  const [tplDefaultWardrobeSource, setTplDefaultWardrobeSource] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
+  const [adapterAuditList, setAdapterAuditList] = useState<any[]>([]);
+  const [isLoadingAdapters, setIsLoadingAdapters] = useState<boolean>(false);
+
+  const fetchAdapterAudit = async () => {
+    setIsLoadingAdapters(true);
+    try {
+      const res = await fetch('/api/admin/adapters/status', {
+        headers: getAdminHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.adapters)) {
+          setAdapterAuditList(data.adapters);
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingAdapters(false);
+    }
+  };
 
   // DEMO VIDEO STATE
   const [currentDemoVideoUrl, setCurrentDemoVideoUrl] = useState('');
@@ -1707,10 +1734,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 subtitle: bannerSubtitle.trim(),
                 badge: bannerBadge.trim(),
                 category: bannerCategory,
-                targetTemplateId: bannerTargetId.trim() || b.targetTemplateId || '',
+                targetTemplateId: bannerType === 'LINKED_TEMPLATE' ? (bannerTargetId.trim() || b.targetTemplateId || '') : '',
+                linkedTemplateId: bannerType === 'LINKED_TEMPLATE' ? (bannerTargetId.trim() || b.linkedTemplateId || '') : undefined,
+                type: bannerType,
                 image: mediaUrl || b.image,
                 coverMedia: mediaUrl || b.coverMedia,
-                isActive: bannerIsActive
+                isActive: bannerIsActive,
+                crop: {
+                  aspectRatio: '1:1',
+                  positionX: bannerCropX,
+                  positionY: bannerCropY,
+                  zoom: bannerCropZoom
+                }
               }
             : b
         );
@@ -1721,14 +1756,22 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           subtitle: bannerSubtitle.trim(),
           badge: bannerBadge.trim(),
           category: bannerCategory,
-          targetTemplateId: bannerTargetId.trim() || '',
+          targetTemplateId: bannerType === 'LINKED_TEMPLATE' ? bannerTargetId.trim() : '',
+          linkedTemplateId: bannerType === 'LINKED_TEMPLATE' ? bannerTargetId.trim() : undefined,
+          type: bannerType,
           image: mediaUrl,
           coverMedia: mediaUrl,
           mediaType: mediaUrl.endsWith('.mp4') ? 'video' : 'image',
           likesCount: '1.2K',
           commentsCount: '120',
           sharesCount: '300',
-          isActive: bannerIsActive
+          isActive: bannerIsActive,
+          crop: {
+            aspectRatio: '1:1',
+            positionX: bannerCropX,
+            positionY: bannerCropY,
+            zoom: bannerCropZoom
+          }
         };
         updatedList.unshift(newBanner);
       }
@@ -1793,9 +1836,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setBannerSubtitle(b.subtitle || '');
     setBannerBadge(b.badge || 'VIRAL NOW');
     setBannerCategory(b.category || 'Trending');
-    setBannerTargetId(b.targetTemplateId || '');
+    setBannerTargetId(b.targetTemplateId || b.linkedTemplateId || '');
     setBannerMediaPreview(b.coverMedia || b.image || '');
     setBannerIsActive(b.isActive !== false);
+    setBannerType(b.type || (b.linkedTemplateId || b.targetTemplateId ? 'LINKED_TEMPLATE' : 'SHOWCASE_ONLY'));
+    setBannerCropX(b.crop?.positionX || 0);
+    setBannerCropY(b.crop?.positionY || 0);
+    setBannerCropZoom(b.crop?.zoom || 1);
     setSubTab('add');
   };
 
@@ -2707,7 +2754,22 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               }`}
             >
               <VideoIcon className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span className="truncate">Face Swap ({adminFaceSwapScenes.length || faceSwapScenes.length})</span>
+              <span className="truncate">Face Swap</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('adapters');
+                fetchAdapterAudit();
+              }}
+              className={`col-span-1 sm:flex-1 py-2 px-2.5 sm:px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 sm:gap-2 transition-all cursor-pointer ${
+                activeTab === 'adapters'
+                  ? 'bg-white/15 text-white border border-white/20 shadow-sm'
+                  : 'bg-white/5 text-stone-400 hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="truncate">Adapter Audit</span>
             </button>
           </div>
         </div>
@@ -4292,14 +4354,79 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </button>
                 </div>
 
-                {/* Media Upload (Exact 1:1 Square Frame matching Customer Home View) */}
-                <div className="space-y-1.5">
+                {/* Banner Type: Showcase Only vs Linked Template */}
+                <div className="space-y-1.5 p-3 rounded-2xl bg-stone-900/90 border border-white/10">
+                  <label className="text-xs font-bold text-white block">Banner Role / Type</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setBannerType('SHOWCASE_ONLY')}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        bannerType === 'SHOWCASE_ONLY'
+                          ? 'bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-md'
+                          : 'bg-white/5 text-stone-400 hover:text-white border border-white/10'
+                      }`}
+                    >
+                      Showcase Only (AI Capabilities Demo)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBannerType('LINKED_TEMPLATE')}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        bannerType === 'LINKED_TEMPLATE'
+                          ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-black shadow-md'
+                          : 'bg-white/5 text-stone-400 hover:text-white border border-white/10'
+                      }`}
+                    >
+                      Linked Template (Has CTA Action)
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-stone-400">
+                    {bannerType === 'SHOWCASE_ONLY'
+                      ? 'ग्राहक केवल वीडियो या फोटो देख सकता है। इस पर कोई "Use This Template" बटन नहीं होगा।'
+                      : 'ग्राहक क्लिक करके "Use This Template" से सीधे अपनी फोटो या वीडियो बना सकता है।'}
+                  </p>
+                </div>
+
+                {/* If Linked Template: Choose Template to Link */}
+                {bannerType === 'LINKED_TEMPLATE' && (
+                  <div className="space-y-1.5 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30">
+                    <label className="text-xs font-bold text-amber-300 block">Link to Published Template</label>
+                    <select
+                      value={bannerTargetId}
+                      onChange={(e) => {
+                        const targetId = e.target.value;
+                        setBannerTargetId(targetId);
+                        const found = displayTemplates.find((t) => t.id === targetId);
+                        if (found) {
+                          if (!bannerTitle || bannerTitle === 'e.g. Retro 80s Bollywood') setBannerTitle(found.title);
+                          setBannerCategory(found.category);
+                          if (!bannerMediaPreview) {
+                            setBannerMediaPreview(found.sampleResult || found.cover || found.preview || '');
+                          }
+                        }
+                      }}
+                      className="w-full px-3 py-2 rounded-xl bg-black border border-amber-500/40 text-xs text-white focus:outline-none"
+                    >
+                      <option value="">-- Choose a template to link --</option>
+                      {displayTemplates.map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>
+                          {tpl.title} ({tpl.category} · {tpl.type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Media Upload & 1:1 Square Crop & Pan / Zoom Controls */}
+                <div className="space-y-2 p-3 rounded-2xl bg-stone-900/90 border border-white/10">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-stone-300">
-                      Banner Image or Video {editingBannerId ? '(Optional on Edit)' : '*'}
+                      1:1 Square Media & Crop Editor {editingBannerId ? '(Optional on Edit)' : '*'}
                     </label>
-                    <span className="text-[10px] text-pink-400 font-bold">1:1 Square Ratio · No Cropping</span>
+                    <span className="text-[10px] text-pink-400 font-bold">1:1 Client-Side CSS Crop System</span>
                   </div>
+
                   <input
                     ref={bannerFileRef}
                     type="file"
@@ -4307,21 +4434,44 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     onChange={handleBannerFileSelect}
                     className="hidden"
                   />
+
+                  {/* 1:1 Live Square Preview Frame */}
                   <div
                     onClick={() => bannerFileRef.current?.click()}
-                    className="relative w-full max-w-[420px] mx-auto aspect-square rounded-2xl border-2 border-dashed border-white/20 hover:border-pink-500 bg-[#000000] flex flex-col items-center justify-center p-2 cursor-pointer overflow-hidden group shadow-inner"
+                    className="relative w-full max-w-[420px] mx-auto aspect-square rounded-2xl border-2 border-dashed border-white/20 hover:border-pink-500 bg-[#000000] flex flex-col items-center justify-center p-0 cursor-pointer overflow-hidden group shadow-inner"
                   >
                     {bannerMediaPreview ? (
                       <>
-                        {bannerMediaPreview.includes('video') || bannerMediaPreview.endsWith('.mp4') ? (
-                          <video src={bannerMediaPreview} autoPlay loop muted playsInline className="w-full h-full object-contain" />
-                        ) : (
-                          <img src={bannerMediaPreview} alt="Preview" className="w-full h-full object-contain" />
-                        )}
-                        <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/90 to-transparent flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-pink-300">1:1 Square Frame</span>
+                        <div className="w-full h-full overflow-hidden flex items-center justify-center bg-[#000000]">
+                          {bannerMediaPreview.includes('video') || bannerMediaPreview.endsWith('.mp4') ? (
+                            <video
+                              src={bannerMediaPreview}
+                              autoPlay
+                              loop
+                              muted
+                              playsInline
+                              style={{
+                                transform: `scale(${bannerCropZoom}) translate(${bannerCropX}%, ${bannerCropY}%)`,
+                                transformOrigin: 'center center'
+                              }}
+                              className="w-full h-full object-cover object-contain transition-transform duration-75"
+                            />
+                          ) : (
+                            <img
+                              src={bannerMediaPreview}
+                              alt="Preview"
+                              style={{
+                                transform: `scale(${bannerCropZoom}) translate(${bannerCropX}%, ${bannerCropY}%)`,
+                                transformOrigin: 'center center'
+                              }}
+                              className="w-full h-full object-cover object-contain transition-transform duration-75"
+                            />
+                          )}
+                        </div>
+                        <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/90 to-transparent flex items-center justify-between pointer-events-none">
+                          <span className="text-[10px] font-bold text-pink-300">1:1 Live Crop Preview</span>
                           <span className="px-2 py-0.5 rounded-lg bg-pink-500 text-white text-[10px] font-black">
-                            Replace Media
+                            Tap to Change File
                           </span>
                         </div>
                       </>
@@ -4330,11 +4480,82 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         <Upload className="w-8 h-8 text-pink-400 mb-2" />
                         <span className="text-xs font-bold text-white">Tap to Choose Banner Media from Phone</span>
                         <span className="text-[10px] text-stone-400 mt-1">
-                          1:1 Square aspect-ratio · Object-contain · Black background (#000000)
+                          Displays strictly 1:1 square in home hero carousel
                         </span>
                       </div>
                     )}
                   </div>
+
+                  {/* Tactile Sliders for Pan X, Pan Y, and Zoom */}
+                  {bannerMediaPreview && (
+                    <div className="space-y-2 pt-2 border-t border-white/10">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-stone-300">
+                        <span>Pan & Zoom (1:1 Frame Alignment)</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBannerCropX(0);
+                            setBannerCropY(0);
+                            setBannerCropZoom(1);
+                          }}
+                          className="text-[10px] text-pink-400 hover:text-pink-300 underline cursor-pointer"
+                        >
+                          Reset Crop
+                        </button>
+                      </div>
+
+                      {/* Zoom Slider */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-stone-400">
+                          <span>Zoom: {bannerCropZoom.toFixed(1)}x</span>
+                          <span>1.0x - 3.0x</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={3}
+                          step={0.05}
+                          value={bannerCropZoom}
+                          onChange={(e) => setBannerCropZoom(parseFloat(e.target.value))}
+                          className="w-full accent-pink-500 h-1.5 bg-white/20 rounded cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Pan X Slider */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-stone-400">
+                          <span>Pan Horizontal (X): {bannerCropX}%</span>
+                          <span>Left ◄ ► Right</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-50}
+                          max={50}
+                          step={1}
+                          value={bannerCropX}
+                          onChange={(e) => setBannerCropX(parseInt(e.target.value))}
+                          className="w-full accent-pink-500 h-1.5 bg-white/20 rounded cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Pan Y Slider */}
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-stone-400">
+                          <span>Pan Vertical (Y): {bannerCropY}%</span>
+                          <span>Up ▲ ▼ Down</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-50}
+                          max={50}
+                          step={1}
+                          value={bannerCropY}
+                          onChange={(e) => setBannerCropY(parseInt(e.target.value))}
+                          className="w-full accent-pink-500 h-1.5 bg-white/20 rounded cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -5966,6 +6187,115 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* TAB 5: ADAPTER & INFRASTRUCTURE AUDIT (Live Provider Capability Check) */}
+        {activeTab === 'adapters' && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+            <div className="p-4 rounded-2xl bg-stone-900/80 border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+              <div>
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>AI Adapter & Infrastructure Audit</span>
+                </h4>
+                <p className="text-xs text-stone-300 mt-1">
+                  Honest audit of registered model adapters, environment secrets, and verified capabilities without executing automated paid calls.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchAdapterAudit}
+                disabled={isLoadingAdapters}
+                className="px-3.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAdapters ? 'animate-spin' : ''}`} />
+                <span>Re-Audit</span>
+              </button>
+            </div>
+
+            {/* Adapter Cards */}
+            <div className="space-y-3">
+              {(adapterAuditList.length > 0 ? adapterAuditList : [
+                {
+                  id: 'geminiAdapter',
+                  name: 'Google Gemini Image Adapter',
+                  model: 'gemini-2.5-flash-image',
+                  status: 'MISSING_SECRET',
+                  secretName: 'GEMINI_API_KEY',
+                  supportedResolutions: ['1:1', '9:16', '16:9', '4:5'],
+                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                },
+                {
+                  id: 'faceSwapAdapter',
+                  name: 'Higgsfield Video Motion & Object Swap',
+                  models: ['hf_mult_motion_control_flash', 'hf_mult_replace_object_flash'],
+                  status: 'MISSING_SECRET',
+                  secretName: 'HIGGSFIELD_API_KEY',
+                  supportedResolutions: ['480p', '720p', '1080p'],
+                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                },
+                {
+                  id: 'videoProviderAdapter',
+                  name: 'Google Veo Video Provider Adapter',
+                  model: 'gemini-omni-1.1-flash',
+                  status: 'MISSING_SECRET',
+                  secretName: 'GOOGLE_VEO_KEY',
+                  supportedResolutions: ['720p', '1080p'],
+                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                },
+                {
+                  id: 'videoTrimmer',
+                  name: 'Video Trimmer / Smart FFmpeg',
+                  status: 'CONFIGURED',
+                  note: 'In-memory / safe duration chunking',
+                  supportedResolutions: ['Flexible (Model-Dependent)'],
+                  pricingStatus: 'FREE_LOCAL'
+                }
+              ]).map((ad: any) => (
+                <div
+                  key={ad.id}
+                  className="p-3.5 rounded-2xl bg-stone-900/70 border border-white/10 space-y-2"
+                >
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white">{ad.name}</span>
+                      <span className="text-[10px] text-stone-400 font-mono">({ad.id})</span>
+                    </div>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                        ad.status === 'CONFIGURED' || ad.status?.includes('CONFIGURED')
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : ad.status === 'MISSING_SECRET'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : 'bg-stone-800 text-stone-300'
+                      }`}
+                    >
+                      {ad.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-stone-300 pt-1 border-t border-white/5">
+                    <div>
+                      <span className="text-stone-500 block text-[10px]">Model / Endpoints:</span>
+                      <span className="font-mono text-amber-200">{ad.model || (ad.models && ad.models.join(', ')) || ad.note || 'Default'}</span>
+                    </div>
+                    <div>
+                      <span className="text-stone-500 block text-[10px]">Secret Requirement:</span>
+                      <span className="font-mono text-stone-300">{ad.secretName || 'None (Local)'}</span>
+                    </div>
+                    <div>
+                      <span className="text-stone-500 block text-[10px]">Supported Resolutions:</span>
+                      <span className="font-mono text-stone-300">{(ad.supportedResolutions && ad.supportedResolutions.join(', ')) || 'Model Dependent'}</span>
+                    </div>
+                    <div>
+                      <span className="text-stone-500 block text-[10px]">Pricing Status:</span>
+                      <span className="font-mono text-stone-400">{ad.pricingStatus}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
