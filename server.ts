@@ -20,6 +20,10 @@ import {
   calculateCreditsFromUsd,
   calculateCustomerPrice,
   calculateFaceSwapCredits,
+  calculateEstimatedProviderCostUsd,
+  calculateEstimatedCustomerCredits,
+  measureActualProviderCostUsd,
+  reconcileCostOnCompletion,
   MODEL_REGISTRY
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
@@ -1035,6 +1039,38 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         updates.cover = stored.publicUrl;
       }
       delete updates.coverBase64;
+    }
+
+    if (updates.coverImageBase64) {
+      if (typeof updates.coverImageBase64 === 'string' && (updates.coverImageBase64.startsWith('http://') || updates.coverImageBase64.startsWith('https://') || updates.coverImageBase64.startsWith('/api/media/'))) {
+        updates.coverImage = updates.coverImageBase64;
+      } else {
+        const stored = await mediaStorage.saveMedia(
+          updates.coverImageBase64,
+          'tpl_cover_img',
+          `cover_img_${Date.now()}.jpg`,
+          undefined,
+          true
+        );
+        updates.coverImage = stored.publicUrl;
+      }
+      delete updates.coverImageBase64;
+    }
+
+    if (updates.coverVideoBase64) {
+      if (typeof updates.coverVideoBase64 === 'string' && (updates.coverVideoBase64.startsWith('http://') || updates.coverVideoBase64.startsWith('https://') || updates.coverVideoBase64.startsWith('/api/media/'))) {
+        updates.coverVideo = updates.coverVideoBase64;
+      } else {
+        const stored = await mediaStorage.saveMedia(
+          updates.coverVideoBase64,
+          'tpl_cover_vid',
+          `cover_vid_${Date.now()}.mp4`,
+          undefined,
+          true
+        );
+        updates.coverVideo = stored.publicUrl;
+      }
+      delete updates.coverVideoBase64;
     }
 
     if (updates.sampleFaceThumbnailBase64) {
@@ -3360,15 +3396,51 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   const inputMediaUrl = persistentMediaList.join('|||');
   mediaList = persistentMediaList;
 
+  // Probe source video duration from driving video or uploaded video if present (never assume)
+  let measuredSourceVideoDuration: number | undefined;
+  const candidateSourceVideo = template.drivingVideoUrl || template.recipe?.drivingVideoUrl || (detectedInputType === 'video' ? persistentMediaList[0] : undefined);
+  if (candidateSourceVideo) {
+    try {
+      measuredSourceVideoDuration = await videoTrimmer.probeDuration(candidateSourceVideo);
+    } catch {
+      // Unprobed state remains explicitly undefined
+    }
+  }
+
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 
+  // Validate Model Capability and Resolution against Model Registry
+  const modelEntry = MODEL_REGISTRY[effectiveModel];
+  if (modelEntry) {
+    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
+    if (tariff && tariff.supportStatus === 'UNSUPPORTED') {
+      return res.status(400).json({
+        error: `Resolution ${requestedResolution} is not supported by model ${effectiveModel}.`,
+        code: 'UNSUPPORTED_RESOLUTION',
+        stage: 'validation'
+      });
+    }
+  }
+
   // Server-Authoritative Dynamic Cost Calculation (40% Markup Rule)
-  const requiredCredits = calculateAuthoritativeTemplateCost({
-    ...template,
-    model: effectiveModel,
-    durationSeconds: requestedDuration,
-    resolutionLabel: requestedResolution
-  }) || template.creditCost;
+  const estimate = calculateEstimatedProviderCostUsd({
+    modelId: effectiveModel,
+    resolution: requestedResolution as any,
+    sourceVideoDurationSeconds: measuredSourceVideoDuration,
+    requestedOutputDurationSeconds: requestedDuration
+  });
+
+  let requiredCredits: number;
+  if (estimate.status === 'QUOTED' && estimate.estimatedProviderCostUsd !== undefined) {
+    requiredCredits = calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
+  } else {
+    requiredCredits = calculateAuthoritativeTemplateCost({
+      ...template,
+      model: effectiveModel,
+      durationSeconds: requestedDuration,
+      resolutionLabel: requestedResolution
+    }) || template.creditCost;
+  }
   const wallet = prodDb.getWallet(user.id);
 
   if (!isAuthorizedAdmin && wallet.balance < requiredCredits) {
@@ -3399,7 +3471,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
-  // 2. Record generation record with four-tier duration tracking fields
+  // 2. Record generation record with four-tier duration tracking fields (measured values, never assumed)
   const generation: Generation = {
     id: genId,
     userId: user.id,
@@ -3418,7 +3490,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     resolution: requestedResolution,
     durationSeconds: requestedDuration,
     requestedOutputDurationSeconds: requestedDuration,
-    sourceVideoDurationSeconds: detectedInputType === 'video' ? requestedDuration : undefined,
+    sourceVideoDurationSeconds: measuredSourceVideoDuration,
     wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined
   };
 
@@ -3450,6 +3522,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
       const categoryPrompt = prodDb.getCategoryPrompt(template.category);
       const recipePrompt = template.recipe?.prompt?.trim();
+      const isCoupleValid = Boolean(isCoupleTemplate && mediaList.length >= 2);
       const effectivePrompt = buildUnifiedGenerationPrompt({
         categoryPrompt,
         templateRecipePrompt: recipePrompt,
@@ -3460,7 +3533,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         hasBeforeReference: Boolean(template.sampleBefore),
         outputType: template.type,
         workflow: template.workflow,
-        isCouple: template.category === 'Couple',
+        isCouple: isCoupleValid,
         hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
         wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
       });
@@ -3468,6 +3541,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       const effectiveRecipe = template.recipe ? {
         ...template.recipe,
         prompt: effectivePrompt,
+        model: effectiveModel,
+        resolution: requestedResolution,
+        duration: requestedDuration,
         referenceImageUrl: resolvedRefImage,
         sampleBefore: template.sampleBefore,
         sampleResult: resolvedRefImage
@@ -3503,7 +3579,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         ownerUserId: user.id,
         recipe: effectiveRecipe,
         detectedInputType,
-        drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl
+        drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl,
+        model: effectiveModel,
+        resolution: requestedResolution as any,
+        durationSeconds: requestedDuration,
+        isCouple: isCoupleValid,
+        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
       });
 
       // Terminal State & Race Condition Guard: If generation already timed out and refunded, do NOT mark completed
@@ -3523,10 +3604,37 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       try {
         if (template.type === 'video' || isVideoMedia(result.resultUrl)) {
           actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl);
-          actualBillableDuration = actualOutputDuration;
         }
       } catch (probeErr) {
         console.warn('[Duration Probe] Failed to probe video duration:', probeErr);
+      }
+
+      // Determine billable duration strictly according to verified provider billing rules
+      if (modelEntry?.billsSourceVideo === true && measuredSourceVideoDuration !== undefined && actualOutputDuration !== undefined) {
+        actualBillableDuration = measuredSourceVideoDuration + actualOutputDuration;
+      } else if (modelEntry?.billsSourceVideo === false && actualOutputDuration !== undefined) {
+        actualBillableDuration = actualOutputDuration;
+      } else {
+        // When billsSourceVideo is UNKNOWN, do not falsely label output duration as billable
+        actualBillableDuration = undefined;
+      }
+
+      const costMeasurement = measureActualProviderCostUsd({
+        modelId: effectiveModel,
+        resolution: requestedResolution as any,
+        actualBillableDurationSeconds: actualBillableDuration
+      });
+
+      const reconciliation = reconcileCostOnCompletion({
+        reservedCredits: requiredCredits,
+        actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
+        isFailed: false,
+        hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
+      });
+
+      // If bounded reconciliation found a refund difference, refund customer
+      if (!isAuthorizedAdmin && reconciliation.refundCredits > 0) {
+        prodDb.refundCredits(user.id, reconciliation.refundCredits, `Reconciliation Refund: Duration adjustment (${template.title})`, genId);
       }
 
       prodDb.updateGeneration(genId, {
@@ -3534,7 +3642,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         resultMediaUrl: result.resultUrl,
         actualOutputDurationSeconds: actualOutputDuration,
         actualBillableDurationSeconds: actualBillableDuration,
-        reconciledCostCredits: isAuthorizedAdmin ? 0 : requiredCredits,
+        reconciledCostCredits: isAuthorizedAdmin ? 0 : reconciliation.finalChargeCredits,
         completedAt: new Date().toISOString()
       });
     } catch (err: any) {

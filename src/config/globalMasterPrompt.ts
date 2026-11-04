@@ -216,8 +216,14 @@ Strictly maintain two independent, separate human identities throughout the enti
  * Helper to build wardrobe instructions based on customer choice and template setting
  * From AI Prime Studio Prompt Standard v1.1 Section 7
  */
-export function getWardrobePrompt(wardrobeSource?: 'auto' | 'my_photo' | 'template'): string {
-  switch (wardrobeSource) {
+export function getWardrobePrompt(wardrobeSource?: string): string {
+  const normalized = wardrobeSource
+    ?.toLowerCase()
+    .replace('customer_photo', 'my_photo')
+    .replace('template_video', 'template')
+    .trim();
+
+  switch (normalized) {
     case 'my_photo':
       return `WARDROBE SELECTION: Use the customer photo's visible outfit details. If the outfit is not clearly visible or lacks detail, fall back to the template/source outfit. Do not invent unseen clothing details.`;
     case 'template':

@@ -73,6 +73,11 @@ export class AIRouter {
     const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
     const selectedModel = activeWorkflowConfig?.model || params.model;
 
+    // Unconditional Omni / Evaluation-Only Model Guard (protects all routes including driving video)
+    if (selectedModel && MODEL_REGISTRY[selectedModel]?.isEvaluationOnly && !params.customParameters?.isEvaluationMode) {
+      throw new Error(`MODEL_EVALUATION_ONLY: Model '${selectedModel}' is configured for internal evaluation only and is guarded from production customer generation.`);
+    }
+
     // 2. Prompt Construction: Combine protected template prompt + optional user custom instructions
     const basePrompt =
       activeWorkflowConfig?.prompt ||
@@ -89,15 +94,33 @@ export class AIRouter {
         ? `${basePrompt}\nAdditional User Creative Instructions (Hindi/English/Hinglish): ${params.customPrompt.trim()}`
         : basePrompt;
 
-    // Extract all candidate customer media URLs
-    const customerMediaUrls =
-      params.inputMediaUrls && params.inputMediaUrls.length > 0
-        ? params.inputMediaUrls
-        : params.inputMediaUrl.includes('|||')
-        ? params.inputMediaUrl.split('|||').map((s) => s.trim()).filter(Boolean)
-        : [params.inputMediaUrl];
+    if (combinedPrompt.length > 4000) {
+      throw new Error(`VALIDATION_ERROR: Generation prompt length (${combinedPrompt.length} chars) exceeds maximum provider limit (4000 chars).`);
+    }
 
-    const isCouple = customerMediaUrls.length >= 2 || (params.inputMedia && params.inputMedia.length >= 2);
+    // Extract and slot-order candidate customer media URLs
+    let customerMediaUrls: string[] = [];
+    if (params.inputMedia && params.inputMedia.length > 0) {
+      // Preserve explicit slotId role mapping (partner_1 -> slot 0 / Person A, partner_2 -> slot 1 / Person B)
+      const partner1 = params.inputMedia.find((m) => m.slotId === 'partner_1' || m.slotId === 'slot_1');
+      const partner2 = params.inputMedia.find((m) => m.slotId === 'partner_2' || m.slotId === 'slot_2');
+      if (partner1 && partner2) {
+        customerMediaUrls = [partner1.media || partner1.mediaUrl || '', partner2.media || partner2.mediaUrl || ''].filter(Boolean);
+      } else {
+        customerMediaUrls = params.inputMedia.map((m) => m.media || m.mediaUrl || '').filter(Boolean);
+      }
+    }
+
+    if (customerMediaUrls.length === 0) {
+      customerMediaUrls =
+        params.inputMediaUrls && params.inputMediaUrls.length > 0
+          ? params.inputMediaUrls
+          : params.inputMediaUrl.includes('|||')
+          ? params.inputMediaUrl.split('|||').map((s) => s.trim()).filter(Boolean)
+          : [params.inputMediaUrl];
+    }
+
+    const isCouple = Boolean(params.isCouple || customerMediaUrls.length >= 2);
 
     // 3. Reference / Driving Video Support:
     // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
@@ -109,7 +132,8 @@ export class AIRouter {
         customInstructions: params.customPrompt,
         ownerUserId: params.ownerUserId,
         model: selectedModel || (workflowName === 'MOTION_TRANSFER' ? 'hf_mult_motion_control_flash' : 'hf_mult_replace_object_flash'),
-        resolution: (params.aspectRatio as any) === '1080p' ? '1080p' : '720p',
+        resolution: params.resolution || ((params.aspectRatio as any) === '1080p' ? '1080p' : '720p'),
+        durationSeconds: params.durationSeconds,
         isCouple
       });
     }
@@ -121,9 +145,6 @@ export class AIRouter {
       recipe?.sampleBefore;
 
     if (provider === 'google_veo' || params.templateType === 'video' || isInputVideo) {
-      if (selectedModel && MODEL_REGISTRY[selectedModel]?.isEvaluationOnly) {
-        throw new Error(`MODEL_EVALUATION_ONLY: Model '${selectedModel}' is configured for internal evaluation only and is guarded from production customer generation.`);
-      }
       return await this.generateVideo({
         prompt: combinedPrompt,
         sourceMediaUrl: params.inputMediaUrl,
@@ -133,6 +154,7 @@ export class AIRouter {
         sampleBeforeUrl,
         sampleResultUrl: params.sampleResultUrl,
         aspectRatio: (activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16') as any,
+        durationSeconds: params.durationSeconds,
         styleWorkflow: workflowName,
         ownerUserId: params.ownerUserId
       });

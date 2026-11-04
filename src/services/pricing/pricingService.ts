@@ -143,35 +143,62 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
 
 /**
  * Stage 1: Pre-Generation Estimated Provider Cost (USD)
+ * Fails closed with PENDING_QUOTE if resolution support or billing rules are UNKNOWN.
  */
 export function calculateEstimatedProviderCostUsd(params: {
   modelId: string;
   resolution: '480p' | '720p' | '1080p';
   sourceVideoDurationSeconds?: number;
   requestedOutputDurationSeconds: number;
-}): { status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED'; estimatedProviderCostUsd?: number; reason?: string } {
+}): {
+  status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED';
+  estimatedProviderCostUsd?: number;
+  quoteBasis?: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE';
+  reason?: string;
+} {
   const entry = MODEL_REGISTRY[params.modelId];
-  if (!entry) return { status: 'UNSUPPORTED', reason: 'Model not registered.' };
+  if (!entry) return { status: 'UNSUPPORTED', reason: `Model ${params.modelId} is not registered.` };
 
   const tariff = entry.resolutionTariffs[params.resolution];
   if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
     return { status: 'UNSUPPORTED', reason: `Resolution ${params.resolution} is unsupported by ${params.modelId}.` };
   }
 
+  // UNKNOWN resolution capability must NOT return QUOTED; fail closed with PENDING_QUOTE
+  if (tariff.supportStatus === 'UNKNOWN') {
+    return {
+      status: 'PENDING_QUOTE',
+      reason: `Resolution ${params.resolution} capability is unverified (UNKNOWN) for model ${params.modelId}.`
+    };
+  }
+
+  // UNKNOWN billing rule must NOT assume output-only; fail closed with PENDING_QUOTE
+  if (entry.billsSourceVideo === 'UNKNOWN') {
+    return {
+      status: 'PENDING_QUOTE',
+      reason: `Source video billing policy is unverified (UNKNOWN) for model ${params.modelId}. Dual-duration tariff cannot be quoted.`
+    };
+  }
+
+  const hasAccountQuote = Boolean(tariff.accountQuotePerSecondUsd && tariff.accountQuotePerSecondUsd > 0);
   const rate = tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd;
   if ((rate === undefined || rate <= 0) && entry.provider !== 'smart_template') {
     return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
   }
+
+  const quoteBasis: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE' = hasAccountQuote
+    ? 'ACCOUNT_QUOTE'
+    : 'PUBLISHED_LIST_PRICE';
 
   if (entry.billsSourceVideo === true) {
     if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
       return { status: 'PENDING_QUOTE', reason: 'Source video duration is required for dual-duration quote.' };
     }
     const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
-    return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate };
+    return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate, quoteBasis };
   }
 
-  return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate };
+  return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate, quoteBasis };
 }
 
 /**
@@ -189,38 +216,74 @@ export function calculateEstimatedCustomerCredits(
   return Math.ceil(customerBasePrice * creditsPerInr);
 }
 
+export interface ActualProviderCostMeasurement {
+  costUsd: number;
+  actualProviderCostUsd: number;
+  isExactTransactionCost: boolean;
+  basis: 'provider_receipt' | 'estimated_tariff' | 'unmeasured';
+}
+
 /**
  * Stage 3: Post-Generation Actual Provider Cost (USD)
+ * Distinctly separates actual provider transaction receipts from tariff estimates.
  */
 export function measureActualProviderCostUsd(params: {
   modelId: string;
   resolution: '480p' | '720p' | '1080p';
-  actualBillableDurationSeconds: number;
+  actualBillableDurationSeconds?: number;
   providerTransactionCostUsd?: number;
-}): number {
-  if (params.providerTransactionCostUsd !== undefined) {
-    return params.providerTransactionCostUsd;
+}): ActualProviderCostMeasurement {
+  if (params.providerTransactionCostUsd !== undefined && params.providerTransactionCostUsd >= 0) {
+    return {
+      costUsd: params.providerTransactionCostUsd,
+      actualProviderCostUsd: params.providerTransactionCostUsd,
+      isExactTransactionCost: true,
+      basis: 'provider_receipt'
+    };
   }
   const entry = MODEL_REGISTRY[params.modelId];
   const tariff = entry?.resolutionTariffs[params.resolution];
   const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
-  return params.actualBillableDurationSeconds * rate;
+  const billableSec = params.actualBillableDurationSeconds || 0;
+  const calculatedCost = billableSec * rate;
+  return {
+    costUsd: calculatedCost,
+    actualProviderCostUsd: calculatedCost,
+    isExactTransactionCost: false,
+    basis: billableSec > 0 && rate > 0 ? 'estimated_tariff' : 'unmeasured'
+  };
 }
 
 /**
  * Stage 4: Actual Cost Reconciliation
+ * Bounded refund policy: refunds differences when verified actual usage is lower than reserved,
+ * refunds 100% on failure, and strictly never post-debits customer wallet.
  */
 export function reconcileCostOnCompletion(params: {
   reservedCredits: number;
-  actualProviderCostUsd: number;
+  actualProviderCostUsd?: number;
   rate?: number;
   markupPercent?: number;
   isFailed: boolean;
-}): { finalChargeCredits: number; refundCredits: number } {
+  hasExactTransactionReceipt?: boolean;
+}): { finalChargeCredits: number; refundCredits: number; isSettled: boolean } {
   if (params.isFailed) {
-    return { finalChargeCredits: 0, refundCredits: params.reservedCredits };
+    return { finalChargeCredits: 0, refundCredits: params.reservedCredits, isSettled: true };
   }
-  return { finalChargeCredits: params.reservedCredits, refundCredits: 0 };
+  // Bounded reconciliation: if actual verified provider cost is known and less than reserved, refund the difference
+  if (params.actualProviderCostUsd !== undefined && params.actualProviderCostUsd >= 0) {
+    const actualCredits = calculateEstimatedCustomerCredits(
+      params.actualProviderCostUsd,
+      params.rate || CENTRAL_PRICING_CONFIG.usdToInrRate,
+      params.markupPercent || CENTRAL_PRICING_CONFIG.markupPercent
+    );
+    if (actualCredits < params.reservedCredits) {
+      const refund = params.reservedCredits - actualCredits;
+      return { finalChargeCredits: actualCredits, refundCredits: refund, isSettled: true };
+    }
+  }
+  // Never charge more than reserved credits (no unexpected post-generation debits)
+  return { finalChargeCredits: params.reservedCredits, refundCredits: 0, isSettled: true };
 }
 
 export const CENTRAL_PRICING_CONFIG: PricingSettings = {

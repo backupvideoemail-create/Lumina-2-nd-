@@ -34,6 +34,7 @@ import {
   HomeBannerItem
 } from '../config/homeBannersConfig';
 import { Template } from '../types';
+import { queueHdDownload } from '../services/media/hdDownloadQueue';
 
 export const HomeView: React.FC = () => {
   const {
@@ -103,6 +104,20 @@ export const HomeView: React.FC = () => {
     }, 6000);
     return () => clearInterval(interval);
   }, [isPaused, banners.length, timerResetKey]);
+
+  // HD video prefetch for hero banners
+  useEffect(() => {
+    if (!banners || banners.length === 0) return;
+    const current = banners[currentBannerIndex];
+    if (current?.videoUrl) {
+      queueHdDownload(current.videoUrl, 'high').catch(() => {});
+    }
+    const nextIndex = (currentBannerIndex + 1) % banners.length;
+    const next = banners[nextIndex];
+    if (next?.videoUrl) {
+      queueHdDownload(next.videoUrl, 'medium').catch(() => {});
+    }
+  }, [currentBannerIndex, banners]);
 
   const activeBanner: HomeBannerItem = banners[currentBannerIndex] || banners[0] || HOME_HERO_BANNERS[0];
 
@@ -285,7 +300,7 @@ export const HomeView: React.FC = () => {
               <div
                 className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/60 via-black/20 to-transparent'}`}
               />
-              <div className="absolute inset-0 z-15 bg-gradient-to-t from-[#070609] via-transparent to-black/30" />
+              <div className="absolute inset-0 z-15 bg-gradient-to-t from-black/70 via-transparent to-black/15" />
 
               {/* Floating PRO Badge with Video Play Icon (Top Right) */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black shadow-[0_0_20px_rgba(255,159,0,0.5)]">
@@ -413,16 +428,23 @@ export const HomeView: React.FC = () => {
       <section className="px-3.5 pt-1.5 pb-2 max-w-4xl mx-auto">
         <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
           {sortedCategories.map((cat) => {
-            const isSelected = selectedCategory === cat;
+            const isSelected = cat === 'All' ? selectedCategories.length === 0 : selectedCategories.includes(cat);
             return (
               <button
                 key={cat}
                 onClick={() => {
-                  setSelectedCategory(cat);
                   if (cat === 'All') {
+                    setSelectedCategory('All');
                     setSelectedCategories([]);
                   } else {
-                    setSelectedCategories([cat]);
+                    const exists = selectedCategories.includes(cat);
+                    const updated = exists
+                      ? selectedCategories.filter((c) => c !== cat)
+                      : [...selectedCategories, cat];
+                    setSelectedCategories(updated);
+                    setSelectedCategory(
+                      updated.length === 1 ? updated[0] : (updated.length === 0 ? 'All' : updated.join(', '))
+                    );
                   }
                 }}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all shrink-0 cursor-pointer ${
@@ -470,11 +492,13 @@ export const HomeView: React.FC = () => {
             )}
           </div>
         ) : (
-          sortedCategories.map((category) => {
-            const catTemplates = activeTemplates.filter(
-              (t) => (t.category || 'Trending') === category
-            );
-            if (catTemplates.length === 0) return null;
+          sortedCategories
+            .filter((category) => selectedCategories.length === 0 || selectedCategories.includes(category))
+            .map((category) => {
+              const catTemplates = activeTemplates.filter(
+                (t) => (t.category || 'Trending') === category
+              );
+              if (catTemplates.length === 0) return null;
 
             return (
               <div key={category} className="space-y-2.5">

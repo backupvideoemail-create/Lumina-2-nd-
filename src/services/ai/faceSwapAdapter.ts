@@ -120,6 +120,10 @@ Never blend, average, cross-apply, or fuse their faces.`;
       finalPrompt = `${finalPrompt}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${sanitizedCustomerInput}`;
     }
 
+    if (finalPrompt.length > 4000) {
+      throw new Error(`VALIDATION_ERROR: Higgsfield prompt length (${finalPrompt.length} chars) exceeds maximum provider limit (4000 chars).`);
+    }
+
     const selectedModel = params.model || this.primaryModelName;
     const requestedResolution = params.resolution || '480p';
 
@@ -132,12 +136,16 @@ Never blend, average, cross-apply, or fuse their faces.`;
     }
 
     // Official documented Higgsfield Genjutsu payload.
-    const payload = {
+    const payload: Record<string, any> = {
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
       prompt: finalPrompt,
       resolution: requestedResolution
     };
+
+    if (params.durationSeconds && Number(params.durationSeconds) > 0) {
+      payload.duration = Number(params.durationSeconds);
+    }
 
     // Official Higgsfield Authorization: "Key ${keyId}:${keySecret}" or "Key ${apiKey}"
     let authHeaderValue: string;

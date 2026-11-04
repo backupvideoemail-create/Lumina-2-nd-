@@ -42,6 +42,7 @@ export interface FaceSwapParams {
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   customParameters?: Record<string, any>;
   ownerUserId?: string;
+  inputMedia?: Array<{ slotId?: string; type?: string; media?: string; mediaUrl?: string }>;
 }
 
 export interface TemplateProcessParams {
@@ -64,6 +65,12 @@ export interface TemplateProcessParams {
   recipe?: any;
   drivingVideoUrl?: string;
   model?: string;
+  resolution?: '480p' | '720p' | '1080p';
+  durationSeconds?: number;
+  isCouple?: boolean;
+  wardrobeSource?: string;
+  customParameters?: Record<string, any>;
+  isEvaluationMode?: boolean;
 }
 
 export interface ProviderResult {

@@ -1357,48 +1357,64 @@ async function runSystemVerification() {
     reconcileCostOnCompletion
   } = await import('../src/services/pricing/pricingService.ts');
 
-  const estCost = calculateEstimatedProviderCostUsd({
+  // UNKNOWN model support status must return PENDING_QUOTE
+  const estCostPending = calculateEstimatedProviderCostUsd({
     modelId: 'hf_mult_motion_control_flash',
     resolution: '480p',
     requestedOutputDurationSeconds: 8
   });
-  assert(estCost.status === 'QUOTED' && typeof estCost.estimatedProviderCostUsd === 'number', '25.3 calculateEstimatedProviderCostUsd returns QUOTED estimate');
+  assert(estCostPending.status === 'PENDING_QUOTE', '25.3 calculateEstimatedProviderCostUsd returns PENDING_QUOTE for UNKNOWN model/billing');
 
-  const estCredits = calculateEstimatedCustomerCredits(estCost.estimatedProviderCostUsd || 0.4);
+  // calculateEstimatedCustomerCredits returns positive credits from positive USD
+  const estCredits = calculateEstimatedCustomerCredits(0.40);
   assert(estCredits > 0, `25.3 calculateEstimatedCustomerCredits returns positive credits (${estCredits})`);
 
-  const actualUsd = measureActualProviderCostUsd({
+  // measureActualProviderCostUsd returns measurement with isExactTransactionCost
+  const measuredUnverified = measureActualProviderCostUsd({
     modelId: 'hf_mult_motion_control_flash',
     resolution: '480p',
     actualBillableDurationSeconds: 8
   });
-  assert(actualUsd > 0, `25.3 measureActualProviderCostUsd measures cost correctly ($${actualUsd})`);
+  assert(measuredUnverified.isExactTransactionCost === false, '25.3 measureActualProviderCostUsd marks unverified receipt as isExactTransactionCost: false');
 
-  const reconc = reconcileCostOnCompletion({
-    reservedCredits: estCredits,
-    actualProviderCostUsd: actualUsd,
+  const measuredVerified = measureActualProviderCostUsd({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '480p',
+    actualBillableDurationSeconds: 8,
+    providerTransactionCostUsd: 0.15
+  });
+  assert(measuredVerified.isExactTransactionCost === true && measuredVerified.actualProviderCostUsd === 0.15, '25.3 measureActualProviderCostUsd records verified transaction receipt');
+
+  // Reconcile cost on completion: Refund customer if actual cost is lower than reserved
+  const reconcSettled = reconcileCostOnCompletion({
+    reservedCredits: 20,
+    actualProviderCostUsd: 0.10, // ~5 credits
     isFailed: false
   });
-  assert(reconc.finalChargeCredits === estCredits && reconc.refundCredits === 0, '25.3 reconcileCostOnCompletion settles successful generation');
+  assert(reconcSettled.refundCredits > 0 && reconcSettled.finalChargeCredits < 20, '25.3 reconcileCostOnCompletion refunds difference when actual cost is lower than reserved');
 
+  // Reconcile cost on completion: 100% refund on failure
   const reconcFailed = reconcileCostOnCompletion({
-    reservedCredits: estCredits,
+    reservedCredits: 20,
     actualProviderCostUsd: 0,
     isFailed: true
   });
-  assert(reconcFailed.finalChargeCredits === 0 && reconcFailed.refundCredits === estCredits, '25.3 reconcileCostOnCompletion refunds 100% on failure');
+  assert(reconcFailed.finalChargeCredits === 0 && reconcFailed.refundCredits === 20, '25.3 reconcileCostOnCompletion refunds 100% on failure');
 
   // 25.4 FaceSwap Dual-Model Routing & Resolution Flexibility
   const faceSwapAdapterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/faceSwapAdapter.ts'), 'utf-8');
   assert(faceSwapAdapterContent.includes('hf_mult_motion_control_flash'), '25.4 FaceSwap supports Motion Control flash');
   assert(faceSwapAdapterContent.includes('hf_mult_replace_object_flash'), '25.4 FaceSwap supports Replace Object flash');
   assert(faceSwapAdapterContent.includes("'480p' | '720p' | '1080p'"), '25.4 FaceSwap supports 480p, 720p, 1080p resolutions');
+  assert(faceSwapAdapterContent.includes('4000') && faceSwapAdapterContent.includes('VALIDATION_ERROR'), '25.4 FaceSwap enforces 4000-char prompt limit');
 
   // 25.5 Black Thumbnail Problem Fix in TemplateCard
   const templateCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
-  assert(templateCardContent.includes('resolvedPoster'), '25.5 TemplateCard resolves poster image fallback');
+  assert(templateCardContent.includes('posterCandidates'), '25.5 TemplateCard implements ordered poster candidates fallback');
+  assert(templateCardContent.includes('hasVideoError') && templateCardContent.includes('allPostersFailed'), '25.5 TemplateCard separates video error from poster failure');
   assert(templateCardContent.includes('preload="none"'), '25.5 TemplateCard prevents premature video buffer stall with preload="none"');
   assert(templateCardContent.includes('IntersectionObserver'), '25.5 TemplateCard lazy attaches video near viewport');
+  assert(templateCardContent.includes('queueHdDownload'), '25.5 TemplateCard calls queueHdDownload for background HD video upgrade');
 
   // 25.6 Multi-Category Selection in Context & TemplatesView
   const appContextContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf-8');
@@ -1406,16 +1422,20 @@ async function runSystemVerification() {
   const templatesViewContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/TemplatesView.tsx'), 'utf-8');
   assert(templatesViewContent.includes('selectedCategories.includes'), '25.6 TemplatesView checks selectedCategories');
 
-  // 25.7 Server /api/templates Multi-Category & Trending Bug Fix
+  // 25.7 Server /api/templates Multi-Category & Trending Bug Fix & Admin Persistence
   assert(serverCode.includes("categoriesParam = (req.query.categories as string)"), '25.7 server.ts supports categories query parameter');
   assert(!serverCode.includes("category !== 'Trending'"), '25.7 server.ts removed Trending category exclusion bug');
   assert(serverCode.includes('/api/admin/adapters/status'), '25.7 server.ts provides adapter audit endpoint');
+  assert(serverCode.includes('coverImageBase64') && serverCode.includes('coverVideoBase64'), '25.7 server.ts persists admin coverImage and coverVideo');
 
-  // 25.8 Home Hero Banner 1:1 CSS Crop & Full-Screen Modal
+  // 25.8 Home Hero Banner 1:1 CSS Crop, Scrim Softening, Multi-Cat OR Rail Filtering, and HD Queue
   assert(homeViewContent.includes('aspect-square'), '25.8 HomeView enforces 1:1 square aspect ratio for hero banner');
   assert(homeViewContent.includes('scale(') || homeViewContent.includes('transform'), '25.8 HomeView applies 1:1 crop transform');
   assert(homeViewContent.includes('object-contain'), '25.8 Fullscreen video modal preserves uncropped native aspect ratio');
   assert(homeViewContent.includes("fullVideoBanner.type === 'SHOWCASE_ONLY'"), '25.8 HomeView handles SHOWCASE_ONLY vs LINKED_TEMPLATE banner types');
+  assert(homeViewContent.includes('from-black/70 via-transparent to-black/15'), '25.8 HomeView applies softened hero bottom gradient');
+  assert(homeViewContent.includes('selectedCategories.includes(category)'), '25.8 HomeView filters horizontal rails using selectedCategories');
+  assert(homeViewContent.includes('queueHdDownload'), '25.8 HomeView calls queueHdDownload for hero banner video prefetching');
 
   // 25.9 Generation Screen Credits Only (Zero INR in Customer Flow)
   assert(!detailModalContent.includes('₹'), '25.9 Customer TemplateDetailModal has zero INR currency symbols');
@@ -1441,10 +1461,12 @@ async function runSystemVerification() {
   assert(fs.existsSync(hdQueuePath), '25.13 hdDownloadQueue.ts exists in codebase');
   const hdQueueContent = fs.readFileSync(hdQueuePath, 'utf-8');
   assert(hdQueueContent.includes('isDataSaverActive') && hdQueueContent.includes('queueHdDownload'), '25.13 hdDownloadQueue implements data saver and priority queuing');
+  assert(hdQueueContent.includes('3g'), '25.13 hdDownloadQueue detects 3G slow networks');
 
-  // 25.14 Omni model evaluation-only guard in AIRouter
+  // 25.14 Omni model evaluation-only guard in AIRouter & prompt length validation
   const aiRouterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/aiRouter.ts'), 'utf-8');
-  assert(aiRouterContent.includes('MODEL_EVALUATION_ONLY'), '25.14 aiRouter guards evaluation-only models from production customer generation');
+  assert(aiRouterContent.includes('MODEL_EVALUATION_ONLY'), '25.14 aiRouter guards evaluation-only models from production customer generation across all routes');
+  assert(aiRouterContent.includes('4000') && aiRouterContent.includes('VALIDATION_ERROR'), '25.14 aiRouter enforces 4000-char prompt length limit');
 
   // 25.15 Protected Payment & Financial Systems Zero Modification Assertion
   const razorpayContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/payments/razorpayAdapter.ts'), 'utf-8');

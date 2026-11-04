@@ -46,7 +46,7 @@ class HdDownloadQueueManager {
     if (!conn) return false;
 
     if (conn.saveData === true) return true;
-    if (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g') return true;
+    if (conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g' || conn.effectiveType === '3g') return true;
 
     return false;
   }
@@ -67,8 +67,8 @@ class HdDownloadQueueManager {
       return Promise.resolve(this.blobCache.get(url)!);
     }
 
-    // If Data Saver is active and priority is low, skip download to respect customer bandwidth
-    if (this.isDataSaverActive() && priority === 'low') {
+    // If Data Saver / slow cellular is active and priority is not high, skip download to respect customer bandwidth
+    if (this.isDataSaverActive() && (priority === 'low' || priority === 'medium')) {
       return Promise.resolve(url);
     }
 

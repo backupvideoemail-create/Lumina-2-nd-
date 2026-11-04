@@ -4,6 +4,7 @@ import { Play, Sparkles, Image as ImageIcon, UserCheck, ArrowUpRight, ShieldChec
 import { Template } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
+import { queueHdDownload } from '../services/media/hdDownloadQueue';
 
 interface TemplateCardProps {
   template: Template;
@@ -43,20 +44,27 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   );
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
-  const [mediaError, setMediaError] = React.useState(false);
+  const [hasVideoError, setHasVideoError] = React.useState(false);
   const [isNearViewport, setIsNearViewport] = React.useState(false);
+  const [hdVideoSrc, setHdVideoSrc] = React.useState<string | null>(null);
 
-  // Reliable Poster extraction: Prioritize admin cover/after assets; Never use stock portraits
+  // Reliable Poster extraction: Ordered fallback candidates; Never use stock portraits
   const isCoverVideo = isVideoMedia(template.cover);
   const isPreviewVideo = isVideoMedia(template.preview);
-  const resolvedPoster =
-    template.coverImage ||
-    (!isCoverVideo && template.cover ? template.cover : undefined) ||
-    template.sampleResult ||
-    template.sampleAfter ||
-    (!isPreviewVideo && template.preview ? template.preview : undefined) ||
-    template.sampleFaceThumbnail ||
-    '';
+  const posterCandidates = React.useMemo(() => {
+    return [
+      template.coverImage,
+      !isCoverVideo && template.cover ? template.cover : undefined,
+      template.sampleResult,
+      template.sampleAfter,
+      !isPreviewVideo && template.preview ? template.preview : undefined,
+      template.sampleFaceThumbnail
+    ].filter((url): url is string => Boolean(url && typeof url === 'string' && !isVideoMedia(url)));
+  }, [template, isCoverVideo, isPreviewVideo]);
+
+  const [posterIndex, setPosterIndex] = React.useState(0);
+  const [allPostersFailed, setAllPostersFailed] = React.useState(false);
+  const resolvedPoster = posterCandidates[posterIndex] || '';
 
   // True Lazy Loading: Only attach video src when card is within 150px of viewport
   useEffect(() => {
@@ -87,6 +95,19 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     };
   }, [isVideo]);
 
+  // HD download upgrade when card is near viewport
+  useEffect(() => {
+    if (isNearViewport && isVideo && candidateMedia) {
+      queueHdDownload(candidateMedia, 'medium')
+        .then((hdUrl) => {
+          if (hdUrl && hdUrl !== candidateMedia) {
+            setHdVideoSrc(hdUrl);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isNearViewport, isVideo, candidateMedia]);
+
   const heightClasses = {
     compact: 'h-[360px] sm:h-[390px] w-[58vw] max-w-[240px] min-w-[200px] shrink-0',
     standard: 'h-[390px] sm:h-[430px] w-full',
@@ -95,6 +116,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isVideo && candidateMedia) {
+      queueHdDownload(candidateMedia, 'high').catch(() => {});
+    }
     // Preview-First Flow: Always show template transformation preview first
     if (template.isFaceSwap) {
       const scene =
@@ -121,43 +145,48 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
         
         {/* Loading Media Skeleton / Spinner - Only while loading, removed as soon as loaded */}
-        {!isMediaLoaded && !mediaError && (
+        {!isMediaLoaded && !allPostersFailed && (
           <div className="absolute inset-0 z-[5] bg-stone-900/95 flex flex-col items-center justify-center gap-2.5 pointer-events-none animate-pulse">
             <div className="w-7 h-7 border-2 border-amber-400/20 border-t-amber-400 rounded-full animate-spin" />
             <span className="text-[11px] tracking-wide text-amber-200/80 font-medium">Loading media…</span>
           </div>
         )}
 
-        {/* Media Loading Error Fallback */}
-        {mediaError && (
+        {/* Media Loading Error Fallback - Only if all poster candidates failed AND (video failed or non-video) */}
+        {allPostersFailed && (hasVideoError || !isVideo) && (
           <div className="absolute inset-0 z-[5] bg-stone-950 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
             <Sparkles className="w-7 h-7 text-stone-600 mb-1.5" />
             <span className="text-[11px] text-stone-400 font-medium">Preview unavailable</span>
           </div>
         )}
 
-        {/* Guaranteed Underlying Poster Image: Prevents Black/Blank Box on Initial Paint or while Video Buffers */}
-        <img
-          src={resolvedPoster}
-          alt={template.title}
-          loading="lazy"
-          draggable={false}
-          onLoad={() => setIsMediaLoaded(true)}
-          onError={() => {
-            if (!isVideo) {
-              setIsMediaLoaded(true);
-              setMediaError(true);
-            }
-          }}
-          onContextMenu={(e) => e.preventDefault()}
-          className="absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[1]"
-        />
+        {/* Guaranteed Underlying Poster Image: Advances across poster candidates on error */}
+        {resolvedPoster && (
+          <img
+            key={resolvedPoster}
+            src={resolvedPoster}
+            alt={template.title}
+            loading="lazy"
+            draggable={false}
+            onLoad={() => setIsMediaLoaded(true)}
+            onError={() => {
+              if (posterIndex < posterCandidates.length - 1) {
+                setPosterIndex((idx) => idx + 1);
+              } else {
+                setAllPostersFailed(true);
+                setIsMediaLoaded(true);
+              }
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+            className="absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[1]"
+          />
+        )}
 
         {/* Viewport-Aware Video Layer: Attached only when near viewport with preload="none" */}
         {isVideo && isNearViewport && (
           <video
             ref={videoRef}
-            src={candidateMedia}
+            src={hdVideoSrc || candidateMedia}
             poster={resolvedPoster}
             loop
             muted
@@ -165,10 +194,12 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             preload="none"
             draggable={false}
             onLoadedData={() => setIsMediaLoaded(true)}
-            onError={() => { setMediaError(true); }}
+            onError={() => {
+              setHasVideoError(true);
+            }}
             onContextMenu={(e) => e.preventDefault()}
             className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
-              isMediaLoaded && !mediaError ? 'opacity-100' : 'opacity-0'
+              isMediaLoaded && !hasVideoError ? 'opacity-100' : 'opacity-0'
             }`}
           />
         )}
