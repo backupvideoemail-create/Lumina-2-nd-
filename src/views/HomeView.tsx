@@ -312,11 +312,11 @@ export const HomeView: React.FC = () => {
                 );
               })()}
 
-              {/* Multi-layer Cinematic Scrims */}
+              {/* Softened Cinematic Scrims - Vivid media without dark veil, protecting bottom text */}
               <div
-                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/60 via-black/20 to-transparent'}`}
+                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/40 via-transparent to-transparent'}`}
               />
-              <div className="absolute inset-0 z-15 bg-gradient-to-t from-black/70 via-transparent to-black/15" />
+              <div className="absolute inset-0 z-15 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
 
               {/* Floating PRO Badge with Video Play Icon (Top Right) */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black shadow-[0_0_20px_rgba(255,159,0,0.5)]">

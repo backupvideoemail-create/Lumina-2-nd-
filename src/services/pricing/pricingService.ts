@@ -396,32 +396,37 @@ export function calculateAuthoritativeTemplateCost(
 ): number {
   // 1. Smart Template deterministic fixed-credit execution path (Approved separate pricing path)
   if (template.engine === 'SMART_TEMPLATE' || template.model === 'smart_canvas_ffmpeg') {
+    if (template.providerCostUsd && template.providerCostUsd > 0) {
+      return calculateCreditsFromUsd(template.providerCostUsd);
+    }
     return template.creditCost || 10;
   }
 
-  // 2. Explicit provider cost override if configured
-  if (template.providerCostUsd && template.providerCostUsd > 0) {
-    return calculateCreditsFromUsd(template.providerCostUsd);
-  }
-
-  // 3. AI Generation Templates: Must be derived through server-authoritative MODEL_REGISTRY quoting
+  // 2. AI Generation Templates: Must be derived strictly through server-authoritative MODEL_REGISTRY quoting
+  // Note: providerCostUsd is strictly prohibited from bypassing verified AI model quotes.
   const modelId = template.model || (template.type === 'video' ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
   const resolution = (template.resolutionLabel === '480p' || template.resolutionLabel === '720p' || template.resolutionLabel === '1080p')
     ? template.resolutionLabel
-    : (modelId === 'hf_mult_motion_control_flash' ? '480p' : '720p');
-  const duration = template.durationSeconds || 5;
+    : undefined;
+  const duration = template.durationSeconds;
+
+  // If resolution or duration is not provided or unverified, fail closed with 0
+  if (!resolution || !duration) {
+    return 0;
+  }
 
   const estimate = calculateEstimatedProviderCostUsd({
     modelId,
     resolution: resolution as any,
-    requestedOutputDurationSeconds: duration
+    requestedOutputDurationSeconds: duration,
+    allowPublishedListPriceFallback: false // Never bypass verified account quotes without explicit policy
   });
 
   if (estimate.status === 'QUOTED' && estimate.estimatedProviderCostUsd !== undefined) {
     return calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
   }
 
-  // Fail closed: Unverified AI models return 0 (Quote Pending) to prevent guessed reservations
+  // Fail closed: Unverified AI models or missing quotes return 0 (Quote Pending) to prevent guessed reservations
   return 0;
 }
 

@@ -121,7 +121,7 @@ export function evaluateBestCompatibleModel(
       modelId: entry.modelId,
       resolution,
       requestedOutputDurationSeconds: durationSeconds,
-      allowPublishedListPriceFallback: true
+      allowPublishedListPriceFallback: false
     });
 
     if (costEst.status === 'QUOTED' && isVerified) {
@@ -162,12 +162,11 @@ export function evaluateBestCompatibleModel(
     };
   }
 
-  // Fallback: Pick first compatible non-eval candidate if available
-  const compatibleFallback = candidates.find((c) => c.isCompatible && !c.isEvaluationOnly);
+  // Fail closed: No verified compatible model available without verified quote
   return {
-    selectedModelId: compatibleFallback ? compatibleFallback.modelId : null,
+    selectedModelId: null,
     candidates,
-    strategy: 'FALLBACK_COMPATIBLE'
+    strategy: 'BLOCKED_PENDING_QUOTE' as any
   };
 }
 
@@ -176,14 +175,12 @@ export function selectBestCompatibleModel(
   preferredWorkflow?: string,
   resolution: '480p' | '720p' | '1080p' = '720p',
   durationSeconds: number = 5
-): string {
+): string | null {
   const evaluation = evaluateBestCompatibleModel(modality, preferredWorkflow, resolution, durationSeconds);
   if (evaluation.selectedModelId) return evaluation.selectedModelId;
 
-  // Safe registry-defined default
-  if (modality === 'image') return 'gemini-3.1-flash-lite-image';
-  if (modality === 'face_swap') return 'hf_mult_motion_control_flash';
-  return 'hf_mult_motion_control_flash';
+  // Strict Fail-Closed: Do not invent or select unverified models
+  return null;
 }
 
 export class AIRouter {
@@ -241,7 +238,10 @@ export class AIRouter {
     let selectedModel = activeWorkflowConfig?.model || params.model;
     if (!selectedModel || selectedModel === 'auto') {
       const modality = drivingVideoUrl && isInputImage ? 'face_swap' : (isInputVideo || params.templateType === 'video' ? 'video' : 'image');
-      selectedModel = selectBestCompatibleModel(modality, workflowName);
+      selectedModel = selectBestCompatibleModel(modality, workflowName) || undefined;
+      if (!selectedModel) {
+        throw new Error(`NO_VERIFIED_MODEL: No verified compatible model available for modality '${modality}' and workflow '${workflowName}'.`);
+      }
     }
 
     // Unconditional Omni / Evaluation-Only Model Guard (protects all routes including driving video)

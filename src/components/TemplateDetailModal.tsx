@@ -26,7 +26,7 @@ import {
 import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
-import { calculateAuthoritativeTemplateCost, MODEL_REGISTRY } from '../services/pricing/pricingService';
+import { calculateAuthoritativeTemplateCost, calculateEstimatedProviderCostUsd, MODEL_REGISTRY } from '../services/pricing/pricingService';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -231,10 +231,20 @@ export const TemplateDetailModal: React.FC = () => {
         : [];
       if (verifiedResolutions.length > 0) {
         setSelectedResolution(verifiedResolutions[0]);
+      } else if (modelEntry?.appDefaultResolution) {
+        setSelectedResolution(modelEntry.appDefaultResolution);
       } else {
         setSelectedResolution('720p');
       }
-      setSelectedDuration(selectedTemplate.durationSeconds || 5);
+      if (modelEntry?.appDefaultDurationSeconds) {
+        setSelectedDuration(modelEntry.appDefaultDurationSeconds);
+      } else if (selectedTemplate.durationSeconds) {
+        setSelectedDuration(selectedTemplate.durationSeconds);
+      } else if (modelEntry?.minDurationSeconds) {
+        setSelectedDuration(modelEntry.minDurationSeconds);
+      } else {
+        setSelectedDuration(0);
+      }
     }
   }, [selectedTemplate?.id]);
 
@@ -252,19 +262,34 @@ export const TemplateDetailModal: React.FC = () => {
         .map(([res]) => res as '480p' | '720p' | '1080p'))
     : [];
 
+  const selectedResolutionTariff = modelEntry?.resolutionTariffs[selectedResolution];
+  const isResolutionSupported = selectedResolutionTariff?.supportStatus === 'SUPPORTED';
+
+  const isDurationSupported = modelEntry?.minDurationSeconds !== undefined && modelEntry?.maxDurationSeconds !== undefined
+    ? (selectedDuration >= modelEntry.minDurationSeconds && selectedDuration <= modelEntry.maxDurationSeconds)
+    : (modelEntry?.appDefaultDurationSeconds !== undefined ? selectedDuration === modelEntry.appDefaultDurationSeconds : false);
+
+  const estimate = modelEntry ? calculateEstimatedProviderCostUsd({
+    modelId: tpl.model || '',
+    resolution: selectedResolution,
+    requestedOutputDurationSeconds: selectedDuration,
+    allowPublishedListPriceFallback: false
+  }) : null;
+
   const computedCreditCost = calculateAuthoritativeTemplateCost({
     ...tpl,
     durationSeconds: selectedDuration,
     resolutionLabel: selectedResolution
   });
 
+  // isQuotePending must evaluate the selected resolution and duration, not just general endpoint status
   const isQuotePending = !isSmartTemplate && (
     computedCreditCost <= 0 ||
-    Boolean(
-      modelEntry &&
-      (modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' ||
-        Object.values(modelEntry.resolutionTariffs).every((t) => t.supportStatus === 'UNKNOWN' || t.supportStatus === 'UNSUPPORTED'))
-    )
+    !isResolutionSupported ||
+    (tpl.type === 'video' && !isDurationSupported) ||
+    !estimate ||
+    estimate.status !== 'QUOTED' ||
+    Boolean(modelEntry && modelEntry.endpointVerificationStatus === 'PENDING_QUOTE')
   );
 
   const liveCreditCost = isSmartTemplate ? (computedCreditCost || tpl.creditCost || 10) : computedCreditCost;
@@ -1169,13 +1194,12 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Credits scale proportionally</span>
                 </div>
                 <div className="flex gap-2">
-                  {(!modelEntry || modelEntry.endpointVerificationStatus === 'PENDING_QUOTE') ? (
+                  {(!modelEntry || modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' || modelEntry.minDurationSeconds === undefined || modelEntry.maxDurationSeconds === undefined) ? (
                     <div className="w-full py-2 px-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs text-center font-medium">
                       Duration verification pending (जाँच लंबित)
                     </div>
                   ) : (
-                    [5, 8]
-                      .filter((dur) => dur >= (modelEntry.minDurationSeconds || 5) && dur <= (modelEntry.maxDurationSeconds || 8))
+                    Array.from(new Set([modelEntry.minDurationSeconds, modelEntry.maxDurationSeconds]))
                       .map((dur) => (
                         <button
                           key={dur}
@@ -1188,7 +1212,6 @@ export const TemplateDetailModal: React.FC = () => {
                           }`}
                         >
                           {dur}s
-                          {dur === 8 && ' (Quick 8s)'}
                         </button>
                       ))
                   )}

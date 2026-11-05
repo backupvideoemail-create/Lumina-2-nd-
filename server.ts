@@ -572,11 +572,13 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       model: geminiImgEntry ? geminiImgEntry.modelId : 'gemini-3.1-flash-lite-image',
       provider: 'gemini',
       status: hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      connectionStatus: hasGeminiKey ? 'CONNECTED' : 'DISCONNECTED',
       modelStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: geminiImgEntry ? Object.keys(geminiImgEntry.resolutionTariffs) : ['1080p'],
       verificationStatus: geminiImgEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
-      generationTestStatus: geminiImgEntry?.generationTestStatus || 'NOT_TESTED',
+      generationTestStatus: 'NOT_TESTED',
+      quoteStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE',
       pricingStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE'
     },
     {
@@ -588,6 +590,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       ],
       provider: 'higgsfield',
       status: hasHiggsfieldKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      connectionStatus: hasHiggsfieldKey ? 'CONNECTED' : 'DISCONNECTED',
       modelStatus: hfMotionEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'HIGGSFIELD_API_KEY',
       supportedResolutions: {
@@ -595,7 +598,8 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
         object_swap: hfReplaceEntry ? Object.entries(hfReplaceEntry.resolutionTariffs).map(([res, t]) => `${res} (${t.supportStatus})`) : ['480p (UNSUPPORTED)', '720p (UNKNOWN)', '1080p (UNKNOWN)']
       },
       verificationStatus: hfMotionEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
-      generationTestStatus: hfMotionEntry?.generationTestStatus || 'NOT_TESTED',
+      generationTestStatus: 'NOT_TESTED',
+      quoteStatus: 'PENDING_QUOTE',
       pricingStatus: 'PENDING_QUOTE (Account Quote Required)'
     },
     {
@@ -604,11 +608,13 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.1-flash',
       provider: 'gemini',
       status: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET'),
+      connectionStatus: hasGeminiKey ? 'CONNECTED' : 'DISCONNECTED',
       modelStatus: 'EVALUATION_ONLY',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: ['720p', '1080p'],
       verificationStatus: 'EVALUATION_ONLY',
       generationTestStatus: 'NOT_TESTED',
+      quoteStatus: 'EVALUATION_ONLY',
       pricingStatus: 'EVALUATION_ONLY (Guarded from Customer Production)'
     },
     {
@@ -617,19 +623,23 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       model: smartCanvasEntry ? smartCanvasEntry.modelId : 'smart_canvas_ffmpeg',
       provider: 'smart_template',
       status: 'CONFIGURED',
+      connectionStatus: 'LOCAL',
       modelStatus: 'MODEL_AVAILABLE',
       supportedResolutions: ['Flexible / Preserved Source'],
       verificationStatus: 'VERIFIED',
       generationTestStatus: 'GENERATION_TEST_PASSED',
+      quoteStatus: 'QUOTE_VERIFIED',
       pricingStatus: 'FREE_LOCAL'
     },
     {
       id: 'mediaStorage',
       name: 'Media Storage Driver',
       status: storageStatus.r2Configured ? 'CONFIGURED (R2 Authoritative)' : 'LOCAL_FALLBACK',
+      connectionStatus: storageStatus.r2Configured ? 'CONNECTED' : 'LOCAL',
       modelStatus: storageStatus.r2Configured ? 'CONNECTED' : 'LOCAL_FALLBACK',
       verificationStatus: storageStatus.r2Configured ? 'VERIFIED' : 'LOCAL_FALLBACK',
       generationTestStatus: 'TEST_PASSED_LOCAL',
+      quoteStatus: 'QUOTE_VERIFIED',
       pricingStatus: 'FREE_LOCAL',
       details: storageStatus
     }
@@ -3392,41 +3402,65 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
 
     // Validate resolution against exact SUPPORTED status (UNKNOWN is NOT supported)
-    const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
+    const candidateResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
       ? resolution
-      : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
+      : (template.resolutionLabel || modelEntry.appDefaultResolution);
 
-    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
+    if (!candidateResolution) {
+      return res.status(400).json({
+        error: `Resolution selection is required. Model '${effectiveModel}' has no verified default resolution.`,
+        code: 'MISSING_VERIFIED_RESOLUTION',
+        stage: 'validation'
+      });
+    }
+
+    const tariff = modelEntry.resolutionTariffs[candidateResolution as '480p' | '720p' | '1080p'];
     if (!tariff || tariff.supportStatus !== 'SUPPORTED') {
       return res.status(400).json({
-        error: `Resolution '${requestedResolution}' is not verified/supported by model '${effectiveModel}' (Status: ${tariff?.supportStatus || 'UNSUPPORTED'}).`,
+        error: `Resolution '${candidateResolution}' is not verified/supported by model '${effectiveModel}' (Status: ${tariff?.supportStatus || 'UNSUPPORTED'}).`,
         code: 'UNSUPPORTED_RESOLUTION',
         stage: 'validation'
       });
     }
 
     // Validate duration against verified model limits
-    const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
+    let candidateDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : undefined;
+    if (candidateDuration === undefined) {
+      if (template.durationSeconds && Number(template.durationSeconds) > 0) {
+        candidateDuration = Number(template.durationSeconds);
+      } else if (modelEntry.appDefaultDurationSeconds !== undefined) {
+        candidateDuration = modelEntry.appDefaultDurationSeconds;
+      }
+    }
+
     if (template.type === 'video') {
+      if (candidateDuration === undefined) {
+        return res.status(400).json({
+          error: `Duration selection is required. Model '${effectiveModel}' has no verified default duration.`,
+          code: 'MISSING_VERIFIED_DURATION',
+          stage: 'validation'
+        });
+      }
+
       if (modelEntry.minDurationSeconds !== undefined && modelEntry.maxDurationSeconds !== undefined) {
-        if (requestedDuration < modelEntry.minDurationSeconds || requestedDuration > modelEntry.maxDurationSeconds) {
+        if (candidateDuration < modelEntry.minDurationSeconds || candidateDuration > modelEntry.maxDurationSeconds) {
           return res.status(400).json({
-            error: `Requested duration ${requestedDuration}s exceeds verified bounds [${modelEntry.minDurationSeconds}s - ${modelEntry.maxDurationSeconds}s] for model '${effectiveModel}'.`,
+            error: `Requested duration ${candidateDuration}s exceeds verified bounds [${modelEntry.minDurationSeconds}s - ${modelEntry.maxDurationSeconds}s] for model '${effectiveModel}'.`,
             code: 'UNSUPPORTED_DURATION',
             stage: 'validation'
           });
         }
       } else if (modelEntry.appDefaultDurationSeconds !== undefined) {
-        if (requestedDuration !== modelEntry.appDefaultDurationSeconds) {
+        if (candidateDuration !== modelEntry.appDefaultDurationSeconds) {
           return res.status(400).json({
-            error: `Duration ${requestedDuration}s is unverified for model '${effectiveModel}'. Only default ${modelEntry.appDefaultDurationSeconds}s is supported.`,
+            error: `Duration ${candidateDuration}s is unverified for model '${effectiveModel}'. Only default ${modelEntry.appDefaultDurationSeconds}s is supported.`,
             code: 'UNSUPPORTED_DURATION',
             stage: 'validation'
           });
         }
       } else if (modelEntry.provider !== 'smart_template') {
         return res.status(400).json({
-          error: `Duration capabilities for model '${effectiveModel}' are unverified. Paid generation cannot proceed with arbitrary duration ${requestedDuration}s.`,
+          error: `Duration capabilities for model '${effectiveModel}' are unverified. Paid generation cannot proceed with arbitrary duration ${candidateDuration}s.`,
           code: 'UNVERIFIED_DURATION',
           stage: 'validation'
         });
@@ -3436,8 +3470,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
     ? resolution
-    : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
-  const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
+    : (template.resolutionLabel || modelEntry?.appDefaultResolution || '720p');
+  const requestedDuration = Number(durationSeconds) > 0
+    ? Number(durationSeconds)
+    : (template.durationSeconds || modelEntry?.appDefaultDurationSeconds || 5);
 
   // Normalize customer inputs into structured slots
   const rawInputMedia = req.body.inputMedia;
@@ -3483,12 +3519,14 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   const configuredCoupleSlots = (template.requiredInputs || []).filter(
     (s) => s.id === 'partner_1' || s.id === 'partner_2' || s.id === 'slot_1' || s.id === 'slot_2' || (s as any).role === 'person_a' || (s as any).role === 'person_b'
   );
-  const hasConfiguredCoupleSlots = configuredCoupleSlots.length >= 2;
+  const personASlots = configuredCoupleSlots.filter(s => s.id === 'partner_1' || s.id === 'slot_1' || (s as any).role === 'person_a');
+  const personBSlots = configuredCoupleSlots.filter(s => s.id === 'partner_2' || s.id === 'slot_2' || (s as any).role === 'person_b');
+  const hasConfiguredCoupleSlots = personASlots.length === 1 && personBSlots.length === 1;
 
   if (isCoupleTemplate) {
     if (!hasConfiguredCoupleSlots) {
       return res.status(400).json({
-        error: 'Couple template configuration is invalid: requires explicit Person A and Person B slots.',
+        error: 'Couple template configuration is invalid: requires exactly one Person A slot and one Person B slot.',
         code: 'INVALID_COUPLE_CONFIG',
         stage: 'validation'
       });
@@ -3520,10 +3558,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     const configuredDef = (template.requiredInputs || []).find((s) => s.id === slotId || (s as any).slotId === slotId);
     let resolvedRole = rawSlot?.role || (configuredDef as any)?.role;
     if (isCoupleTemplate) {
-      if (slotId === 'partner_1' || slotId === 'slot_1' || rawSlot?.role === 'person_a') {
+      if (slotId === 'partner_1' || slotId === 'slot_1' || rawSlot?.role === 'person_a' || (configuredDef as any)?.role === 'person_a') {
         resolvedRole = 'person_a';
-      } else if (slotId === 'partner_2' || slotId === 'slot_2' || rawSlot?.role === 'person_b') {
+      } else if (slotId === 'partner_2' || slotId === 'slot_2' || rawSlot?.role === 'person_b' || (configuredDef as any)?.role === 'person_b') {
         resolvedRole = 'person_b';
+      } else {
+        resolvedRole = (configuredDef as any)?.role || (mIdx === 0 ? 'person_a' : 'person_b');
       }
     } else {
       if (!resolvedRole) resolvedRole = (configuredDef as any)?.role || 'user_photo';
@@ -3548,7 +3588,16 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
 
     let effectiveUrl = '';
-    if (rawMediaString && rawMediaString.startsWith('data:')) {
+    if (rawMediaString && (rawMediaString.startsWith('data:') || rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://'))) {
+      if (rawMediaString.includes('/api/media/') && !rawMediaString.includes('token=')) {
+        return res.status(400).json({
+          error: 'Insecure local media URL cannot be dispatched to AI provider without verified HMAC token.',
+          code: 'INSECURE_MEDIA_URL',
+          stage: 'validation'
+        });
+      }
+
+      // Ingest through mediaStorage to bind to user.id in private storage and get signed provider URL
       const ext = itemIsVideo ? 'mp4' : 'jpg';
       const stored = await mediaStorage.saveMedia(
         rawMediaString,
@@ -3586,18 +3635,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
           stage: 'storage'
         });
       }
-    } else if (typeof rawMediaString === 'string' && (rawMediaString.startsWith('https://') || rawMediaString.startsWith('http://'))) {
-      if (rawMediaString.includes('/api/media/') && !rawMediaString.includes('token=')) {
-        return res.status(400).json({
-          error: 'Insecure local media URL cannot be dispatched to AI provider without verified HMAC token.',
-          code: 'INSECURE_MEDIA_URL',
-          stage: 'validation'
-        });
-      }
-      effectiveUrl = rawMediaString;
     } else {
       return res.status(400).json({
-        error: `Invalid media payload for input ${mIdx + 1}. Raw Base64 cannot be dispatched directly to AI provider.`,
+        error: `Invalid media payload for input ${mIdx + 1}. Raw Base64 or unsupported URL cannot be dispatched directly to AI provider.`,
         code: 'INVALID_MEDIA_PAYLOAD',
         stage: 'validation'
       });
@@ -3605,20 +3645,20 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
     sanitizedStructuredMedia.push({
       slotId,
-      role: isCoupleTemplate ? (slotId === 'partner_1' ? 'person_a' : 'person_b') : resolvedRole, // role: slotId === 'partner_1' ? 'person_a' : 'person_b'
+      role: resolvedRole,
       type: mediaType,
       mediaUrl: effectiveUrl,
       media: effectiveUrl
     });
   }
 
-  // Strict Couple upload check: verify both Person A and Person B slots are distinct and present
+  // Strict Couple upload check: verify exactly one Person A and one Person B slot are present
   if (isCoupleTemplate) {
-    const hasSlotA = sanitizedStructuredMedia.some((m) => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1');
-    const hasSlotB = sanitizedStructuredMedia.some((m) => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2');
-    if (!hasSlotA || !hasSlotB) {
+    const personASlotsPresent = sanitizedStructuredMedia.filter((m) => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1');
+    const personBSlotsPresent = sanitizedStructuredMedia.filter((m) => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2');
+    if (personASlotsPresent.length !== 1 || personBSlotsPresent.length !== 1) {
       return res.status(400).json({
-        error: 'Couple templates require distinct uploads for Person A (partner_1) and Person B (partner_2).',
+        error: 'Couple templates require exactly one upload for Person A (partner_1) and one for Person B (partner_2).',
         code: 'INVALID_COUPLE_SLOTS',
         stage: 'validation'
       });

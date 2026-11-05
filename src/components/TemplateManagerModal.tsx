@@ -6331,19 +6331,78 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         <span className="text-xs font-bold text-white">{ad.name}</span>
                         <span className="text-[10px] text-stone-400 font-mono">({ad.id})</span>
                       </div>
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                          ad.status === 'CONFIGURED' || ad.status?.includes('CONFIGURED')
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                            : ad.status === 'MISSING_SECRET'
-                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                            : ad.status === 'EVALUATION_ONLY'
-                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                            : 'bg-stone-800 text-stone-300'
-                        }`}
-                      >
-                        {ad.status}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {/* 1. Configuration Status */}
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                            ad.status === 'CONFIGURED' || ad.status?.includes('CONFIGURED')
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : ad.status === 'MISSING_SECRET'
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : ad.status === 'EVALUATION_ONLY'
+                              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                              : 'bg-stone-800 text-stone-300'
+                          }`}
+                        >
+                          {ad.status}
+                        </span>
+
+                        {/* 2. Connection Status */}
+                        {ad.connectionStatus && (
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                              ad.connectionStatus === 'CONNECTED'
+                                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                                : ad.connectionStatus === 'LOCAL'
+                                ? 'bg-stone-700/50 text-stone-300 border border-stone-600'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                            }`}
+                          >
+                            {ad.connectionStatus}
+                          </span>
+                        )}
+
+                        {/* 3. Model Status */}
+                        {ad.modelStatus && (
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                              ad.modelStatus === 'MODEL_AVAILABLE'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : ad.modelStatus === 'PENDING_QUOTE'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                            }`}
+                          >
+                            {ad.modelStatus}
+                          </span>
+                        )}
+
+                        {/* 4. Quote Status */}
+                        {ad.quoteStatus && (
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                              ad.quoteStatus === 'QUOTE_VERIFIED'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            }`}
+                          >
+                            {ad.quoteStatus}
+                          </span>
+                        )}
+
+                        {/* 5. Generation Test Status */}
+                        {ad.generationTestStatus && (
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                              ad.generationTestStatus === 'GENERATION_TEST_PASSED' || ad.generationTestStatus === 'TEST_PASSED_LOCAL'
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-stone-800 text-stone-400 border border-stone-700'
+                            }`}
+                          >
+                            {ad.generationTestStatus}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-stone-300 pt-1 border-t border-white/5">

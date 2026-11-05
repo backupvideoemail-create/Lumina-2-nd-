@@ -30,11 +30,18 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     ? (faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || template.id)) || faceSwapScenes[0])
     : (template.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === template.faceSwapSceneId) : null);
 
-  const candidateMedia = matchingScene
-    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || template.coverVideo || template.preview || template.cover)
+  // Distinct lightweight preview media vs full HD target media
+  const previewMedia = matchingScene
+    ? (matchingScene.sourceVideoPreview || matchingScene.resultVideoPreview || template.preview || template.coverVideo || template.cover)
     : (template.type === 'video' || template.mediaType === 'video'
-        ? (template.coverVideo || template.preview || template.cover)
+        ? (template.preview || template.coverVideo || template.cover)
         : (template.preview || template.cover || template.coverVideo));
+
+  const hdTargetMedia = matchingScene
+    ? (matchingScene.resultVideoPreview || (template as any).hdVideoUrl || (template as any).hdMedia || template.coverVideo || previewMedia)
+    : ((template as any).hdVideoUrl || (template as any).hdMedia || template.coverVideo || previewMedia);
+
+  const candidateMedia = previewMedia;
 
   const sampleFace = matchingScene?.sampleFace || template.sampleFaceThumbnail;
 
@@ -97,10 +104,20 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     };
   }, [isVideo]);
 
-  // HD download upgrade when card is near viewport
+  // HD download upgrade when card is near viewport (scheduled on idle, distinct from preview)
   useEffect(() => {
-    if (isNearViewport && isVideo && candidateMedia) {
-      queueHdDownload(candidateMedia, 'medium')
+    if (!isNearViewport || !isVideo || !hdTargetMedia || hdTargetMedia === candidateMedia) return;
+
+    const scheduleTask = typeof window !== 'undefined' && 'requestIdleCallback' in window
+      ? (cb: () => void) => (window as any).requestIdleCallback(cb, { timeout: 2000 })
+      : (cb: () => void) => setTimeout(cb, 100);
+
+    const cancelTask = typeof window !== 'undefined' && 'cancelIdleCallback' in window
+      ? (id: any) => (window as any).cancelIdleCallback(id)
+      : (id: any) => clearTimeout(id);
+
+    const taskId = scheduleTask(() => {
+      queueHdDownload(hdTargetMedia, 'medium')
         .then((hdUrl) => {
           if (hdUrl && hdUrl !== candidateMedia) {
             const videoEl = videoRef.current;
@@ -126,8 +143,10 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           }
         })
         .catch(() => {});
-    }
-  }, [isNearViewport, isVideo, candidateMedia]);
+    });
+
+    return () => cancelTask(taskId);
+  }, [isNearViewport, isVideo, hdTargetMedia, candidateMedia]);
 
   const heightClasses = {
     compact: 'h-[360px] sm:h-[390px] w-[58vw] max-w-[240px] min-w-[200px] shrink-0',
