@@ -101,7 +101,26 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       queueHdDownload(candidateMedia, 'medium')
         .then((hdUrl) => {
           if (hdUrl && hdUrl !== candidateMedia) {
-            setHdVideoSrc(hdUrl);
+            const videoEl = videoRef.current;
+            if (videoEl) {
+              const prevTime = videoEl.currentTime;
+              const wasPaused = videoEl.paused;
+              const wasMuted = videoEl.muted;
+              setHdVideoSrc(hdUrl);
+              const restoreState = () => {
+                try {
+                  videoEl.currentTime = prevTime;
+                  videoEl.muted = wasMuted;
+                  if (!wasPaused) {
+                    videoEl.play().catch(() => {});
+                  }
+                } catch {}
+                videoEl.removeEventListener('loadeddata', restoreState);
+              };
+              videoEl.addEventListener('loadeddata', restoreState);
+            } else {
+              setHdVideoSrc(hdUrl);
+            }
           }
         })
         .catch(() => {});

@@ -105,17 +105,31 @@ export const HomeView: React.FC = () => {
     return () => clearInterval(interval);
   }, [isPaused, banners.length, timerResetKey]);
 
+  const [bannerHdUrls, setBannerHdUrls] = useState<Record<string, string>>({});
+
   // HD video prefetch for hero banners
   useEffect(() => {
     if (!banners || banners.length === 0) return;
     const current = banners[currentBannerIndex];
     if (current?.videoUrl) {
-      queueHdDownload(current.videoUrl, 'high').catch(() => {});
+      queueHdDownload(current.videoUrl, 'high')
+        .then((hdUrl) => {
+          if (hdUrl && hdUrl !== current.videoUrl) {
+            setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
+          }
+        })
+        .catch(() => {});
     }
     const nextIndex = (currentBannerIndex + 1) % banners.length;
     const next = banners[nextIndex];
     if (next?.videoUrl) {
-      queueHdDownload(next.videoUrl, 'medium').catch(() => {});
+      queueHdDownload(next.videoUrl, 'medium')
+        .then((hdUrl) => {
+          if (hdUrl && hdUrl !== next.videoUrl) {
+            setBannerHdUrls((prev) => ({ ...prev, [next.id]: hdUrl }));
+          }
+        })
+        .catch(() => {});
     }
   }, [currentBannerIndex, banners]);
 
@@ -253,7 +267,7 @@ export const HomeView: React.FC = () => {
                 const linkedTpl = (activeBanner.type === 'LINKED_TEMPLATE' && activeBanner.targetTemplateId)
                   ? templates.find((t) => t.id === activeBanner.targetTemplateId)
                   : null;
-                const effectiveVideoUrl = activeBanner.videoUrl || (linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl.cover : undefined);
+                const effectiveVideoUrl = activeBanner.videoUrl || linkedTpl?.coverVideo || (linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl.cover : undefined);
                 const effectiveImage = activeBanner.image || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || linkedTpl?.preview || '';
                 const effectivePoster = activeBanner.coverMedia || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || '';
 
@@ -270,11 +284,13 @@ export const HomeView: React.FC = () => {
                   effectiveImage?.startsWith('data:video/')
                 );
 
+                const heroVideoSrc = bannerHdUrls[activeBanner.id] || effectiveVideoUrl || effectiveImage;
+
                 return isVideoBanner ? (
                   <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
                     <video
-                      key={`hero_fg_${activeBanner.id}_${effectiveVideoUrl || effectiveImage}`}
-                      src={effectiveVideoUrl || effectiveImage}
+                      key={`hero_fg_${activeBanner.id}_${heroVideoSrc}`}
+                      src={heroVideoSrc}
                       poster={effectivePoster || (effectiveImage?.endsWith('.mp4') ? undefined : effectiveImage)}
                       autoPlay
                       muted

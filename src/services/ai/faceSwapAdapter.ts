@@ -111,11 +111,27 @@ Maintain two separate recognizable human identities throughout the entire video.
 Never blend, average, cross-apply, or fuse their faces.`;
     }
 
-    let finalPrompt = basePrompt;
-    if (params.masterRecipePrompt && params.masterRecipePrompt.trim()) {
-      finalPrompt = `${finalPrompt}\n\nSCENE_RECIPE_PROMPT:\n${params.masterRecipePrompt.trim()}`;
+    // Build prompt without duplicating instructions
+    const recipePrompt = params.masterRecipePrompt?.trim() || '';
+    const alreadyHasUserCustomInstructions = Boolean(
+      (params.customInstructions && recipePrompt.includes(params.customInstructions.trim())) ||
+      recipePrompt.includes('--- OPTIONAL CUSTOMER INSTRUCTIONS ---') ||
+      recipePrompt.includes('USER_CUSTOM_INSTRUCTIONS:') ||
+      recipePrompt.includes('Additional User Creative Instructions')
+    );
+    const alreadyHasCustomerText = alreadyHasUserCustomInstructions;
+
+    let finalPrompt = '';
+    const recipeHasIdentityRule = recipePrompt.includes('COUPLE DUAL IDENTITY') || recipePrompt.includes('IDENTITY INTEGRITY') || recipePrompt.includes('FACE SWAP IDENTITY');
+    if (!recipeHasIdentityRule) {
+      finalPrompt = basePrompt;
     }
-    if (params.customInstructions && params.customInstructions.trim()) {
+
+    if (recipePrompt) {
+      finalPrompt = finalPrompt ? `${finalPrompt}\n\nSCENE_RECIPE_PROMPT:\n${recipePrompt}` : recipePrompt;
+    }
+
+    if (params.customInstructions && params.customInstructions.trim() && !alreadyHasCustomerText) {
       const sanitizedCustomerInput = params.customInstructions.trim().slice(0, 300);
       finalPrompt = `${finalPrompt}\n\nUSER_CUSTOM_INSTRUCTIONS:\n${sanitizedCustomerInput}`;
     }

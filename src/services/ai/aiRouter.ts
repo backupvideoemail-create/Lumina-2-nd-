@@ -19,6 +19,28 @@ import { faceSwapAdapter } from './faceSwapAdapter.ts';
 import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
 import { MODEL_REGISTRY } from '../pricing/pricingService.ts';
 
+export function selectBestCompatibleModel(
+  modality: 'image' | 'video' | 'face_swap',
+  preferredWorkflow?: string
+): string {
+  const entries = Object.values(MODEL_REGISTRY).filter((m) => !m.isEvaluationOnly);
+  if (modality === 'face_swap') {
+    const match = entries.find(
+      (m) => m.provider === 'higgsfield' && (preferredWorkflow ? m.workflow === preferredWorkflow : true)
+    );
+    if (match) return match.modelId;
+    return 'hf_mult_motion_control_flash';
+  }
+  if (modality === 'image') {
+    const match = entries.find((m) => m.provider === 'gemini' && m.workflow === 'PHOTO_GENERATION');
+    if (match) return match.modelId;
+    return 'gemini-3.1-flash-lite-image';
+  }
+  const match = entries.find((m) => m.workflow === 'VIDEO_EDIT' || m.workflow === 'IMAGE_TO_VIDEO');
+  if (match) return match.modelId;
+  return 'hf_mult_motion_control_flash';
+}
+
 export class AIRouter {
   // 1. Unified Image Generation
   async generateImage(params: ImageGenerationParams): Promise<ProviderResult> {
@@ -71,7 +93,11 @@ export class AIRouter {
     const provider = activeWorkflowConfig?.provider || (params.templateType === 'video' ? 'google_veo' : 'gemini');
     const workflowName = activeWorkflowConfig?.workflow || params.workflow;
     const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
-    const selectedModel = activeWorkflowConfig?.model || params.model;
+    let selectedModel = activeWorkflowConfig?.model || params.model;
+    if (!selectedModel || selectedModel === 'auto') {
+      const modality = drivingVideoUrl && isInputImage ? 'face_swap' : (isInputVideo || params.templateType === 'video' ? 'video' : 'image');
+      selectedModel = selectBestCompatibleModel(modality, workflowName);
+    }
 
     // Unconditional Omni / Evaluation-Only Model Guard (protects all routes including driving video)
     if (selectedModel && MODEL_REGISTRY[selectedModel]?.isEvaluationOnly && !params.customParameters?.isEvaluationMode) {
@@ -87,7 +113,7 @@ export class AIRouter {
 
     const alreadyHasCustomerInstructions =
       basePrompt.includes('--- OPTIONAL CUSTOMER INSTRUCTIONS ---') ||
-      (params.customPrompt && basePrompt.includes(params.customPrompt.trim()));
+      Boolean(params.customPrompt && basePrompt.includes(params.customPrompt.trim()));
 
     const combinedPrompt =
       params.customPrompt && params.customPrompt.trim() && !alreadyHasCustomerInstructions
@@ -120,7 +146,8 @@ export class AIRouter {
           : [params.inputMediaUrl];
     }
 
-    const isCouple = Boolean(params.isCouple || customerMediaUrls.length >= 2);
+    // Strict Couple Flag: only true when explicitly set, not inferred from image count
+    const isCouple = Boolean(params.isCouple);
 
     // 3. Reference / Driving Video Support:
     // If template recipe has a fixed driving video and user provided a photo, run motion transfer synthesis!
@@ -129,7 +156,7 @@ export class AIRouter {
         videoUrl: drivingVideoUrl,
         imageUrls: customerMediaUrls,
         masterRecipePrompt: basePrompt,
-        customInstructions: params.customPrompt,
+        customInstructions: alreadyHasCustomerInstructions ? undefined : params.customPrompt,
         ownerUserId: params.ownerUserId,
         model: selectedModel || (workflowName === 'MOTION_TRANSFER' ? 'hf_mult_motion_control_flash' : 'hf_mult_replace_object_flash'),
         resolution: params.resolution || ((params.aspectRatio as any) === '1080p' ? '1080p' : '720p'),

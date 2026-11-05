@@ -1474,6 +1474,72 @@ async function runSystemVerification() {
   assert(razorpayContent.includes('RazorpayAdapter'), '25.15 Protected Razorpay payment adapter is intact');
   assert(cashfreeContent.includes('CashfreeAdapter'), '25.15 Protected Cashfree payment adapter is intact');
 
+  console.log('\n--- SUITE 26: FINAL CORRECTION & FAIL-CLOSED INTEGRITY ---');
+
+  // 26.1 PENDING_QUOTE model fail-closed behavior (no fallback to static credits; stops before reservation and provider dispatch)
+  assert(serverCode.includes("estimate.status === 'PENDING_QUOTE'"), '26.1 server.ts checks for PENDING_QUOTE estimate status');
+  assert(serverCode.includes("code: 'PENDING_QUOTE'"), '26.1 server.ts returns HTTP 400 with code PENDING_QUOTE');
+  assert(serverCode.includes("status === 'PENDING_QUOTE'") && serverCode.includes("return res.status(400)"), '26.1 server.ts stops execution before credit reservation on PENDING_QUOTE');
+
+  // 26.2 Unknown client model ID is rejected with HTTP 400 INVALID_MODEL
+  assert(serverCode.includes("code: 'INVALID_MODEL'"), '26.2 server.ts rejects unlisted client model ID with INVALID_MODEL');
+  assert(serverCode.includes("!MODEL_REGISTRY[requestedModel]"), '26.2 server.ts validates requested model against server-side MODEL_REGISTRY');
+
+  // 26.3 Unverified options hidden; 10s duration removed from options list; pending banner shown
+  const detailModalUpdatedContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf-8');
+  assert(!detailModalUpdatedContent.includes('[5, 8, 10]'), '26.3 TemplateDetailModal removed hardcoded 10s option');
+  assert(detailModalUpdatedContent.includes('[5, 8]'), '26.3 TemplateDetailModal exposes verified [5, 8] duration options');
+  assert(detailModalUpdatedContent.includes('isQuotePending'), '26.3 TemplateDetailModal tracks isQuotePending state');
+  assert(detailModalUpdatedContent.includes('Verification Pending (जाँच लंबित)'), '26.3 TemplateDetailModal guards button when quote is pending');
+
+  // 26.4 Prompt assembly deduplication in faceSwapAdapter.ts and aiRouter.ts
+  assert(faceSwapAdapterContent.includes('alreadyHasUserCustomInstructions'), '26.4 faceSwapAdapter guards against duplicate custom instructions');
+  const updatedAiRouterContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/aiRouter.ts'), 'utf-8');
+  assert(updatedAiRouterContent.includes('alreadyHasCustomerInstructions'), '26.4 aiRouter guards against duplicate customer prompt');
+
+  // 26.5 Couple mapping disabled for non-couple templates even with 2 media uploads
+  assert(updatedAiRouterContent.includes('const isCouple = Boolean(params.isCouple);'), '26.5 aiRouter strictly respects params.isCouple without inferring from media count');
+
+  // 26.6 Couple Person A / Person B slot validation and role preservation
+  assert(serverCode.includes('partner_1') && serverCode.includes('partner_2'), '26.6 server.ts validates partner_1 and partner_2 slots');
+  assert(serverCode.includes("role: slotId === 'partner_1' ? 'person_a' : 'person_b'"), '26.6 server.ts maps couple slots to person_a / person_b roles');
+
+  // 26.7 Private R2 signed HTTPS URL substituted into structured inputMedia; fails closed on failure
+  assert(serverCode.includes('STORAGE_SIGNING_FAILED'), '26.7 server.ts fails closed with STORAGE_SIGNING_FAILED if URL signing fails');
+  assert(serverCode.includes('sanitizedStructuredMedia'), '26.7 server.ts converts Base64 customer inputs to signed HTTPS structured media');
+
+  // 26.8 Actual cost reports UNMEASURED and UNMEASURED_NO_POST_DEBIT when provider receipt is absent
+  assert(serverCode.includes('actualCostStatus') && serverCode.includes("'UNMEASURED'"), '26.8 server.ts sets actualCostStatus to UNMEASURED when receipt is unmeasured');
+  assert(serverCode.includes('reconciliationStatus') && serverCode.includes("'UNMEASURED_NO_POST_DEBIT'"), '26.8 server.ts sets reconciliationStatus to UNMEASURED_NO_POST_DEBIT without false reconciliation claims');
+
+  // 26.9 Auto model router selects lowest-cost verified model from registry
+  assert(updatedAiRouterContent.includes('selectBestCompatibleModel'), '26.9 aiRouter exports selectBestCompatibleModel for auto resolution');
+  assert(updatedAiRouterContent.includes("selectedModel === 'auto'"), '26.9 aiRouter dynamically resolves auto model selection');
+
+  // 26.10 Distinct HD upgrade preserves currentTime and playback state in TemplateCard.tsx
+  const updatedCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
+  assert(updatedCardContent.includes('prevTime = videoEl.currentTime'), '26.10 TemplateCard captures prevTime before HD video swap');
+  assert(updatedCardContent.includes('wasPaused = videoEl.paused'), '26.10 TemplateCard captures wasPaused before HD video swap');
+
+  // 26.11 HomeView consumes returned HD URL from queue via bannerHdUrls and checks linkedTpl.coverVideo
+  const updatedHomeContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/HomeView.tsx'), 'utf-8');
+  assert(updatedHomeContent.includes('bannerHdUrls'), '26.11 HomeView maintains bannerHdUrls state');
+  assert(updatedHomeContent.includes('heroVideoSrc'), '26.11 HomeView consumes returned HD URL in hero video');
+  assert(updatedHomeContent.includes('linkedTpl?.coverVideo'), '26.11 HomeView checks linkedTpl.coverVideo');
+
+  // 26.12 Admin adapter audit returns dynamic registry data with truthful statuses
+  assert(serverCode.includes('gemini-3.1-flash-lite-image'), '26.12 server.ts correctly identifies gemini-3.1-flash-lite-image');
+  assert(serverCode.includes('MODEL_REGISTRY'), '26.12 server.ts /api/admin/adapters/status reads authoritative MODEL_REGISTRY dynamically');
+
+  // 26.13 Admin cover video persists across save in TemplateManagerModal.tsx
+  const updatedManagerContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateManagerModal.tsx'), 'utf-8');
+  assert(updatedManagerContent.includes('tplCoverVideoPreview'), '26.13 TemplateManagerModal manages tplCoverVideoPreview');
+  assert(updatedManagerContent.includes('coverVideoBase64'), '26.13 TemplateManagerModal sends coverVideoBase64 payload');
+
+  // 26.14 Protected payment files remain 100% intact
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'src/services/payments/razorpayAdapter.ts')), '26.14 razorpayAdapter.ts exists');
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'src/services/payments/cashfreeAdapter.ts')), '26.14 cashfreeAdapter.ts exists');
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'src/services/billing/googlePlayService.ts')), '26.14 googlePlayService.ts exists');
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

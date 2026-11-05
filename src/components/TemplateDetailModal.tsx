@@ -26,7 +26,7 @@ import {
 import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
-import { calculateAuthoritativeTemplateCost } from '../services/pricing/pricingService';
+import { calculateAuthoritativeTemplateCost, MODEL_REGISTRY } from '../services/pricing/pricingService';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -219,8 +219,18 @@ export const TemplateDetailModal: React.FC = () => {
   useEffect(() => {
     if (selectedTemplate) {
       setWardrobeSource((selectedTemplate.defaultWardrobeSource as any) || 'AUTO');
-      const defaultRes = selectedTemplate.model === 'hf_mult_motion_control_flash' ? '480p' : '720p';
-      setSelectedResolution(defaultRes);
+      const modelEntry = selectedTemplate.model ? MODEL_REGISTRY[selectedTemplate.model] : undefined;
+      const verifiedResolutions = modelEntry
+        ? (Object.entries(modelEntry.resolutionTariffs)
+            .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
+            .map(([res]) => res as '480p' | '720p' | '1080p'))
+        : [];
+      if (verifiedResolutions.length > 0) {
+        setSelectedResolution(verifiedResolutions[0]);
+      } else {
+        const defaultRes = selectedTemplate.model === 'hf_mult_motion_control_flash' ? '480p' : '720p';
+        setSelectedResolution(defaultRes);
+      }
       setSelectedDuration(selectedTemplate.durationSeconds || 5);
     }
   }, [selectedTemplate?.id]);
@@ -236,6 +246,19 @@ export const TemplateDetailModal: React.FC = () => {
     resolutionLabel: selectedResolution
   }) || tpl.creditCost;
   const hasCredits = userBalance >= liveCreditCost;
+
+  const modelEntry = tpl.model ? MODEL_REGISTRY[tpl.model] : undefined;
+  const supportedResolutions = modelEntry
+    ? (Object.entries(modelEntry.resolutionTariffs)
+        .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
+        .map(([res]) => res as '480p' | '720p' | '1080p'))
+    : [];
+
+  const isQuotePending = Boolean(
+    modelEntry &&
+    (modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' ||
+      Object.values(modelEntry.resolutionTariffs).every((t) => t.supportStatus === 'UNKNOWN' || t.supportStatus === 'UNSUPPORTED'))
+  );
 
   // Next / Previous Navigation
   const currentIndex = templates.findIndex((t) => t.id === tpl.id);
@@ -1088,9 +1111,11 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Supported by {tpl.model || 'Flash'}</span>
                 </div>
                 <div className="flex gap-2">
-                  {(tpl.model === 'hf_mult_motion_control_flash'
-                    ? (['480p', '720p', '1080p'] as const)
-                    : (['720p', '1080p'] as const)
+                  {(supportedResolutions.length > 0
+                    ? supportedResolutions
+                    : (tpl.model === 'hf_mult_motion_control_flash'
+                      ? (['480p', '720p'] as const)
+                      : (['720p'] as const))
                   ).map((res) => (
                     <button
                       key={res}
@@ -1111,7 +1136,7 @@ export const TemplateDetailModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Output Duration Options (including 8s quick option) */}
+              {/* Output Duration Options (Only verified [5, 8], 10s removed) */}
               <div className="space-y-1.5 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
@@ -1121,7 +1146,7 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Credits scale proportionally</span>
                 </div>
                 <div className="flex gap-2">
-                  {[5, 8, 10].map((dur) => (
+                  {[5, 8].map((dur) => (
                     <button
                       key={dur}
                       type="button"
@@ -1138,6 +1163,14 @@ export const TemplateDetailModal: React.FC = () => {
                   ))}
                 </div>
               </div>
+
+              {/* Verification Pending Warning Banner */}
+              {isQuotePending && (
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                  <span>⚡ Provider quote & capability verification pending. Generation is guarded until verified. (जाँच लंबित)</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -1330,9 +1363,9 @@ export const TemplateDetailModal: React.FC = () => {
         <div className="max-w-md mx-auto space-y-1.5">
           <button
             onClick={handleGenerateClick}
-            disabled={isGenerating || !isAllInputsReady}
+            disabled={isGenerating || !isAllInputsReady || isQuotePending}
             className={`w-full py-3.5 sm:py-4 px-6 rounded-2xl text-base font-black flex items-center justify-between shadow-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-              isAllInputsReady
+              isAllInputsReady && !isQuotePending
                 ? 'gold-button shadow-[0_10px_30px_rgba(212,175,55,0.35)]'
                 : 'bg-stone-800 text-stone-400 border border-white/10'
             }`}
@@ -1347,7 +1380,9 @@ export const TemplateDetailModal: React.FC = () => {
                 <>
                   <Sparkles className="w-5 h-5 fill-current" />
                   <span>
-                    {isAllInputsReady
+                    {isQuotePending
+                      ? 'Verification Pending (जाँच लंबित)'
+                      : isAllInputsReady
                       ? (tpl.isFaceSwap ? 'Swap Face Now' : (isVideo ? 'Create Video Now' : 'Create Photo Now'))
                       : (tpl.category === 'Couple'
                           ? (filledSlotsCount === 0 ? 'Upload 2 Photos to Continue' : 'Upload Partner Photo to Continue')

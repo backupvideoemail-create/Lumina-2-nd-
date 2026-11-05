@@ -181,6 +181,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplCostUsd, setTplCostUsd] = useState<number>(0.25);
   const [tplMediaPreview, setTplMediaPreview] = useState<string>('');
   const [tplCoverPreview, setTplCoverPreview] = useState<string>('');
+  const [tplCoverVideoPreview, setTplCoverVideoPreview] = useState<string>('');
   const [tplReferenceImagePreview, setTplReferenceImagePreview] = useState<string>('');
   const [tplSampleResultPreview, setTplSampleResultPreview] = useState<string>('');
   const [tplSampleFaceThumbnail, setTplSampleFaceThumbnail] = useState<string>('');
@@ -423,6 +424,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const tplFileRef = useRef<HTMLInputElement>(null);
   const coverFileRef = useRef<HTMLInputElement>(null);
+  const coverVideoFileRef = useRef<HTMLInputElement>(null);
   const referenceImageFileRef = useRef<HTMLInputElement>(null);
   const bulkFileInputRef = useRef<HTMLInputElement>(null);
   const sampleResultFileRef = useRef<HTMLInputElement>(null);
@@ -793,6 +795,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     reader.readAsDataURL(file);
   };
 
+  const handleCoverVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTplCoverVideoPreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSampleFaceFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -966,7 +978,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTplBadge(tpl.badge || '');
     setTplTagsInput(tpl.tags ? tpl.tags.join(', ') : '');
     setTplCostUsd(tpl.providerCostUsd || 0.25);
-    setTplCoverPreview(tpl.sampleResult || tpl.sampleAfter || tpl.cover || '');
+    setTplCoverPreview(tpl.coverImage || tpl.sampleResult || tpl.sampleAfter || tpl.cover || '');
+    setTplCoverVideoPreview(tpl.coverVideo || (tpl.cover?.endsWith('.mp4') ? tpl.cover : ''));
     setTplMediaPreview(tpl.preview || tpl.sampleResult || tpl.sampleAfter || tpl.cover || '');
     setTplSampleResultPreview(tpl.sampleResult || tpl.sampleAfter || '');
     setTplSampleFaceThumbnail(tpl.sampleFaceThumbnail || '');
@@ -1080,6 +1093,17 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           }
         }
 
+        if (tplCoverVideoPreview.startsWith('data:')) {
+          updateBody.coverVideoBase64 = tplCoverVideoPreview;
+        } else if (tplCoverVideoPreview) {
+          updateBody.coverVideo = tplCoverVideoPreview;
+        }
+        if (tplCoverPreview.startsWith('data:')) {
+          updateBody.coverImageBase64 = tplCoverPreview;
+        } else if (tplCoverPreview) {
+          updateBody.coverImage = tplCoverPreview;
+        }
+
         if (!isNewAfterProvided) {
           if (tplCoverPreview.startsWith('data:')) {
             updateBody.coverBase64 = tplCoverPreview;
@@ -1148,6 +1172,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             mediaBase64: tplMediaPreview || effectiveCover,
             coverBase64: effectiveCover.startsWith('data:') ? effectiveCover : undefined,
             cover: !effectiveCover.startsWith('data:') && effectiveCover ? effectiveCover : undefined,
+            coverImageBase64: tplCoverPreview.startsWith('data:') ? tplCoverPreview : undefined,
+            coverImage: !tplCoverPreview.startsWith('data:') && tplCoverPreview ? tplCoverPreview : undefined,
+            coverVideoBase64: tplCoverVideoPreview.startsWith('data:') ? tplCoverVideoPreview : undefined,
+            coverVideo: !tplCoverVideoPreview.startsWith('data:') && tplCoverVideoPreview ? tplCoverVideoPreview : undefined,
             sampleFaceThumbnailBase64: tplSampleFaceThumbnail.startsWith('data:') ? tplSampleFaceThumbnail : undefined,
             sampleFaceThumbnail: !tplSampleFaceThumbnail.startsWith('data:') && tplSampleFaceThumbnail ? tplSampleFaceThumbnail : undefined,
             sampleBeforeBase64: tplSampleBefore.startsWith('data:') ? tplSampleBefore : undefined,
@@ -3612,7 +3640,32 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             {tplCoverPreview ? (
                               <img src={tplCoverPreview} alt="Cover Preview" className="w-full h-full object-cover" />
                             ) : (
-                              <span className="text-[10px] text-stone-400">Click to upload separate cover</span>
+                              <span className="text-[10px] text-stone-400">Click to upload separate cover image</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Custom Cover Video (MP4) */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-stone-300">Cover Video (MP4)</span>
+                            <span className="text-[9px] text-stone-500">Optional teaser video</span>
+                          </div>
+                          <input
+                            ref={coverVideoFileRef}
+                            type="file"
+                            accept="video/*"
+                            onChange={handleCoverVideoFileSelect}
+                            className="hidden"
+                          />
+                          <div
+                            onClick={() => coverVideoFileRef.current?.click()}
+                            className="relative w-full h-20 rounded-xl border border-dashed border-white/15 bg-black/40 flex items-center justify-center cursor-pointer overflow-hidden"
+                          >
+                            {tplCoverVideoPreview ? (
+                              <video src={tplCoverVideoPreview} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] text-stone-400">Click to upload cover video</span>
                             )}
                           </div>
                         </div>

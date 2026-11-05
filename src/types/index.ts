@@ -224,6 +224,9 @@ export interface Generation {
   actualOutputDurationSeconds?: number;
   actualBillableDurationSeconds?: number;
   reconciledCostCredits?: number;
+  actualCostStatus?: 'UNMEASURED' | 'MEASURED_RECEIPT' | 'ESTIMATED_TARIFF';
+  reconciliationStatus?: 'PENDING' | 'RECONCILED' | 'UNMEASURED_NO_POST_DEBIT';
+  actualProviderCostUsd?: number;
 }
 
 export type SubscriptionStatus =

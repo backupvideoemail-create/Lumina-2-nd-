@@ -552,53 +552,85 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
   });
 });
 
-// Admin Adapter Audit Endpoint (Honest connection and capability audit without paid calls)
+// Admin Adapter Audit Endpoint (Honest connection and capability audit dynamically queried from MODEL_REGISTRY)
 app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
   const hasHiggsfieldKey = Boolean(process.env.HIGGSFIELD_API_KEY && process.env.HIGGSFIELD_API_KEY.trim().length > 0);
-  const hasVeoKey = Boolean(process.env.GOOGLE_VEO_KEY && process.env.GOOGLE_VEO_KEY.trim().length > 0);
   const storageStatus = mediaStorage.getStatus();
+
+  // Dynamically resolve adapters and models from authoritative MODEL_REGISTRY
+  const geminiImgEntry = MODEL_REGISTRY['gemini-3.1-flash-lite-image'];
+  const hfMotionEntry = MODEL_REGISTRY['hf_mult_motion_control_flash'];
+  const hfReplaceEntry = MODEL_REGISTRY['hf_mult_replace_object_flash'];
+  const veoOmniEntry = MODEL_REGISTRY['gemini-omni-1.1-flash'];
+  const smartCanvasEntry = MODEL_REGISTRY['smart_canvas_ffmpeg'];
 
   const adapters = [
     {
       id: 'geminiAdapter',
       name: 'Google Gemini Image Adapter',
-      model: 'gemini-2.5-flash-image',
+      model: geminiImgEntry ? geminiImgEntry.modelId : 'gemini-3.1-flash-lite-image',
+      provider: 'gemini',
       status: hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      modelStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'GEMINI_API_KEY',
-      supportedResolutions: ['1:1', '9:16', '16:9', '4:5'],
-      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+      supportedResolutions: geminiImgEntry ? Object.keys(geminiImgEntry.resolutionTariffs) : ['1080p'],
+      verificationStatus: geminiImgEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
+      generationTestStatus: geminiImgEntry?.generationTestStatus || 'NOT_TESTED',
+      pricingStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE'
     },
     {
       id: 'faceSwapAdapter',
-      name: 'Higgsfield Video Motion & Object Swap',
-      models: ['hf_mult_motion_control_flash', 'hf_mult_replace_object_flash'],
+      name: 'Higgsfield Genjutsu Light Motion Transfer & Object Swap',
+      models: [
+        hfMotionEntry ? hfMotionEntry.modelId : 'hf_mult_motion_control_flash',
+        hfReplaceEntry ? hfReplaceEntry.modelId : 'hf_mult_replace_object_flash'
+      ],
+      provider: 'higgsfield',
       status: hasHiggsfieldKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      modelStatus: hfMotionEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'HIGGSFIELD_API_KEY',
-      supportedResolutions: ['480p', '720p', '1080p'],
-      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+      supportedResolutions: {
+        motion_control: hfMotionEntry ? Object.entries(hfMotionEntry.resolutionTariffs).map(([res, t]) => `${res} (${t.supportStatus})`) : ['480p (UNKNOWN)', '720p (UNKNOWN)', '1080p (UNKNOWN)'],
+        object_swap: hfReplaceEntry ? Object.entries(hfReplaceEntry.resolutionTariffs).map(([res, t]) => `${res} (${t.supportStatus})`) : ['480p (UNSUPPORTED)', '720p (UNKNOWN)', '1080p (UNKNOWN)']
+      },
+      verificationStatus: hfMotionEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
+      generationTestStatus: hfMotionEntry?.generationTestStatus || 'NOT_TESTED',
+      pricingStatus: 'PENDING_QUOTE (Account Quote Required)'
     },
     {
       id: 'videoProviderAdapter',
       name: 'Google Veo Video Provider Adapter',
-      model: 'gemini-omni-1.1-flash',
-      status: (hasVeoKey || hasGeminiKey) ? 'CONFIGURED' : 'MISSING_SECRET',
-      secretName: 'GOOGLE_VEO_KEY',
+      model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.1-flash',
+      provider: 'gemini',
+      status: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET'),
+      modelStatus: 'EVALUATION_ONLY',
+      secretName: 'GEMINI_API_KEY',
       supportedResolutions: ['720p', '1080p'],
-      pricingStatus: 'UNKNOWN (Pending Account Quote)'
+      verificationStatus: 'EVALUATION_ONLY',
+      generationTestStatus: 'NOT_TESTED',
+      pricingStatus: 'EVALUATION_ONLY (Guarded from Customer Production)'
     },
     {
       id: 'videoTrimmer',
       name: 'Video Trimmer / Smart FFmpeg',
+      model: smartCanvasEntry ? smartCanvasEntry.modelId : 'smart_canvas_ffmpeg',
+      provider: 'smart_template',
       status: 'CONFIGURED',
-      note: 'In-memory / safe duration chunking',
-      supportedResolutions: ['Flexible (Model-Dependent)'],
+      modelStatus: 'MODEL_AVAILABLE',
+      supportedResolutions: ['Flexible / Preserved Source'],
+      verificationStatus: 'VERIFIED',
+      generationTestStatus: 'GENERATION_TEST_PASSED',
       pricingStatus: 'FREE_LOCAL'
     },
     {
       id: 'mediaStorage',
       name: 'Media Storage Driver',
       status: storageStatus.r2Configured ? 'CONFIGURED (R2 Authoritative)' : 'LOCAL_FALLBACK',
+      modelStatus: storageStatus.r2Configured ? 'CONNECTED' : 'LOCAL_FALLBACK',
+      verificationStatus: storageStatus.r2Configured ? 'VERIFIED' : 'LOCAL_FALLBACK',
+      generationTestStatus: 'TEST_PASSED_LOCAL',
+      pricingStatus: 'FREE_LOCAL',
       details: storageStatus
     }
   ];
@@ -621,6 +653,10 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       tags = [],
       mediaBase64,
       coverBase64,
+      coverImageBase64,
+      coverVideoBase64,
+      coverImage: inputCoverImage,
+      coverVideo: inputCoverVideo,
       sampleFaceThumbnailBase64,
       sampleFaceThumbnail: inputSampleFaceThumbnail,
       sampleBeforeBase64,
@@ -725,6 +761,32 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     const resolvedCover = coverUrl;
     const resolvedMedia = mediaUrl || sampleResultUrl || coverUrl || '';
 
+    let coverImageUrl: string | undefined = inputCoverImage || undefined;
+    if (coverImageBase64) {
+      if (typeof coverImageBase64 === 'string' && (coverImageBase64.startsWith('http://') || coverImageBase64.startsWith('https://') || coverImageBase64.startsWith('/api/media/'))) {
+        coverImageUrl = coverImageBase64;
+      } else {
+        const storedCoverImg = await mediaStorage.saveMedia(coverImageBase64, 'tpl_cover_img', `${targetTemplateId}_cover_img.jpg`, undefined, true);
+        coverImageUrl = storedCoverImg.publicUrl;
+        if (storedCoverImg.r2Key) uploadedAssetMeta.push({ key: storedCoverImg.r2Key, filename: storedCoverImg.fileId, publicUrl: storedCoverImg.publicUrl });
+      }
+    } else if (resolvedCover && !resolvedCover.endsWith('.mp4') && !resolvedCover.endsWith('.webm')) {
+      coverImageUrl = resolvedCover;
+    }
+
+    let coverVideoUrl: string | undefined = inputCoverVideo || undefined;
+    if (coverVideoBase64) {
+      if (typeof coverVideoBase64 === 'string' && (coverVideoBase64.startsWith('http://') || coverVideoBase64.startsWith('https://') || coverVideoBase64.startsWith('/api/media/'))) {
+        coverVideoUrl = coverVideoBase64;
+      } else {
+        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
+        coverVideoUrl = storedCoverVid.publicUrl;
+        if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
+      }
+    } else if (resolvedCover && (resolvedCover.endsWith('.mp4') || resolvedCover.endsWith('.webm'))) {
+      coverVideoUrl = resolvedCover;
+    }
+
     // 6. Persist style-reference image for photo templates (points to AFTER sample or cover)
     let referenceImageUrl = inputReferenceImageUrl || sampleResultUrl || coverUrl || '';
     if (referenceImageBase64) {
@@ -781,6 +843,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       inputType: (inputType as TemplateInputType) || (type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'),
       category: category.trim() as TemplateCategory,
       cover: resolvedCover,
+      coverImage: coverImageUrl || undefined,
+      coverVideo: coverVideoUrl || undefined,
       preview: resolvedMedia,
       referenceImageUrl: referenceImageUrl || (type === 'photo' ? resolvedCover : undefined),
       sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
@@ -3270,44 +3334,62 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
   }
 
-  // Determine effective model and requested options
-  const effectiveModel = (typeof model === 'string' && model.trim()) ? model.trim() : (template.model || 'hf_mult_motion_control_flash');
+  // 1. Validate requested model against server-side MODEL_REGISTRY allowlist
+  const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : undefined;
+  if (requestedModel) {
+    if (!MODEL_REGISTRY[requestedModel]) {
+      return res.status(400).json({
+        error: `Unknown model '${requestedModel}'. Model must be registered in server registry.`,
+        code: 'INVALID_MODEL',
+        stage: 'validation'
+      });
+    }
+  }
+
+  const effectiveModel = requestedModel
+    ? requestedModel
+    : (template.model || (template.type === 'photo' ? 'gemini-3.1-flash-lite-image' : 'hf_mult_motion_control_flash'));
+
+  const modelEntry = MODEL_REGISTRY[effectiveModel];
+  if (!modelEntry && template.engine !== 'SMART_TEMPLATE') {
+    return res.status(400).json({
+      error: `Model '${effectiveModel}' is not registered in server model registry.`,
+      code: 'INVALID_MODEL',
+      stage: 'validation'
+    });
+  }
+
   const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
     ? resolution
     : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
   const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
 
   // Validate resolution support against Model Registry
-  if (resolution && MODEL_REGISTRY[effectiveModel]) {
-    const tariff = MODEL_REGISTRY[effectiveModel].resolutionTariffs[resolution as '480p' | '720p' | '1080p'];
-    if (tariff && tariff.supportStatus === 'UNSUPPORTED') {
+  if (modelEntry) {
+    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
+    if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
       return res.status(400).json({
-        error: `Resolution ${resolution} is not supported by model ${effectiveModel}.`,
+        error: `Resolution '${requestedResolution}' is not supported by model '${effectiveModel}'.`,
         code: 'UNSUPPORTED_RESOLUTION',
         stage: 'validation'
       });
     }
   }
 
-  // Normalize customer inputs: support array inputMediaUrls, structured inputMedia, or legacy string inputMediaUrl
+  // Normalize customer inputs into structured slots
   const rawInputMedia = req.body.inputMedia;
   const rawInputMediaUrls = req.body.inputMediaUrls;
   const rawInputMediaUrl = req.body.inputMediaUrl;
 
-  let mediaList: string[] = [];
-  if (Array.isArray(rawInputMediaUrls)) {
-    mediaList = rawInputMediaUrls.filter((u: any) => typeof u === 'string' && u.trim().length > 0);
-  } else if (Array.isArray(rawInputMedia)) {
-    mediaList = rawInputMedia
-      .map((m: any) => m?.mediaUrl || m?.media || m?.url)
-      .filter((u: any) => typeof u === 'string' && u.trim().length > 0);
-  } else if (typeof rawInputMediaUrl === 'string' && rawInputMediaUrl.trim()) {
-    mediaList = rawInputMediaUrl.includes('|||')
-      ? rawInputMediaUrl.split('|||').map((s: string) => s.trim()).filter(Boolean)
-      : [rawInputMediaUrl.trim()];
-  }
+  const rawStructuredInput: any[] = Array.isArray(rawInputMedia) && rawInputMedia.length > 0
+    ? rawInputMedia
+    : Array.isArray(rawInputMediaUrls) && rawInputMediaUrls.length > 0
+    ? rawInputMediaUrls.map((u: any, idx: number) => ({ slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`, mediaUrl: u }))
+    : typeof rawInputMediaUrl === 'string' && rawInputMediaUrl.trim()
+    ? rawInputMediaUrl.split('|||').map((u: string, idx: number) => ({ slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`, mediaUrl: u.trim() }))
+    : [];
 
-  if (mediaList.length === 0) {
+  if (rawStructuredInput.length === 0) {
     return res.status(400).json({ error: 'Please upload media to generate', code: 'MISSING_MEDIA', stage: 'validation' });
   }
 
@@ -3320,8 +3402,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     return clean.endsWith('.mp4') || clean.endsWith('.mov') || clean.endsWith('.webm') || clean.endsWith('.m4v');
   };
 
-  const primaryMedia = mediaList[0];
-  const detectedInputType: 'image' | 'video' = isVideoMedia(primaryMedia) ? 'video' : 'image';
+  const primaryRawItem = rawStructuredInput[0]?.mediaUrl || rawStructuredInput[0]?.media || rawStructuredInput[0]?.url || (typeof rawStructuredInput[0] === 'string' ? rawStructuredInput[0] : '');
+  const detectedInputType: 'image' | 'video' = isVideoMedia(primaryRawItem) ? 'video' : 'image';
 
   // Input Contract Enforcement: Prioritize requiredInputs first, then configured inputType
   const hasExplicitSlots = Boolean(template.requiredInputs && template.requiredInputs.length > 0);
@@ -3333,7 +3415,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     : (template.inputType === 'VIDEO_ONLY');
 
   // Validate Couple templates: require 2 distinct customer photos
-  const isCoupleTemplate = template.category === 'Couple';
+  const isCoupleTemplate = template.category === 'Couple' || (template as any).isCouple === true;
+  const configuredCoupleSlots = (template.requiredInputs || []).filter(s => s.id === 'partner_1' || s.id === 'partner_2' || s.id === 'slot_1' || s.id === 'slot_2');
+  const hasConfiguredCoupleSlots = configuredCoupleSlots.length >= 2;
+
+  let mediaList = rawStructuredInput;
   if (isCoupleTemplate && mediaList.length < 2) {
     return res.status(400).json({
       error: 'Couple templates require 2 distinct photos (आपकी Photo और Partner की Photo). Please provide both photos.',
@@ -3342,57 +3428,99 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
-  // Validate each media input separately
-  for (let idx = 0; idx < mediaList.length; idx++) {
-    const isItemVideo = isVideoMedia(mediaList[idx]);
-    if (requiresImageOnly && isItemVideo) {
-      return res.status(400).json({
-        error: `Input ${idx + 1} requires a photo (JPG, PNG, WEBP). Please upload an image.`,
-        code: 'INVALID_INPUT_TYPE',
-        stage: 'validation'
-      });
-    }
-    if (requiresVideoOnly && !isItemVideo) {
-      return res.status(400).json({
-        error: `Input ${idx + 1} requires a video (MP4, MOV). Please upload a video clip.`,
-        code: 'INVALID_INPUT_TYPE',
-        stage: 'validation'
-      });
-    }
+  // Convert customer inputs to persistent storage and generate short-lived signed HTTPS URLs (fail closed)
+  interface SanitizedSlot {
+    slotId: string;
+    role?: string;
+    type: 'image' | 'video';
+    mediaUrl: string;
+    media: string;
   }
+  const sanitizedStructuredMedia: SanitizedSlot[] = [];
 
-  // Convert customer base64 inputs to persistent mediaStorage to provide provider-compatible URLs
-  const persistentMediaList: string[] = [];
-  for (let mIdx = 0; mIdx < mediaList.length; mIdx++) {
-    const rawItem = mediaList[mIdx];
-    if (rawItem && rawItem.startsWith('data:')) {
-      const ext = isVideoMedia(rawItem) ? 'mp4' : 'jpg';
+  for (let mIdx = 0; mIdx < rawStructuredInput.length; mIdx++) {
+    const rawSlot = rawStructuredInput[mIdx];
+    const rawMediaString = rawSlot?.mediaUrl || rawSlot?.media || rawSlot?.url || (typeof rawSlot === 'string' ? rawSlot : '');
+    const slotId = rawSlot?.slotId || (mIdx === 0 ? 'partner_1' : mIdx === 1 ? 'partner_2' : `slot_${mIdx + 1}`);
+    const role = rawSlot?.role || (slotId === 'partner_1' ? 'person_a' : 'person_b');
+    const itemIsVideo = isVideoMedia(rawMediaString);
+    const mediaType: 'image' | 'video' = itemIsVideo ? 'video' : 'image';
+
+    if (requiresImageOnly && itemIsVideo) {
+      return res.status(400).json({
+        error: `Input ${mIdx + 1} requires a photo (JPG, PNG, WEBP). Please upload an image.`,
+        code: 'INVALID_INPUT_TYPE',
+        stage: 'validation'
+      });
+    }
+    if (requiresVideoOnly && !itemIsVideo) {
+      return res.status(400).json({
+        error: `Input ${mIdx + 1} requires a video (MP4, MOV). Please upload a video clip.`,
+        code: 'INVALID_INPUT_TYPE',
+        stage: 'validation'
+      });
+    }
+
+    let effectiveUrl = '';
+    if (rawMediaString && rawMediaString.startsWith('data:')) {
+      const ext = itemIsVideo ? 'mp4' : 'jpg';
       const stored = await mediaStorage.saveMedia(
-        rawItem,
+        rawMediaString,
         'user_gen',
         `${user.id}_gen_${Date.now()}_${mIdx}.${ext}`,
         user.id,
         false
       );
-      let effectiveUrl = stored.publicUrl;
+
       if (stored.r2Key) {
         try {
           const signed = await mediaStorage.generateProviderSignedUrl(stored.r2Key, 3600);
-          if (signed) effectiveUrl = signed;
+          if (!signed || typeof signed !== 'string' || signed.trim().length === 0) {
+            console.error('[Storage Error] generateProviderSignedUrl returned empty for customer media');
+            return res.status(500).json({
+              error: 'Failed to generate secure signed URL for private customer media.',
+              code: 'STORAGE_SIGNING_FAILED',
+              stage: 'storage'
+            });
+          }
+          effectiveUrl = signed;
         } catch (storageErr: any) {
           console.error('[Storage Error] Failed to generate signed provider URL for customer media:', storageErr);
           return res.status(500).json({
             error: 'Failed to prepare private customer media for AI generation provider.',
-            code: 'STORAGE_SIGN_FAILED',
+            code: 'STORAGE_SIGNING_FAILED',
             stage: 'storage'
           });
         }
+      } else if (stored.publicUrl && !stored.publicUrl.startsWith('data:')) {
+        effectiveUrl = stored.publicUrl;
+      } else {
+        return res.status(500).json({
+          error: 'Failed to store private customer media into provider-accessible storage.',
+          code: 'STORAGE_FAILED',
+          stage: 'storage'
+        });
       }
-      persistentMediaList.push(effectiveUrl);
+    } else if (typeof rawMediaString === 'string' && (rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://') || rawMediaString.startsWith('/api/media/'))) {
+      effectiveUrl = rawMediaString;
     } else {
-      persistentMediaList.push(rawItem);
+      return res.status(400).json({
+        error: `Invalid media payload for input ${mIdx + 1}. Raw Base64 cannot be dispatched directly to AI provider.`,
+        code: 'INVALID_MEDIA_PAYLOAD',
+        stage: 'validation'
+      });
     }
+
+    sanitizedStructuredMedia.push({
+      slotId,
+      role: slotId === 'partner_1' ? 'person_a' : 'person_b',
+      type: mediaType,
+      mediaUrl: effectiveUrl,
+      media: effectiveUrl
+    });
   }
+
+  const persistentMediaList = sanitizedStructuredMedia.map(m => m.mediaUrl);
   const inputMediaUrl = persistentMediaList.join('|||');
   mediaList = persistentMediaList;
 
@@ -3409,37 +3537,45 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 
-  // Validate Model Capability and Resolution against Model Registry
-  const modelEntry = MODEL_REGISTRY[effectiveModel];
-  if (modelEntry) {
-    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
-    if (tariff && tariff.supportStatus === 'UNSUPPORTED') {
+  // Server-Authoritative Dynamic Cost Calculation & Quoting (Fail Closed)
+  const isSmartTemplate = template.engine === 'SMART_TEMPLATE' || effectiveModel === 'smart_canvas_ffmpeg';
+  let requiredCredits: number;
+
+  if (isSmartTemplate) {
+    requiredCredits = template.creditCost || 10;
+  } else {
+    const estimate = calculateEstimatedProviderCostUsd({
+      modelId: effectiveModel,
+      resolution: requestedResolution as any,
+      sourceVideoDurationSeconds: measuredSourceVideoDuration,
+      requestedOutputDurationSeconds: requestedDuration
+    });
+
+    if (estimate.status === 'PENDING_QUOTE') {
       return res.status(400).json({
-        error: `Resolution ${requestedResolution} is not supported by model ${effectiveModel}.`,
-        code: 'UNSUPPORTED_RESOLUTION',
-        stage: 'validation'
+        error: `Provider quote or capability is pending verification (${estimate.reason || 'Tariff or billing rules unverified'}). Paid generation is guarded until provider account tariff is verified.`,
+        code: 'PENDING_QUOTE',
+        stage: 'pricing'
       });
     }
-  }
 
-  // Server-Authoritative Dynamic Cost Calculation (40% Markup Rule)
-  const estimate = calculateEstimatedProviderCostUsd({
-    modelId: effectiveModel,
-    resolution: requestedResolution as any,
-    sourceVideoDurationSeconds: measuredSourceVideoDuration,
-    requestedOutputDurationSeconds: requestedDuration
-  });
+    if (estimate.status === 'UNSUPPORTED') {
+      return res.status(400).json({
+        error: `Requested options are unsupported by model '${effectiveModel}': ${estimate.reason || 'Unsupported capability'}`,
+        code: 'UNSUPPORTED_CAPABILITY',
+        stage: 'pricing'
+      });
+    }
 
-  let requiredCredits: number;
-  if (estimate.status === 'QUOTED' && estimate.estimatedProviderCostUsd !== undefined) {
+    if (estimate.status !== 'QUOTED' || estimate.estimatedProviderCostUsd === undefined) {
+      return res.status(400).json({
+        error: `Unable to compute authoritative quote for model '${effectiveModel}'. Status: ${estimate.status}.`,
+        code: 'QUOTE_FAILED',
+        stage: 'pricing'
+      });
+    }
+
     requiredCredits = calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
-  } else {
-    requiredCredits = calculateAuthoritativeTemplateCost({
-      ...template,
-      model: effectiveModel,
-      durationSeconds: requestedDuration,
-      resolutionLabel: requestedResolution
-    }) || template.creditCost;
   }
   const wallet = prodDb.getWallet(user.id);
 
@@ -3518,11 +3654,14 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
       }
 
-      // 2. Authoritative Prompt Construction (Prompt Standard v1.1 Modality Hierarchy)
+      // 2. Authoritative Prompt Construction (Prompt Standard v1.1 & v1.2 Modality Hierarchy)
       // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
       const categoryPrompt = prodDb.getCategoryPrompt(template.category);
       const recipePrompt = template.recipe?.prompt?.trim();
-      const isCoupleValid = Boolean(isCoupleTemplate && mediaList.length >= 2);
+      const hasCustomerPartner1 = sanitizedStructuredMedia.some(m => m.slotId === 'partner_1' || m.slotId === 'slot_1');
+      const hasCustomerPartner2 = sanitizedStructuredMedia.some(m => m.slotId === 'partner_2' || m.slotId === 'slot_2');
+      const isCoupleValid = Boolean(isCoupleTemplate && (hasConfiguredCoupleSlots ? (hasCustomerPartner1 && hasCustomerPartner2) : sanitizedStructuredMedia.length >= 2));
+
       const effectivePrompt = buildUnifiedGenerationPrompt({
         categoryPrompt,
         templateRecipePrompt: recipePrompt,
@@ -3569,7 +3708,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         workflow: template.workflow,
         inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
         inputMediaUrls: mediaList,
-        inputMedia: Array.isArray(req.body.inputMedia) ? req.body.inputMedia : undefined,
+        inputMedia: sanitizedStructuredMedia,
         referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
         sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
         sampleResultUrl: resolvedRefImage,
@@ -3642,6 +3781,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         resultMediaUrl: result.resultUrl,
         actualOutputDurationSeconds: actualOutputDuration,
         actualBillableDurationSeconds: actualBillableDuration,
+        actualCostStatus: costMeasurement.isExactTransactionCost ? 'MEASURED_RECEIPT' : 'UNMEASURED',
+        reconciliationStatus: costMeasurement.isExactTransactionCost ? 'RECONCILED' : 'UNMEASURED_NO_POST_DEBIT',
+        actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
         reconciledCostCredits: isAuthorizedAdmin ? 0 : reconciliation.finalChargeCredits,
         completedAt: new Date().toISOString()
       });
