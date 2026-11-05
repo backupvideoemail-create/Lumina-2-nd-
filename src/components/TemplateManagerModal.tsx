@@ -6273,11 +6273,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 {
                   id: 'geminiAdapter',
                   name: 'Google Gemini Image Adapter',
-                  model: 'gemini-2.5-flash-image',
+                  model: 'gemini-3.1-flash-lite-image',
                   status: 'MISSING_SECRET',
                   secretName: 'GEMINI_API_KEY',
-                  supportedResolutions: ['1:1', '9:16', '16:9', '4:5'],
-                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                  supportedResolutions: ['1080p'],
+                  pricingStatus: 'PENDING_QUOTE'
                 },
                 {
                   id: 'faceSwapAdapter',
@@ -6285,69 +6285,88 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   models: ['hf_mult_motion_control_flash', 'hf_mult_replace_object_flash'],
                   status: 'MISSING_SECRET',
                   secretName: 'HIGGSFIELD_API_KEY',
-                  supportedResolutions: ['480p', '720p', '1080p'],
-                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                  supportedResolutions: {
+                    motion_control: ['480p (UNKNOWN)', '720p (UNKNOWN)', '1080p (UNKNOWN)'],
+                    object_swap: ['480p (UNSUPPORTED)', '720p (UNKNOWN)', '1080p (UNKNOWN)']
+                  },
+                  pricingStatus: 'PENDING_QUOTE'
                 },
                 {
                   id: 'videoProviderAdapter',
                   name: 'Google Veo Video Provider Adapter',
                   model: 'gemini-omni-1.1-flash',
-                  status: 'MISSING_SECRET',
+                  status: 'EVALUATION_ONLY',
                   secretName: 'GOOGLE_VEO_KEY',
                   supportedResolutions: ['720p', '1080p'],
-                  pricingStatus: 'UNKNOWN (Pending Account Quote)'
+                  pricingStatus: 'EVALUATION_ONLY'
                 },
                 {
                   id: 'videoTrimmer',
                   name: 'Video Trimmer / Smart FFmpeg',
+                  model: 'smart_canvas_ffmpeg',
                   status: 'CONFIGURED',
                   note: 'In-memory / safe duration chunking',
                   supportedResolutions: ['Flexible (Model-Dependent)'],
                   pricingStatus: 'FREE_LOCAL'
                 }
-              ]).map((ad: any) => (
-                <div
-                  key={ad.id}
-                  className="p-3.5 rounded-2xl bg-stone-900/70 border border-white/10 space-y-2"
-                >
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-white">{ad.name}</span>
-                      <span className="text-[10px] text-stone-400 font-mono">({ad.id})</span>
-                    </div>
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                        ad.status === 'CONFIGURED' || ad.status?.includes('CONFIGURED')
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : ad.status === 'MISSING_SECRET'
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                          : 'bg-stone-800 text-stone-300'
-                      }`}
-                    >
-                      {ad.status}
-                    </span>
-                  </div>
+              ]).map((ad: any) => {
+                const renderResolutions = (val: any) => {
+                  if (!val) return 'Model Dependent';
+                  if (Array.isArray(val)) return val.join(', ');
+                  if (typeof val === 'object') {
+                    return Object.entries(val)
+                      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
+                      .join(' | ');
+                  }
+                  return String(val);
+                };
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-stone-300 pt-1 border-t border-white/5">
-                    <div>
-                      <span className="text-stone-500 block text-[10px]">Model / Endpoints:</span>
-                      <span className="font-mono text-amber-200">{ad.model || (ad.models && ad.models.join(', ')) || ad.note || 'Default'}</span>
+                return (
+                  <div
+                    key={ad.id}
+                    className="p-3.5 rounded-2xl bg-stone-900/70 border border-white/10 space-y-2"
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white">{ad.name}</span>
+                        <span className="text-[10px] text-stone-400 font-mono">({ad.id})</span>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                          ad.status === 'CONFIGURED' || ad.status?.includes('CONFIGURED')
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            : ad.status === 'MISSING_SECRET'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            : ad.status === 'EVALUATION_ONLY'
+                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                            : 'bg-stone-800 text-stone-300'
+                        }`}
+                      >
+                        {ad.status}
+                      </span>
                     </div>
-                    <div>
-                      <span className="text-stone-500 block text-[10px]">Secret Requirement:</span>
-                      <span className="font-mono text-stone-300">{ad.secretName || 'None (Local)'}</span>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block text-[10px]">Supported Resolutions:</span>
-                      <span className="font-mono text-stone-300">{(ad.supportedResolutions && ad.supportedResolutions.join(', ')) || 'Model Dependent'}</span>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block text-[10px]">Pricing Status:</span>
-                      <span className="font-mono text-stone-400">{ad.pricingStatus}</span>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-stone-300 pt-1 border-t border-white/5">
+                      <div>
+                        <span className="text-stone-500 block text-[10px]">Model / Endpoints:</span>
+                        <span className="font-mono text-amber-200">{ad.model || (ad.models && ad.models.join(', ')) || ad.note || 'Default'}</span>
+                      </div>
+                      <div>
+                        <span className="text-stone-500 block text-[10px]">Secret Requirement:</span>
+                        <span className="font-mono text-stone-300">{ad.secretName || 'None (Local)'}</span>
+                      </div>
+                      <div>
+                        <span className="text-stone-500 block text-[10px]">Supported Resolutions:</span>
+                        <span className="font-mono text-stone-300">{renderResolutions(ad.supportedResolutions)}</span>
+                      </div>
+                      <div>
+                        <span className="text-stone-500 block text-[10px]">Pricing Status:</span>
+                        <span className="font-mono text-stone-400">{ad.pricingStatus}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

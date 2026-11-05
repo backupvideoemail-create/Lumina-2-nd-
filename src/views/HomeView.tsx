@@ -289,7 +289,7 @@ export const HomeView: React.FC = () => {
                 return isVideoBanner ? (
                   <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
                     <video
-                      key={`hero_fg_${activeBanner.id}_${heroVideoSrc}`}
+                      key={`hero_fg_${activeBanner.id}`}
                       src={heroVideoSrc}
                       poster={effectivePoster || (effectiveImage?.endsWith('.mp4') ? undefined : effectiveImage)}
                       autoPlay

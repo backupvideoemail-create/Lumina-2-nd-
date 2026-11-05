@@ -213,12 +213,16 @@ export const TemplateDetailModal: React.FC = () => {
 
   // Wardrobe source, resolution, and duration state (unconditional hooks)
   const [wardrobeSource, setWardrobeSource] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
+  const [wardrobeSourceA, setWardrobeSourceA] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
+  const [wardrobeSourceB, setWardrobeSourceB] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
   const [selectedResolution, setSelectedResolution] = useState<'480p' | '720p' | '1080p'>('720p');
   const [selectedDuration, setSelectedDuration] = useState<number>(5);
 
   useEffect(() => {
     if (selectedTemplate) {
       setWardrobeSource((selectedTemplate.defaultWardrobeSource as any) || 'AUTO');
+      setWardrobeSourceA('AUTO');
+      setWardrobeSourceB('AUTO');
       const modelEntry = selectedTemplate.model ? MODEL_REGISTRY[selectedTemplate.model] : undefined;
       const verifiedResolutions = modelEntry
         ? (Object.entries(modelEntry.resolutionTariffs)
@@ -228,8 +232,7 @@ export const TemplateDetailModal: React.FC = () => {
       if (verifiedResolutions.length > 0) {
         setSelectedResolution(verifiedResolutions[0]);
       } else {
-        const defaultRes = selectedTemplate.model === 'hf_mult_motion_control_flash' ? '480p' : '720p';
-        setSelectedResolution(defaultRes);
+        setSelectedResolution('720p');
       }
       setSelectedDuration(selectedTemplate.durationSeconds || 5);
     }
@@ -240,12 +243,7 @@ export const TemplateDetailModal: React.FC = () => {
 
   const tpl = selectedTemplate;
   const userBalance = wallet?.balance ?? 0;
-  const liveCreditCost = calculateAuthoritativeTemplateCost({
-    ...tpl,
-    durationSeconds: selectedDuration,
-    resolutionLabel: selectedResolution
-  }) || tpl.creditCost;
-  const hasCredits = userBalance >= liveCreditCost;
+  const isSmartTemplate = Boolean((tpl as any).isSmartTemplate || (tpl as any).smartMode || (tpl as any).source === 'smart' || (tpl as any).smartAssetRole);
 
   const modelEntry = tpl.model ? MODEL_REGISTRY[tpl.model] : undefined;
   const supportedResolutions = modelEntry
@@ -254,11 +252,23 @@ export const TemplateDetailModal: React.FC = () => {
         .map(([res]) => res as '480p' | '720p' | '1080p'))
     : [];
 
-  const isQuotePending = Boolean(
-    modelEntry &&
-    (modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' ||
-      Object.values(modelEntry.resolutionTariffs).every((t) => t.supportStatus === 'UNKNOWN' || t.supportStatus === 'UNSUPPORTED'))
+  const computedCreditCost = calculateAuthoritativeTemplateCost({
+    ...tpl,
+    durationSeconds: selectedDuration,
+    resolutionLabel: selectedResolution
+  });
+
+  const isQuotePending = !isSmartTemplate && (
+    computedCreditCost <= 0 ||
+    Boolean(
+      modelEntry &&
+      (modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' ||
+        Object.values(modelEntry.resolutionTariffs).every((t) => t.supportStatus === 'UNKNOWN' || t.supportStatus === 'UNSUPPORTED'))
+    )
   );
+
+  const liveCreditCost = isSmartTemplate ? (computedCreditCost || tpl.creditCost || 10) : computedCreditCost;
+  const hasCredits = userBalance >= liveCreditCost;
 
   // Next / Previous Navigation
   const currentIndex = templates.findIndex((t) => t.id === tpl.id);
@@ -451,11 +461,21 @@ export const TemplateDetailModal: React.FC = () => {
     };
 
     let finalPrompt = customPrompt.trim();
+    const isCoupleTemplate = tpl.category === 'Couple' || Boolean((tpl as any).isCouple);
     if (tpl.allowWardrobeChoice) {
-      if (wardrobeSource === 'CUSTOMER_PHOTO') {
-        finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + 'Wardrobe preference: KEEP_CUSTOMER_PHOTO_CLOTHES';
-      } else if (wardrobeSource === 'TEMPLATE_VIDEO') {
-        finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + 'Wardrobe preference: KEEP_TEMPLATE_CLOTHES';
+      if (isCoupleTemplate) {
+        if (wardrobeSourceA !== 'AUTO') {
+          finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + `Person A wardrobe: KEEP_${wardrobeSourceA}_CLOTHES`;
+        }
+        if (wardrobeSourceB !== 'AUTO') {
+          finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + `Person B wardrobe: KEEP_${wardrobeSourceB}_CLOTHES`;
+        }
+      } else {
+        if (wardrobeSource === 'CUSTOMER_PHOTO') {
+          finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + 'Wardrobe preference: KEEP_CUSTOMER_PHOTO_CLOTHES';
+        } else if (wardrobeSource === 'TEMPLATE_VIDEO') {
+          finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + 'Wardrobe preference: KEEP_TEMPLATE_CLOTHES';
+        }
       }
     }
 
@@ -490,7 +510,9 @@ export const TemplateDetailModal: React.FC = () => {
         resolution: selectedResolution,
         durationSeconds: selectedDuration,
         model: tpl.model,
-        wardrobeSource
+        wardrobeSource,
+        wardrobeSourceA,
+        wardrobeSourceB
       }
     );
     setIsGenerating(false);
@@ -1111,32 +1133,33 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Supported by {tpl.model || 'Flash'}</span>
                 </div>
                 <div className="flex gap-2">
-                  {(supportedResolutions.length > 0
-                    ? supportedResolutions
-                    : (tpl.model === 'hf_mult_motion_control_flash'
-                      ? (['480p', '720p'] as const)
-                      : (['720p'] as const))
-                  ).map((res) => (
-                    <button
-                      key={res}
-                      type="button"
-                      onClick={() => setSelectedResolution(res)}
-                      className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                        selectedResolution === res
-                          ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md font-black'
-                          : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
-                      }`}
-                    >
-                      {res}
-                      {res === '480p' && ' (Economy)'}
-                      {res === '720p' && ' (Standard)'}
-                      {res === '1080p' && ' (Ultra)'}
-                    </button>
-                  ))}
+                  {supportedResolutions.length > 0 ? (
+                    supportedResolutions.map((res) => (
+                      <button
+                        key={res}
+                        type="button"
+                        onClick={() => setSelectedResolution(res)}
+                        className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                          selectedResolution === res
+                            ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md font-black'
+                            : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                        }`}
+                      >
+                        {res}
+                        {res === '480p' && ' (Economy)'}
+                        {res === '720p' && ' (Standard)'}
+                        {res === '1080p' && ' (Ultra)'}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="w-full py-2 px-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs text-center font-medium">
+                      Resolution verification pending (जाँच लंबित)
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Output Duration Options (Only verified [5, 8], 10s removed) */}
+              {/* Output Duration Options */}
               <div className="space-y-1.5 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white flex items-center gap-1.5">
@@ -1146,21 +1169,29 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Credits scale proportionally</span>
                 </div>
                 <div className="flex gap-2">
-                  {[5, 8].map((dur) => (
-                    <button
-                      key={dur}
-                      type="button"
-                      onClick={() => setSelectedDuration(dur)}
-                      className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                        selectedDuration === dur
-                          ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md font-black'
-                          : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
-                      }`}
-                    >
-                      {dur}s
-                      {dur === 8 && ' (Quick 8s)'}
-                    </button>
-                  ))}
+                  {(!modelEntry || modelEntry.endpointVerificationStatus === 'PENDING_QUOTE') ? (
+                    <div className="w-full py-2 px-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs text-center font-medium">
+                      Duration verification pending (जाँच लंबित)
+                    </div>
+                  ) : (
+                    [5, 8]
+                      .filter((dur) => dur >= (modelEntry.minDurationSeconds || 5) && dur <= (modelEntry.maxDurationSeconds || 8))
+                      .map((dur) => (
+                        <button
+                          key={dur}
+                          type="button"
+                          onClick={() => setSelectedDuration(dur)}
+                          className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            selectedDuration === dur
+                              ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md font-black'
+                              : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                          }`}
+                        >
+                          {dur}s
+                          {dur === 8 && ' (Quick 8s)'}
+                        </button>
+                      ))
+                  )}
                 </div>
               </div>
 
@@ -1176,7 +1207,7 @@ export const TemplateDetailModal: React.FC = () => {
 
           {/* WARDROBE SOURCE SELECTOR (कपड़े किससे लेने हैं?) */}
           {tpl.allowWardrobeChoice && (
-            <div className="p-3 rounded-2xl bg-[#121018] border border-white/10 space-y-2">
+            <div className="p-3 rounded-2xl bg-[#121018] border border-white/10 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -1184,44 +1215,90 @@ export const TemplateDetailModal: React.FC = () => {
                 </span>
                 <span className="text-[10px] text-amber-300 font-medium">वस्त्र विकल्प</span>
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setWardrobeSource('AUTO')}
-                  className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
-                    wardrobeSource === 'AUTO'
-                      ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
-                      : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
-                  }`}
-                >
-                  <span>Auto (अनुशंसित)</span>
-                  <span className="text-[9px] opacity-80">AI Best Match</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWardrobeSource('CUSTOMER_PHOTO')}
-                  className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
-                    wardrobeSource === 'CUSTOMER_PHOTO'
-                      ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
-                      : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
-                  }`}
-                >
-                  <span>मेरी Photo</span>
-                  <span className="text-[9px] opacity-80">Keep Clothes</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWardrobeSource('TEMPLATE_VIDEO')}
-                  className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
-                    wardrobeSource === 'TEMPLATE_VIDEO'
-                      ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
-                      : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
-                  }`}
-                >
-                  <span>Template Video</span>
-                  <span className="text-[9px] opacity-80">Template Style</span>
-                </button>
-              </div>
+
+              {(tpl.category === 'Couple' || Boolean((tpl as any).isCouple)) ? (
+                <div className="space-y-2.5">
+                  {/* Person A */}
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-bold text-stone-300">Person A (आपकी Photo) के कपड़े:</span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['AUTO', 'CUSTOMER_PHOTO', 'TEMPLATE_VIDEO'] as const).map((mode) => (
+                        <button
+                          key={'a_' + mode}
+                          type="button"
+                          onClick={() => setWardrobeSourceA(mode)}
+                          className={`py-1.5 px-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                            wardrobeSourceA === mode
+                              ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
+                              : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                          }`}
+                        >
+                          {mode === 'AUTO' ? 'Auto' : mode === 'CUSTOMER_PHOTO' ? 'मेरी Photo' : 'Template'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Person B */}
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-bold text-stone-300">Person B (Partner Photo) के कपड़े:</span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['AUTO', 'CUSTOMER_PHOTO', 'TEMPLATE_VIDEO'] as const).map((mode) => (
+                        <button
+                          key={'b_' + mode}
+                          type="button"
+                          onClick={() => setWardrobeSourceB(mode)}
+                          className={`py-1.5 px-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                            wardrobeSourceB === mode
+                              ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
+                              : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                          }`}
+                        >
+                          {mode === 'AUTO' ? 'Auto' : mode === 'CUSTOMER_PHOTO' ? 'Partner Photo' : 'Template'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setWardrobeSource('AUTO')}
+                    className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
+                      wardrobeSource === 'AUTO'
+                        ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
+                        : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                    }`}
+                  >
+                    <span>Auto (अनुशंसित)</span>
+                    <span className="text-[9px] opacity-80">AI Best Match</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWardrobeSource('CUSTOMER_PHOTO')}
+                    className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
+                      wardrobeSource === 'CUSTOMER_PHOTO'
+                        ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
+                        : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                    }`}
+                  >
+                    <span>मेरी Photo</span>
+                    <span className="text-[9px] opacity-80">Keep Clothes</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWardrobeSource('TEMPLATE_VIDEO')}
+                    className={`p-2 rounded-xl text-xs font-bold flex flex-col items-center gap-0.5 transition-all cursor-pointer ${
+                      wardrobeSource === 'TEMPLATE_VIDEO'
+                        ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md'
+                        : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                    }`}
+                  >
+                    <span>Template Video</span>
+                    <span className="text-[9px] opacity-80">Template Style</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1363,9 +1440,9 @@ export const TemplateDetailModal: React.FC = () => {
         <div className="max-w-md mx-auto space-y-1.5">
           <button
             onClick={handleGenerateClick}
-            disabled={isGenerating || !isAllInputsReady || isQuotePending}
+            disabled={isGenerating || !isAllInputsReady || isQuotePending || liveCreditCost <= 0}
             className={`w-full py-3.5 sm:py-4 px-6 rounded-2xl text-base font-black flex items-center justify-between shadow-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-              isAllInputsReady && !isQuotePending
+              isAllInputsReady && !isQuotePending && liveCreditCost > 0
                 ? 'gold-button shadow-[0_10px_30px_rgba(212,175,55,0.35)]'
                 : 'bg-stone-800 text-stone-400 border border-white/10'
             }`}
@@ -1380,7 +1457,7 @@ export const TemplateDetailModal: React.FC = () => {
                 <>
                   <Sparkles className="w-5 h-5 fill-current" />
                   <span>
-                    {isQuotePending
+                    {isQuotePending || liveCreditCost <= 0
                       ? 'Verification Pending (जाँच लंबित)'
                       : isAllInputsReady
                       ? (tpl.isFaceSwap ? 'Swap Face Now' : (isVideo ? 'Create Video Now' : 'Create Photo Now'))
@@ -1393,12 +1470,14 @@ export const TemplateDetailModal: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-black/40 text-xs font-black text-white">
-              <span>{liveCreditCost} Credits</span>
+              <span>{isQuotePending || liveCreditCost <= 0 ? 'Quote Pending' : `${liveCreditCost} Credits`}</span>
             </div>
           </button>
 
           <p className="text-[10.5px] text-center text-stone-400">
-            {!hasCredits
+            {isQuotePending || liveCreditCost <= 0
+              ? 'Provider quote verification pending. Generation safely paused.'
+              : !hasCredits
               ? `Requires ${liveCreditCost} credits (Your Balance: ${userBalance})`
               : 'Server-guaranteed generation with 100% exact refund on failure'}
           </p>

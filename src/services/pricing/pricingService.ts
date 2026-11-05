@@ -31,6 +31,9 @@ export interface ProviderCostUsdCatalog {
 
 export interface PricingSettings {
   usdToInrRate: number;       // Current USD/INR rate (Default: 96.3)
+  rateSource: string;         // Authoritative rate source ('RBI_REFERENCE_CENTRAL')
+  updatedAt: string;          // Timestamp of rate verification
+  lastVerifiedRate: number;   // Last confirmed rate
   markupPercent: number;      // 40% Business Markup Rule
   currency: string;
   creditsPerInr: number;      // 1 Credit = ₹1 INR
@@ -150,6 +153,7 @@ export function calculateEstimatedProviderCostUsd(params: {
   resolution: '480p' | '720p' | '1080p';
   sourceVideoDurationSeconds?: number;
   requestedOutputDurationSeconds: number;
+  allowPublishedListPriceFallback?: boolean;
 }): {
   status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED';
   estimatedProviderCostUsd?: number;
@@ -181,14 +185,33 @@ export function calculateEstimatedProviderCostUsd(params: {
   }
 
   const hasAccountQuote = Boolean(tariff.accountQuotePerSecondUsd && tariff.accountQuotePerSecondUsd > 0);
-  const rate = tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd;
-  if ((rate === undefined || rate <= 0) && entry.provider !== 'smart_template') {
-    return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
-  }
-
   const quoteBasis: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE' = hasAccountQuote
     ? 'ACCOUNT_QUOTE'
     : 'PUBLISHED_LIST_PRICE';
+
+  // Smart template local ffmpeg is free
+  if (entry.provider === 'smart_template') {
+    return { status: 'QUOTED', estimatedProviderCostUsd: 0, quoteBasis: 'ACCOUNT_QUOTE' };
+  }
+
+  // If no account quote exists, check whether published list price is explicitly permitted by policy
+  if (!hasAccountQuote) {
+    if (!params.allowPublishedListPriceFallback) {
+      return {
+        status: 'PENDING_QUOTE',
+        quoteBasis: 'PUBLISHED_LIST_PRICE',
+        reason: `Account-specific quote is required for model ${params.modelId} at ${params.resolution}. Published list price cannot be used without explicit quote authorization.`
+      };
+    }
+  }
+
+  const rate = hasAccountQuote
+    ? tariff.accountQuotePerSecondUsd!
+    : tariff.publishedListPricePerSecondUsd;
+
+  if (rate === undefined || rate <= 0) {
+    return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
+  }
 
   if (entry.billsSourceVideo === true) {
     if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
@@ -288,6 +311,9 @@ export function reconcileCostOnCompletion(params: {
 
 export const CENTRAL_PRICING_CONFIG: PricingSettings = {
   usdToInrRate: 96.3, // Current standard USD/INR conversion
+  rateSource: 'RBI_REFERENCE_CENTRAL',
+  updatedAt: '2026-11-04T00:00:00.000Z',
+  lastVerifiedRate: 96.3,
   markupPercent: 40,  // +40% Business Markup Rule (cost * 1.40)
   currency: 'INR',
   creditsPerInr: 1,
@@ -368,56 +394,43 @@ export function calculateAuthoritativeTemplateCost(
     providerCostUsd?: number;
   }
 ): number {
-  // 1. Face Swap: Dynamic calculation based on duration ($0.05/sec @ 480p + 40% markup)
-  if (template.isFaceSwap || template.model?.includes('genjutsu') || template.model?.includes('faceswap')) {
-    return calculateFaceSwapCredits(template.durationSeconds || 4).credits;
+  // 1. Smart Template deterministic fixed-credit execution path (Approved separate pricing path)
+  if (template.engine === 'SMART_TEMPLATE' || template.model === 'smart_canvas_ffmpeg') {
+    return template.creditCost || 10;
   }
 
-  // 2. Video Templates: Server-authoritative dynamic calculation based on model, duration, and resolution
-  if (template.type === 'video') {
-    const is1080p = Boolean(
-      template.resolutionLabel?.includes('1080p') ||
-      template.resolutionLabel?.includes('60FPS') ||
-      template.resolutionLabel?.includes('FHD')
-    );
-    const duration = Math.max(1, template.durationSeconds || 5);
-    const isVeoAi = template.engine === 'AI_GENERATION' || template.model?.includes('veo') || !template.engine;
-
-    let baseUsd: number;
-    if (isVeoAi) {
-      // Current Google Veo 3.1 Lite pricing: 720p = $0.05/sec, 1080p = $0.08/sec
-      const ratePerSecUsd = is1080p ? 0.08 : 0.05;
-      baseUsd = duration * ratePerSecUsd;
-    } else {
-      baseUsd = CENTRAL_PRICING_CONFIG.providerCostsUsd.videoSmartMotionUsd * (duration / 5);
-    }
-    return calculateCreditsFromUsd(baseUsd);
-  }
-
-  // 3. If template specifies an explicit providerCostUsd, calculate dynamically
+  // 2. Explicit provider cost override if configured
   if (template.providerCostUsd && template.providerCostUsd > 0) {
     return calculateCreditsFromUsd(template.providerCostUsd);
   }
 
-  // 4. Photo Templates: dynamic model and resolution based cost
-  const { providerCostsUsd } = CENTRAL_PRICING_CONFIG;
-  const isGeminiAi = template.engine === 'AI_GENERATION' || template.model?.includes('gemini');
-  const is4k = Boolean(template.resolutionLabel?.includes('4K') || template.resolutionLabel?.includes('HDR'));
+  // 3. AI Generation Templates: Must be derived through server-authoritative MODEL_REGISTRY quoting
+  const modelId = template.model || (template.type === 'video' ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
+  const resolution = (template.resolutionLabel === '480p' || template.resolutionLabel === '720p' || template.resolutionLabel === '1080p')
+    ? template.resolutionLabel
+    : (modelId === 'hf_mult_motion_control_flash' ? '480p' : '720p');
+  const duration = template.durationSeconds || 5;
 
-  let photoUsd = providerCostsUsd.photoSmartUsd;
-  if (is4k) {
-    photoUsd = providerCostsUsd.photo4kHdrDiffusionUsd;
-  } else if (isGeminiAi) {
-    photoUsd = providerCostsUsd.photoAiDiffusionUsd;
+  const estimate = calculateEstimatedProviderCostUsd({
+    modelId,
+    resolution: resolution as any,
+    requestedOutputDurationSeconds: duration
+  });
+
+  if (estimate.status === 'QUOTED' && estimate.estimatedProviderCostUsd !== undefined) {
+    return calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
   }
 
-  return calculateCreditsFromUsd(photoUsd);
+  // Fail closed: Unverified AI models return 0 (Quote Pending) to prevent guessed reservations
+  return 0;
 }
 
 /**
- * Authoritative Face/Character Video Cost Calculation (Higgsfield Genjutsu Light Motion Transfer).
- * Rate: 480p = $0.05 per source-video second list price.
- * Formula: Duration (sec) × $0.05 × USD/INR Rate × 1.40 (+40% Business Markup) -> Required Customer Credits.
+ * DEPRECATED / LEGACY FALLBACK ONLY:
+ * Legacy Face/Character Video Cost Calculation based on unverified list price assumptions ($0.05/sec).
+ * STRICT POLICY: Preserved strictly for backward-compatible interface contracts.
+ * It MUST NOT be used for authoritative server-side AI reservations or customer quotes.
+ * Authoritative reservations must use calculateEstimatedProviderCostUsd + calculateEstimatedCustomerCredits.
  */
 export function calculateFaceSwapCredits(durationSeconds: number = 4): {
   durationSeconds: number;

@@ -32,6 +32,7 @@ export interface QueueStats {
 
 class HdDownloadQueueManager {
   private queue: QueueItem[] = [];
+  private inFlight = new Map<string, Promise<string>>();
   private activeDownloads = 0;
   private maxConcurrency = 2;
   private blobCache = new Map<string, string>();
@@ -67,12 +68,17 @@ class HdDownloadQueueManager {
       return Promise.resolve(this.blobCache.get(url)!);
     }
 
+    // In-flight deduplication: return existing promise if already downloading
+    if (this.inFlight.has(url)) {
+      return this.inFlight.get(url)!;
+    }
+
     // If Data Saver / slow cellular is active and priority is not high, skip download to respect customer bandwidth
     if (this.isDataSaverActive() && (priority === 'low' || priority === 'medium')) {
       return Promise.resolve(url);
     }
 
-    return new Promise<string>((resolve, reject) => {
+    const downloadPromise = new Promise<string>((resolve, reject) => {
       const item: QueueItem = {
         id: `hd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         url,
@@ -95,7 +101,12 @@ class HdDownloadQueueManager {
       }
 
       this.processNext();
+    }).finally(() => {
+      this.inFlight.delete(url);
     });
+
+    this.inFlight.set(url, downloadPromise);
+    return downloadPromise;
   }
 
   /**

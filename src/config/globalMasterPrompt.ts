@@ -247,6 +247,8 @@ export interface PromptAssemblyOptions {
   hasDrivingVideo?: boolean;
   isCouple?: boolean;
   wardrobeSource?: 'auto' | 'my_photo' | 'template';
+  wardrobeSourceA?: 'auto' | 'my_photo' | 'template';
+  wardrobeSourceB?: 'auto' | 'my_photo' | 'template';
 }
 
 /**
@@ -306,7 +308,11 @@ export function buildUnifiedGenerationPrompt(options: PromptAssemblyOptions): st
   }
 
   // 4. Wardrobe Rules
-  if (options.wardrobeSource) {
+  if (options.isCouple && (options.wardrobeSourceA || options.wardrobeSourceB)) {
+    const wardA = getWardrobePrompt(options.wardrobeSourceA || 'auto').replace('WARDROBE SELECTION', 'PERSON A WARDROBE');
+    const wardB = getWardrobePrompt(options.wardrobeSourceB || 'auto').replace('WARDROBE SELECTION', 'PERSON B WARDROBE');
+    sections.push(`--- COUPLE INDEPENDENT WARDROBE ---\n${wardA}\n${wardB}`);
+  } else if (options.wardrobeSource) {
     sections.push(getWardrobePrompt(options.wardrobeSource));
   }
 

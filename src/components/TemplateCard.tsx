@@ -31,8 +31,10 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     : (template.faceSwapSceneId ? faceSwapScenes.find((s) => s.id === template.faceSwapSceneId) : null);
 
   const candidateMedia = matchingScene
-    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || template.preview || template.cover)
-    : (template.preview || template.cover);
+    ? (matchingScene.resultVideoPreview || matchingScene.sourceVideoPreview || template.coverVideo || template.preview || template.cover)
+    : (template.type === 'video' || template.mediaType === 'video'
+        ? (template.coverVideo || template.preview || template.cover)
+        : (template.preview || template.cover || template.coverVideo));
 
   const sampleFace = matchingScene?.sampleFace || template.sampleFaceThumbnail;
 

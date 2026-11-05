@@ -89,6 +89,8 @@ interface AppContextType {
       durationSeconds?: number;
       model?: string;
       wardrobeSource?: string;
+      wardrobeSourceA?: string;
+      wardrobeSourceB?: string;
     }
   ) => Promise<GenerationResult>;
   deleteGeneration: (id: string) => Promise<void>;
@@ -529,6 +531,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       durationSeconds?: number;
       model?: string;
       wardrobeSource?: string;
+      wardrobeSourceA?: string;
+      wardrobeSourceB?: string;
     }
   ): Promise<GenerationResult> => {
     if (!user) {
@@ -553,7 +557,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           resolution: options?.resolution,
           durationSeconds: options?.durationSeconds,
           model: options?.model,
-          wardrobeSource: options?.wardrobeSource
+          wardrobeSource: options?.wardrobeSource,
+          wardrobeSourceA: options?.wardrobeSourceA,
+          wardrobeSourceB: options?.wardrobeSourceB
         })
       });
 

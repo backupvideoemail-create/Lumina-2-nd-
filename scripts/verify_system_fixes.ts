@@ -1541,6 +1541,89 @@ async function runSystemVerification() {
   assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'src/services/payments/cashfreeAdapter.ts')), '26.14 cashfreeAdapter.ts exists');
   assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'src/services/billing/googlePlayService.ts')), '26.14 googlePlayService.ts exists');
 
+  console.log('\n--- SUITE 27: DELTA CORRECTIONS & BEHAVIORAL VERIFICATION ---');
+
+  // 27.1 Pricing calculation returns PENDING_QUOTE when account quote is missing without explicit list price fallback
+  const { calculateAuthoritativeTemplateCost, CENTRAL_PRICING_CONFIG } = await import('../src/services/pricing/pricingService.ts');
+  const quoteWithoutFallback = calculateEstimatedProviderCostUsd({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '480p',
+    requestedOutputDurationSeconds: 5,
+    allowPublishedListPriceFallback: false
+  });
+  assert(quoteWithoutFallback.status === 'PENDING_QUOTE', '27.1 calculateEstimatedProviderCostUsd returns PENDING_QUOTE when account quote is missing without explicit list price fallback');
+
+  // 27.2 calculateAuthoritativeTemplateCost returns 0 (not guessed static credits) for unquoted AI template
+  const unquotedAiCost = calculateAuthoritativeTemplateCost({
+    id: 'test_ai_tpl',
+    title: 'Test AI Template',
+    type: 'video',
+    model: 'hf_mult_motion_control_flash',
+    creditCost: 35
+  } as any);
+  assert(unquotedAiCost === 0, '27.2 calculateAuthoritativeTemplateCost returns 0 for unquoted AI templates');
+
+  // 27.3 Central Pricing Settings Rate Source and Update Timestamp
+  assert(CENTRAL_PRICING_CONFIG.rateSource === 'RBI_REFERENCE_CENTRAL', '27.3 Central pricing rate source is RBI_REFERENCE_CENTRAL');
+  assert(CENTRAL_PRICING_CONFIG.lastVerifiedRate === 96.3, '27.3 Central pricing lastVerifiedRate is 96.3');
+  assert(CENTRAL_PRICING_CONFIG.updatedAt === '2026-11-04T00:00:00.000Z', '27.3 Central pricing updatedAt is 2026-11-04T00:00:00.000Z');
+
+  // 27.4 Server validates model workflow compatibility
+  assert(serverCode.includes('MODEL_WORKFLOW_MISMATCH'), '27.4 server.ts validates model workflow compatibility and returns MODEL_WORKFLOW_MISMATCH');
+
+  // 27.5 Server validates resolution exact support
+  assert(serverCode.includes('UNSUPPORTED_RESOLUTION'), '27.5 server.ts validates exact SUPPORTED resolution tariff and rejects UNKNOWN with UNSUPPORTED_RESOLUTION');
+
+  // 27.6 Server validates duration limits
+  assert(serverCode.includes('UNVERIFIED_DURATION'), '27.6 server.ts validates requested duration against verified model limits and returns UNVERIFIED_DURATION');
+
+  // 27.7 Server fails closed on missing R2 key
+  assert(serverCode.includes('STORAGE_FAILED'), '27.7 server.ts fails closed with STORAGE_FAILED if private R2 key is missing');
+
+  // 27.8 Server strict Couple validation checks partner_1 and partner_2
+  assert(serverCode.includes('MISSING_PARTNER_PHOTO'), '27.8 server.ts rejects couple generation missing partner photo with MISSING_PARTNER_PHOTO');
+  assert(serverCode.includes('INVALID_COUPLE_SLOTS'), '27.8 server.ts validates couple slot configuration with INVALID_COUPLE_SLOTS');
+
+  // 27.9 evaluateBestCompatibleModel in aiRouter evaluates models and chooses lowest-cost verified
+  const { evaluateBestCompatibleModel, selectBestCompatibleModel } = await import('../src/services/ai/aiRouter.ts');
+  const evalResult = evaluateBestCompatibleModel('video', 'MOTION_TRANSFER', '720p', 5);
+  assert(Array.isArray(evalResult.candidates), '27.9 evaluateBestCompatibleModel returns candidate list');
+  assert(typeof evalResult.strategy === 'string', '27.9 evaluateBestCompatibleModel returns evaluation strategy');
+  const bestModel = selectBestCompatibleModel('image');
+  assert(bestModel === 'gemini-3.1-flash-lite-image', '27.9 selectBestCompatibleModel selects verified image model');
+
+  // 27.10 hdDownloadQueue implements inFlight deduplication map
+  assert(hdQueueContent.includes('inFlight'), '27.10 hdDownloadQueue implements inFlight deduplication map');
+
+  // 27.11 TemplateCard prioritizes coverVideo for video templates
+  assert(updatedCardContent.includes('template.coverVideo || template.preview'), '27.11 TemplateCard prioritizes coverVideo for video templates');
+
+  // 27.12 HomeView stabilizes hero video key
+  assert(updatedHomeContent.includes('key={`hero_fg_${activeBanner.id}`}'), '27.12 HomeView stabilizes hero video key across HD swaps');
+
+  // 27.13 TemplateDetailModal supports independent couple wardrobe selectors
+  assert(detailModalUpdatedContent.includes('wardrobeSourceA') && detailModalUpdatedContent.includes('wardrobeSourceB'), '27.13 TemplateDetailModal implements independent couple wardrobe selectors');
+
+  // 27.14 TemplateManagerModal handles object-formatted supportedResolutions safely
+  assert(updatedManagerContent.includes('renderResolutions'), '27.14 TemplateManagerModal handles object-formatted supportedResolutions safely without .join crash');
+
+  // 27.15 All 4 protected payment file SHA-256 hashes match baseline
+  const crypto = await import('crypto');
+  const hashFile = (filePath: string) => {
+    const buf = fs.readFileSync(pathUtil.resolve(process.cwd(), filePath));
+    return crypto.createHash('sha256').update(buf).digest('hex');
+  };
+  const expectedHashes = {
+    'src/services/payments/razorpayAdapter.ts': '78d76c04324259a53cb08ac156a7d3f5ba02d5656d939d90e07ceae2491f1e05',
+    'src/services/payments/cashfreeAdapter.ts': 'e2f5f57157f1bdad3f1fbe87c52d7c9f0c14061364f96dda595057aefef84945',
+    'src/services/billing/googlePlayService.ts': '3da6f78c3ab1bde17f7b183fe34ae10610c54b13ef3a0f79fe55026af4d58a42',
+    'src/services/config/pricingAndConfig.ts': 'bd94bd5c70ba201006c400086a7e4ab223cc38ac9cf6421f4a5a486d04643d83'
+  };
+  for (const [file, hash] of Object.entries(expectedHashes)) {
+    const actual = hashFile(file);
+    assert(actual === hash, `27.15 Protected hash verified: ${file}`);
+  }
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

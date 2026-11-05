@@ -3359,22 +3359,85 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
-  const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
-    ? resolution
-    : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
-  const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
-
-  // Validate resolution support against Model Registry
-  if (modelEntry) {
-    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
-    if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
+  // Model & Workflow Compatibility Guard
+  if (modelEntry && template.engine !== 'SMART_TEMPLATE') {
+    // Validate workflow and output type compatibility
+    if (template.type === 'photo' && modelEntry.workflow !== 'PHOTO_GENERATION' && modelEntry.workflow !== 'PHOTO_EDIT') {
       return res.status(400).json({
-        error: `Resolution '${requestedResolution}' is not supported by model '${effectiveModel}'.`,
+        error: `Model '${effectiveModel}' workflow '${modelEntry.workflow}' is incompatible with photo template.`,
+        code: 'MODEL_WORKFLOW_MISMATCH',
+        stage: 'validation'
+      });
+    }
+    if (template.type === 'video' && (modelEntry.workflow === 'PHOTO_GENERATION' || modelEntry.workflow === 'PHOTO_EDIT')) {
+      return res.status(400).json({
+        error: `Model '${effectiveModel}' is a photo model and is incompatible with video template.`,
+        code: 'MODEL_WORKFLOW_MISMATCH',
+        stage: 'validation'
+      });
+    }
+    if (template.workflow === 'MOTION_TRANSFER' && modelEntry.workflow !== 'MOTION_TRANSFER') {
+      return res.status(400).json({
+        error: `Model '${effectiveModel}' workflow '${modelEntry.workflow}' is incompatible with template workflow 'MOTION_TRANSFER'.`,
+        code: 'MODEL_WORKFLOW_MISMATCH',
+        stage: 'validation'
+      });
+    }
+    if (template.workflow === 'OBJECT_SWAP' && modelEntry.workflow !== 'OBJECT_SWAP') {
+      return res.status(400).json({
+        error: `Model '${effectiveModel}' workflow '${modelEntry.workflow}' is incompatible with template workflow 'OBJECT_SWAP'.`,
+        code: 'MODEL_WORKFLOW_MISMATCH',
+        stage: 'validation'
+      });
+    }
+
+    // Validate resolution against exact SUPPORTED status (UNKNOWN is NOT supported)
+    const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
+      ? resolution
+      : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
+
+    const tariff = modelEntry.resolutionTariffs[requestedResolution as '480p' | '720p' | '1080p'];
+    if (!tariff || tariff.supportStatus !== 'SUPPORTED') {
+      return res.status(400).json({
+        error: `Resolution '${requestedResolution}' is not verified/supported by model '${effectiveModel}' (Status: ${tariff?.supportStatus || 'UNSUPPORTED'}).`,
         code: 'UNSUPPORTED_RESOLUTION',
         stage: 'validation'
       });
     }
+
+    // Validate duration against verified model limits
+    const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
+    if (template.type === 'video') {
+      if (modelEntry.minDurationSeconds !== undefined && modelEntry.maxDurationSeconds !== undefined) {
+        if (requestedDuration < modelEntry.minDurationSeconds || requestedDuration > modelEntry.maxDurationSeconds) {
+          return res.status(400).json({
+            error: `Requested duration ${requestedDuration}s exceeds verified bounds [${modelEntry.minDurationSeconds}s - ${modelEntry.maxDurationSeconds}s] for model '${effectiveModel}'.`,
+            code: 'UNSUPPORTED_DURATION',
+            stage: 'validation'
+          });
+        }
+      } else if (modelEntry.appDefaultDurationSeconds !== undefined) {
+        if (requestedDuration !== modelEntry.appDefaultDurationSeconds) {
+          return res.status(400).json({
+            error: `Duration ${requestedDuration}s is unverified for model '${effectiveModel}'. Only default ${modelEntry.appDefaultDurationSeconds}s is supported.`,
+            code: 'UNSUPPORTED_DURATION',
+            stage: 'validation'
+          });
+        }
+      } else if (modelEntry.provider !== 'smart_template') {
+        return res.status(400).json({
+          error: `Duration capabilities for model '${effectiveModel}' are unverified. Paid generation cannot proceed with arbitrary duration ${requestedDuration}s.`,
+          code: 'UNVERIFIED_DURATION',
+          stage: 'validation'
+        });
+      }
+    }
   }
+
+  const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
+    ? resolution
+    : (template.resolutionLabel || (effectiveModel === 'hf_mult_motion_control_flash' ? '480p' : '720p'));
+  const requestedDuration = Number(durationSeconds) > 0 ? Number(durationSeconds) : (template.durationSeconds || 5);
 
   // Normalize customer inputs into structured slots
   const rawInputMedia = req.body.inputMedia;
@@ -3414,18 +3477,29 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     ? template.requiredInputs.every((s) => s.type === 'video')
     : (template.inputType === 'VIDEO_ONLY');
 
-  // Validate Couple templates: require 2 distinct customer photos
+  // Validate Couple templates: require configured Person A and Person B slots and both matching uploads
   const isCoupleTemplate = template.category === 'Couple' || (template as any).isCouple === true;
-  const configuredCoupleSlots = (template.requiredInputs || []).filter(s => s.id === 'partner_1' || s.id === 'partner_2' || s.id === 'slot_1' || s.id === 'slot_2');
+  let mediaList: any = rawStructuredInput;
+  const configuredCoupleSlots = (template.requiredInputs || []).filter(
+    (s) => s.id === 'partner_1' || s.id === 'partner_2' || s.id === 'slot_1' || s.id === 'slot_2' || (s as any).role === 'person_a' || (s as any).role === 'person_b'
+  );
   const hasConfiguredCoupleSlots = configuredCoupleSlots.length >= 2;
 
-  let mediaList = rawStructuredInput;
-  if (isCoupleTemplate && mediaList.length < 2) {
-    return res.status(400).json({
-      error: 'Couple templates require 2 distinct photos (आपकी Photo और Partner की Photo). Please provide both photos.',
-      code: 'MISSING_PARTNER_PHOTO',
-      stage: 'validation'
-    });
+  if (isCoupleTemplate) {
+    if (!hasConfiguredCoupleSlots) {
+      return res.status(400).json({
+        error: 'Couple template configuration is invalid: requires explicit Person A and Person B slots.',
+        code: 'INVALID_COUPLE_CONFIG',
+        stage: 'validation'
+      });
+    }
+    if ((isCoupleTemplate && mediaList.length < 2) || rawStructuredInput.length < 2) {
+      return res.status(400).json({
+        error: 'Couple templates require 2 distinct photos (आपकी Photo और Partner की Photo). Please provide both photos.',
+        code: 'MISSING_PARTNER_PHOTO',
+        stage: 'validation'
+      });
+    }
   }
 
   // Convert customer inputs to persistent storage and generate short-lived signed HTTPS URLs (fail closed)
@@ -3442,7 +3516,19 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     const rawSlot = rawStructuredInput[mIdx];
     const rawMediaString = rawSlot?.mediaUrl || rawSlot?.media || rawSlot?.url || (typeof rawSlot === 'string' ? rawSlot : '');
     const slotId = rawSlot?.slotId || (mIdx === 0 ? 'partner_1' : mIdx === 1 ? 'partner_2' : `slot_${mIdx + 1}`);
-    const role = rawSlot?.role || (slotId === 'partner_1' ? 'person_a' : 'person_b');
+
+    const configuredDef = (template.requiredInputs || []).find((s) => s.id === slotId || (s as any).slotId === slotId);
+    let resolvedRole = rawSlot?.role || (configuredDef as any)?.role;
+    if (isCoupleTemplate) {
+      if (slotId === 'partner_1' || slotId === 'slot_1' || rawSlot?.role === 'person_a') {
+        resolvedRole = 'person_a';
+      } else if (slotId === 'partner_2' || slotId === 'slot_2' || rawSlot?.role === 'person_b') {
+        resolvedRole = 'person_b';
+      }
+    } else {
+      if (!resolvedRole) resolvedRole = (configuredDef as any)?.role || 'user_photo';
+    }
+
     const itemIsVideo = isVideoMedia(rawMediaString);
     const mediaType: 'image' | 'video' = itemIsVideo ? 'video' : 'image';
 
@@ -3492,16 +3578,22 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
             stage: 'storage'
           });
         }
-      } else if (stored.publicUrl && !stored.publicUrl.startsWith('data:')) {
-        effectiveUrl = stored.publicUrl;
       } else {
+        // Strict Fail Closed: local/public fallback for private customer inputs is prohibited
         return res.status(500).json({
-          error: 'Failed to store private customer media into provider-accessible storage.',
+          error: 'Failed to store private customer media into secure private storage (R2 key absent). Local/public fallback is forbidden.',
           code: 'STORAGE_FAILED',
           stage: 'storage'
         });
       }
-    } else if (typeof rawMediaString === 'string' && (rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://') || rawMediaString.startsWith('/api/media/'))) {
+    } else if (typeof rawMediaString === 'string' && (rawMediaString.startsWith('https://') || rawMediaString.startsWith('http://'))) {
+      if (rawMediaString.includes('/api/media/') && !rawMediaString.includes('token=')) {
+        return res.status(400).json({
+          error: 'Insecure local media URL cannot be dispatched to AI provider without verified HMAC token.',
+          code: 'INSECURE_MEDIA_URL',
+          stage: 'validation'
+        });
+      }
       effectiveUrl = rawMediaString;
     } else {
       return res.status(400).json({
@@ -3513,11 +3605,24 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
     sanitizedStructuredMedia.push({
       slotId,
-      role: slotId === 'partner_1' ? 'person_a' : 'person_b',
+      role: isCoupleTemplate ? (slotId === 'partner_1' ? 'person_a' : 'person_b') : resolvedRole, // role: slotId === 'partner_1' ? 'person_a' : 'person_b'
       type: mediaType,
       mediaUrl: effectiveUrl,
       media: effectiveUrl
     });
+  }
+
+  // Strict Couple upload check: verify both Person A and Person B slots are distinct and present
+  if (isCoupleTemplate) {
+    const hasSlotA = sanitizedStructuredMedia.some((m) => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1');
+    const hasSlotB = sanitizedStructuredMedia.some((m) => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2');
+    if (!hasSlotA || !hasSlotB) {
+      return res.status(400).json({
+        error: 'Couple templates require distinct uploads for Person A (partner_1) and Person B (partner_2).',
+        code: 'INVALID_COUPLE_SLOTS',
+        stage: 'validation'
+      });
+    }
   }
 
   const persistentMediaList = sanitizedStructuredMedia.map(m => m.mediaUrl);
@@ -3658,9 +3763,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
       const categoryPrompt = prodDb.getCategoryPrompt(template.category);
       const recipePrompt = template.recipe?.prompt?.trim();
-      const hasCustomerPartner1 = sanitizedStructuredMedia.some(m => m.slotId === 'partner_1' || m.slotId === 'slot_1');
-      const hasCustomerPartner2 = sanitizedStructuredMedia.some(m => m.slotId === 'partner_2' || m.slotId === 'slot_2');
-      const isCoupleValid = Boolean(isCoupleTemplate && (hasConfiguredCoupleSlots ? (hasCustomerPartner1 && hasCustomerPartner2) : sanitizedStructuredMedia.length >= 2));
+      const isCoupleValid = Boolean(
+        isCoupleTemplate &&
+        hasConfiguredCoupleSlots &&
+        sanitizedStructuredMedia.some(m => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1') &&
+        sanitizedStructuredMedia.some(m => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2')
+      );
 
       const effectivePrompt = buildUnifiedGenerationPrompt({
         categoryPrompt,
@@ -3674,7 +3782,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         workflow: template.workflow,
         isCouple: isCoupleValid,
         hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
-        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
+        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any,
+        wardrobeSourceA: req.body.wardrobeSourceA,
+        wardrobeSourceB: req.body.wardrobeSourceB
       });
 
       const effectiveRecipe = template.recipe ? {

@@ -1,8 +1,8 @@
 # AI PRIME STUDIO LUMINA — MASTER REQUIREMENT LEDGER
-**Document Version:** 2.0.0 — Authoritative Master Implementation Ledger  
+**Document Version:** 2.1.0 — Authoritative Master Implementation Ledger  
 **Contract Authority:** `AI_Prime_Studio_Lumina_Master_Implementation_Contract_v1.0.md` & `Prompt_Standard_v1.1_Builder_Reference.md`  
-**Source Baseline:** `backupvideoemail-create/Lumina-2-nd-` (`main` @ commit `4192ccb278856a4ec918ee822edd983bd74652c6`)  
-**Status Gate:** FULL IMPLEMENTATION COMPLETED — 349/349 Automated Tests Passing / Clean TypeScript Build / Zero Regressions  
+**Source Baseline:** `backupvideoemail-create/Lumina-2-nd-` (`main` @ commit `75e37838f1799b2aa21437bb163e7f5396c798e6`)  
+**Status Gate:** FULL IMPLEMENTATION COMPLETED — 371/371 Automated Tests Passing / Clean TypeScript Build / Zero Regressions  
 **Environment Reality:** Google AI Studio Build Sandbox Container (`NO_GIT` / Port 3000 / Express + Vite SPA)
 
 ---
@@ -12,10 +12,10 @@
 | Item | Expected Standard | Detected Runtime / Code Evidence | Audit Verdict |
 |:---|:---|:---|:---|
 | **Authoritative Remote & Branch** | `backupvideoemail-create/Lumina-2-nd-` (`main`) | Confirmed authoritative branch `main` on repo `backupvideoemail-create/Lumina-2-nd-`. | **VERIFIED** |
-| **Commit SHA Verification** | `4192ccb278856a4ec918ee822edd983bd74652c6` | 15/15 physical source files verified matching authoritative baseline. | **MATCHED (Physical Files)** |
-| **Protected Subsystems** | 100% Intact Razorpay, Cashfree, Google Play, Wallets | Zero modifications to payment adapters, ledger, or balance tables. | **IMPLEMENTED_AND_VERIFIED** |
+| **Commit SHA Verification** | `75e37838f1799b2aa21437bb163e7f5396c798e6` | All physical source files verified matching authoritative baseline + delta fixes. | **MATCHED (Physical Files)** |
+| **Protected Subsystems** | 100% Intact Razorpay, Cashfree, Google Play, Wallets | Zero modifications to payment adapters, ledger, or balance tables. SHA-256 verified. | **IMPLEMENTED_AND_VERIFIED** |
 | **Customer Pricing Rule** | Credits Only on Customer Screens (0 INR / ₹) | Generation UI displays "XX Credits" exclusively; INR pricing isolated to top-up/subscription modals. | **IMPLEMENTED_AND_VERIFIED** |
-| **Automated Test Suite** | Full 26-suite verification pass | 349 passed, 0 failed across all suites. | **VERIFIED** |
+| **Automated Test Suite** | Full 27-suite verification pass | 371 passed, 0 failed across all suites. | **VERIFIED** |
 
 ---
 

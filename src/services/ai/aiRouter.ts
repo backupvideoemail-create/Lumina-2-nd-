@@ -17,27 +17,172 @@ import { geminiAdapter } from './geminiAdapter.ts';
 import { videoProviderAdapter } from './videoProviderAdapter.ts';
 import { faceSwapAdapter } from './faceSwapAdapter.ts';
 import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
-import { MODEL_REGISTRY } from '../pricing/pricingService.ts';
+import { MODEL_REGISTRY, calculateEstimatedProviderCostUsd } from '../pricing/pricingService.ts';
+
+export interface ModelEvaluationCandidate {
+  modelId: string;
+  provider: string;
+  workflow: string;
+  isEvaluationOnly: boolean;
+  isCompatible: boolean;
+  isVerified: boolean;
+  estimatedCostUsd: number | null;
+  status: 'ELIGIBLE' | 'EVALUATION_ONLY' | 'UNSUPPORTED_RESOLUTION' | 'PENDING_QUOTE' | 'INCOMPATIBLE_WORKFLOW';
+  reason?: string;
+}
+
+export interface ModelEvaluationResult {
+  selectedModelId: string | null;
+  candidates: ModelEvaluationCandidate[];
+  strategy: 'LOWEST_COST_VERIFIED' | 'FALLBACK_COMPATIBLE';
+}
+
+export function evaluateBestCompatibleModel(
+  modality: 'image' | 'video' | 'face_swap',
+  preferredWorkflow?: string,
+  resolution: '480p' | '720p' | '1080p' = '720p',
+  durationSeconds: number = 5
+): ModelEvaluationResult {
+  const allEntries = Object.values(MODEL_REGISTRY);
+  const candidates: ModelEvaluationCandidate[] = [];
+
+  for (const entry of allEntries) {
+    // 1. Modality & Workflow Compatibility
+    let isCompatible = false;
+    if (modality === 'image') {
+      isCompatible = entry.workflow === 'PHOTO_GENERATION' || entry.workflow === 'PHOTO_EDIT';
+    } else if (modality === 'face_swap') {
+      isCompatible = entry.workflow === 'MOTION_TRANSFER' || entry.workflow === 'OBJECT_SWAP' || entry.workflow === 'VIDEO_FACE_REPLACEMENT';
+    } else if (modality === 'video') {
+      isCompatible = entry.workflow === 'VIDEO_EDIT' || entry.workflow === 'IMAGE_TO_VIDEO' || entry.workflow === 'MOTION_TRANSFER';
+    }
+
+    if (preferredWorkflow && isCompatible) {
+      if (entry.workflow !== preferredWorkflow && preferredWorkflow !== 'auto') {
+        isCompatible = false;
+      }
+    }
+
+    if (!isCompatible) {
+      candidates.push({
+        modelId: entry.modelId,
+        provider: entry.provider,
+        workflow: entry.workflow,
+        isEvaluationOnly: Boolean(entry.isEvaluationOnly),
+        isCompatible: false,
+        isVerified: false,
+        estimatedCostUsd: null,
+        status: 'INCOMPATIBLE_WORKFLOW',
+        reason: `Workflow ${entry.workflow} does not match required modality ${modality} (preferred: ${preferredWorkflow || 'any'}).`
+      });
+      continue;
+    }
+
+    // 2. Evaluation Only Check
+    if (entry.isEvaluationOnly) {
+      candidates.push({
+        modelId: entry.modelId,
+        provider: entry.provider,
+        workflow: entry.workflow,
+        isEvaluationOnly: true,
+        isCompatible: true,
+        isVerified: false,
+        estimatedCostUsd: null,
+        status: 'EVALUATION_ONLY',
+        reason: `Model ${entry.modelId} is restricted for internal evaluation only.`
+      });
+      continue;
+    }
+
+    // 3. Resolution Tariff Support
+    const tariff = entry.resolutionTariffs[resolution];
+    if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
+      candidates.push({
+        modelId: entry.modelId,
+        provider: entry.provider,
+        workflow: entry.workflow,
+        isEvaluationOnly: false,
+        isCompatible: true,
+        isVerified: false,
+        estimatedCostUsd: null,
+        status: 'UNSUPPORTED_RESOLUTION',
+        reason: `Resolution ${resolution} is marked UNSUPPORTED for ${entry.modelId}.`
+      });
+      continue;
+    }
+
+    // 4. Verification & Tariff Quote
+    const isVerified =
+      tariff.supportStatus === 'SUPPORTED' &&
+      entry.endpointVerificationStatus === 'VERIFIED' &&
+      entry.billsSourceVideo !== 'UNKNOWN';
+
+    const costEst = calculateEstimatedProviderCostUsd({
+      modelId: entry.modelId,
+      resolution,
+      requestedOutputDurationSeconds: durationSeconds,
+      allowPublishedListPriceFallback: true
+    });
+
+    if (costEst.status === 'QUOTED' && isVerified) {
+      candidates.push({
+        modelId: entry.modelId,
+        provider: entry.provider,
+        workflow: entry.workflow,
+        isEvaluationOnly: false,
+        isCompatible: true,
+        isVerified: true,
+        estimatedCostUsd: costEst.estimatedProviderCostUsd ?? null,
+        status: 'ELIGIBLE',
+        reason: `Verified and quoted at $${costEst.estimatedProviderCostUsd}.`
+      });
+    } else {
+      candidates.push({
+        modelId: entry.modelId,
+        provider: entry.provider,
+        workflow: entry.workflow,
+        isEvaluationOnly: false,
+        isCompatible: true,
+        isVerified: false,
+        estimatedCostUsd: costEst.status === 'QUOTED' ? (costEst.estimatedProviderCostUsd ?? null) : null,
+        status: 'PENDING_QUOTE',
+        reason: costEst.reason || `Model ${entry.modelId} capability or quote is pending verification.`
+      });
+    }
+  }
+
+  // Choose lowest-cost verified eligible model
+  const eligible = candidates.filter((c) => c.status === 'ELIGIBLE' && c.estimatedCostUsd !== null);
+  if (eligible.length > 0) {
+    eligible.sort((a, b) => (a.estimatedCostUsd ?? 0) - (b.estimatedCostUsd ?? 0));
+    return {
+      selectedModelId: eligible[0].modelId,
+      candidates,
+      strategy: 'LOWEST_COST_VERIFIED'
+    };
+  }
+
+  // Fallback: Pick first compatible non-eval candidate if available
+  const compatibleFallback = candidates.find((c) => c.isCompatible && !c.isEvaluationOnly);
+  return {
+    selectedModelId: compatibleFallback ? compatibleFallback.modelId : null,
+    candidates,
+    strategy: 'FALLBACK_COMPATIBLE'
+  };
+}
 
 export function selectBestCompatibleModel(
   modality: 'image' | 'video' | 'face_swap',
-  preferredWorkflow?: string
+  preferredWorkflow?: string,
+  resolution: '480p' | '720p' | '1080p' = '720p',
+  durationSeconds: number = 5
 ): string {
-  const entries = Object.values(MODEL_REGISTRY).filter((m) => !m.isEvaluationOnly);
-  if (modality === 'face_swap') {
-    const match = entries.find(
-      (m) => m.provider === 'higgsfield' && (preferredWorkflow ? m.workflow === preferredWorkflow : true)
-    );
-    if (match) return match.modelId;
-    return 'hf_mult_motion_control_flash';
-  }
-  if (modality === 'image') {
-    const match = entries.find((m) => m.provider === 'gemini' && m.workflow === 'PHOTO_GENERATION');
-    if (match) return match.modelId;
-    return 'gemini-3.1-flash-lite-image';
-  }
-  const match = entries.find((m) => m.workflow === 'VIDEO_EDIT' || m.workflow === 'IMAGE_TO_VIDEO');
-  if (match) return match.modelId;
+  const evaluation = evaluateBestCompatibleModel(modality, preferredWorkflow, resolution, durationSeconds);
+  if (evaluation.selectedModelId) return evaluation.selectedModelId;
+
+  // Safe registry-defined default
+  if (modality === 'image') return 'gemini-3.1-flash-lite-image';
+  if (modality === 'face_swap') return 'hf_mult_motion_control_flash';
   return 'hf_mult_motion_control_flash';
 }
 
