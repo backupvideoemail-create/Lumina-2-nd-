@@ -118,5 +118,10 @@ service cloud.firestore {
       allow create: if true;
       allow read, update, delete: if isAdmin();
     }
+
+    // Connection Health Probe (Used by frontend client to verify Firestore reachability)
+    match /test/connection {
+      allow get: if true;
+    }
   }
 }

@@ -66,13 +66,19 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Connection test per skill guidelines
+// Connection test per skill guidelines with timeout and graceful offline resilience
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    const probePromise = getDocFromServer(doc(db, 'test', 'connection'));
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('connection-timeout: the client is offline or backend unreachable')), 4000)
+    );
+    await Promise.race([probePromise, timeoutPromise]);
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+    if (error instanceof Error && (error.message.includes('client is offline') || error.message.includes('connection-timeout') || error.message.includes('Could not reach Cloud Firestore'))) {
+      console.warn('[Firebase] Firestore client is operating in local/offline-resilient mode.');
+    } else {
+      console.warn('[Firebase] Firestore probe notice:', error);
     }
   }
 }
