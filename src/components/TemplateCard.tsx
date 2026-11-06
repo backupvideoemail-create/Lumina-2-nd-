@@ -37,9 +37,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
         ? (template.preview || template.coverVideo || template.cover)
         : (template.preview || template.cover || template.coverVideo));
 
-  const hdTargetMedia = matchingScene
-    ? (matchingScene.resultVideoPreview || (template as any).hdVideoUrl || (template as any).hdMedia || template.coverVideo || previewMedia)
-    : ((template as any).hdVideoUrl || (template as any).hdMedia || template.coverVideo || previewMedia);
+  // Genuine distinct HD asset only: requires explicit hdVideoUrl or hdMedia; never conflates preview with HD
+  const hdTargetMedia = ((template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl) || null;
 
   const candidateMedia = previewMedia;
 

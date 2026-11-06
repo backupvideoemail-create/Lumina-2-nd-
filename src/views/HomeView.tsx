@@ -106,8 +106,9 @@ export const HomeView: React.FC = () => {
   }, [isPaused, banners.length, timerResetKey]);
 
   const [bannerHdUrls, setBannerHdUrls] = useState<Record<string, string>>({});
+  const heroVideoRef = useRef<HTMLVideoElement>(null);
 
-  // HD video prefetch for hero banners
+  // HD video prefetch for hero banners with seamless playback preservation
   useEffect(() => {
     if (!banners || banners.length === 0) return;
     const current = banners[currentBannerIndex];
@@ -115,7 +116,26 @@ export const HomeView: React.FC = () => {
       queueHdDownload(current.videoUrl, 'high')
         .then((hdUrl) => {
           if (hdUrl && hdUrl !== current.videoUrl) {
-            setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
+            const videoEl = heroVideoRef.current;
+            if (videoEl) {
+              const prevTime = videoEl.currentTime;
+              const wasPaused = videoEl.paused;
+              const wasMuted = videoEl.muted;
+              setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
+              const restoreState = () => {
+                try {
+                  videoEl.currentTime = prevTime;
+                  videoEl.muted = wasMuted;
+                  if (!wasPaused) {
+                    videoEl.play().catch(() => {});
+                  }
+                } catch {}
+                videoEl.removeEventListener('loadeddata', restoreState);
+              };
+              videoEl.addEventListener('loadeddata', restoreState);
+            } else {
+              setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
+            }
           }
         })
         .catch(() => {});
@@ -289,6 +309,7 @@ export const HomeView: React.FC = () => {
                 return isVideoBanner ? (
                   <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
                     <video
+                      ref={heroVideoRef}
                       key={`hero_fg_${activeBanner.id}`}
                       src={heroVideoSrc}
                       poster={effectivePoster || (effectiveImage?.endsWith('.mp4') ? undefined : effectiveImage)}

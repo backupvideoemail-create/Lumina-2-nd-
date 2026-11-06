@@ -748,25 +748,43 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       }
     }
 
-    // 5. AFTER RESULT IS THE PRIMARY AUTHORITATIVE COVER PHOTO:
-    // When Admin uploads Face Photo, BEFORE Photo and AFTER Photo, AFTER Photo is ALWAYS the Cover Photo!
-    // Face Photo is ONLY for Face Thumbnail. BEFORE Photo is ONLY for Before-After slider.
-    let coverUrl: string | undefined = sampleResultUrl;
-    if (!coverUrl && coverBase64) {
+    // 5. COVER MEDIA RESOLUTION:
+    // If Admin explicitly selected an independent Cover (Cover Video or Cover Image), honor that explicit Cover!
+    // Only fall back to sampleResultUrl if no explicit Cover media was uploaded/configured.
+    let explicitCoverUrl: string | undefined = undefined;
+    if (coverVideoBase64 || inputCoverVideo) {
+      const explicitInput = coverVideoBase64 || inputCoverVideo;
+      if (typeof explicitInput === 'string' && (explicitInput.startsWith('http://') || explicitInput.startsWith('https://') || explicitInput.startsWith('/api/media/'))) {
+        explicitCoverUrl = explicitInput;
+      } else if (coverVideoBase64) {
+        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
+        explicitCoverUrl = storedCoverVid.publicUrl;
+        if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
+      }
+    } else if (coverImageBase64 || inputCoverImage) {
+      const explicitInput = coverImageBase64 || inputCoverImage;
+      if (typeof explicitInput === 'string' && (explicitInput.startsWith('http://') || explicitInput.startsWith('https://') || explicitInput.startsWith('/api/media/'))) {
+        explicitCoverUrl = explicitInput;
+      } else if (coverImageBase64) {
+        const storedCoverImg = await mediaStorage.saveMedia(coverImageBase64, 'tpl_cover_img', `${targetTemplateId}_cover_img.jpg`, undefined, true);
+        explicitCoverUrl = storedCoverImg.publicUrl;
+        if (storedCoverImg.r2Key) uploadedAssetMeta.push({ key: storedCoverImg.r2Key, filename: storedCoverImg.fileId, publicUrl: storedCoverImg.publicUrl });
+      }
+    } else if (coverBase64) {
       if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://') || coverBase64.startsWith('/api/media/'))) {
-        coverUrl = coverBase64;
+        explicitCoverUrl = coverBase64;
       } else {
         const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `${targetTemplateId}_cover`, undefined, true);
-        coverUrl = storedCover.publicUrl;
+        explicitCoverUrl = storedCover.publicUrl;
         if (storedCover.r2Key) uploadedAssetMeta.push({ key: storedCover.r2Key, filename: storedCover.fileId, publicUrl: storedCover.publicUrl });
       }
-    } else if (!coverUrl && mediaUrl) {
-      coverUrl = mediaUrl;
     }
+
+    let coverUrl: string | undefined = explicitCoverUrl || sampleResultUrl || mediaUrl;
 
     // Require AFTER sample result or explicit cover: NEVER fallback to sampleBefore or sampleFaceThumbnail
     if (!coverUrl) {
-      return res.status(400).json({ error: 'AFTER / Sample Result photo is required for the template cover. Face thumbnail or BEFORE photo cannot be used as cover.' });
+      return res.status(400).json({ error: 'AFTER / Sample Result photo or explicit Cover is required for the template cover. Face thumbnail or BEFORE photo cannot be used as cover.' });
     }
     const resolvedCover = coverUrl;
     const resolvedMedia = mediaUrl || sampleResultUrl || coverUrl || '';
@@ -3470,10 +3488,27 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const requestedResolution = (resolution === '480p' || resolution === '720p' || resolution === '1080p')
     ? resolution
-    : (template.resolutionLabel || modelEntry?.appDefaultResolution || '720p');
+    : (template.resolutionLabel || modelEntry?.appDefaultResolution);
+
+  if (!requestedResolution) {
+    return res.status(400).json({
+      error: 'Resolution selection is required. No verified default resolution exists.',
+      code: 'MISSING_VERIFIED_RESOLUTION',
+      stage: 'validation'
+    });
+  }
+
   const requestedDuration = Number(durationSeconds) > 0
     ? Number(durationSeconds)
-    : (template.durationSeconds || modelEntry?.appDefaultDurationSeconds || 5);
+    : (template.durationSeconds && Number(template.durationSeconds) > 0 ? Number(template.durationSeconds) : modelEntry?.appDefaultDurationSeconds);
+
+  if (template.type === 'video' && (!requestedDuration || requestedDuration <= 0)) {
+    return res.status(400).json({
+      error: 'Duration selection is required for video generation. No verified default duration exists.',
+      code: 'MISSING_VERIFIED_DURATION',
+      stage: 'validation'
+    });
+  }
 
   // Normalize customer inputs into structured slots
   const rawInputMedia = req.body.inputMedia;
@@ -3556,17 +3591,17 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     const slotId = rawSlot?.slotId || (mIdx === 0 ? 'partner_1' : mIdx === 1 ? 'partner_2' : `slot_${mIdx + 1}`);
 
     const configuredDef = (template.requiredInputs || []).find((s) => s.id === slotId || (s as any).slotId === slotId);
-    let resolvedRole = rawSlot?.role || (configuredDef as any)?.role;
+    let resolvedRole = (configuredDef as any)?.role;
     if (isCoupleTemplate) {
-      if (slotId === 'partner_1' || slotId === 'slot_1' || rawSlot?.role === 'person_a' || (configuredDef as any)?.role === 'person_a') {
+      if (slotId === 'partner_1' || slotId === 'slot_1' || (configuredDef as any)?.role === 'person_a') {
         resolvedRole = 'person_a';
-      } else if (slotId === 'partner_2' || slotId === 'slot_2' || rawSlot?.role === 'person_b' || (configuredDef as any)?.role === 'person_b') {
+      } else if (slotId === 'partner_2' || slotId === 'slot_2' || (configuredDef as any)?.role === 'person_b') {
         resolvedRole = 'person_b';
-      } else {
-        resolvedRole = (configuredDef as any)?.role || (mIdx === 0 ? 'person_a' : 'person_b');
+      } else if (!resolvedRole) {
+        resolvedRole = mIdx === 0 ? 'person_a' : 'person_b';
       }
     } else {
-      if (!resolvedRole) resolvedRole = (configuredDef as any)?.role || 'user_photo';
+      if (!resolvedRole) resolvedRole = rawSlot?.role || 'user_photo';
     }
 
     const itemIsVideo = isVideoMedia(rawMediaString);
@@ -3693,7 +3728,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       modelId: effectiveModel,
       resolution: requestedResolution as any,
       sourceVideoDurationSeconds: measuredSourceVideoDuration,
-      requestedOutputDurationSeconds: requestedDuration
+      requestedOutputDurationSeconds: requestedDuration || 1
     });
 
     if (estimate.status === 'PENDING_QUOTE') {

@@ -233,8 +233,10 @@ export const TemplateDetailModal: React.FC = () => {
         setSelectedResolution(verifiedResolutions[0]);
       } else if (modelEntry?.appDefaultResolution) {
         setSelectedResolution(modelEntry.appDefaultResolution);
+      } else if (selectedTemplate.resolutionLabel && (selectedTemplate.resolutionLabel === '480p' || selectedTemplate.resolutionLabel === '720p' || selectedTemplate.resolutionLabel === '1080p')) {
+        setSelectedResolution(selectedTemplate.resolutionLabel as any);
       } else {
-        setSelectedResolution('720p');
+        setSelectedResolution('' as any);
       }
       if (modelEntry?.appDefaultDurationSeconds) {
         setSelectedDuration(modelEntry.appDefaultDurationSeconds);

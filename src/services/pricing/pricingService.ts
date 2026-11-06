@@ -404,21 +404,22 @@ export function calculateAuthoritativeTemplateCost(
 
   // 2. AI Generation Templates: Must be derived strictly through server-authoritative MODEL_REGISTRY quoting
   // Note: providerCostUsd is strictly prohibited from bypassing verified AI model quotes.
-  const modelId = template.model || (template.type === 'video' ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
+  const isVideo = template.type === 'video';
+  const modelId = template.model || (isVideo ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
   const resolution = (template.resolutionLabel === '480p' || template.resolutionLabel === '720p' || template.resolutionLabel === '1080p')
     ? template.resolutionLabel
     : undefined;
-  const duration = template.durationSeconds;
+  const duration = isVideo ? template.durationSeconds : 1;
 
-  // If resolution or duration is not provided or unverified, fail closed with 0
-  if (!resolution || !duration) {
+  // If resolution is missing or duration is missing for video, fail closed with 0
+  if (!resolution || (isVideo && (!duration || duration <= 0))) {
     return 0;
   }
 
   const estimate = calculateEstimatedProviderCostUsd({
     modelId,
     resolution: resolution as any,
-    requestedOutputDurationSeconds: duration,
+    requestedOutputDurationSeconds: duration || 1,
     allowPublishedListPriceFallback: false // Never bypass verified account quotes without explicit policy
   });
 

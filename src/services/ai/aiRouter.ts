@@ -34,7 +34,7 @@ export interface ModelEvaluationCandidate {
 export interface ModelEvaluationResult {
   selectedModelId: string | null;
   candidates: ModelEvaluationCandidate[];
-  strategy: 'LOWEST_COST_VERIFIED' | 'FALLBACK_COMPATIBLE';
+  strategy: 'LOWEST_COST_VERIFIED' | 'FALLBACK_COMPATIBLE' | 'BLOCKED_PENDING_QUOTE';
 }
 
 export function evaluateBestCompatibleModel(
