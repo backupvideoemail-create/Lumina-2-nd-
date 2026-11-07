@@ -1704,6 +1704,81 @@ async function runSystemVerification() {
   assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'android/app/build.gradle.kts')), '28.7 native android/app/build.gradle.kts intact');
   assert(fs.existsSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml')), '28.7 .github/workflows/android-build.yml intact');
 
+  // =========================================================================
+  // SUITE 29: PRODUCTION INCIDENT SAFETY & CENTRAL DIAGNOSTICS AUDIT
+  // =========================================================================
+  console.log('\n--- SUITE 29: PRODUCTION INCIDENT SAFETY & CENTRAL DIAGNOSTICS AUDIT ---');
+
+  // 29.1 Safe Parse Response Helper & 503 HTML Resilience
+  const appContextFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(appContextFile.includes('safeParseJsonResponse'), '29.1 safeParseJsonResponse helper exported in AppContext.tsx');
+  assert(appContextFile.includes('503 Service Unavailable'), '29.1 safeParseJsonResponse gracefully handles 503 Service Unavailable HTML');
+  assert(appContextFile.includes('lumina_pending_payment'), '29.1 AppContext tracks lumina_pending_payment in localStorage');
+  assert(appContextFile.includes('reconcilePayment'), '29.1 AppContext triggers automatic background reconciliation');
+
+  // 29.2 Admin Security & Drawer Isolation
+  const drawerFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
+  assert(drawerFile.includes('backupvideoemail@gmail.com'), '29.2 Drawer checks primary admin backupvideoemail@gmail.com');
+  assert(drawerFile.includes('ai.prime.studio.pro@gmail.com'), '29.2 Drawer checks secondary admin ai.prime.studio.pro@gmail.com');
+  assert(drawerFile.includes('{isAdmin && ('), '29.2 Drawer hides Template Manager and Diagnostics from normal users');
+
+  // 29.3 Account Deletion with Razorpay Mandate Cancellation
+  const suite29ServerCode = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(suite29ServerCode.includes("app.delete('/api/auth/account'"), '29.3 server.ts has DELETE /api/auth/account endpoint');
+  assert(suite29ServerCode.includes('cancelSubscription'), '29.3 DELETE /api/auth/account calls razorpayAdapter.cancelSubscription');
+  const legalModalFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/LegalModal.tsx'), 'utf8');
+  assert(legalModalFile.includes('Cancelling Mandate & Wiping Data...'), '29.3 LegalModal displays active mandate cancellation loading state');
+
+  // 29.4 Template Sync & /api/version Endpoint
+  assert(suite29ServerCode.includes("app.get('/api/version'"), '29.4 server.ts has GET /api/version endpoint');
+  assert(suite29ServerCode.includes('no-store, no-cache, must-revalidate'), '29.4 server.ts enforces no-cache headers on /api/templates and /api/version');
+
+  // 29.5 Central Production Diagnostics: 10 Modules & Formula Verification
+  assert(suite29ServerCode.includes('firebase_auth_architecture'), '29.5 Module 1: Firebase Auth Architecture present');
+  assert(suite29ServerCode.includes('firebase_auth_phone_pipeline'), '29.5 Module 2: Firebase Phone OTP Pipeline present');
+  assert(suite29ServerCode.includes('high_intent_auth_security'), '29.5 Module 3: High-Intent Auth Security present');
+  assert(suite29ServerCode.includes('admin_security_rbac'), '29.5 Module 4: Admin RBAC Security present');
+  assert(suite29ServerCode.includes('razorpay_order_mandate_arch'), '29.5 Module 5: Razorpay Mandate Architecture present');
+  assert(suite29ServerCode.includes('cryptographic_signature_security'), '29.5 Module 6: Cryptographic Signature Security present');
+  assert(suite29ServerCode.includes('autopay_lifecycle_and_pricing'), '29.5 Module 7: AutoPay Lifecycle & Pricing present');
+  assert(suite29ServerCode.includes('webhook_resilience_idempotency'), '29.5 Module 8: Webhook Replay Protection present');
+  assert(suite29ServerCode.includes('credit_activation_ledger_integrity'), '29.5 Module 9: Credit Ledger Integrity present');
+  assert(suite29ServerCode.includes('ai_and_media_storage_readiness'), '29.5 Module 10: AI & Storage Readiness present');
+  assert(suite29ServerCode.includes('balance_after === balance_before + pack_credits'), '29.5 Credit Ledger verifies exact balance formula');
+  assert(suite29ServerCode.includes('diagnostics_history'), '29.5 Diagnostics persists run snapshot to diagnostics_history');
+
+  // 29.6 Diagnostics UI & Expandable Cards
+  const diagnosticsModalFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/DiagnosticsModal.tsx'), 'utf8');
+  assert(diagnosticsModalFile.includes('Central Production Diagnostics & Audit'), '29.6 DiagnosticsModal has production audit title');
+  assert(diagnosticsModalFile.includes('Calculation Formula:'), '29.6 DiagnosticsModal renders calculation formula');
+  assert(diagnosticsModalFile.includes('Expected Result:'), '29.6 DiagnosticsModal renders expected result');
+  assert(diagnosticsModalFile.includes('Actual Result:'), '29.6 DiagnosticsModal renders actual result');
+  assert(diagnosticsModalFile.includes('Failure Reason:'), '29.6 DiagnosticsModal renders failure reason');
+  assert(diagnosticsModalFile.includes('Root Cause / Hypothesis:'), '29.6 DiagnosticsModal renders root cause hypothesis');
+  assert(diagnosticsModalFile.includes('Recommended Owner Action:'), '29.6 DiagnosticsModal renders recommended owner action');
+  assert(diagnosticsModalFile.includes('Permanent Firestore Run History'), '29.6 DiagnosticsModal supports Firestore run history snapshot loading');
+
+  // 29.7 Mobile Phone Duplicate Removal
+  const plansModalFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/PlansModal.tsx'), 'utf8');
+  assert(plansModalFile.includes('cleanUserPhone.length >= 10'), '29.7 PlansModal inspects user.phone and bypasses duplicate input prompt');
+
+  // 29.8 SVG Standards
+  const svgFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'public/icons/logo-icon.svg'), 'utf8');
+  assert(svgFile.includes('stop-color='), '29.8 logo-icon.svg uses standard kebab-case stop-color');
+  assert(svgFile.includes('stop-opacity='), '29.8 logo-icon.svg uses standard kebab-case stop-opacity');
+  assert(!svgFile.includes('stopColor='), '29.8 logo-icon.svg eliminated non-standard camelCase stopColor');
+
+  // 29.9 TWA SDK 36 Alignment
+  const twaGradleFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android-twa/app/build.gradle'), 'utf8');
+  assert(twaGradleFile.includes('compileSdk 36'), '29.9 android-twa/app/build.gradle updated to compileSdk 36');
+  assert(twaGradleFile.includes('targetSdk 36'), '29.9 android-twa/app/build.gradle updated to targetSdk 36');
+
+  // 29.10 Native Project Untouched Guarantee
+  const nativeBuildKts = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/build.gradle.kts'), 'utf8');
+  assert(nativeBuildKts.includes('com.aiprimestudio.app'), '29.10 Native android/app/build.gradle.kts intact and untouched');
+  const androidWorkflow = fs.readFileSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml'), 'utf8');
+  assert(androidWorkflow.includes('Android CI Build'), '29.10 .github/workflows/android-build.yml intact and untouched');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

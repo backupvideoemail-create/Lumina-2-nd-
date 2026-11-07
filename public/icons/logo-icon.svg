@@ -2,32 +2,32 @@
   <defs>
     <!-- Background Gradient -->
     <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
-      <stop offset="0%" stopColor="#1a1920" />
-      <stop offset="60%" stopColor="#0d0d12" />
-      <stop offset="100%" stopColor="#08080a" />
+      <stop offset="0%" stop-color="#1a1920" />
+      <stop offset="60%" stop-color="#0d0d12" />
+      <stop offset="100%" stop-color="#08080a" />
     </radialGradient>
 
     <!-- Metallic Gold Gradient -->
     <linearGradient id="aiPrimeGold" x1="46" y1="46" x2="466" y2="466" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stopColor="#fff8e7" />
-      <stop offset="30%" stopColor="#f5d77f" />
-      <stop offset="65%" stopColor="#d4af37" />
-      <stop offset="100%" stopColor="#966d0c" />
+      <stop offset="0%" stop-color="#fff8e7" />
+      <stop offset="30%" stop-color="#f5d77f" />
+      <stop offset="65%" stop-color="#d4af37" />
+      <stop offset="100%" stop-color="#966d0c" />
     </linearGradient>
 
     <!-- Lens Ring Gradient -->
     <linearGradient id="lensRingGrad" x1="116" y1="116" x2="396" y2="396" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stopColor="#ffffff" stopOpacity="0.85" />
-      <stop offset="50%" stopColor="#d4af37" stopOpacity="0.75" />
-      <stop offset="100%" stopColor="#1a1813" stopOpacity="0.95" />
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.85" />
+      <stop offset="50%" stop-color="#d4af37" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#1a1813" stop-opacity="0.95" />
     </linearGradient>
 
     <!-- Video Play Core Radial -->
     <radialGradient id="videoPlayCore" cx="45%" cy="45%" r="55%">
-      <stop offset="0%" stopColor="#ffffff" />
-      <stop offset="35%" stopColor="#fae29c" />
-      <stop offset="70%" stopColor="#dfb743" />
-      <stop offset="100%" stopColor="#a3760e" />
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="35%" stop-color="#fae29c" />
+      <stop offset="70%" stop-color="#dfb743" />
+      <stop offset="100%" stop-color="#a3760e" />
     </radialGradient>
   </defs>
 

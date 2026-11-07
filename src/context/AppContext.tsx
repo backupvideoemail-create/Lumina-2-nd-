@@ -241,6 +241,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch((err) => console.warn('[AppContext] Payment config sync note:', err));
   }, []);
 
+// Resilient Response Helper for Cloud Run 503 / HTML interception
+export async function safeParseJsonResponse<T = any>(
+  res: Response
+): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+
+  if (!isJson) {
+    const rawText = await res.text().catch(() => '');
+    if (res.status === 503) {
+      return {
+        ok: false,
+        status: 503,
+        data: null,
+        error: 'Cloud Run service warming up (503 Service Unavailable). Please retry in a moment.'
+      };
+    }
+    if (res.status === 401) {
+      return {
+        ok: false,
+        status: 401,
+        data: null,
+        error: 'Authentication session expired or required (401 Unauthorized).'
+      };
+    }
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      error: rawText.slice(0, 160) || `Server returned HTTP ${res.status}`
+    };
+  }
+
+  try {
+    const data = await res.json();
+    return {
+      ok: res.ok,
+      status: res.status,
+      data,
+      error: res.ok ? undefined : (data?.error || `HTTP ${res.status}`)
+    };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      error: 'Invalid JSON response from server'
+    };
+  }
+}
+
   // Auth Header Helper
   const getAuthHeaders = (): Record<string, string> => {
     const token = localStorage.getItem('lumina_session_token');
@@ -699,6 +750,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Auto-Reconciliation of Pending Payments on App Mount or Network Online Event
+  useEffect(() => {
+    const attemptPendingReconciliation = async () => {
+      try {
+        const rawPending = localStorage.getItem('lumina_pending_payment');
+        if (!rawPending) return;
+        const pending = JSON.parse(rawPending);
+        if (pending && (pending.paymentId || pending.subscriptionId || pending.orderId)) {
+          console.log('[Payment Resilience] Auto-reconciling pending payment from storage:', pending);
+          const recon = await reconcilePayment(pending.paymentId, pending.subscriptionId);
+          if (recon.success) {
+            console.log('[Payment Resilience] Auto-reconciliation succeeded:', recon.message);
+            localStorage.removeItem('lumina_pending_payment');
+          }
+        }
+      } catch (e) {
+        console.warn('[Payment Resilience] Auto-reconciliation check error:', e);
+      }
+    };
+
+    attemptPendingReconciliation();
+    window.addEventListener('online', attemptPendingReconciliation);
+    return () => window.removeEventListener('online', attemptPendingReconciliation);
+  }, []);
+
   // Initiate Razorpay Checkout Order / Subscription
   const initiateCheckout = async (
     type: 'plan' | 'topup',
@@ -722,20 +798,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
         body: JSON.stringify({ type, planId: itemId, topUpId: itemId, itemId, provider, phone })
       });
-      const data = await res.json();
+      const parsed = await safeParseJsonResponse<{
+        orderId?: string;
+        subscriptionId?: string;
+        customerId?: string;
+        shortUrl?: string;
+        isAutoPay?: boolean;
+        error?: string;
+      }>(res);
       setIsPaying(false);
 
-      if (res.ok && (data.orderId || data.subscriptionId)) {
+      if (parsed.ok && parsed.data && (parsed.data.orderId || parsed.data.subscriptionId)) {
         return {
           success: true,
-          orderId: data.orderId,
-          subscriptionId: data.subscriptionId,
-          customerId: data.customerId,
-          shortUrl: data.shortUrl,
-          isAutoPay: Boolean(data.isAutoPay || data.subscriptionId)
+          orderId: parsed.data.orderId,
+          subscriptionId: parsed.data.subscriptionId,
+          customerId: parsed.data.customerId,
+          shortUrl: parsed.data.shortUrl,
+          isAutoPay: Boolean(parsed.data.isAutoPay || parsed.data.subscriptionId)
         };
       } else {
-        return { success: false, error: data.error || 'Failed to create payment order or mandate' };
+        return { success: false, error: parsed.error || 'Failed to create payment order or mandate' };
       }
     } catch (err: any) {
       setIsPaying(false);
@@ -753,6 +836,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     signature?: string,
     subscriptionId?: string
   ): Promise<{ success: boolean; error?: string }> => {
+    // Record pending payment in localStorage to survive transient 503 or network drop
+    try {
+      localStorage.setItem(
+        'lumina_pending_payment',
+        JSON.stringify({
+          orderId,
+          type,
+          itemId,
+          provider,
+          paymentId,
+          signature,
+          subscriptionId,
+          timestamp: Date.now()
+        })
+      );
+    } catch {}
+
     try {
       const res = await fetch('/api/payments/verify', {
         method: 'POST',
@@ -770,19 +870,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           subscriptionId
         })
       });
-      const data = await res.json();
+      const parsed = await safeParseJsonResponse<{
+        success: boolean;
+        error?: string;
+        wallet?: CreditWallet;
+        subscription?: UserSubscription;
+      }>(res);
       setIsPaying(false);
-      if (res.ok && data.success) {
-        if (data.wallet) setWallet(data.wallet);
-        if (data.subscription) setActiveSubscription(data.subscription);
+
+      if (parsed.ok && parsed.data?.success) {
+        localStorage.removeItem('lumina_pending_payment');
+        if (parsed.data.wallet) setWallet(parsed.data.wallet);
+        if (parsed.data.subscription) setActiveSubscription(parsed.data.subscription);
         await refreshUserData();
         return { success: true };
       }
-      return { success: false, error: data.error || 'Payment verification failed on the server.' };
+
+      return {
+        success: false,
+        error: parsed.error || 'Payment verification pending. If money was debited, your credits will activate automatically.'
+      };
     } catch (err: any) {
       console.error('Payment verify error:', err);
       setIsPaying(false);
-      return { success: false, error: err.message || 'Network error during verification' };
+      return {
+        success: false,
+        error: err.message || 'Network error during verification. Your payment is saved and will auto-reconcile.'
+      };
     }
   };
 
@@ -800,14 +914,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
         body: JSON.stringify({ paymentId, subscriptionId })
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        if (data.wallet) setWallet(data.wallet);
-        if (data.subscription) setActiveSubscription(data.subscription);
+      const parsed = await safeParseJsonResponse<{
+        success: boolean;
+        message?: string;
+        error?: string;
+        wallet?: CreditWallet;
+        subscription?: UserSubscription;
+      }>(res);
+
+      if (parsed.ok && parsed.data?.success) {
+        localStorage.removeItem('lumina_pending_payment');
+        if (parsed.data.wallet) setWallet(parsed.data.wallet);
+        if (parsed.data.subscription) setActiveSubscription(parsed.data.subscription);
         await refreshUserData();
-        return { success: true, message: data.message };
+        return { success: true, message: parsed.data.message };
       }
-      return { success: false, error: data.error || 'Reconciliation failed' };
+      return { success: false, error: parsed.error || 'Reconciliation failed' };
     } catch (err: any) {
       return { success: false, error: err.message || 'Network error during reconciliation' };
     }
@@ -823,7 +945,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...getAuthHeaders()
         }
       });
-      if (res.ok) {
+      const parsed = await safeParseJsonResponse(res);
+      if (parsed.ok) {
         await refreshUserData();
         return true;
       }

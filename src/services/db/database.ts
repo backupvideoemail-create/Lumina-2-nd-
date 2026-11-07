@@ -1508,7 +1508,8 @@ export class ProductionDatabase {
     await this.syncToFirestore('credit_grants', grant.id, grant);
 
     const wallet = this.getWallet(userId);
-    wallet.lifetimeCredits += amount;
+    wallet.balance = (wallet.balance || 0) + amount;
+    wallet.lifetimeCredits = (wallet.lifetimeCredits || 0) + amount;
     wallet.updatedAt = now.toISOString();
 
     this.db.transactions.unshift(tx);

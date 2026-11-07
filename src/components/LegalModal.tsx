@@ -7,14 +7,26 @@ export const LegalModal: React.FC = () => {
   const { legalModal, setLegalModal, deleteAccount } = useApp();
   const [confirmText, setConfirmText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   if (!legalModal) return null;
 
   const handleDelete = async () => {
     if (confirmText.toLowerCase() !== 'delete') return;
     setIsDeleting(true);
-    await deleteAccount();
-    setIsDeleting(false);
+    setDeleteError(null);
+    try {
+      const ok = await deleteAccount();
+      if (!ok) {
+        setDeleteError('Account deletion failed. Please check your network connection and retry.');
+        setIsDeleting(false);
+      } else {
+        setLegalModal(null);
+      }
+    } catch (err: any) {
+      setDeleteError(err.message || 'An unexpected error occurred during account deletion.');
+      setIsDeleting(false);
+    }
   };
 
   const titles = {
@@ -26,7 +38,7 @@ export const LegalModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-      <div className="absolute inset-0" onClick={() => setLegalModal(null)} />
+      <div className="absolute inset-0" onClick={() => !isDeleting && setLegalModal(null)} />
 
       <motion.div
         initial={{ scale: 0.94, opacity: 0 }}
@@ -40,7 +52,7 @@ export const LegalModal: React.FC = () => {
             {titles[legalModal]}
           </h3>
           <button
-            onClick={() => setLegalModal(null)}
+            onClick={() => !isDeleting && setLegalModal(null)}
             className="p-2 text-stone-400 hover:text-white rounded-full bg-white/5 hover:bg-white/10"
           >
             <X className="w-5 h-5" />
@@ -98,10 +110,16 @@ export const LegalModal: React.FC = () => {
                 <div className="text-xs text-red-200">
                   <p className="font-bold">Permanent Deletion Warning</p>
                   <p className="mt-1 text-red-300/80">
-                    Deleting your account will immediately wipe your uploaded media, generation history, credit wallet balance, and active subscription mandates. This action cannot be reversed.
+                    Deleting your account will immediately cancel any active Razorpay AutoPay mandates, wipe all uploaded media, delete creations history, and clear your credit wallet balance. This action cannot be reversed.
                   </p>
                 </div>
               </div>
+
+              {deleteError && (
+                <div className="p-3 rounded-xl bg-red-900/40 border border-red-500/50 text-red-300 text-xs">
+                  {deleteError}
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-stone-300 block">
@@ -112,7 +130,8 @@ export const LegalModal: React.FC = () => {
                   value={confirmText}
                   onChange={(e) => setConfirmText(e.target.value)}
                   placeholder="DELETE"
-                  className="w-full px-4 py-2.5 bg-stone-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-red-500 font-mono"
+                  disabled={isDeleting}
+                  className="w-full px-4 py-2.5 bg-stone-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-red-500 font-mono disabled:opacity-50"
                 />
               </div>
 
@@ -122,7 +141,7 @@ export const LegalModal: React.FC = () => {
                 className="w-full py-3 px-4 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>{isDeleting ? 'Deleting...' : 'Permanently Delete Account & Media'}</span>
+                <span>{isDeleting ? 'Cancelling Mandate & Wiping Data...' : 'Permanently Delete Account & Media'}</span>
               </button>
             </div>
           )}

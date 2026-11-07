@@ -38,12 +38,12 @@ def effectiveVersionCode = rawVersionCode.isInteger() ? rawVersionCode.toInteger
 
 android {
     namespace "com.aiprimestudio.app"
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.aiprimestudio.app"
         minSdk 21
-        targetSdk 34
+        targetSdk 36
         versionCode effectiveVersionCode
         versionName rawVersionName
 

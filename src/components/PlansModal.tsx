@@ -66,6 +66,12 @@ export const PlansModal: React.FC = () => {
   }, [plansModalOpen]);
 
   useEffect(() => {
+    if (user?.phone) {
+      setPhoneInput(user.phone);
+    }
+  }, [user?.phone]);
+
+  useEffect(() => {
     if (!isIntroEligible && selectedPlanId === 'plan_intro_daily') {
       setSelectedPlanId('plan_weekly_pass');
     }
@@ -96,7 +102,12 @@ export const PlansModal: React.FC = () => {
     // 2. Fetch live Razorpay client configuration from server
     try {
       const configRes = await fetch('/api/payments/config');
-      const configData = await configRes.json();
+      const isJson = (configRes.headers.get('content-type') || '').includes('application/json');
+      if (!isJson) {
+        setErrorMessage('Payment service warming up (503). Please retry in a few moments.');
+        return;
+      }
+      const configData = await configRes.json().catch(() => null);
 
       if (!configData?.keyId) {
         setErrorMessage('Razorpay live configuration is missing on the server. Please contact support.');
@@ -122,6 +133,21 @@ export const PlansModal: React.FC = () => {
         image: logoUrl,
         handler: async (response: any) => {
           const effectiveOrderId = response.razorpay_order_id || res.orderId || response.razorpay_subscription_id || res.subscriptionId || '';
+          
+          // Pre-record pending transaction in localStorage to survive transient disconnection
+          try {
+            localStorage.setItem('lumina_pending_payment', JSON.stringify({
+              orderId: effectiveOrderId,
+              type: 'plan',
+              itemId: currentPlan.id,
+              provider: 'razorpay',
+              paymentId: response.razorpay_payment_id,
+              signature: response.razorpay_signature,
+              subscriptionId: response.razorpay_subscription_id || res.subscriptionId,
+              timestamp: Date.now()
+            }));
+          } catch {}
+
           const verifyResult = await verifyPayment(
             effectiveOrderId,
             'plan',
@@ -133,14 +159,17 @@ export const PlansModal: React.FC = () => {
           );
 
           if (verifyResult.success) {
+            try {
+              localStorage.removeItem('lumina_pending_payment');
+            } catch {}
             await refreshUserData();
             setPlansModalOpen(false);
           } else {
             console.error('[Razorpay Verify Error]:', verifyResult.error);
             setErrorMessage(
               verifyResult.error
-                ? `${verifyResult.error}. If money was debited from your bank, please retry or contact support.`
-                : 'Payment verification failed on the server. If money was debited, it will reflect within a few minutes.'
+                ? `${verifyResult.error}. If money was debited, your transaction is safely saved and will activate automatically.`
+                : 'Payment verification pending. If money was debited from your bank, credits will activate automatically.'
             );
           }
         },
@@ -207,13 +236,17 @@ export const PlansModal: React.FC = () => {
       return;
     }
 
-    const clean = (phoneInput || user?.phone || '').replace(/[^0-9]/g, '');
-    if (clean.length < 10) {
-      setShowPhoneStep(true);
+    const cleanUserPhone = (user?.phone || '').replace(/[^0-9]/g, '');
+    const cleanInputPhone = (phoneInput || '').replace(/[^0-9]/g, '');
+    const clean = cleanUserPhone.length >= 10 ? cleanUserPhone : cleanInputPhone;
+
+    if (clean.length >= 10) {
+      setShowPhoneStep(false);
+      await proceedWithRazorpayCheckout(clean.slice(-10));
       return;
     }
 
-    await proceedWithRazorpayCheckout(clean.slice(-10));
+    setShowPhoneStep(true);
   };
 
   const handleConfirmPhoneAndPay = async () => {
