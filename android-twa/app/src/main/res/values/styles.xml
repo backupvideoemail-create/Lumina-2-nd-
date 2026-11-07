@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.LauncherActivity" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:statusBarColor">#08080a</item>
+        <item name="android:navigationBarColor">#08080a</item>
+        <item name="android:windowBackground">#08080a</item>
+    </style>
+</resources>

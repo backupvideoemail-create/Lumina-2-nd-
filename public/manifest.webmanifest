@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "AI Prime Studio",
+  "short_name": "AI Prime",
+  "description": "Premium cinematic AI photo and video template studio for Instagram Reels, Stories, fashion, and luxury visuals.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#08080a",
+  "theme_color": "#08080a",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": ["photo", "video", "entertainment", "productivity"]
+}

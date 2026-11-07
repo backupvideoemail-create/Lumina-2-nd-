@@ -1,105 +1,174 @@
-# AI Prime Studio Lumina — CI Workflow Fix & Face Swap / Home Banner Upgrade
+# Final Implementation Plan (Plan 12 — Execution Approved): AI Prime Studio Lumina — PWA & Android TWA Integration
 
-Revised engineering plan integrating the strict two-phase execution requested: **Phase A (CI Workflow Root-Cause Fix & Validation Independence)** followed by **Phase B (Higgsfield Genjutsu Light Face Swap, Single-Source Workflow, and 1:1 Square Home Hero Banner)**.
+## Executive Summary & Final Owner Authorization
+This is the final, definitive execution plan for **AI Prime Studio Lumina PWA & Android TWA**. It integrates the Owner's two final requirements into the approved Plan 11 baseline:
 
----
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following requirements and constraints are locked into this plan:
-> - **Strict Phase A Isolation**: First ensure a clean GitHub Actions runner completes `npm run lint`, `npm test`, and `npm run build` with 100% independence from secret-generated Firebase files.
-> - **Mandatory Post-Secret Firebase Verification**: Real validation of `com.aiprimestudio.app` and `com.aiprimestudio.app.debug` must remain strictly enforced in CI immediately following secret restoration (no `|| true`, no silent skip, fail closed on missing/invalid secrets).
-> - **Higgsfield API Key Reuse**: Inspect and reuse existing `HIGGSFIELD_API_KEY` in environment secrets; do not request new keys unless verified unusable.
-> - **Higgsfield Genjutsu Light Primary**: Primary provider for Face Swap. No automatic fallback to Google Omni for Face Swap unless equivalent identity and motion capabilities are proven through real tests.
-> - **Single-Source Video Workflow**: Admin needs only ONE source driving video; After Demo and Sample Face are optional with automatic first-frame capture.
-> - **1:1 Square Home Hero Banner**: Pure 1:1 square ratio (`aspect-square`), full width on mobile, centered with dark margins on desktop, `object-fit: contain` on clean `#000000` background, no blurred duplicate background layer.
-> - **Strict Preservation**: Zero modification to existing templates, pricing, ₹1 intro offer, credits, payment webhooks, or existing working features.
-
----
-
-## 1. Overview & Phased Strategy
-
-### Phase A: CI Workflow & Test Independence (Immediate Scope)
-- **Problem**: In GitHub Actions Run #44, `npm test` runs `scripts/verify_system_fixes.ts` before `android/app/google-services.json` is restored from the repository secret, throwing `ENOENT: no such file or directory`.
-- **Solution**:
-  1. Make `scripts/verify_system_fixes.ts` use pure, self-contained test fixtures to test Firebase client package validation logic so `npm test` runs cleanly in any fresh repository checkout without secrets.
-  2. Keep actual disk-based validation in `.github/workflows/android-build.yml` right after the "Recreate google-services.json from secret" step.
-  3. Verify both package IDs (`com.aiprimestudio.app` and `com.aiprimestudio.app.debug`) and exit 1 if either is missing or invalid.
-
-### Phase B: Face Swap & Home Hero Banner Enhancements
-- **Face Swap Priority**: Higgsfield Genjutsu Light as primary motion transfer engine, preserving `HIGGSFIELD_BASE_IDENTITY_PROMPT`, scene recipe, and customer instructions.
-- **Single Source Video**: Update schema, validation, admin manager, and customer modal so only the original source video is required.
-- **1:1 Square Banner**: Convert Home carousel from 16:9 to 1:1 square, eliminate background blurred video, and ensure clean `object-fit: contain` presentation across all 5 slides.
+1. **VERSION CODE REQUIREMENT**: Zero hardcoded assumption of Version Code 2. Any release build requires explicit verification of the highest Version Code already uploaded to Google Play Console for `com.aiprimestudio.app`, requiring the next available integer via `TWA_VERSION_CODE` before release bundling.
+2. **NON-INVASIVE SHARED-ACCOUNT SYNCHRONIZATION TEST**: Dedicated automated verification suite testing:
+   - Identical customer identity (Firebase UID) across Web, Chrome PWA, and TWA sessions.
+   - 100% parity of User Plan, Wallet balance, Credits, and Generation History across platforms.
+   - Bi-directional test-credit usage reflection (credit consumed on Web reflects on TWA; credit consumed on TWA reflects on Web).
+   - Zero modification to existing Authentication, Firestore, or Wallet business logic to run this test.
+3. **STRICT ISOLATION & PRESERVATION**:
+   - Live public Website and Razorpay payment flows remain 100% operational on Web and Chrome PWA.
+   - Only Play-distributed TWA disables checkout (neutral notice: *"Purchases are currently unavailable in this app. Existing credits can still be used."*).
+   - Digital Asset Links held in strict `PENDING_PLAY_CONSOLE_FINGERPRINT` status.
+   - Dual release artifacts (`app-release-signed.apk` and `app-release-bundle.aab`) built exclusively from `android-twa/` with verified upload keystore signatures.
+   - Native `android/` project and `.github/workflows/android-build.yml` remain 100% untouched.
 
 ---
 
-## 2. Technical Architecture & Component Flow
+## 1. Environment & Architecture Matrix
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│               PHASE A: CI / CD PIPELINE EXECUTION                      │
-├────────────────────────────────────────────────────────────────────────┤
-│ 1. actions/checkout@v4                                                 │
-│ 2. npm install && npm run lint && npm test && npm run build            │
-│    (Independent of gitignored secrets; tests use safe fixtures)       │
-│ 3. Recreate google-services.json from secret                           │
-│ 4. Verify Firebase Configuration (Strict check for both packages)      │
-│    -> com.aiprimestudio.app                                           │
-│    -> com.aiprimestudio.app.debug                                     │
-│ 5. Ensure Canonical Debug Keystore & assembleDebug                     │
-│ 6. Set up Release Keystore & bundleRelease                             │
-│ 7. Verify Release AAB Signing Fingerprint                              │
-└────────────────────────────────────────────────────────────────────────┘
-
-┌────────────────────────────────────────────────────────────────────────┐
-│               PHASE B: APPLICATION RUNTIME ARCHITECTURE                │
-├───────────────────────────────────┬────────────────────────────────────┤
-│  HomeView: 1:1 Square Banner      │  FaceSwap: Single Source Video     │
-│  - aspect-square container        │  - Admin: 1 Driving Video (MP4)    │
-│  - object-contain / pure black    │  - Optional: Demo & Sample Face    │
-│  - Zero blurred duplicate video   │  - Customer: Uploads Face only     │
-└─────────────────┬─────────────────┴──────────────────┬─────────────────┘
-                  │                                    │
-                  ▼                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                         SERVER & PROVIDER LAYER                        │
-│  - FaceSwap Route: POST /api/faceswap/generate                         │
-│  - Authoritative Scene Lookup from Firestore                           │
-│  - Primary Provider: Higgsfield Genjutsu Light                         │
-│  - Credit Ledger: Exact reservation & 100% refund on failure           │
-│  - Secondary: Google Omni 1.1 Flash (isolated for general video)       │
-└────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                               AI PRIME STUDIO RUNTIME                             │
+├───────────────────────────────┬───────────────────────────────┬───────────────────┤
+│       A. NORMAL WEBSITE       │     B. CHROME-INSTALLED PWA   │  C. PLAY STORE TWA│
+│          (Desktop/Mobile)     │      (Android / Desktop PWA)  │   (Play Store App)│
+├───────────────────────────────┼───────────────────────────────┼───────────────────┤
+│ • Full Video/Photo Synthesis  │ • Full Video/Photo Synthesis  │ • Full Synthesis  │
+│ • Full Credit Usage           │ • Full Credit Usage           │ • Full Credit Use │
+│ • Razorpay Top-Up ON          │ • Razorpay Top-Up ON          │ • Razorpay OFF    │
+│ • Cashfree Top-Up ON          │ • Cashfree Top-Up ON          │ • Cashfree OFF    │
+│ • ₹1 Intro & AutoPay ON       │ • ₹1 Intro & AutoPay ON       │ • Neutral Notice: │
+│ • Browser Navigation          │ • Standalone App Window       │   "Purchases      │
+│ • PWA Install Prompt Visible  │ • PWA Already Installed       │   unavailable.    │
+│                               │                               │   Existing credits│
+│                               │                               │   usable."        │
+├───────────────────────────────┴───────────────────────────────┴───────────────────┤
+│                  SHARED AUTHORITATIVE BACKEND & DATA LAYER                        │
+│ • 1 Firebase UID → 1 User Profile → 1 Shared Wallet Balance → 1 Generation History│
+│ • Real-time synchronization across Web, Chrome PWA, and Play Store TWA            │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Step-by-Step Execution Plan
+## 2. Repository File Layout & Boundaries
 
-### Step 1: Finalize & Validate Phase A (CI Fix)
-- Verify `scripts/verify_system_fixes.ts` suite 21.2 uses `validateGoogleServicesPackages` with fixture JSON and does not require local `google-services.json`.
-- Verify `.github/workflows/android-build.yml` steps 41-86 and 87-112 enforce strict validation on the restored file for `com.aiprimestudio.app` and `com.aiprimestudio.app.debug`.
-- Execute local simulation of fresh runner (`npm run lint`, `npm test`, `npm run build`) with `android/app/google-services.json` temporarily removed.
+```
+Lumina Repository Root
+├── android/                          [STRICTLY PRESERVED - Native Kotlin/Compose project]
+├── .github/workflows/
+│   ├── android-build.yml             [STRICTLY PRESERVED - Native Android CI]
+│   └── twa-build.yml                 [NEW - Standalone TWA CI build: dual APK + AAB]
+├── android-twa/                      [NEW - Isolated Bubblewrap-standard TWA project]
+│   ├── build.gradle
+│   ├── settings.gradle
+│   ├── gradle.properties
+│   └── app/
+│       ├── build.gradle              (applicationId: com.aiprimestudio.app, mandatory TWA_START_URL & TWA_VERSION_CODE)
+│       └── src/main/
+│           └── AndroidManifest.xml   (TWA Launcher Activity bound to verified TWA_START_URL)
+├── public/
+│   ├── manifest.webmanifest          [NEW - PWA Manifest with id: "/"]
+│   ├── sw.js                         [NEW - Whitelist-only, zero-HTML-cache Service Worker]
+│   ├── icons/                        [NEW - Exact geometry icons from Logo.tsx]
+│   │   ├── icon-192.png
+│   │   ├── icon-512.png
+│   │   ├── icon-maskable-512.png
+│   │   └── apple-touch-icon.png
+│   └── .well-known/
+│       └── assetlinks.json.example   [NEW - Clean template for Owner Play Signing SHA-256]
+├── src/
+│   ├── utils/
+│   │   └── twaDetection.ts           [NEW - Strict positive-only Android TWA referrer detection]
+│   ├── components/
+│   │   ├── TopUpModal.tsx            [MODIFIED - Guard checkout actions when in TWA]
+│   │   ├── PlansModal.tsx            [MODIFIED - Guard checkout actions when in TWA]
+│   │   └── TemplateDetailModal.tsx   [MODIFIED - Guard top-up trigger when in TWA]
+│   └── main.tsx                      [MODIFIED - Safe production SW registration]
+└── scripts/
+    └── verify_system_fixes.ts        [MODIFIED - Suite 28: PWA, TWA, Shared-Account Parity & Financial Integrity]
+```
 
-### Step 2: Implement Phase B (Higgsfield Genjutsu Light Primary)
-- Inspect existing `HIGGSFIELD_API_KEY` configuration in `.env` / runtime.
-- Update `src/services/ai/faceSwapAdapter.ts` to support Genjutsu Light model parameters, maintaining server-side security and 100% credit refund protection.
-- Ensure Google Omni remains preserved as general video candidate without automatic face swap hijacking.
+---
 
-### Step 3: Implement Single Source Video Workflow
-- Update `src/types/index.ts` to make `resultVideoPreview` and `sampleFace` optional on `FaceSwapScene`.
-- Update `src/components/TemplateManagerModal.tsx` to require only `sourceVideoPreview`, with first-frame extraction for poster.
-- Update `src/components/FaceSwapModal.tsx` to cleanly handle templates with or without demo videos.
+## 3. Step-by-Step Implementation Sequence
 
-### Step 4: Implement 1:1 Square Home Hero Banner
-- Update `src/views/HomeView.tsx` Hero Carousel container from `aspect-[16/9] max-h-[380px]` to `aspect-square w-full max-w-[500px] mx-auto` (responsive mobile/desktop).
-- Remove the blurred ambient background `<video>` tag completely.
-- Set container background to neutral black (`bg-black`).
-- Ensure main video has `object-contain` without cropping or stretching across all 5 slides.
+### Step 1: PWA Assets & High-Fidelity App Icons
+1. Render exact PNG icon assets (`public/icons/icon-192.png`, `public/icons/icon-512.png`, `public/icons/icon-maskable-512.png`, and `public/icons/apple-touch-icon.png`) using the SVG geometry from `src/components/Logo.tsx` (gold camera viewfinder brackets, optical aperture ring, golden video play triangle, AI brilliance star).
+2. Create `public/manifest.webmanifest`:
+   - `id`: `"/"`
+   - `start_url`: `"/"`
+   - `scope`: `"/"`
+   - `display`: `"standalone"`
+   - `background_color`: `"#08080a"`
+   - `theme_color`: `"#08080a"`
+   - `icons`: References to generated icons.
+3. Update `index.html` with `<link rel="manifest" href="/manifest.webmanifest">` and `<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">`.
+4. Ensure public HTTPS routes in `server.ts` serve `manifest.webmanifest` and `icons/*` without authentication, login redirects, or HTML fallbacks.
 
-### Step 5: Verification & Quality Assurance
-- Run full automated test suite (`npm test`).
-- Run TypeScript type checks (`npm run lint`).
-- Run production bundle build (`npm run build`).
-- Verify applet compilation (`compile_applet`).
-- Generate Requirement Ledger table with status of every item.
+### Step 2: Ultra-Safe Whitelist-Only Service Worker (`public/sw.js`)
+1. Implement `public/sw.js` with zero precaching of HTML (`/`).
+2. Allowlist only `/icons/*` and same-origin versioned `/assets/*.{js,css}`.
+3. Ensure all navigation requests (`mode === 'navigate'`), all `/api/**` calls, uploads, payments, and generated media bypass the service worker directly to the network.
+4. Safely register service worker in `src/main.tsx` for production environments.
+
+### Step 3: Complete Payment Entry Audit & TWA Referrer Detection
+1. Implement `src/utils/twaDetection.ts`:
+   - Checks `document.referrer.startsWith('android-app://com.aiprimestudio.app')`.
+   - Persists only positive TWA verification in `sessionStorage.setItem('lumina_twa_verified', 'true')`.
+   - Returns `false` for normal Web and Chrome-installed PWA (`standalone` mode).
+2. Audit and guard all payment entry points across the repository:
+   - `src/components/TopUpModal.tsx`: When `isPlayStoreTWA() === true`, hide Razorpay top-up button and render: *"Purchases are currently unavailable in this app. Existing credits can still be used."*
+   - `src/components/PlansModal.tsx`: When `isPlayStoreTWA() === true`, hide subscription and AutoPay buttons; render neutral notice.
+   - `src/components/TemplateDetailModal.tsx`: When `isPlayStoreTWA() === true` and balance is insufficient, disable purchase redirect; render neutral notice.
+   - Normal Web & Chrome PWA: Full Razorpay/Cashfree checkout remains 100% active.
+
+### Step 4: Isolated `android-twa/` Project (Fail-Closed Origin & Versioning)
+1. Scaffold `android-twa/` using Google Android Browser Helper standards.
+2. In `android-twa/app/build.gradle`:
+   - **Mandatory `TWA_START_URL` Check**: If building release and `TWA_START_URL` is empty or invalid HTTPS, throw `GradleException` immediately.
+   - **Mandatory `TWA_VERSION_CODE` Check**:
+     ```groovy
+     def rawCode = project.findProperty('TWA_VERSION_CODE') ?: System.getenv('TWA_VERSION_CODE')
+     if (isBuildingRelease && (!rawCode || rawCode.toString().toInteger() < 2)) {
+         throw new GradleException("CRITICAL RELEASE ERROR: TWA_VERSION_CODE must be verified against Play Console and explicitly set (>= 2). Got: '${rawCode}'.")
+     }
+     ```
+   - **Configurable Version Name**: Supports `project.findProperty('TWA_VERSION_NAME')` or env var `TWA_VERSION_NAME`, defaulting to `"1.0.1"`.
+   - Configure release signing block to strictly require `release.keystore` (never sign release artifacts with debug key).
+
+### Step 5: Dedicated CI Workflow (`.github/workflows/twa-build.yml`)
+1. Create `.github/workflows/twa-build.yml`:
+   - Reuses existing secrets: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`, `TWA_START_URL`, `TWA_VERSION_CODE`.
+   - Runs `android-twa/gradlew assembleRelease` to produce `app-release-signed.apk`.
+   - Runs `android-twa/gradlew bundleRelease` to produce `app-release-bundle.aab`.
+   - Runs `apksigner verify --print-certs` on the APK and `keytool` on the keystore, verifying matching SHA-256 fingerprints.
+   - Uploads both `app-release-signed.apk` and `app-release-bundle.aab` as downloadable GitHub Actions artifacts.
+   - Completely independent from `.github/workflows/android-build.yml`.
+
+### Step 6: Automated Verification & Shared-Account Synchronization Suite (Suite 28)
+1. Add Suite 28 to `scripts/verify_system_fixes.ts`:
+   - 28.1 Validate `manifest.webmanifest` syntax, `id: "/"`, `display: "standalone"`.
+   - 28.2 Validate `public/sw.js` network-only passthrough for `/api/` and HTML.
+   - 28.3 Validate `twaDetection.ts` behavior (Web = false, Standalone PWA = false, TWA referrer = true).
+   - 28.4 **Shared-Account Synchronization**:
+     - Verify identical Firebase UID identity between simulated Web and TWA client contexts.
+     - Verify shared wallet balance and credit consumption reflection without separate account creation.
+     - Verify creation history accessibility from both client representations.
+   - 28.5 Verify all 4 protected payment file SHA-256 hashes match baseline:
+     - `src/services/payments/razorpayAdapter.ts`
+     - `src/services/payments/cashfreeAdapter.ts`
+     - `src/services/billing/googlePlayService.ts`
+     - `src/services/config/pricingAndConfig.ts`
+   - 28.6 Verify native `android/` directory and `.github/workflows/android-build.yml` are unchanged.
+   - 28.7 Verify `android-twa/` fails closed when `TWA_START_URL` or `TWA_VERSION_CODE` is empty.
+2. Run `npx tsc --noEmit` and `npx tsx scripts/verify_system_fixes.ts`.
+
+---
+
+## 4. Verification & Evidence Reporting Protocol
+
+| Verification Stage | Check | Reporting Standard |
+|:---|:---|:---|
+| **TypeScript & Build** | `npx tsc --noEmit && npm run build` | Actual compilation status with 0 errors |
+| **Automated Suite** | `scripts/verify_system_fixes.ts` (Suite 1-28) | Report exact count of passing tests |
+| **Shared Account Sync**| Web ↔ TWA parity test | 1 UID, 1 Wallet, 1 History, bi-directional credit sync |
+| **Financial Integrity** | 4 Protected SHA-256 hashes | Exact hash match confirmation |
+| **Native Android Tree** | `git status android/` & `android-build.yml` | 0 modifications confirmed |
+| **TWA Artifacts** | `app-release-signed.apk` & `app-release-bundle.aab` | File sizes, SHA-256 certificate fingerprints |
+| **Digital Asset Links** | Status in documentation & config | Explicitly marked `PENDING_PLAY_CONSOLE_FINGERPRINT` |
+| **Web Regression** | Normal Web + Chrome PWA Razorpay checkout | Confirmed operational without disruptions |

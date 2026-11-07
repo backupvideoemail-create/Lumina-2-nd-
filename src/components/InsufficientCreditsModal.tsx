@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, X, ArrowRight, ShieldCheck, Zap } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { isPlayStoreTWA } from '../utils/twaDetection.ts';
 
 export const InsufficientCreditsModal: React.FC = () => {
   const {
@@ -85,30 +86,40 @@ export const InsufficientCreditsModal: React.FC = () => {
 
         {/* Call to action */}
         <div className="space-y-3">
-          {hasActivePlan ? (
-            <button
-              onClick={handleAction}
-              className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
-            >
-              <Zap className="w-4 h-4 fill-black" />
-              <span>Buy More Credits (Top-Up)</span>
-              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-            </button>
+          {isPlayStoreTWA() ? (
+            <div className="p-4 rounded-xl bg-stone-900/90 border border-stone-800 text-center space-y-1">
+              <p className="text-xs text-amber-200/90 font-medium">
+                Purchases are currently unavailable in this app. Existing credits can still be used.
+              </p>
+            </div>
           ) : (
-            <button
-              onClick={handleAction}
-              className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
-            >
-              <span>Get Credits · Unlock Pro Pass (₹1)</span>
-              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
-            </button>
+            <>
+              {hasActivePlan ? (
+                <button
+                  onClick={handleAction}
+                  className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
+                >
+                  <Zap className="w-4 h-4 fill-black" />
+                  <span>Buy More Credits (Top-Up)</span>
+                  <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleAction}
+                  className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
+                >
+                  <span>Get Credits · Unlock Pro Pass (₹1)</span>
+                  <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                </button>
+              )}
+            </>
           )}
 
           <button
             onClick={() => setInsufficientCreditsModal(null)}
             className="w-full py-2.5 text-xs text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
           >
-            Maybe Later
+            Close
           </button>
         </div>
 

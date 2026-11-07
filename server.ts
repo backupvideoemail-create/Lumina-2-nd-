@@ -4666,6 +4666,21 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   res.json({ success: true, results });
 });
 
+// Digital Asset Links for Android App Verification (Public, direct JSON, zero login redirect)
+app.get('/.well-known/assetlinks.json', (_req, res) => {
+  const assetlinksPath = path.resolve(process.cwd(), 'public/.well-known/assetlinks.json');
+  if (fs.existsSync(assetlinksPath)) {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.sendFile(assetlinksPath);
+  }
+  // Return explicit 404 JSON if the Owner has not yet deployed their verified Play Console fingerprint
+  res.status(404).json({
+    status: 'PENDING_PLAY_CONSOLE_FINGERPRINT',
+    message: 'Official Google Play App Signing SHA-256 fingerprint has not been configured yet.'
+  });
+});
+
 // Universal API Error Handler (Ensures all /api routes always return JSON, NEVER HTML)
 app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[API Middleware Error]:', err?.message || err);

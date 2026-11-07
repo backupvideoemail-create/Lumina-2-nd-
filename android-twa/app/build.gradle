@@ -1,0 +1,97 @@
+plugins {
+    id 'com.android.application'
+}
+
+def twaStartUrl = (project.findProperty("TWA_START_URL") as String)
+    ?: System.getenv("TWA_START_URL")
+    ?: ""
+
+def rawVersionCode = (project.findProperty("TWA_VERSION_CODE") as String)
+    ?: System.getenv("TWA_VERSION_CODE")
+    ?: ""
+
+def rawVersionName = (project.findProperty("TWA_VERSION_NAME") as String)
+    ?: System.getenv("TWA_VERSION_NAME")
+    ?: "1.0.1"
+
+def isBuildingRelease = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase: true) || it.contains("bundle", ignoreCase: true)
+}
+
+// 1. Mandatory TWA_START_URL Validation (Fail-closed: zero assumed domain)
+if (isBuildingRelease && (twaStartUrl.isBlank() || !twaStartUrl.startsWith("https://") || twaStartUrl.contains("example.com") || twaStartUrl.contains("ais-dev"))) {
+    throw new GradleException(
+        "CRITICAL TWA BUILD ERROR: 'TWA_START_URL' is mandatory for release builds and must be an independently verified, currently live production HTTPS URL. " +
+        "Got: '${twaStartUrl}'. Assumed domains and development URLs are strictly forbidden."
+    )
+}
+
+// 2. Mandatory TWA_VERSION_CODE Verification
+if (isBuildingRelease && (rawVersionCode.isBlank() || rawVersionCode.toInteger() < 2)) {
+    throw new GradleException(
+        "CRITICAL TWA BUILD ERROR: 'TWA_VERSION_CODE' must be verified against the highest Version Code already uploaded to Play Console and explicitly supplied (>= 2). " +
+        "Got: '${rawVersionCode}'. Do not assume Version Code 2 without Play Console verification."
+    )
+}
+
+def effectiveVersionCode = rawVersionCode.isInteger() ? rawVersionCode.toInteger() : 2
+
+android {
+    namespace "com.aiprimestudio.app"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.aiprimestudio.app"
+        minSdk 21
+        targetSdk 34
+        versionCode effectiveVersionCode
+        versionName rawVersionName
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        manifestPlaceholders = [
+            hostName: twaStartUrl.replaceFirst("https://", "").replaceFirst("/.*", ""),
+            defaultUrl: twaStartUrl.isBlank() ? "https://verified-site.invalid" : twaStartUrl,
+            assetStatements: """[{"relation": ["delegate_permission/common.handle_all_urls"], "target": {"namespace": "android_app", "package_name": "com.aiprimestudio.app", "sha256_cert_fingerprints": ["PENDING_PLAY_CONSOLE_FINGERPRINT"]}}]"""
+        ]
+    }
+
+    signingConfigs {
+        release {
+            def keystoreFile = file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+            if (keystoreFile.exists()) {
+                storeFile keystoreFile
+                storePassword System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias System.getenv("KEY_ALIAS") ?: ""
+                keyPassword System.getenv("KEY_PASSWORD") ?: ""
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            
+            def releaseKeystore = file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+            if (releaseKeystore.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+        debug {
+            applicationIdSuffix ".debug"
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.browser:browser:1.8.0'
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}

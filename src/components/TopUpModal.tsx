@@ -12,6 +12,8 @@ import {
 import { useApp } from '../context/AppContext';
 import officialStudioLogo from '../assets/images/ai_prime_studio_logo_1791382901426.jpg';
 
+import { isPlayStoreTWA } from '../utils/twaDetection.ts';
+
 export const TopUpModal: React.FC = () => {
   const {
     topUpModalOpen,
@@ -294,25 +296,35 @@ export const TopUpModal: React.FC = () => {
 
         {/* Action Button */}
         <div className="mt-5 space-y-2">
-          <button
-            onClick={handleStartTopUpPayment}
-            disabled={isProcessing}
-            className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-          >
-            {isProcessing ? (
-              <span>Connecting to Razorpay...</span>
-            ) : (
-              <>
-                <span>Pay ₹{selectedPack.price} · Add {selectedPack.credits} Credits</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
+          {isPlayStoreTWA() ? (
+            <div className="p-4 rounded-xl bg-stone-900/90 border border-stone-800 text-center space-y-1">
+              <p className="text-xs text-amber-200/90 font-medium">
+                Purchases are currently unavailable in this app. Existing credits can still be used.
+              </p>
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={handleStartTopUpPayment}
+                disabled={isProcessing}
+                className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isProcessing ? (
+                  <span>Connecting to Razorpay...</span>
+                ) : (
+                  <>
+                    <span>Pay ₹{selectedPack.price} · Add {selectedPack.credits} Credits</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
 
-          <div className="flex items-center justify-center gap-1.5 text-[11px] text-stone-500 pt-1">
-            <ShieldCheck className="w-3.5 h-3.5 text-[#d4af37]" />
-            <span>One-time instant purchase · No recurring charges</span>
-          </div>
+              <div className="flex items-center justify-center gap-1.5 text-[11px] text-stone-500 pt-1">
+                <ShieldCheck className="w-3.5 h-3.5 text-[#d4af37]" />
+                <span>One-time instant purchase · No recurring charges</span>
+              </div>
+            </>
+          )}
         </div>
       </motion.div>
     </div>

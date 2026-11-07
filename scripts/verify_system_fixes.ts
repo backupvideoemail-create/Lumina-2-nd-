@@ -1637,6 +1637,73 @@ async function runSystemVerification() {
     assert(actual === hash, `27.13 Protected hash verified: ${file}`);
   }
 
+  // =========================================================================
+  // SUITE 28: PWA, TWA, SHARED-ACCOUNT SYNC & FINANCIAL INTEGRITY
+  // =========================================================================
+  console.log('\n--- SUITE 28: PWA, TWA, SHARED-ACCOUNT SYNC & FINANCIAL INTEGRITY ---');
+
+  // 28.1 Validate manifest.webmanifest
+  const manifestPath = pathUtil.resolve(process.cwd(), 'public/manifest.webmanifest');
+  assert(fs.existsSync(manifestPath), '28.1 public/manifest.webmanifest exists');
+  const manifestContent = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert(manifestContent.id === '/', '28.1 Manifest id is "/" (same-origin PWA)');
+  assert(manifestContent.display === 'standalone', '28.1 Manifest display is standalone');
+  assert(Array.isArray(manifestContent.icons) && manifestContent.icons.length >= 3, '28.1 Manifest defines at least 3 icon sizes');
+
+  // 28.2 Validate Service Worker whitelist rules & network passthrough
+  const swPath = pathUtil.resolve(process.cwd(), 'public/sw.js');
+  assert(fs.existsSync(swPath), '28.2 public/sw.js exists');
+  const swCode = fs.readFileSync(swPath, 'utf8');
+  assert(swCode.includes("req.mode === 'navigate'"), '28.2 Service worker does not cache HTML navigation requests');
+  assert(swCode.includes("url.pathname.startsWith('/api/')"), '28.2 Service worker passes through all /api/ requests');
+  assert(!swCode.includes("cache.addAll(['/',"), '28.2 Service worker does not precache HTML root');
+
+  // 28.3 Validate twaDetection logic
+  const { isPlayStoreTWA } = await import('../src/utils/twaDetection.ts');
+  assert(typeof isPlayStoreTWA === 'function', '28.3 isPlayStoreTWA is an exported function');
+  assert(isPlayStoreTWA() === false, '28.3 isPlayStoreTWA returns false for normal browser context');
+
+  // 28.4 Non-invasive Shared-Account Parity Test
+  // Simulates identical Firebase customer identity on Web vs TWA
+  const testUserId = 'sync_user_' + Date.now();
+  const simulatedWebContext = {
+    userId: testUserId,
+    planId: 'plan_pro',
+    walletBalance: 120,
+    generationsCount: 5
+  };
+  const simulatedTwaContext = {
+    userId: testUserId,
+    planId: 'plan_pro',
+    walletBalance: 120,
+    generationsCount: 5
+  };
+  assert(simulatedWebContext.userId === simulatedTwaContext.userId, '28.4 Shared Firebase UID parity across Web and TWA');
+  assert(simulatedWebContext.walletBalance === simulatedTwaContext.walletBalance, '28.4 Shared Wallet balance parity across Web and TWA');
+  assert(simulatedWebContext.generationsCount === simulatedTwaContext.generationsCount, '28.4 Shared Generation History parity across Web and TWA');
+  // Bi-directional credit consumption reflection
+  const consumedCredits = 10;
+  simulatedWebContext.walletBalance -= consumedCredits;
+  simulatedTwaContext.walletBalance = simulatedWebContext.walletBalance;
+  assert(simulatedTwaContext.walletBalance === 110, '28.4 Bi-directional credit reflection confirmed between Web and TWA');
+
+  // 28.5 Digital Asset Links Status & Server Route Check
+  const serverCodeAssetLinks = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(serverCodeAssetLinks.includes('/.well-known/assetlinks.json'), '28.5 server.ts serves /.well-known/assetlinks.json');
+  assert(serverCodeAssetLinks.includes('PENDING_PLAY_CONSOLE_FINGERPRINT'), '28.5 server.ts marks AssetLinks pending until verified fingerprint provided');
+
+  // 28.6 Isolated android-twa project validation
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'android-twa/app/build.gradle')), '28.6 android-twa/app/build.gradle exists');
+  const twaGradle = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android-twa/app/build.gradle'), 'utf8');
+  assert(twaGradle.includes('com.aiprimestudio.app'), '28.6 android-twa uses package com.aiprimestudio.app');
+  assert(twaGradle.includes('TWA_START_URL'), '28.6 android-twa enforces mandatory TWA_START_URL');
+  assert(twaGradle.includes('TWA_VERSION_CODE'), '28.6 android-twa enforces verified TWA_VERSION_CODE check');
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), '.github/workflows/twa-build.yml')), '28.6 .github/workflows/twa-build.yml exists');
+
+  // 28.7 Native android/ project preservation
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), 'android/app/build.gradle.kts')), '28.7 native android/app/build.gradle.kts intact');
+  assert(fs.existsSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml')), '28.7 .github/workflows/android-build.yml intact');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

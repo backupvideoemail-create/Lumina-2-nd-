@@ -17,6 +17,7 @@ import {
 } from '../config/subscriptionConfig';
 import creatorModelImg from '../assets/images/nikhil_creator_hero_1791103631854.jpg';
 import officialStudioLogo from '../assets/images/ai_prime_studio_logo_1791382901426.jpg';
+import { isPlayStoreTWA } from '../utils/twaDetection.ts';
 
 export const PlansModal: React.FC = () => {
   const {
@@ -382,23 +383,33 @@ export const PlansModal: React.FC = () => {
 
             {/* Confirm CTA */}
             <div className="pt-1">
-              <motion.button
-                whileTap={{ scale: 0.98 }}
-                onClick={handleConfirmPhoneAndPay}
-                disabled={isPaying}
-                className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 relative overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
-                <span className="relative z-10">
-                  {isPaying ? 'Connecting to Razorpay...' : `Proceed to Secure Checkout · ₹${currentPlan.price}`}
-                </span>
-                <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
-              </motion.button>
-            </div>
+              {isPlayStoreTWA() ? (
+                <div className="p-4 rounded-2xl bg-stone-900/90 border border-stone-800 text-center space-y-1">
+                  <p className="text-xs text-amber-200/90 font-medium">
+                    Purchases are currently unavailable in this app. Existing credits can still be used.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <motion.button
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleConfirmPhoneAndPay}
+                    disabled={isPaying}
+                    className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 relative overflow-hidden"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
+                    <span className="relative z-10">
+                      {isPaying ? 'Connecting to Razorpay...' : `Proceed to Secure Checkout · ₹${currentPlan.price}`}
+                    </span>
+                    <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
+                  </motion.button>
 
-            <div className="flex items-center justify-center gap-1.5 text-[10px] text-stone-400 pt-1">
-              <Lock className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Official 256-bit Encrypted Checkout via Razorpay</span>
+                  <div className="flex items-center justify-center gap-1.5 text-[10px] text-stone-400 pt-2">
+                    <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Official 256-bit Encrypted Checkout via Razorpay</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -523,29 +534,38 @@ export const PlansModal: React.FC = () => {
 
             {/* PRIMARY CTA BUTTON: High-Impact Gold-to-Electric-Blue Gradient with Sheen */}
             <div className="px-3.5 pt-3">
-              <motion.button
-                whileTap={{ scale: 0.98 }}
-                onClick={handleStartRealPayment}
-                disabled={isPaying}
-                className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
-                <span className="relative z-10">
-                  {isPaying
-                    ? 'Connecting to Razorpay...'
-                    : selectedPlanId === 'plan_intro_daily'
-                    ? 'Continue & Pay ₹1'
-                    : `Continue & Pay ₹${currentPlan.price}`}
-                </span>
-                <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
-              </motion.button>
-            </div>
+              {isPlayStoreTWA() ? (
+                <div className="p-4 rounded-2xl bg-stone-900/90 border border-stone-800 text-center space-y-1">
+                  <p className="text-xs text-amber-200/90 font-medium">
+                    Purchases are currently unavailable in this app. Existing credits can still be used.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <motion.button
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleStartRealPayment}
+                    disabled={isPaying}
+                    className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
+                    <span className="relative z-10">
+                      {isPaying
+                        ? 'Connecting to Razorpay...'
+                        : selectedPlanId === 'plan_intro_daily'
+                        ? 'Continue & Pay ₹1'
+                        : `Continue & Pay ₹${currentPlan.price}`}
+                    </span>
+                    <ArrowRight className="w-5 h-5 stroke-[3] text-black relative z-10" />
+                  </motion.button>
 
-            {/* POLICY TEXT: Compact 2 lines matching design */}
-            <div className="text-center pt-2 px-5">
-              <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
-                Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
-              </p>
+                  <div className="text-center pt-2 px-5">
+                    <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
+                      Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           </>
         )}
