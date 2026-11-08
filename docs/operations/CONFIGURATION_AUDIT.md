@@ -1,6 +1,7 @@
 # AI PRIME STUDIO LUMINA — CONFIGURATION & ENVIRONMENT AUDIT
 **Repository:** `backupvideoemail-create/Lumina-2-nd-`  
-**Audited Baseline Main HEAD:** `1818df837de995635cf8344f821de871392cc10f`  
+**Current Approved Main Baseline:** `4a0aba4554131cb902240dc979db5f978ccef0fa`  
+**Previous Verified Commit:** `1818df837de995635cf8344f821de871392cc10f`  
 **Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
 **Feature Branch:** `feature/secondary-hero-cache-sync`  
 **Execution Environment:** Sandbox Container vs. Cloud Run Secret Manager  

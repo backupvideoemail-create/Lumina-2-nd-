@@ -1,6 +1,7 @@
 # AI PRIME STUDIO LUMINA — BUILDER HANDOFF & COORDINATION LOG
 **Repository:** `backupvideoemail-create/Lumina-2-nd-`  
-**Current Verified Main HEAD:** `1818df837de995635cf8344f821de871392cc10f`  
+**Current Approved Main Baseline:** `4a0aba4554131cb902240dc979db5f978ccef0fa`  
+**Previous Verified Commit:** `1818df837de995635cf8344f821de871392cc10f`  
 **Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
 **Feature Branch:** `feature/secondary-hero-cache-sync`  
 **Integration Owner:** Primary Builder  
@@ -10,19 +11,21 @@
 ---
 
 ## 1. Governance & Multi-Builder Operating Protocol
-1. **Single Source of Truth**: All builders operate strictly on `backupvideoemail-create/Lumina-2-nd-`.
-2. **Feature Branch Rule**: Secondary Builder work must be performed on isolated feature branch `feature/secondary-hero-cache-sync` and submitted via PR/commit. Direct pushes to `main` are strictly prohibited.
-3. **Primary Review Gate**: Before any changes merge to `main`, Primary Builder must:
-   - Verify base commit matches latest approved commit (`1818df837de995635cf8344f821de871392cc10f`).
+1. **Single Source of Truth**: All builders operate strictly on `backupvideoemail-create/Lumina-2-nd-` and its approved main baseline (`4a0aba4554131cb902240dc979db5f978ccef0fa`).
+2. **240-File Hash Parity Verified**: Workspace ZIP comparison confirmed 240 identical source files with matching SHA-256 content across Primary and Secondary builder snapshots.
+3. **Android Firebase Configuration Files Protected**: Primary ZIP contains two additional Android Firebase configuration files (e.g. `google-services.json`). They must NOT be deleted, overwritten, reverted, or pushed without full inspection and explicit Owner authorization.
+4. **Feature Branch Rule**: Secondary Builder work is isolated to `feature/secondary-hero-cache-sync`. Direct pushes to `main` are strictly prohibited.
+5. **Primary Review Gate**: Before any changes merge to `main`, Primary Builder must:
+   - Verify base commit matches latest approved commit (`4a0aba4554131cb902240dc979db5f978ccef0fa`).
    - Inspect diff against protected financial and native files (`razorpayAdapter.ts`, `cashfreeAdapter.ts`, `googlePlayService.ts`, `pricingAndConfig.ts`, `android/`, `.github/workflows/android-build.yml`).
    - Run `npx tsc --noEmit` and `npx tsx scripts/verify_system_fixes.ts` (443 PASSED, 0 FAILED verified).
-   - Confirm zero regression on live website and payment gateways.
-4. **Primary Builder Exclusive Ownership**:
+   - Confirm zero regression on live website, Firebase Auth, and payment gateways.
+6. **Primary Builder Exclusive Ownership**:
    - Razorpay, Cashfree, Google Play Billing adapters and webhooks.
    - Production Firestore customer collections, Wallet, and Credit Ledger.
    - Cloud Run Secret Manager bindings, production IAM, and deployment.
    - Account deletion backend cascade and mandate cancellation.
-   - Native Android keystore and Google Play Console release.
+   - Native Android keystore, Firebase configuration files, and Google Play Console release.
 
 ---
 
