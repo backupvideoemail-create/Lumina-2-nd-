@@ -37,8 +37,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
         ? (template.preview || template.coverVideo || template.cover)
         : (template.preview || template.cover || template.coverVideo));
 
-  // Genuine distinct HD asset only: requires explicit hdVideoUrl or hdMedia; never conflates preview with HD
-  const hdTargetMedia = ((template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl) || null;
+  // Genuine distinct HD asset only: requires explicit hdDisplayUrl, hdVideoUrl or hdMedia; never conflates preview with HD
+  const hdTargetMedia = ((template as any).hdDisplayUrl || (template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl) || null;
 
   const candidateMedia = previewMedia;
 
@@ -156,9 +156,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     const configuredHdUrl = (template as any).hdDisplayUrl || (template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl || hdTargetMedia || null;
-    const targetAssetToQueue = configuredHdUrl || candidateMedia;
-    if (isVideo && targetAssetToQueue) {
-      queueHdDownload(targetAssetToQueue, 'high').catch(() => {});
+    if (isVideo && configuredHdUrl) {
+      queueHdDownload(configuredHdUrl, 'high').catch(() => {});
     }
     // Preview-First Flow: Always show template transformation preview first
     if (template.isFaceSwap) {

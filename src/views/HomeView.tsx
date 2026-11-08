@@ -98,6 +98,9 @@ export const HomeView: React.FC = () => {
     resetTimer();
   };
 
+  // Gesture Deduplication and Lock
+  const lastGestureTimestampRef = useRef<number>(0);
+
   // Pause carousel when browser tab loses visibility
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -111,8 +114,14 @@ export const HomeView: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [fullVideoBanner]);
 
-  // Touch Swipe Handlers (40px threshold, circular boundary wrapping)
+  // Touch Swipe Handlers (40px threshold, circular boundary wrapping, control element guard)
   const handleTouchStart = (e: React.TouchEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest('button, a, video, [role="button"], input, select, textarea')) {
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+      return;
+    }
     if (e.touches.length === 1) {
       touchStartXRef.current = e.touches[0].clientX;
       touchStartYRef.current = e.touches[0].clientY;
@@ -122,13 +131,21 @@ export const HomeView: React.FC = () => {
 
   const handleTouchEnd = (e: React.TouchEvent) => {
     if (touchStartXRef.current === null) return;
+    const now = Date.now();
+    if (now - lastGestureTimestampRef.current < 450) {
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+      return;
+    }
+
     const touchEndX = e.changedTouches[0].clientX;
     const touchEndY = e.changedTouches[0].clientY;
     const diffX = touchEndX - touchStartXRef.current;
     const diffY = touchStartYRef.current !== null ? touchEndY - touchStartYRef.current : 0;
 
-    // Only trigger horizontal swipe if movement is predominantly horizontal and >= 40px
+    // Vertical safeguard: If vertical movement is greater or equal to horizontal movement, ignore as page scroll
     if (Math.abs(diffX) >= 40 && Math.abs(diffX) > Math.abs(diffY)) {
+      lastGestureTimestampRef.current = now;
       isSwipingRef.current = true;
       if (diffX < 0) {
         nextBanner();
@@ -140,8 +157,20 @@ export const HomeView: React.FC = () => {
     touchStartYRef.current = null;
   };
 
-  // Pointer Drag Handlers (Mouse / Stylus)
+  const handleTouchCancel = () => {
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+    isSwipingRef.current = false;
+  };
+
+  // Pointer Drag Handlers (Mouse / Stylus only; bypasses touch to prevent double navigation)
   const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return; // Handled by touch events natively
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest('button, a, video, [role="button"], input, select, textarea')) {
+      pointerStartXRef.current = null;
+      return;
+    }
     if (e.button === 0) {
       pointerStartXRef.current = e.clientX;
       isSwipingRef.current = false;
@@ -149,9 +178,16 @@ export const HomeView: React.FC = () => {
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (pointerStartXRef.current === null) return;
+    if (e.pointerType === 'touch' || pointerStartXRef.current === null) return;
+    const now = Date.now();
+    if (now - lastGestureTimestampRef.current < 450) {
+      pointerStartXRef.current = null;
+      return;
+    }
+
     const diffX = e.clientX - pointerStartXRef.current;
     if (Math.abs(diffX) >= 40) {
+      lastGestureTimestampRef.current = now;
       isSwipingRef.current = true;
       if (diffX < 0) {
         nextBanner();
@@ -160,6 +196,11 @@ export const HomeView: React.FC = () => {
       }
     }
     pointerStartXRef.current = null;
+  };
+
+  const handlePointerCancel = () => {
+    pointerStartXRef.current = null;
+    isSwipingRef.current = false;
   };
 
   // Fetch live admin-managed banners dynamically
@@ -358,8 +399,10 @@ export const HomeView: React.FC = () => {
           className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
         >
           <AnimatePresence mode="wait">
             <motion.div

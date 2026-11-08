@@ -46,9 +46,24 @@ const PRUNE_TARGET_BYTES = 75 * 1024 * 1024; // Prune to 75 MB on eviction
 export class MediaCacheStorage {
   private dbPromise: Promise<IDBDatabase | null> | null = null;
   private objectUrlMap = new Map<string, string>(); // url -> objectUrl
+  private protectedUrls = new Set<string>(); // URLs currently active in player or viewport protected from eviction
   private hitCount = 0;
   private missCount = 0;
   private evictionCount = 0;
+
+  /**
+   * Protect an active media URL (e.g. playing in modal) from being evicted by LRU pruning.
+   */
+  public protectUrl(url: string): void {
+    if (url) this.protectedUrls.add(url);
+  }
+
+  /**
+   * Unprotect a media URL when component unmounts or playback terminates.
+   */
+  public unprotectUrl(url: string): void {
+    if (url) this.protectedUrls.delete(url);
+  }
 
   /**
    * Safe asynchronous IndexedDB connection initializer.
@@ -267,6 +282,13 @@ export class MediaCacheStorage {
             const cursor = event.target.result;
             if (cursor && remainingBytes > targetBytes) {
               const item = cursor.value as CachedMediaEntry;
+
+              // Safeguard: Never evict active media playing in user viewport or modal
+              if (this.protectedUrls.has(item.url)) {
+                cursor.continue();
+                return;
+              }
+
               const itemSize = item.sizeBytes || 0;
 
               // Revoke Object URL if active

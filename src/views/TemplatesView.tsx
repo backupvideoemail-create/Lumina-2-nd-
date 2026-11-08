@@ -5,6 +5,7 @@ import { TemplateCard } from '../components/TemplateCard';
 import { useApp } from '../context/AppContext';
 import { CATEGORIES } from '../data/templatesData';
 import { AspectRatio } from '../types';
+import { queueHdDownload, isDataSaverActive } from '../services/media/hdDownloadQueue';
 
 export const TemplatesView: React.FC = () => {
   const {
@@ -88,6 +89,46 @@ export const TemplatesView: React.FC = () => {
   } else {
     displayList = [...displayList].sort((a, b) => (b.likesCount || 0) - (a.likesCount || 0));
   }
+
+  // Idle background prefetch for top visible gallery preview media
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (isDataSaverActive()) return;
+
+    let idleId: number | null = null;
+    let timerId: any = null;
+
+    const performPrefetch = () => {
+      // Prefetch preview media for top 8 visible templates at 'low' priority
+      const candidateTemplates = displayList.slice(0, 8);
+      candidateTemplates.forEach((tpl) => {
+        const previewUrl =
+          (tpl as any).previewMedia?.url ||
+          (tpl as any).sampleOutputMedia?.url ||
+          tpl.preview ||
+          tpl.coverVideo ||
+          tpl.cover;
+        if (previewUrl && previewUrl.startsWith('http')) {
+          queueHdDownload(previewUrl, 'low').catch(() => {});
+        }
+      });
+    };
+
+    if ('requestIdleCallback' in window) {
+      idleId = (window as any).requestIdleCallback(performPrefetch, { timeout: 3000 });
+    } else {
+      timerId = setTimeout(performPrefetch, 1200);
+    }
+
+    return () => {
+      if (idleId !== null && 'cancelIdleCallback' in window) {
+        (window as any).cancelIdleCallback(idleId);
+      }
+      if (timerId !== null) {
+        clearTimeout(timerId);
+      }
+    };
+  }, [displayList]);
 
   return (
     <div className="min-h-screen bg-[#08080a] pb-28 text-stone-100">

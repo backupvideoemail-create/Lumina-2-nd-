@@ -16,8 +16,12 @@ import {
   Server,
   Layers,
   ArrowRight,
-  Info
+  Info,
+  HardDrive,
+  Trash2
 } from 'lucide-react';
+import { getQueueStats, hdDownloadQueue, QueueStats } from '../services/media/hdDownloadQueue';
+import { mediaCacheStorage, MediaCacheTelemetry } from '../services/media/mediaCacheStorage';
 
 export interface DiagnosticTestDetail {
   id: string;
@@ -73,10 +77,30 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const [historyRuns, setHistoryRuns] = useState<DiagnosticRunSummary[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'critical' | 'issues'>('all');
+  const [cacheStats, setCacheStats] = useState<MediaCacheTelemetry | null>(null);
+  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+
+  const loadCacheTelemetry = async () => {
+    try {
+      setQueueStats(getQueueStats());
+      const stats = await mediaCacheStorage.getStats();
+      setCacheStats(stats);
+    } catch {}
+  };
+
+  const handleClearCache = async () => {
+    try {
+      await hdDownloadQueue.clearCache(true);
+      await loadCacheTelemetry();
+    } catch {}
+  };
 
   useEffect(() => {
-    if (isOpen && !runSummary && !running) {
-      runDiagnostics();
+    if (isOpen) {
+      loadCacheTelemetry();
+      if (!runSummary && !running) {
+        runDiagnostics();
+      }
     }
   }, [isOpen]);
 
@@ -128,6 +152,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
       console.error('[Diagnostics Modal] Run error:', err);
     } finally {
       setRunning(false);
+      loadCacheTelemetry();
     }
   };
 
@@ -384,10 +409,70 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
             )}
           </div>
         ) : (
-          /* Current 10 Module Cards */
+          /* Current Diagnostic Module Cards */
           <div className="p-3 sm:p-5 overflow-y-auto space-y-2.5 flex-1 no-scrollbar bg-[#09080d]">
+            {/* Client Media Cache & Storage Guard Telemetry Card */}
+            <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2 mb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">
+                    Client Media Cache & Storage Guard
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+                    IndexedDB LRU
+                  </span>
+                </div>
+                <button
+                  onClick={handleClearCache}
+                  className="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer border border-rose-500/20"
+                  title="Purge cached media blobs from browser IndexedDB"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Clear Cache</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
+                <div className="bg-black/30 p-2 rounded-xl border border-white/5">
+                  <span className="text-stone-400 block text-[9px] uppercase tracking-wider">Stored MB</span>
+                  <span className="text-white font-bold text-xs">
+                    {cacheStats ? (cacheStats.totalBytesStored / (1024 * 1024)).toFixed(2) : '0.00'} MB
+                  </span>
+                  <span className="text-[9px] text-stone-500 block">Cap: 100 MB</span>
+                </div>
+                <div className="bg-black/30 p-2 rounded-xl border border-white/5">
+                  <span className="text-stone-400 block text-[9px] uppercase tracking-wider">Cached Items</span>
+                  <span className="text-amber-300 font-bold text-xs">
+                    {cacheStats?.itemCount || 0} Assets
+                  </span>
+                  <span className="text-[9px] text-stone-500 block">In-Memory: {queueStats?.cacheSize || 0}</span>
+                </div>
+                <div className="bg-black/30 p-2 rounded-xl border border-white/5">
+                  <span className="text-stone-400 block text-[9px] uppercase tracking-wider">Hit / Miss Ratio</span>
+                  <span className="text-emerald-400 font-bold text-xs">
+                    {cacheStats?.hitCount || 0} Hits / {cacheStats?.missCount || 0} Miss
+                  </span>
+                  <span className="text-[9px] text-stone-500 block">
+                    {cacheStats && (cacheStats.hitCount + cacheStats.missCount > 0)
+                      ? `${Math.round((cacheStats.hitCount / (cacheStats.hitCount + cacheStats.missCount)) * 100)}% Rate`
+                      : '0% Rate'}
+                  </span>
+                </div>
+                <div className="bg-black/30 p-2 rounded-xl border border-white/5">
+                  <span className="text-stone-400 block text-[9px] uppercase tracking-wider">Evictions & Mode</span>
+                  <span className="text-sky-400 font-bold text-xs">
+                    {cacheStats?.evictionCount || 0} Evicted
+                  </span>
+                  <span className="text-[9px] text-stone-500 block">
+                    {queueStats?.isDataSaver ? 'Data Saver ON' : 'Normal Data'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div className="flex items-center justify-between pb-1 text-[11px] text-stone-400">
-              <span>Showing {filteredResults.length} of 10 Diagnostic Test Modules</span>
+              <span>Showing {filteredResults.length} of {results.length || 10} Diagnostic Test Modules</span>
               <div className="flex items-center gap-2">
                 <button onClick={expandAll} className="hover:text-white text-[10px] cursor-pointer">
                   Expand All

@@ -27,7 +27,7 @@ import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { calculateAuthoritativeTemplateCost, calculateEstimatedProviderCostUsd, MODEL_REGISTRY } from '../services/pricing/pricingService';
-import { queueHdDownload } from '../services/media/hdDownloadQueue';
+import { queueHdDownload, protectMediaUrl, unprotectMediaUrl, isCachedBlobUrl } from '../services/media/hdDownloadQueue';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -200,7 +200,7 @@ export const TemplateDetailModal: React.FC = () => {
   const [hdVideoSrc, setHdVideoSrc] = useState<string | null>(null);
   const [hdStatus, setHdStatus] = useState<'idle' | 'downloading' | 'upgraded' | 'unavailable'>('idle');
 
-  const configuredHdAsset = (selectedTemplate as any)?.hdVideoUrl || (selectedTemplate as any)?.hdDisplayUrl || (selectedTemplate as any)?.hdMedia || (matchingScene as any)?.hdVideoUrl || null;
+  const configuredHdAsset = (selectedTemplate as any)?.hdDisplayUrl || (selectedTemplate as any)?.hdVideoUrl || (selectedTemplate as any)?.hdMedia || (matchingScene as any)?.hdVideoUrl || null;
 
   // Background HD Upgrade: Swap to cached HD asset in place without remounting or restarting playback
   useEffect(() => {
@@ -218,11 +218,18 @@ export const TemplateDetailModal: React.FC = () => {
 
     setHdStatus('downloading');
     let isMounted = true;
+    let activeUpgradedUrl: string | null = null;
 
     queueHdDownload(configuredHdAsset, 'high')
       .then((hdUrl) => {
         if (!isMounted) return;
-        if (hdUrl && hdUrl !== videoAfterSrc) {
+        // Strict requirement: Never report HD Cached when original remote URL was returned after failure
+        const isGenuineBlob = isCachedBlobUrl(hdUrl);
+
+        if (isGenuineBlob && hdUrl && hdUrl !== videoAfterSrc) {
+          activeUpgradedUrl = hdUrl;
+          protectMediaUrl(hdUrl);
+
           const videoEl = videoPlayerRef.current;
           if (videoEl) {
             const prevTime = videoEl.currentTime;
@@ -250,6 +257,7 @@ export const TemplateDetailModal: React.FC = () => {
             setHdStatus('upgraded');
           }
         } else {
+          // Failure or remote fallback: retain preview without faking HD
           setHdStatus('unavailable');
         }
       })
@@ -261,6 +269,9 @@ export const TemplateDetailModal: React.FC = () => {
 
     return () => {
       isMounted = false;
+      if (activeUpgradedUrl) {
+        unprotectMediaUrl(activeUpgradedUrl);
+      }
     };
   }, [selectedTemplate?.id, configuredHdAsset, videoAfterSrc, isVideo]);
 

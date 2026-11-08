@@ -72,8 +72,11 @@ class HdDownloadQueueManager {
       return Promise.resolve(this.blobCache.get(url)!);
     }
 
-    // Fast-path 2: In-flight deduplication
+    // Fast-path 2: In-flight deduplication with priority promotion
     if (this.inFlight.has(url)) {
+      if (priority === 'high') {
+        this.promotePriority(url, 'high');
+      }
       return this.inFlight.get(url)!;
     }
 
@@ -207,6 +210,18 @@ class HdDownloadQueueManager {
   }
 
   /**
+   * Promotes an existing queued item to a higher priority (e.g. when user clicks on a template).
+   */
+  public promotePriority(url: string, newPriority: QueuePriority = 'high'): void {
+    const item = this.queue.find((q) => q.url === url);
+    if (item) {
+      item.priority = newPriority;
+      const priorityWeights: Record<QueuePriority, number> = { high: 3, medium: 2, low: 1 };
+      this.queue.sort((a, b) => priorityWeights[b.priority] - priorityWeights[a.priority]);
+    }
+  }
+
+  /**
    * Clear in-memory blob URLs and optionally persistent storage.
    */
   public async clearCache(clearPersistent: boolean = false): Promise<void> {
@@ -227,3 +242,13 @@ export const hdDownloadQueue = new HdDownloadQueueManager();
 export const queueHdDownload = (url: string, priority?: QueuePriority) => hdDownloadQueue.queueHdDownload(url, priority);
 export const isDataSaverActive = () => hdDownloadQueue.isDataSaverActive();
 export const getQueueStats = () => hdDownloadQueue.getStats();
+
+/**
+ * Distinguishes successful cached Blob URLs from raw remote fallback URLs.
+ * Never report HD Cached if original remote URL is returned.
+ */
+export const isCachedBlobUrl = (url?: string | null): boolean =>
+  Boolean(url && typeof url === 'string' && url.startsWith('blob:'));
+
+export const protectMediaUrl = (url: string) => mediaCacheStorage.protectUrl(url);
+export const unprotectMediaUrl = (url: string) => mediaCacheStorage.unprotectUrl(url);

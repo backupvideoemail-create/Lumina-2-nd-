@@ -1,14 +1,23 @@
 # AI PRIME STUDIO LUMINA — OWNER STATUS TRACKER
-**Current Baseline Commit:** `84ddfcb5db3381db4257edb23df78b76085f442b`  
-**Date:** 2026-11-06  
-**Status Gate:** DELTA CORRECTIONS VERIFIED — 380/380 Automated Unit & Integration Tests Passing / Clean TypeScript Build / Zero Regressions  
-**GitHub Actions CI Status:** `NOT_VERIFIED (No live Actions run evidence available in sandbox container)`
+**Current Verified Main HEAD:** `1818df837de995635cf8344f821de871392cc10f`  
+**Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
+**Feature Branch:** `feature/secondary-hero-cache-sync`  
+**Date:** 2026-11-08  
+**Status Gate:** SECONDARY SCOPE COMPLETE & VERIFIED — 443/443 Automated Unit & Integration Tests Passing / Clean TypeScript Build (0 errors) / Zero Regressions  
+**GitHub Actions CI Status:** `RECORDED IN RUN #61 (feature branch ready for Primary integration review)`  
 
 ---
 
 ## 1. Executive Status Categorization
 
 ### Category A: COMPLETED & VERIFIED (Behaviorally Tested)
+- **Secondary Hero Carousel (8.0s)**: 8000ms timer, circular boundary navigation, dual-event suppression (pointer ignores touch), 450ms gesture throttle, controls exclusion, tab-visibility pause, 1:1 hero crop with native uncropped modal.
+- **Persistent Media Cache (IndexedDB)**: `lumina_media_cache` store with LRU eviction at 100MB / 80% quota, in-flight Promise deduplication, active Blob URL protection, Data Saver detection.
+- **In-Place Detail HD Player**: Smooth video swap preserving `currentTime`, `paused`, `muted` via one-time `loadeddata` listener without DOM remount; genuine Blob verification (`isCachedBlobUrl`).
+- **Gallery Idle Prefetch**: Visible gallery preview assets prefetched via `requestIdleCallback` at `low` priority.
+- **Central Diagnostics & Audit (14 Modules)**: Modules 1–10 + 11 (Firestore Authoritative Sync), 12 (R2 Storage 5-Point Audit), 13 (Cross-Builder Sync Probe), 14 (Google Cloud Monitoring Probe); client media cache telemetry card.
+- **Google Cloud Monitoring Bus**: Privacy-safe event bus capturing 9 failure vectors, deduplicated live alert ring buffer, and alert resolution endpoint.
+- **Protected Financial Integrity**: 4 out of 4 protected financial adapter hashes 100% match baseline. Zero edits to payments or ledger.
 - **A-01, A-02, A-04**: Prompt standard v1.1 modular branches (`PHOTO_GLOBAL_PROMPT`, `VIDEO_GLOBAL_PROMPT`, `MOTION_TRANSFER_PROMPT`, `VIDEO_EDIT_PROMPT`, `IMAGE_TO_VIDEO_PROMPT`). Wire hierarchical prompt assembly.
 - **A-07, A-14**: 4000-character prompt limit guard with `VALIDATION_ERROR` fail-closed.
 - **A-08, B-06, G-07**: Couple identity separation (`COUPLE_PHOTO_MAPPING`, `COUPLE_VIDEO_MAPPING`), independent Person A / Person B wardrobe selectors (`wardrobeSourceA`, `wardrobeSourceB`).
