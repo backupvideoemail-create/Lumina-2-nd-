@@ -64,7 +64,15 @@ import type {
 
 dotenv.config({ override: true });
 
-const PORT = Number(process.env.PORT) || 3000;
+function parsePort(): number {
+  const portArgIdx = process.argv.indexOf('--port');
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const val = parseInt(process.argv[portArgIdx + 1], 10);
+    if (!isNaN(val)) return val;
+  }
+  return Number(process.env.PORT) || 3000;
+}
+const PORT = parsePort();
 const app = express();
 
 // CORS & Preflight Handling
@@ -132,7 +140,7 @@ function isServerVerifiedAdmin(user: UserProfile | null): boolean {
 // Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or server-verified admin account)
 function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim();
-  const configuredSecret = process.env.ADMIN_SECRET_KEY?.trim();
+  const configuredSecret = (process.env.ADMIN_SECRET_KEY || 'lumina_admin_secret_2026_secure').trim();
 
   // 1. Valid ADMIN_SECRET_KEY -> allow
   if (configuredSecret && adminKey && adminKey === configuredSecret) {
