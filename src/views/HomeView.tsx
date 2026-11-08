@@ -56,11 +56,17 @@ export const HomeView: React.FC = () => {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-rotating Hero Carousel State (6.0s timer with reset on interaction)
+  // Auto-rotating Hero Carousel State (8.0s timer with reset on interaction & swipe gestures)
   const [banners, setBanners] = useState<HomeBannerItem[]>(HOME_HERO_BANNERS);
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [timerResetKey, setTimerResetKey] = useState(0);
+
+  // Swipe Gesture Coordinates
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const pointerStartXRef = useRef<number | null>(null);
+  const isSwipingRef = useRef(false);
 
   // Fullscreen / Responsive Video Player for Hero Banner Videos
   const [fullVideoBanner, setFullVideoBanner] = useState<HomeBannerItem | null>(null);
@@ -80,6 +86,82 @@ export const HomeView: React.FC = () => {
     resetTimer();
   };
 
+  const nextBanner = () => {
+    if (banners.length <= 1) return;
+    setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
+    resetTimer();
+  };
+
+  const prevBanner = () => {
+    if (banners.length <= 1) return;
+    setCurrentBannerIndex((prev) => (prev - 1 + banners.length) % banners.length);
+    resetTimer();
+  };
+
+  // Pause carousel when browser tab loses visibility
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setIsPaused(true);
+      } else if (!fullVideoBanner) {
+        setIsPaused(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fullVideoBanner]);
+
+  // Touch Swipe Handlers (40px threshold, circular boundary wrapping)
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartXRef.current = e.touches[0].clientX;
+      touchStartYRef.current = e.touches[0].clientY;
+      isSwipingRef.current = false;
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartXRef.current === null) return;
+    const touchEndX = e.changedTouches[0].clientX;
+    const touchEndY = e.changedTouches[0].clientY;
+    const diffX = touchEndX - touchStartXRef.current;
+    const diffY = touchStartYRef.current !== null ? touchEndY - touchStartYRef.current : 0;
+
+    // Only trigger horizontal swipe if movement is predominantly horizontal and >= 40px
+    if (Math.abs(diffX) >= 40 && Math.abs(diffX) > Math.abs(diffY)) {
+      isSwipingRef.current = true;
+      if (diffX < 0) {
+        nextBanner();
+      } else {
+        prevBanner();
+      }
+    }
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+  };
+
+  // Pointer Drag Handlers (Mouse / Stylus)
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button === 0) {
+      pointerStartXRef.current = e.clientX;
+      isSwipingRef.current = false;
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (pointerStartXRef.current === null) return;
+    const diffX = e.clientX - pointerStartXRef.current;
+    if (Math.abs(diffX) >= 40) {
+      isSwipingRef.current = true;
+      if (diffX < 0) {
+        nextBanner();
+      } else {
+        prevBanner();
+      }
+    }
+    pointerStartXRef.current = null;
+  };
+
   // Fetch live admin-managed banners dynamically
   useEffect(() => {
     let isMounted = true;
@@ -97,13 +179,14 @@ export const HomeView: React.FC = () => {
     };
   }, []);
 
+  // 8.0-second auto-cycle rotation timer
   useEffect(() => {
-    if (isPaused || banners.length === 0) return;
+    if (isPaused || fullVideoBanner !== null || banners.length <= 1) return;
     const interval = setInterval(() => {
       setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
-    }, 6000);
+    }, 8000);
     return () => clearInterval(interval);
-  }, [isPaused, banners.length, timerResetKey]);
+  }, [isPaused, fullVideoBanner, banners.length, timerResetKey]);
 
   const [bannerHdUrls, setBannerHdUrls] = useState<Record<string, string>>({});
   const heroVideoRef = useRef<HTMLVideoElement>(null);
@@ -265,13 +348,19 @@ export const HomeView: React.FC = () => {
         </button>
       </header>
 
-      {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 6.0 seconds) */}
+      {/* 2. ROTATING HERO CAROUSEL BANNER (Auto-cycles every 8.0 seconds) */}
       <section
         className="px-3.5 pt-2 pb-2 relative flex justify-center"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
-        <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group">
+        <div
+          className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+        >
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
@@ -279,7 +368,13 @@ export const HomeView: React.FC = () => {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.98 }}
               transition={{ duration: 0.5, ease: 'easeOut' }}
-              onClick={() => handleBannerClick(activeBanner)}
+              onClick={() => {
+                if (isSwipingRef.current) {
+                  isSwipingRef.current = false;
+                  return;
+                }
+                handleBannerClick(activeBanner);
+              }}
               className="absolute inset-0 cursor-pointer"
             >
               {/* Media Container: 1:1 Square Theater Frame on Clean Black Canvas with Zero Blurred Duplicate Video */}

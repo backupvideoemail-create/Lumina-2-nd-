@@ -140,6 +140,57 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+// Resilient Response Helper for Cloud Run 503 / HTML interception
+export async function safeParseJsonResponse<T = any>(
+  res: Response
+): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
+  const contentType = res.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
+
+  if (!isJson) {
+    const rawText = await res.text().catch(() => '');
+    if (res.status === 503) {
+      return {
+        ok: false,
+        status: 503,
+        data: null,
+        error: 'Cloud Run service warming up (503 Service Unavailable). Please retry in a moment.'
+      };
+    }
+    if (res.status === 401) {
+      return {
+        ok: false,
+        status: 401,
+        data: null,
+        error: 'Authentication session expired or required (401 Unauthorized).'
+      };
+    }
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      error: rawText.slice(0, 160) || `Server returned HTTP ${res.status}`
+    };
+  }
+
+  try {
+    const data = await res.json();
+    return {
+      ok: res.ok,
+      status: res.status,
+      data,
+      error: res.ok ? undefined : (data?.error || `HTTP ${res.status}`)
+    };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      error: 'Invalid JSON response from server'
+    };
+  }
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'home' | 'templates' | 'creations' | 'profile'>('home');
   const [templates, setTemplates] = useState<Template[]>(SEED_TEMPLATES);
@@ -240,57 +291,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .catch((err) => console.warn('[AppContext] Payment config sync note:', err));
   }, []);
-
-// Resilient Response Helper for Cloud Run 503 / HTML interception
-export async function safeParseJsonResponse<T = any>(
-  res: Response
-): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
-  const contentType = res.headers.get('content-type') || '';
-  const isJson = contentType.includes('application/json');
-
-  if (!isJson) {
-    const rawText = await res.text().catch(() => '');
-    if (res.status === 503) {
-      return {
-        ok: false,
-        status: 503,
-        data: null,
-        error: 'Cloud Run service warming up (503 Service Unavailable). Please retry in a moment.'
-      };
-    }
-    if (res.status === 401) {
-      return {
-        ok: false,
-        status: 401,
-        data: null,
-        error: 'Authentication session expired or required (401 Unauthorized).'
-      };
-    }
-    return {
-      ok: false,
-      status: res.status,
-      data: null,
-      error: rawText.slice(0, 160) || `Server returned HTTP ${res.status}`
-    };
-  }
-
-  try {
-    const data = await res.json();
-    return {
-      ok: res.ok,
-      status: res.status,
-      data,
-      error: res.ok ? undefined : (data?.error || `HTTP ${res.status}`)
-    };
-  } catch {
-    return {
-      ok: false,
-      status: res.status,
-      data: null,
-      error: 'Invalid JSON response from server'
-    };
-  }
-}
 
   // Auth Header Helper
   const getAuthHeaders = (): Record<string, string> => {

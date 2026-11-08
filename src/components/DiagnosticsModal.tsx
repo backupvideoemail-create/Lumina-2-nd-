@@ -23,8 +23,9 @@ export interface DiagnosticTestDetail {
   id: string;
   name: string;
   category: string;
-  status: 'passed' | 'failed' | 'blocked' | 'warning';
+  status: 'passed' | 'failed' | 'blocked' | 'warning' | 'not_tested';
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  testType?: 'AUTOMATED_UNIT' | 'LIVE_PROBE' | 'INTEGRATION_CHECK' | 'SECURITY_RBAC' | 'STORAGE_AUDIT' | 'MONITORING_EVENT';
   environment: 'production' | 'staging' | 'sandbox';
   timestamp: string;
   commitSha: string;
@@ -38,6 +39,7 @@ export interface DiagnosticTestDetail {
   rootCauseHypothesis?: string;
   recommendedAction?: string;
   durationMs: number;
+  lastSuccessfulRun?: string;
   previousRunStatus?: 'passed' | 'failed' | 'blocked' | 'warning' | 'none';
 }
 
@@ -229,7 +231,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
             <span className="flex items-center gap-1">
               <GitCommit className="w-3.5 h-3.5 text-sky-400" />
               <span>Commit: </span>
-              <strong className="text-stone-200">{(runSummary?.commitSha || '349bbfa6').slice(0, 8)}</strong>
+              <strong className="text-stone-200">{runSummary?.commitSha ? runSummary.commitSha.slice(0, 8) : 'UNKNOWN'}</strong>
             </span>
             <span className="flex items-center gap-1">
               <Layers className="w-3.5 h-3.5 text-purple-400" />
@@ -441,6 +443,16 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                         >
                           {r.severity}
                         </span>
+                        {r.testType && (
+                          <span className="text-[9px] font-mono text-sky-300 bg-sky-500/15 border border-sky-500/30 px-1.5 py-0.2 rounded uppercase">
+                            {r.testType}
+                          </span>
+                        )}
+                        {r.lastSuccessfulRun && (
+                          <span className="text-[9px] font-mono text-emerald-400/80 bg-white/5 px-1.5 py-0.2 rounded">
+                            Last Pass: {new Date(r.lastSuccessfulRun).toLocaleTimeString()}
+                          </span>
+                        )}
                         {r.previousRunStatus && r.previousRunStatus !== 'none' && (
                           <span className="text-[9px] font-mono text-stone-400 bg-white/5 px-1.5 py-0.2 rounded">
                             Prev: {r.previousRunStatus.toUpperCase()} → Curr: {r.status.toUpperCase()}

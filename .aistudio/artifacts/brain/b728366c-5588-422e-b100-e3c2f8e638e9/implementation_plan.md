@@ -1,327 +1,377 @@
-# Strict Implementation Plan: AI Prime Studio Lumina — Authoritative Multi-Resolution Costing, Verified Adapter Audit & Progressive Media Architecture
+# Secondary Builder: Master Implementation Plan v2.1
+## AI Prime Studio Lumina — Hero Carousel, Persistent IndexedDB Media Cache, Cross-Builder Sync, Central Diagnostics & Google Cloud Monitoring
 
-## 1. Executive Summary & Strict Constraints
-This plan reconciles all platform requirements with direct, verified facts from the current codebase and runtime environment.
-
-### Strict Non-Negotiable Rules:
-- **No False Verification**: No model, tariff, duration, adapter, or sync capability is labeled `VERIFIED` without verified empirical proof. Unproven entries are strictly marked `UNKNOWN`, `PENDING_QUOTE`, or `NOT_TESTED`.
-- **Pre-Generation vs. Post-Generation Cost Separation**:
-  - `estimatedProviderCostUsd` & `estimatedCustomerCredits` (pre-generation quote based on verified rates and requested inputs).
-  - `actualProviderCostUsd` & `actualCostReconciliation` (post-generation actual measured billing).
-  - The pre-generation quote never claims to be "Actual Cost".
-- **Customer Screen Guarantee**: Generation screen displays **only Required Credits** (e.g., `⚡ 12 Credits`). No INR or currency figures appear on generation screens.
-- **Strict File-Level Change Allowlist**: Payment gateways, wallet deduction/top-up logic, webhooks, and subscriptions are 100% frozen. Any modification to these protected files fails verification.
-- **No Unauthorized Paid Runs**: Passive connection checks do not call paid APIs. Live paid tests require explicit Owner approval and a verified cost quote.
-- **Sandbox Environment Transparency**: `.git` directory is absent in this runtime (`fatal: not a git repository`). Git sync is honestly marked `NOT_VERIFIED (GIT_DIRECTORY_ABSENT)`.
+An authoritative architectural specification and execution plan governed by **Master Handoff v2.0**, **Master Implementation Contract A–P**, **Prompt Standard v1.1**, **Prompt Operating Standard v1.2**, and the **Locked Template System Source of Truth**.
 
 ---
 
-## 2. File-Level Change Allowlist & Protected Systems Freeze
+## User Review & Critical Decisions
 
-### A. Strictly Frozen Files (100% Read-Only — Zero Modifications Allowed)
-The following files and systems are **PROTECTED**. Any edits to these files are prohibited:
-1. `src/services/payments/razorpayAdapter.ts` (Frozen)
-2. `src/services/payments/cashfreeAdapter.ts` (Frozen)
-3. `src/services/billing/googlePlayService.ts` (Frozen)
-4. `src/config/pricingConfig.ts` (Frozen — top-up pack definitions and INR prices)
-5. `src/services/db/prodDb.ts` (Payment, wallet, refund, and subscription methods are Frozen)
-6. `server.ts` (Existing routes `/api/payments/*`, `/api/billing/*`, `/api/webhooks/*` are Frozen)
-
-### B. Explicit Change Allowlist (Only These Files May Be Modified)
-1. `src/config/globalMasterPrompt.ts`: Add Prompt Standard v1.1 modular branches (`PHOTO_GLOBAL_PROMPT`, `VIDEO_SOURCE_PRESERVING_PROMPT`, `MOTION_TRANSFER_PROMPT`, `VIDEO_EDIT_PROMPT`, `IMAGE_TO_VIDEO_PROMPT`, `COUPLE_PHOTO_MAPPING`, `COUPLE_VIDEO_MAPPING`).
-2. `src/services/pricing/pricingService.ts`: Implement `MODEL_REGISTRY` with `UNKNOWN`/`PENDING_QUOTE` statuses; implement 4-stage cost functions.
-3. `src/services/ai/faceSwapAdapter.ts`: Add `hf_mult_motion_control_flash` and `hf_mult_replace_object_flash` endpoint mappings; pass untruncated recipe parameter.
-4. `src/services/ai/aiRouter.ts`: Route `MOTION_TRANSFER` vs `OBJECT_SWAP` vs `VIDEO_EDIT` vs `PHOTO` without conflating workflows.
-5. `src/components/TemplateCard.tsx`: Staged progressive loading (poster first, lazy preview with `preload="none"`, Data Saver detection, in-place HD upgrade).
-6. `src/components/TemplateDetailModal.tsx`: Add wardrobe selector (“कपड़े किससे लेने हैं?”), couple 2-photo upload boxes with independent remove/replace, and live credit recalculation (Credits only, zero INR).
-7. `src/components/TemplateManagerModal.tsx`: Add Cover Media selector for every template, 1:1 client-side crop/zoom editor, and extend existing Testing tab.
-8. `src/views/HomeView.tsx`: Apply 1:1 square CSS crop to carousel cards; uncropped native player (`object-contain`); conditional CTA (`SHOWCASE_ONLY` has no CTA; `LINKED_TEMPLATE` has CTA); respect `filterType` on rails.
-9. `src/views/TemplatesView.tsx`: Support multi-category selection (`selectedCategories: string[]`) with OR logic across categories and AND logic with Photo/Video type filter.
-10. `server.ts` (Targeted sections only): Convert customer uploads to private R2 signed URLs in `/api/generations/create`; fix `category !== 'Trending'` query bug in `/api/templates`; add banner crop metadata endpoints. Payment/billing routes remain 100% untouched.
-11. `scripts/verify_system_fixes.ts`: Add Suite 25 automated tests and regression checks.
+> [!IMPORTANT]
+> The following core architectural boundaries and decisions are locked and accepted:
+> - **Zero-Duplication Single System**: One Website → One Frontend → One Backend → One Auth System → One Authoritative Firestore DB (`ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f`) → One Wallet → Web + PWA + TWA.
+> - **Branch & Scope Boundary**: Base commit is verified as `8409287262d84e9621daf971e1cd30c88884ea3b` on GitHub `main`. All work is isolated to dedicated feature branch `feature/secondary-hero-cache-sync`. Direct push to `main`, merge, and production deployment by Secondary are **strictly prohibited**.
+> - **Persistent Template Media Cache Engine**: Prioritizing **IndexedDB with LRU eviction and quota management** (`navigator.storage.estimate()`). Exclusively for public templates and marketing media. Never cache private customer uploads, generated results, signed R2 URLs, auth tokens, or payment data.
+> - **Google Cloud Monitoring Module**: A read-only telemetry module housed strictly inside the existing Admin Diagnostics console, reusing the existing Cloud Run service account on `gen-lang-client-0525281130`. Zero new recurring SaaS subscriptions, zero paid third-party monitoring tools, and zero IAM permission expansions without explicit Owner + Primary approval. Missing IAM permissions report `BLOCKED_OWNER/PRIMARY`, never fake PASS.
+> - **Strict Financial & Secret Isolation**: Primary Builder exclusively owns Razorpay, Cashfree, Google Play Billing, AutoPay mandates, Wallet, Credit Ledger, refunds, and production secrets. Secondary Builder is prohibited from modifying financial code or production credentials. Any `server.ts` edit requires function-level diffs proving protected payment routes remain 100% untouched.
 
 ---
 
-## 3. Model Registry & Resolution Tariff Matrix (Correction 1)
+## 1. Overview & Core Concept
 
-### Target File: `src/services/pricing/pricingService.ts`
-- **Renamed to `MODEL_REGISTRY`**: No unsupported `VERIFIED` or hardcoded `isSupported: true` tags.
-- **Capabilities Matrix**:
-  ```ts
-  export type SupportStatus = 'SUPPORTED' | 'UNSUPPORTED' | 'UNKNOWN';
-  export type VerificationStatus = 'VERIFIED' | 'PENDING_QUOTE' | 'NOT_TESTED';
-
-  export interface ResolutionTariff {
-    resolution: '480p' | '720p' | '1080p';
-    publishedListPricePerSecondUsd: number;
-    accountQuotePerSecondUsd?: number;
-    supportStatus: SupportStatus;
-    renderingTestStatus: VerificationStatus;
-  }
-
-  export interface ModelRegistryEntry {
-    modelId: string;
-    provider: 'higgsfield' | 'gemini' | 'smart_template';
-    workflow: 'VIDEO_FACE_REPLACEMENT' | 'OBJECT_SWAP' | 'MOTION_TRANSFER' | 'VIDEO_EDIT' | 'IMAGE_TO_VIDEO' | 'PHOTO_EDIT' | 'PHOTO_GENERATION';
-    resolutionTariffs: Record<'480p' | '720p' | '1080p', ResolutionTariff>;
-    appDefaultResolution?: '480p' | '720p' | '1080p';
-    minDurationSeconds?: number;
-    maxDurationSeconds?: number;
-    appDefaultDurationSeconds?: number;
-    billsSourceVideo: boolean | 'UNKNOWN';
-    endpointVerificationStatus: VerificationStatus;
-    generationTestStatus: VerificationStatus;
-  }
-
-  export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
-    'hf_mult_motion_control_flash': {
-      modelId: 'hf_mult_motion_control_flash',
-      provider: 'higgsfield',
-      workflow: 'MOTION_TRANSFER',
-      resolutionTariffs: {
-        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
-      },
-      // Defaults kept disabled/unassigned until exact endpoint and account support are verified
-      appDefaultResolution: undefined,
-      appDefaultDurationSeconds: undefined,
-      billsSourceVideo: 'UNKNOWN',
-      endpointVerificationStatus: 'PENDING_QUOTE',
-      generationTestStatus: 'NOT_TESTED'
-    },
-    'hf_mult_replace_object_flash': {
-      modelId: 'hf_mult_replace_object_flash',
-      provider: 'higgsfield',
-      workflow: 'OBJECT_SWAP',
-      resolutionTariffs: {
-        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
-      },
-      appDefaultResolution: undefined,
-      appDefaultDurationSeconds: undefined,
-      billsSourceVideo: 'UNKNOWN',
-      endpointVerificationStatus: 'PENDING_QUOTE',
-      generationTestStatus: 'NOT_TESTED'
-    },
-    'gemini-3.1-flash-lite-image': {
-      modelId: 'gemini-3.1-flash-lite-image',
-      provider: 'gemini',
-      workflow: 'PHOTO_GENERATION',
-      resolutionTariffs: {
-        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
-      },
-      billsSourceVideo: false,
-      endpointVerificationStatus: 'PENDING_QUOTE',
-      generationTestStatus: 'NOT_TESTED'
-    },
-    'gemini-omni-1.1-flash': {
-      modelId: 'gemini-omni-1.1-flash',
-      provider: 'gemini',
-      workflow: 'VIDEO_EDIT',
-      resolutionTariffs: {
-        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
-      },
-      billsSourceVideo: false,
-      endpointVerificationStatus: 'PENDING_QUOTE',
-      generationTestStatus: 'NOT_TESTED' // Evaluation-only
-    },
-    'smart_canvas_ffmpeg': {
-      modelId: 'smart_canvas_ffmpeg',
-      provider: 'smart_template',
-      workflow: 'VIDEO_EDIT',
-      resolutionTariffs: {
-        // FFmpeg binary installed, but individual rendering resolutions are NOT_TESTED until test render executes
-        '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-        '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
-      },
-      billsSourceVideo: false,
-      endpointVerificationStatus: 'VERIFIED', // Local binary detected
-      generationTestStatus: 'NOT_TESTED'
-    }
-  };
-  ```
+- **Scope of Secondary Builder**:
+  1. **Hero Banner Carousel**: Upgrade from 6000ms to exactly 8000ms auto-rotation with bidirectional touch/pointer swipe, boundary wrapping, manual navigation timer reset, pause/resume on modal open, video playback, and tab visibility change, while strictly preserving 1:1 square crop and uncropped native aspect ratio in fullscreen.
+  2. **Professional Progressive Template Cache**: Extend `src/services/media/hdDownloadQueue.ts` with persistent IndexedDB storage (`lumina_media_cache`), LRU eviction, quota guards, and a strict progressive loading hierarchy: Poster immediately $\to$ Near-viewport Previews $\to$ Idle prefetch of remaining visible gallery previews $\to$ High-priority HD download on user click.
+  3. **Seamless In-Place Detail Player Upgrade**: TemplateCard clicks queue genuine configured HD assets. `TemplateDetailModal` consumes cached HD URLs, upgrading the `<video>` element in place while preserving `currentTime`, paused/playing state, and mute state with zero audio pop or remount flicker.
+  4. **Cross-Builder Synchronization Verification**: Implement bidirectional Primary $\leftrightarrow$ Secondary verification using independent workspaces: write, authoritative Firestore read-back, delete, tombstone verification, re-creation with tombstone removal, and complete cleanup.
+  5. **Truthful Admin Diagnostics & Persistent History**: Upgrade `/api/admin/diagnostics` and `DiagnosticsModal` to persist run history in Firestore (`diagnostics_history`), retrieve after restart, display dynamic tallies, severity, test types, expected vs. actual results, commit SHAs, Cloud Run revisions, and safe trace IDs. Eliminate fake fallback SHAs (`349bbfa6`). Prohibit false "READY" status and guarantee zero financial or customer side effects.
+  6. **Separate Firestore & R2 Health Reporting**: Report Firestore project/DB and authoritative read/write/read-back separately from Cloudflare R2 configuration, upload, read, delete, and pre-signed URL generation (5 distinct R2 checkpoints).
+  7. **Google Cloud Monitoring Inside Admin Diagnostics**: Monitor Cloud Run request logs, container logs, system logs, 5xx error frequency, latency, active revision health, and privacy-safe application error events. Provide authenticated Live Alerts with deduplication and resolved incident history.
+  8. **Privacy-Safe Application Event Telemetry**: Structured event emission across 9 critical operational vectors: Payment 401/503, Ledger mismatch, Gemini 402/RESOURCE_EXHAUSTED, Veo errors, Firestore failures, R2 failures, Template mismatches, Account Deletion partial failures, and Admin/Auth authorization rejections.
+  9. **Admin RBAC Enforcement**: Server-verify both approved Admin emails (`backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com`) with strict HTTP 403 on every `/api/admin/**` endpoint.
+  10. **Master Contract A–P & Filter Preservation**: Preserve all prompt branches, Prompt Standard v1.1, Operating Standard v1.2, Couple slot rules, and multi-category OR/AND filtering across Home and Templates.
+  11. **Six Canonical Documentation Updates**: Maintain complete parity across `master_requirement_ledger.md`, `remaining_delta_plan.md`, `owner_status_tracker.md`, `PRODUCTION_INCIDENT_MASTER_TRACKER.md`, `BUILDER_HANDOFF_LOG.md`, and `CONFIGURATION_AUDIT.md`.
 
 ---
 
-## 4. Four-Stage Duration & Cost Tracking (Correction 2)
+## 2. User Experience & Visual Design
 
-#### Target Files: `src/services/pricing/pricingService.ts`, `server.ts`
-- **Four Distinct Duration Metrics**:
-  1. `sourceVideoDurationSeconds`: Probed from input driving video via FFprobe.
-  2. `requestedOutputDurationSeconds`: Requested by customer (slider) or template configuration.
-  3. `actualOutputDurationSeconds`: Measured from the actual generated output video file via FFprobe after generation.
-  4. `actualBillableDurationSeconds`: Determined from provider transaction response and verified billing rules.
+Following the **Universal Frontend Design Constitution** and **Mobile & Touch-First Design Reference** (`references/10_mobile_touch_apps.md`):
 
-- **Four Distinct Cost Stages**:
-  ```ts
-  // 1. Pre-Generation Estimated Provider Cost
-  export function calculateEstimatedProviderCostUsd(params: {
-    modelId: string;
-    resolution: '480p' | '720p' | '1080p';
-    sourceVideoDurationSeconds?: number;
-    requestedOutputDurationSeconds: number;
-  }): { status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED'; estimatedProviderCostUsd?: number; reason?: string } {
-    const entry = MODEL_REGISTRY[params.modelId];
-    if (!entry) return { status: 'UNSUPPORTED', reason: 'Model not registered.' };
+### Key User Flows
 
-    const tariff = entry.resolutionTariffs[params.resolution];
-    if (!tariff || tariff.supportStatus === 'UNSUPPORTED') {
-      return { status: 'UNSUPPORTED', reason: `Resolution ${params.resolution} is unsupported by ${params.modelId}.` };
-    }
+1. **Hero Banner Interaction & Mobile Swipe**:
+   - Customer views HomeView; Hero Banner 1 displays with a 1:1 aspect ratio and softened bottom-only gradient scrim (`from-black/80 via-black/30 to-transparent`).
+   - The 8-second rotation timer advances. User swipes left or drags horizontally: the carousel transitions smoothly to Banner 2, resetting the 8-second timer.
+   - User taps the PRO Badge or video: the Fullscreen Modal opens in native media ratio (`object-contain`); background rotation automatically pauses.
+   - Swiping does not interfere with buttons, links, or video controls (`e.stopPropagation()`).
+   - Removing a banner via Admin does not delete or deactivate its linked gallery template.
 
-    const rate = tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd;
-    if (rate === undefined || rate <= 0 && entry.provider !== 'smart_template') {
-      return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
-    }
+2. **Template Browsing & Instant In-Place HD Upgrade**:
+   - Customer scrolls the Gallery. Posters render immediately with `loading="lazy"`.
+   - Cards near the viewport trigger background prefetching of lightweight 480p preview videos at medium priority.
+   - When the user taps a Template Card, the configured HD asset (`hdDisplayUrl` / `hdVideoUrl` / `hdMedia`) is queued at **High Priority**.
+   - `TemplateDetailModal` opens immediately using preview media. When the HD asset completes downloading into IndexedDB, the player upgrades the video in place without restarting from 0:00 or interrupting audio.
+   - If no genuine HD asset is configured or download fails, the modal retains preview media and displays a clean notice ("Preview Mode · HD Unavailable"). It never fakes an HD upgrade.
 
-    if (entry.billsSourceVideo === true) {
-      if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
-        return { status: 'PENDING_QUOTE', reason: 'Source video duration is required for dual-duration quote.' };
-      }
-      const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
-      return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate };
-    }
+3. **Admin Diagnostics, Live Alerts & Telemetry**:
+   - Authorized admins open "Diagnostics & Audit" from the Admin Drawer.
+   - The console loads previous diagnostic history snapshots directly from Firestore `diagnostics_history`.
+   - "Run Full Diagnostics" triggers verified non-destructive checks:
+     - Real Git HEAD SHA, Feature Branch, Build Time, and Cloud Run Revision.
+     - Separate Firestore DB health vs. Cloudflare R2 health (5 checkpoints: config, upload, read, delete, signed URL).
+     - Persistent Cache utilization (total bytes stored, hit/miss counters, quota used %, pending queue count).
+     - Google Cloud Monitoring health (Cloud Run container health, 5xx rate, latency, active revision status).
+   - Live Alerts panel displays deduplicated alerts with incident IDs, severity, safe trace IDs, resolution status, and recommended actions.
 
-    return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate };
-  }
-
-  // 2. Pre-Generation Estimated Customer Credits (Credits only, zero INR on UI)
-  export function calculateEstimatedCustomerCredits(
-    estimatedProviderCostUsd: number,
-    config: CentralPricingConfig
-  ): number {
-    const estimatedCostInr = estimatedProviderCostUsd * config.usdToInrRate;
-    const billedInr = estimatedCostInr * (1 + config.markupPercent / 100);
-    return Math.ceil(billedInr * config.creditsPerInr);
-  }
-
-  // 3. Post-Generation Actual Provider Cost
-  export function measureActualProviderCostUsd(params: {
-    modelId: string;
-    resolution: '480p' | '720p' | '1080p';
-    actualBillableDurationSeconds: number;
-    providerTransactionCostUsd?: number;
-  }): number {
-    if (params.providerTransactionCostUsd !== undefined) {
-      return params.providerTransactionCostUsd;
-    }
-    const entry = MODEL_REGISTRY[params.modelId];
-    const tariff = entry?.resolutionTariffs[params.resolution];
-    const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
-    return params.actualBillableDurationSeconds * rate;
-  }
-
-  // 4. Actual Cost Reconciliation
-  export function reconcileCostOnCompletion(params: {
-    reservedCredits: number;
-    actualProviderCostUsd: number;
-    config: CentralPricingConfig;
-    isFailed: boolean;
-  }): { finalChargeCredits: number; refundCredits: number } {
-    if (params.isFailed) {
-      return { finalChargeCredits: 0, refundCredits: params.reservedCredits };
-    }
-    // Customer is never charged more than the pre-generation quote
-    return { finalChargeCredits: params.reservedCredits, refundCredits: 0 };
-  }
-  ```
+### Visual Styling & Accessibility
+- **Theme**: Luxury Cinematic Dark Mode (`#08080a` canvas, `#121216` card surfaces, `#d4af37` gold highlights, `#f59e0b` amber accents).
+- **Typography**: Display headlines in `Cinzel` (bold, tracking-wide), primary interface in `Plus Jakarta Sans`, tabular figures in `font-mono tabular-nums`.
+- **Ergonomics**: Minimum touch targets of $\ge 44 \times 44\text{px}$ on mobile; horizontal swipe containers use `touch-action: pan-y`.
 
 ---
 
-## 5. Comprehensive Adapter Audit Discovered from Codebase (Correction 3)
+## 3. Key Product Decisions & Trade-Offs
 
-### Discovered Registered Adapters Inventory:
+### Decision 1: IndexedDB Media Cache with LRU Eviction & Quota Management
+- **Chosen Approach**: Native browser IndexedDB (`lumina_media_cache`, objectStore `media_blobs`) storing `Blob` data alongside structured metadata (`url`, `etag`, `mimeType`, `sizeBytes`, `lastAccessedAt`, `version`).
+- **Why**: Allows fine-grained LRU eviction when cache exceeds 100MB or `navigator.storage.estimate()` indicates $>80\%$ quota utilization. Cache survives browser restarts and provides corrupt-entry recovery and telemetry reporting.
+- **Alternatives Considered**: Cache Storage API (opaque size tracking, difficult LRU sorting in Safari), LocalStorage (5MB cap, cannot store binary Blobs).
 
-| Provider Name | Adapter File | Exact Model IDs | Supported Workflows | Required Secret Names | Current Sandbox Secret Status | Connection Test | Model/Endpoint Availability | Pricing Evidence | Generation Test Status |
-|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|
-| **Higgsfield Motion Transfer** | `src/services/ai/faceSwapAdapter.ts` | `hf_mult_motion_control_flash` | `MOTION_TRANSFER`, `VIDEO_FACE_REPLACEMENT` | `HIGGSFIELD_API_KEY`, `HIGGSFIELD_API_SECRET` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Published list: $0.05 (480p), $0.10 (720p), $0.20 (1080p) | NOT_TESTED |
-| **Higgsfield Object Swap** | `src/services/ai/faceSwapAdapter.ts` | `hf_mult_replace_object_flash` | `OBJECT_SWAP` | `HIGGSFIELD_API_KEY`, `HIGGSFIELD_API_SECRET` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Published list: $0.10 (720p), $0.20 (1080p) | NOT_TESTED |
-| **Google Gemini Image** | `src/services/ai/geminiAdapter.ts` | `gemini-3.1-flash-lite-image` | `PHOTO_GENERATION`, `PHOTO_EDIT`, `PHOTO_IDENTITY_EDIT`, `COUPLE_PHOTO_MAPPING` | `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Token-based official tariff (Pending Quote) | NOT_TESTED |
-| **Google Gemini Omni Flash** | `src/services/ai/videoProviderAdapter.ts` | `gemini-omni-1.1-flash` | `VIDEO_EDIT`, `IMAGE_TO_VIDEO` | `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY` | MISSING (`false`) | NOT_TESTED (Secret Absent) | UNKNOWN | Per-second official tariff (Pending Quote) | EVALUATION_ONLY |
-| **Smart Template Engine** | `src/services/video/videoTrimmer.ts` | `smart_canvas_ffmpeg` | `VIDEO_EDIT`, Overlays, Text, Transitions | None (Local binary) | INSTALLED (Local binary) | PASS (Binary detected) | Local system | $0.00 (Zero AI cost) | NOT_TESTED (Per-resolution rendering tests pending) |
+### Decision 2: In-Place Video Player Swap
+- **Chosen Approach**: Capture `currentTime`, `paused`, and `muted` state before swapping `<video>` `src` to the cached Blob URL, restoring state on `loadeddata`.
+- **Why**: Remounting the React video element causes audio pops, black frame flashes, and resets scrubbing context. In-place swapping provides a seamless upgrade.
 
-- **Admin Gallery Test Extension**:
-  - Leverages the existing Testing tab in `TemplateManagerModal.tsx`.
-  - Displays accurate statuses: `MISSING_SECRET`, `NOT_TESTED`, `CONFIGURED`.
-  - A passive ping or binary check is **never** presented as an actual generation test.
-  - Paid generation tests require explicit Admin modal confirmation: *"Running live generation test consumes ~X credits ($Y USD). Proceed?"*
+### Decision 3: Truthful Multi-Builder Git Metadata vs. Static Fallbacks
+- **Chosen Approach**: Inject actual build environment variables (`process.env.COMMIT_SHA`, `process.env.K_REVISION`, `import.meta.env.VITE_COMMIT_SHA`). If unavailable, explicitly display `"UNKNOWN"`.
+- **Why**: Eliminates hardcoded fallback hashes (`349bbfa6`) that produced false confidence in deployment synchronization.
 
----
-
-## 6. Real Builder Synchronization & Environment Facts (Correction 4)
-
-### A. Git & Repository Status (Fact-Based)
-- **Current Runtime Status**:
-  - The AI Studio sandbox container does not mount a `.git` directory (`git rev-parse` returns `fatal: not a git repository`).
-  - Consequently, live `git status`, local commit SHA comparison, or git diffs cannot be executed inside this container.
-  - Git synchronization status: **NOT_VERIFIED (GIT_DIRECTORY_ABSENT)**.
-  - Historical reference commits from task prompts: `08702c5` and `68916c3` on branch `main` at `https://github.com/ai-prime-studio/ai-prime-studio-lumina.git`.
-
-### B. Firestore Synchronization Evidence (Suite 18 Verification)
-- **Database ID**: `ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f`.
-- **Suite 18 Execution Log**:
-  - `[PASS] 18.1 Secondary template saved and verified directly in authoritative Firestore`
-  - `[PASS] 18.1 Primary Builder instance refreshed and successfully received Secondary template with all properties`
-  - `[PASS] 18.2 Primary template saved and verified directly in authoritative Firestore`
-  - `[PASS] 18.2 Secondary Builder instance refreshed and successfully received Primary template with all properties`
-  - `[PASS] 18.3 Template document removed from Firestore templates collection`
-  - `[PASS] 18.3 Deleted template ID recorded in authoritative deleted_template_ids`
-  - `[PASS] 18.3 Secondary refresh excludes deleted template; never resurfaces`
-  - `[PASS] 18.4 Re-created template ID atomically cleared from deleted_template_ids`
-  - `[PASS] 18.4 Re-created template is immediately available on Primary after refresh`
-- **Cross-Instance Status**: When verified in dual local simulated instances connected to Firestore, tests 18.1–18.4 pass. Remote multi-runner cross-instance logs are not accessible from within this single sandbox; marked **VERIFIED_LOCAL_SIMULATION / NOT_VERIFIED_REMOTE_RUNNER**.
-
-### C. Cloudflare R2 Storage Status
-- In the current sandbox container, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET_NAME` are missing (`false`).
-- Local filesystem fallback is active.
-- R2 Cloud Sync Status: **NOT_VERIFIED (SECRETS_ABSENT, LOCAL_FALLBACK_ACTIVE)**.
+### Decision 4: Read-Only Cloud Run Monitoring via Service Account
+- **Chosen Approach**: Server-side probe leveraging default Cloud Run runtime identity to inspect container health, 5xx error frequency, and instance latency without modifying production IAM or adding third-party SaaS subscriptions.
 
 ---
 
-## 7. Multi-Category Filtering, Cover Media & Hero Banner 1:1 System
+## 4. Technical Architecture & Data Strategy
 
-### A. Multi-Category & Combined Filtering (Target: `AppContext.tsx`, `TemplatesView.tsx`, `server.ts`)
-- `selectedCategories: string[]` in AppContext.
-- Filter Logic:
-  - Categories: **OR logic** (matches if template belongs to any of the selected categories).
-  - Media Type: **AND logic** with `filterType` (`all` | `photo` | `video`).
-  - Search: **AND logic** with keyword query.
-- Fix in `server.ts`: Remove `category !== 'Trending'` exclusion; support comma-separated multi-category queries (`?categories=Trending,Devotional`).
-- Fix in `HomeView.tsx`: Filter horizontal rails by active `filterType`.
+### System Component Architecture
 
-### B. Template Cover Media for Every Template (Target: `TemplateManagerModal.tsx`, `server.ts`)
-- Explicit Cover Media selector in Template Manager (Cover Image or Cover Video).
-- Used on gallery cards and as default hero display media when linked to Hero Banner.
-- `drivingVideoUrl` strictly preserved as an internal AI generation asset; never automatically assigned as display media.
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ BROWSER CLIENT (React 19 SPA / PWA / TWA)                             │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  [ HomeView: Hero Carousel ]           [ TemplateCard / Gallery ]      │
+│  - Exactly 8000ms Auto-Rotation Timer  - Lazy Viewport Intersection     │
+│  - Touch / Pointer Swipe Handler       - Immediate Poster Display      │
+│  - Manual Navigation Timer Reset       - Candidate Media Separation    │
+│  - Visibility & Fullscreen Pause       - High-Priority Queue Dispatch  │
+│                   │                                 │                  │
+│                   ▼                                 ▼                  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ hdDownloadQueueManager (src/services/media/hdDownloadQueue.ts)   │  │
+│  │ - 3-Tier Priority Queue (High / Medium / Low)                    │  │
+│  │ - Concurrency Limiter (Max 2 Simultaneous Network Fetches)       │  │
+│  │ - Data Saver & 2G/3G Cellular Bypass Detection                   │  │
+│  │ - In-Flight Promise Deduplication Map                            │  │
+│  └──────────────────┬───────────────────────────────────────────────┘  │
+│                     │                                                  │
+│                     ▼                                                  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ Persistent IndexedDB Media Cache (`lumina_media_cache`)          │  │
+│  │ - Object Store: `media_blobs` (Blob, ETag, MIME, Size, Access)   │  │
+│  │ - LRU Eviction & Quota Guard (`navigator.storage.estimate`)      │  │
+│  │ - Blob URL Lifecycle Manager (Revoke Unused Object URLs)         │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                        │
+│  [ TemplateDetailModal: In-Place HD Upgrade Player ]                   │
+│  - Upgrades <video> in place; preserves currentTime, paused, muted     │
+│                                                                        │
+│  [ DiagnosticsModal: Unified Telemetry & Health Dashboard ]            │
+│  - Dynamic PASS/FAIL/BLOCKED/WARNING counters (No false READY)         │
+│  - Firestore History Snapshots (`diagnostics_history`)                 │
+│  - Separate Firestore DB Health vs. R2 Storage Health (5 Checkpoints)  │
+│  - Google Cloud Run Health, Privacy-Safe Events & Live Alerts          │
+└─────────────────────────────────┬──────────────────────────────────────┘
+                                  │ Authenticated API Requests
+                                  ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ EXPRESS BACKEND SERVER (server.ts)                                     │
+├────────────────────────────────────────────────────────────────────────┤
+│  [ Admin Security RBAC ]                                               │
+│  - Strict server-side verification for backupvideoemail@gmail.com and  │
+│    ai.prime.studio.pro@gmail.com; HTTP 403 on /api/admin/** for others │
+│                                                                        │
+│  [ /api/version ]                                                      │
+│  - Truthful COMMIT_SHA, BUILD_TIME, K_REVISION (Zero hardcoded SHA)    │
+│                                                                        │
+│  [ /api/admin/diagnostics & /history ]                                 │
+│  - Persists diagnostic run snapshot to Firestore `diagnostics_history` │
+│  - Complete Diagnostics Result Schema (12 Modules)                     │
+│  - Module 1: Firebase Auth Architecture                                │
+│  - Module 2: Phone OTP Pipeline                                        │
+│  - Module 3: High-Intent Auth Security                                 │
+│  - Module 4: Server-Verified Admin RBAC                                │
+│  - Module 5: Mandate Architecture Status (Read-Only)                   │
+│  - Module 6: Webhook HMAC Cryptographic Primitives                     │
+│  - Module 7: AutoPay Lifecycle & Pricing Status                        │
+│  - Module 8: Webhook Idempotency Store Status                          │
+│  - Module 9: Credit Ledger Invariant Verification (Read-Only)          │
+│  - Module 10: AI Model Registry & Storage Configuration                │
+│  - Module 11: Persistent Client Media Cache Telemetry                  │
+│  - Module 12: Google Cloud Run & Monitoring Health Probe               │
+│                                                                        │
+│  [ Bidirectional Cross-Builder Sync Probe ]                            │
+│  - Synthetic disposable records (`_sync_probe_secondary`)              │
+│  - Authoritative Firestore write, read-back, tombstone, cleanup        │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-### C. Home Hero Banner Dual Types & 1:1 Client-Side Crop (Target: `HomeView.tsx`, `TemplateManagerModal.tsx`)
-- `SHOWCASE_ONLY`: Full-screen player has **no CTA**.
-- `LINKED_TEMPLATE`: Full-screen player presents **"Use This Template" CTA** opening the generation flow.
-- 1:1 Square Carousel Card styled via `crop: { aspectRatio: '1:1', positionX, positionY, zoom }` (zero server transcoding).
-- Native Aspect Ratio Full-Screen Player: 100% uncropped media (`object-contain`). Crop/zoom settings do not apply in full-screen mode. Starts muted, pauses carousel timer on open, and resumes from same slide on close.
-- 1:1 Crop Editor in Admin allows interactive drag pan and zoom (1.0x–3.0x).
+### Complete Diagnostics Result Schema
+
+Every diagnostic result must strictly satisfy:
+
+```typescript
+export type DiagnosticStatus = 'passed' | 'failed' | 'blocked' | 'warning' | 'not_tested';
+export type DiagnosticSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+export type DiagnosticTestType = 
+  | 'AUTOMATED' 
+  | 'SIMULATION' 
+  | 'SANDBOX' 
+  | 'READ_ONLY_PRODUCTION' 
+  | 'PRODUCTION_VERIFIED';
+
+export interface DiagnosticItemResult {
+  id: string;
+  name: string;
+  category: string;
+  severity: DiagnosticSeverity;
+  testType: DiagnosticTestType;
+  endpointOrProvider: string;
+  expectedResult: string;
+  actualResult: string;
+  status: DiagnosticStatus;
+  failureReason?: string;
+  rootCauseHypothesis?: string;
+  recommendedAction?: string;
+  timestamp: string;
+  environment: 'production' | 'staging' | 'sandbox';
+  commitSha: string;
+  cloudRunRevision: string;
+  safeTraceId: string;
+  durationMs: number;
+  lastSuccessfulRun?: string;
+}
+
+export interface DiagnosticRunSummary {
+  runId: string;
+  runTimestamp: string;
+  environment: 'production' | 'staging' | 'sandbox';
+  commitSha: string;
+  cloudRunRevision: string;
+  totalTests: number;
+  passedCount: number;
+  failedCount: number;
+  blockedCount: number;
+  warningCount: number;
+  notTestedCount: number;
+  overallStatus: 'READY' | 'DEGRADED' | 'CRITICAL_BLOCK' | 'UNVERIFIED';
+  results: DiagnosticItemResult[];
+}
+```
+
+### Google Cloud Monitoring & Live Alert Schema
+
+```typescript
+export interface CloudMonitoringAlert {
+  incidentId: string;
+  severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  project: string;            // gen-lang-client-0525281130
+  service: string;            // ai-prime-studio-photo-video
+  revision: string;           // e.g. ai-prime-studio-photo-video-00023-w87
+  errorType: string;          // e.g. 'HTTP_5XX_SURGE', 'LATENCY_DEGRADATION', 'PAYMENT_401'
+  timestamp: string;
+  safeTraceId: string;
+  message: string;
+  recommendedAction: string;
+  resolutionStatus: 'OPEN' | 'INVESTIGATING' | 'RESOLVED';
+  resolvedAt?: string;
+}
+```
+
+### Separate R2 Storage 5-Point Verification Matrix
+
+| Checkpoint ID | Verification Step | Expected Authoritative Result | Missing Permission / Error Handling |
+|:---|:---|:---|:---|
+| `r2_cfg` | Configuration Audit | Valid endpoint, bucket name, Account ID, Access Key ID | Reports `BLOCKED_OWNER/PRIMARY` if missing |
+| `r2_upl` | Disposable Synthetic Upload | Writes test object `_probe/synthetic_probe.json` | Returns `BLOCKED` with sanitized error code; never fake PASS |
+| `r2_read`| Authoritative Read-Back | Fetches uploaded probe object and verifies byte equality | Flags `FAILED` if byte mismatch or timeout |
+| `r2_del` | Object Deletion & Tombstone | Deletes synthetic probe object and verifies 404 on re-fetch | Ensures zero orphan test objects in production bucket |
+| `r2_sign`| Signed HTTPS URL Fetch | Generates pre-signed URL and tests unauthenticated curl access | Validates short-lived expiration and HTTPS accessibility |
 
 ---
 
-## 8. Verification & Regression Plan
+## 5. Implementation Steps & Sub-Tasks
 
-### Automated Test Suite: `scripts/verify_system_fixes.ts`
-Add **Suite 25** covering:
-1. **Model Registry Integrity**: Verified absence of unsupported `VERIFIED` and `isSupported: true` tags; unproven entries marked `UNKNOWN`/`NOT_TESTED`.
-2. **Four-Tier Duration Tracking**: Probed duration, requested duration, output duration, and billable duration separated cleanly.
-3. **Four-Stage Cost Calculation**: `estimatedProviderCostUsd`, `estimatedCustomerCredits`, `actualProviderCostUsd`, and `reconcileCostOnCompletion` functions verified.
-4. **Adapter Audit Status**: Accurate representation of missing secrets in current runtime.
-5. **Multi-Category Filters**: OR logic across categories, AND logic with Photo/Video type filter.
-6. **Template Cover Media**: Dedicated cover selection; protection of `drivingVideoUrl`.
-7. **Hero Banner 1:1 System**: `SHOWCASE_ONLY` (no CTA) vs `LINKED_TEMPLATE` (with CTA); 1:1 client-side transform metadata; uncropped native player.
-8. **Protected System Regression Checks**:
-   - Verification that `src/services/payments/*`, `src/services/billing/*`, and payment routes in `server.ts` are identical to pre-task baseline.
-   - Idempotent wallet reservation and 100% refund on failure verified.
-   - Customer UI verified to show Credits only (zero INR).
+### Step 1: Preflight Verification & Feature Branch Isolation
+- Verify latest GitHub `main` commit matches `8409287262d84e9621daf971e1cd30c88884ea3b`.
+- Confirm known Primary Builder baseline CI failure (Run #42371169324) and isolate without modifying Primary's code.
+- Create and switch to dedicated feature branch `feature/secondary-hero-cache-sync`.
+- Ensure zero unapproved changes exist in working tree.
+
+### Step 2: Hero Banner Carousel Upgrade (`src/views/HomeView.tsx`)
+- Change automatic carousel rotation interval from `6000ms` to strictly `8000ms`.
+- Add touch handlers (`onTouchStart`, `onTouchMove`, `onTouchEnd`) and pointer drag support with a 40px delta threshold.
+- Implement directional navigation: Swipe Left $\to$ Next Banner, Swipe Right $\to$ Previous Banner (with circular wrap).
+- Reset the 8-second timer upon any manual swipe, drag, or pagination dot click.
+- Implement pause triggers: Fullscreen video modal open, video playback active, or `document.visibilityState === 'hidden'`.
+- Prevent swipe gestures when interacting with CTA buttons, links, or video controls (`e.stopPropagation()`).
+- Preserve existing 1:1 square crop on desktop/mobile and uncropped native aspect ratio (`object-contain`) in Fullscreen Modal.
+- Ensure removing a banner via Admin does not delete or deactivate its linked gallery template.
+
+### Step 3: Persistent IndexedDB Media Cache (`src/services/media/mediaCacheStorage.ts`)
+- Implement `MediaCacheStorage` service using native browser IndexedDB.
+- Features:
+  - Cache initialization with schema version control (`lumina_media_cache`).
+  - Read entry by URL with automatic `lastAccessedAt` timestamp update.
+  - Write entry with `Blob`, MIME type, ETag, and byte size tracking.
+  - LRU Eviction: When cache exceeds 100MB or `navigator.storage.estimate()` indicates $>80\%$ quota utilization, evict least-recently-accessed entries.
+  - Stale-while-revalidate: Check remote `ETag` / `Last-Modified` via lightweight `HEAD` request when cached asset age exceeds threshold.
+  - Telemetry counters: hits, misses, evictions, total bytes stored.
+  - Safe Object URL registry: register and revoke object URLs on component unmount to prevent memory leaks.
+  - Corrupt-entry recovery and storage-full fallback.
+
+### Step 4: Upgraded HD Download Queue (`src/services/media/hdDownloadQueue.ts`)
+- Wire `MediaCacheStorage` directly into `hdDownloadQueueManager`.
+- Loading Priority Hierarchy:
+  1. High: User-clicked template HD asset (modal open).
+  2. Medium: Near-viewport visible template preview video/poster.
+  3. Low: Idle background prefetch for remaining gallery cards.
+- Network Awareness: Halt low/medium background prefetches when `navigator.connection.saveData === true` or effective connection is `2g`/`3g`.
+- Concurrency Control: Strictly limit active network downloads to max 2 simultaneous requests.
+- In-flight deduplication: Re-use existing `Promise` for concurrent requests to the same URL.
+
+### Step 5: In-Place Template Detail Modal HD Upgrade (`src/components/TemplateDetailModal.tsx` & `TemplateCard.tsx`)
+- In `TemplateCard.tsx`, ensure clicking enqueues the actual configured HD field (`hdDisplayUrl` || `hdVideoUrl` || `hdMedia`), not just candidate preview media.
+- In `TemplateDetailModal.tsx`, consume the cached HD URL from `queueHdDownload(configuredHdUrl, 'high')`.
+- Upgrade the `<video>` player in place:
+  - Record `prevTime = videoEl.currentTime`, `wasPaused = videoEl.paused`, `wasMuted = videoEl.muted`.
+  - Update `src` to cached Blob URL.
+  - On `loadeddata`, restore `currentTime = prevTime`, `muted = wasMuted`, and resume play if not paused.
+  - If HD download fails, retain Preview cleanly with visual notice ("Preview Mode · HD Unavailable"). Never fake an HD upgrade.
+
+### Step 6: Truthful Diagnostics, History Persistence & Separate Storage Health (`server.ts` & `src/components/DiagnosticsModal.tsx`)
+- In `server.ts`:
+  - Eliminate hardcoded fallback hash `'349bbfa6'`; return real `COMMIT_SHA` from environment or `'UNKNOWN'`.
+  - Return actual build time, Cloud Run revision, and database mode.
+  - Persist diagnostic history snapshots in Firestore `diagnostics_history` and retrieve on startup.
+  - Implement full Diagnostic Result Schema across all modules.
+  - Separate Firestore DB health vs. R2 Storage health (5-point matrix: config, upload, read, delete, signed URL).
+  - Add synthetic bidirectional cross-builder sync probe: Writes disposable test record `_sync_probe_secondary`, verifies Firestore read-back, verifies tombstone deletion, tests re-creation, and executes complete cleanup.
+  - Ensure zero production side effects: no live payments, AutoPay mandates, paid AI generation, wallet modifications, webhook writes, or customer account deletions.
+- In `DiagnosticsModal.tsx`:
+  - Display truthful Git HEAD SHA, Feature Branch name, Build Time, and Cloud Run Revision.
+  - Render persistent cache statistics (Total Cached Bytes, Hit Rate, Quota Used %, Pending Queue Items).
+  - Render Google Cloud Monitoring status indicators with non-destructive PASS/FAIL/BLOCKED ratings.
+  - Prevent false "READY" status when required tests are blocked or failing.
+
+### Step 7: Google Cloud Monitoring & Privacy-Safe Event Bus
+- Implement read-only server probe for Google Cloud Run health on project `gen-lang-client-0525281130`, service `ai-prime-studio-photo-video`.
+- Integrate Cloud Logging, Cloud Monitoring metrics, and Error Reporting status via server-side probe reusing Cloud Run runtime credentials.
+- Add privacy-safe event emission for 9 operational failure vectors:
+  1. Payment 401/503.
+  2. Credit Ledger expected/actual mismatch.
+  3. Gemini 402 / `RESOURCE_EXHAUSTED`.
+  4. Google Veo video generation failures.
+  5. Firestore connection/read/write drops.
+  6. R2 storage upload/download/signing errors.
+  7. Template production count/catalog mismatch.
+  8. Customer account deletion partial failures.
+  9. Admin/Auth authorization rejections.
+- Implement authenticated Live Alerts in Admin Diagnostics with deduplication and resolved alert history.
+- Missing IAM permissions report `BLOCKED_OWNER/PRIMARY`; never fake PASS. No IAM expansions without Owner approval.
+
+### Step 8: Strict Server-Side Admin RBAC & Security Boundary
+- Verify server-side authorization on every `/api/admin/**` endpoint for both approved Admin emails:
+  - `backupvideoemail@gmail.com`
+  - `ai.prime.studio.pro@gmail.com`
+- Return strict HTTP 403 Forbidden for unauthenticated users, guests, and non-admin customers.
+- Hide Admin Drawer entries from non-admins.
+- Provide function-level before/after diffs in `server.ts` proving protected payment and subscription routes remain untouched.
+
+### Step 9: Handoff Tracking for Primary-Owned Tasks
+- Preserve and record all Primary-owned tasks in the shared trackers without implementing or altering their logic:
+  - A. Payment reconciliation & AutoPay mandate authorization.
+  - B. Credit Ledger invariant verification & synthetic webhook isolation.
+  - C. Idempotent customer account deletion pipeline.
+  - D. Central diagnostics quality & sensitive auth auditing.
+  - E. Admin security server-verification.
+  - F. Production Firestore authoritative sync & local DB migration safeguards.
+  - G. Secrets & Cloud Run revision incident correlation.
+  - H. Real AI provider integration & media isolation.
+  - I. Mobile Admin, verified phone handling, Logo/Header art protection, and TWA Play Console signing.
+
+### Step 10: Master Contract A–P, Prompts & Filter Preservation
+- Preserve all 8 prompt branches (Photo, Video, Source-preserving video, Motion Transfer, Video Edit, Image-to-Video, Couple Photo, Couple Video).
+- Enforce Prompt Standard v1.1 and Operating Standard v1.2: assemble final prompt exactly once without duplicating global rules or truncating Admin Scene Recipes.
+- Enforce Couple rules: explicitly require Person A and Person B slots; never infer couple from image count.
+- Preserve multi-category filtering: OR between selected categories, AND with Photo/Video/search/aspect filters on both Home and Templates.
+
+### Step 11: Canonical Documentation Synchronization
+Update all six canonical tracking files:
+1. `public/master_requirement_ledger.md`
+2. `public/remaining_delta_plan.md`
+3. `public/owner_status_tracker.md`
+4. `docs/operations/PRODUCTION_INCIDENT_MASTER_TRACKER.md`
+5. `docs/operations/BUILDER_HANDOFF_LOG.md`
+6. `docs/operations/CONFIGURATION_AUDIT.md`
+
+### Step 12: Verification, Testing & Handover Delivery
+- Run full test suite:
+  - `npm run lint` (`tsc --noEmit`): 0 errors.
+  - `npm test` (`scripts/verify_system_fixes.ts`): Execute and record actual test results (no hardcoded target).
+  - `npm run build` (`vite build`): Verify production client bundle generation.
+  - Four Protected Payment Adapter Hashes: Verify 100% match.
+- Record cold vs. warm cache performance, bytes stored, and mobile touch/swipe behavior.
+- Generate fresh `lumina-latest-source.zip` matching the feature branch commit.
+- Present final unified diff and handover report to Primary Builder and Owner.
+- STOP for Primary integration review and Owner approval before any merge or release.

@@ -29,3 +29,4 @@
 | **HO-06** | 2026-11-07 | P5 Account Deletion & Mandate Cancellation | Primary Builder | **READY_TO_EXECUTE** | `feature/prod-safety-central-diagnostics` | Pending execution |
 | **HO-07** | 2026-11-07 | P6 Phone Number Auto-Fill in PlansModal | Primary Builder | **READY_TO_EXECUTE** | `feature/prod-safety-central-diagnostics` | Pending execution |
 | **HO-08** | 2026-11-07 | P7 & P8 App Icon Standards & TWA SDK 36 | Primary Builder | **READY_TO_EXECUTE** | `feature/prod-safety-central-diagnostics` | Pending execution |
+| **HO-09** | 2026-11-07 | Secondary Scope: Hero Banner 8s Carousel + Swipe Gestures, IndexedDB Media Cache with LRU, In-Place HD Detail Upgrade, Cross-Builder Sync Probe, Central Diagnostics 14 Modules, Google Cloud Monitoring & Event Bus | Secondary Builder | **COMPLETED** | `feature/secondary-hero-cache-sync` | Tested & passing 443/443 test suite, 0 lint errors, build clean, 4 financial hashes verified |

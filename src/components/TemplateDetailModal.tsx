@@ -27,6 +27,7 @@ import { Template, TemplateInputDef } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { calculateAuthoritativeTemplateCost, calculateEstimatedProviderCostUsd, MODEL_REGISTRY } from '../services/pricing/pricingService';
+import { queueHdDownload } from '../services/media/hdDownloadQueue';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -195,7 +196,76 @@ export const TemplateDetailModal: React.FC = () => {
     )
   );
 
-  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : videoAfterSrc;
+  // In-Place HD Upgrade State & Transition Management
+  const [hdVideoSrc, setHdVideoSrc] = useState<string | null>(null);
+  const [hdStatus, setHdStatus] = useState<'idle' | 'downloading' | 'upgraded' | 'unavailable'>('idle');
+
+  const configuredHdAsset = (selectedTemplate as any)?.hdVideoUrl || (selectedTemplate as any)?.hdDisplayUrl || (selectedTemplate as any)?.hdMedia || (matchingScene as any)?.hdVideoUrl || null;
+
+  // Background HD Upgrade: Swap to cached HD asset in place without remounting or restarting playback
+  useEffect(() => {
+    if (!selectedTemplate || !isVideo) {
+      setHdVideoSrc(null);
+      setHdStatus('idle');
+      return;
+    }
+
+    if (!configuredHdAsset) {
+      setHdVideoSrc(null);
+      setHdStatus('unavailable');
+      return;
+    }
+
+    setHdStatus('downloading');
+    let isMounted = true;
+
+    queueHdDownload(configuredHdAsset, 'high')
+      .then((hdUrl) => {
+        if (!isMounted) return;
+        if (hdUrl && hdUrl !== videoAfterSrc) {
+          const videoEl = videoPlayerRef.current;
+          if (videoEl) {
+            const prevTime = videoEl.currentTime;
+            const wasPaused = videoEl.paused;
+            const wasMuted = videoEl.muted;
+
+            setHdVideoSrc(hdUrl);
+            setHdStatus('upgraded');
+
+            const restoreState = () => {
+              try {
+                if (videoEl) {
+                  videoEl.currentTime = prevTime;
+                  videoEl.muted = wasMuted;
+                  if (!wasPaused) {
+                    videoEl.play().catch(() => {});
+                  }
+                }
+              } catch {}
+              videoEl.removeEventListener('loadeddata', restoreState);
+            };
+            videoEl.addEventListener('loadeddata', restoreState);
+          } else {
+            setHdVideoSrc(hdUrl);
+            setHdStatus('upgraded');
+          }
+        } else {
+          setHdStatus('unavailable');
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setHdStatus('unavailable');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedTemplate?.id, configuredHdAsset, videoAfterSrc, isVideo]);
+
+  const effectiveAfterSrc = (activeVideoTab === 'after' && hdVideoSrc) ? hdVideoSrc : videoAfterSrc;
+  const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : effectiveAfterSrc;
 
   // Autoplay with sound detection & graceful recovery (Hook called unconditionally)
   useEffect(() => {
@@ -755,7 +825,7 @@ export const TemplateDetailModal: React.FC = () => {
               ) : (
                 <video
                   ref={videoPlayerRef}
-                  key={currentVideoSrc}
+                  key={`tpl_video_${tpl.id}_${activeVideoTab}`}
                   src={currentVideoSrc}
                   autoPlay
                   loop
@@ -780,8 +850,8 @@ export const TemplateDetailModal: React.FC = () => {
               <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
               <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
 
-              {/* Floating Top Badge */}
-              <div className="absolute top-4 left-4 z-20 pointer-events-none">
+              {/* Floating Top Badge & HD Quality Status */}
+              <div className="absolute top-4 left-4 z-20 pointer-events-none flex items-center gap-2 flex-wrap">
                 <span
                   className={`px-2.5 py-1 rounded-full border text-[10px] font-black uppercase tracking-wider backdrop-blur-md shadow-md ${
                     activeVideoTab === 'before'
@@ -791,6 +861,35 @@ export const TemplateDetailModal: React.FC = () => {
                 >
                   {activeVideoTab === 'before' ? 'Original Driving Video' : 'AI Rendered Video Result'}
                 </span>
+
+                {activeVideoTab === 'after' && (
+                  <span
+                    className={`px-2 py-0.5 rounded-full border text-[9.5px] font-bold tracking-tight backdrop-blur-md shadow flex items-center gap-1 ${
+                      hdStatus === 'upgraded'
+                        ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-300'
+                        : hdStatus === 'downloading'
+                        ? 'bg-amber-500/25 border-amber-400/50 text-amber-300 animate-pulse'
+                        : 'bg-stone-800/80 border-white/10 text-stone-400'
+                    }`}
+                  >
+                    {hdStatus === 'upgraded' ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span>HD 1080p · Cached</span>
+                      </>
+                    ) : hdStatus === 'downloading' ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        <span>Loading HD…</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-stone-500" />
+                        <span>Preview Mode · HD Unavailable</span>
+                      </>
+                    )}
+                  </span>
+                )}
               </div>
 
               {/* Autoplay Sound Prompt Overlay */}

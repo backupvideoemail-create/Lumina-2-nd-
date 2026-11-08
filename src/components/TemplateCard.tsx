@@ -155,8 +155,10 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isVideo && candidateMedia) {
-      queueHdDownload(candidateMedia, 'high').catch(() => {});
+    const configuredHdUrl = (template as any).hdDisplayUrl || (template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl || hdTargetMedia || null;
+    const targetAssetToQueue = configuredHdUrl || candidateMedia;
+    if (isVideo && targetAssetToQueue) {
+      queueHdDownload(targetAssetToQueue, 'high').catch(() => {});
     }
     // Preview-First Flow: Always show template transformation preview first
     if (template.isFaceSwap) {
