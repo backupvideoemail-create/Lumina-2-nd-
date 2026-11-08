@@ -239,9 +239,10 @@ if (isIsolatedTestEnv) {
         const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
         const isConfigProject = projectId === (firebaseConfig as any).projectId;
         const explicitDbId = process.env.FIRESTORE_DATABASE_ID?.trim();
-        const targetDatabaseId = explicitDbId
-          ? (explicitDbId === '(default)' ? undefined : explicitDbId)
-          : (isConfigProject ? (firebaseConfig as any).firestoreDatabaseId : undefined);
+        const configDbId = (firebaseConfig as any).firestoreDatabaseId?.trim();
+        const targetDatabaseId = (explicitDbId && explicitDbId !== '(default)')
+          ? explicitDbId
+          : (configDbId || undefined);
         const adminApp = initAdminApp({
           credential: cert(credentialObj),
           projectId
@@ -3001,6 +3002,27 @@ export class ProductionDatabase {
   public deleteAccount(userId: string): boolean {
     if (!this.db.users[userId]) return false;
 
+    // Preserve restricted billing mapping for active AutoPay mandate continuation
+    const existingSub = this.db.subscriptions[userId];
+    if (existingSub) {
+      if (!(this.db as any).restrictedSubscriptions) (this.db as any).restrictedSubscriptions = {};
+      const restrictedRecord = {
+        ...existingSub,
+        accountDeleted: true,
+        customerStatus: 'deleted',
+        deletedAt: new Date().toISOString()
+      };
+      (this.db as any).restrictedSubscriptions[userId] = restrictedRecord;
+      if (existingSub.mandateId) {
+        (this.db as any).restrictedSubscriptions[existingSub.mandateId] = restrictedRecord;
+      }
+      if (existingSub.id) {
+        (this.db as any).restrictedSubscriptions[existingSub.id] = restrictedRecord;
+      }
+      // Keep subscriptions index keyed in Firestore with accountDeleted: true
+      this.syncToFirestore('subscriptions', userId, restrictedRecord);
+    }
+
     delete this.db.users[userId];
     delete this.db.authIdentities[userId];
     delete this.db.wallets[userId];
@@ -3014,7 +3036,6 @@ export class ProductionDatabase {
     this.deleteFromFirestore('users', userId);
     this.deleteFromFirestore('auth_identities', userId);
     this.deleteFromFirestore('wallets', userId);
-    this.deleteFromFirestore('subscriptions', userId);
     this.deleteFromFirestore('user_likes', userId);
 
     return true;

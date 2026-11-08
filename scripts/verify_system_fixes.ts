@@ -1722,12 +1722,13 @@ async function runSystemVerification() {
   assert(drawerFile.includes('ai.prime.studio.pro@gmail.com'), '29.2 Drawer checks secondary admin ai.prime.studio.pro@gmail.com');
   assert(drawerFile.includes('{isAdmin && ('), '29.2 Drawer hides Template Manager and Diagnostics from normal users');
 
-  // 29.3 Account Deletion with Razorpay Mandate Cancellation
+  // 29.3 Account Deletion with AutoPay Mandate Preservation & Clear Warning
   const suite29ServerCode = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
   assert(suite29ServerCode.includes("app.delete('/api/auth/account'"), '29.3 server.ts has DELETE /api/auth/account endpoint');
-  assert(suite29ServerCode.includes('cancelSubscription'), '29.3 DELETE /api/auth/account calls razorpayAdapter.cancelSubscription');
+  assert(suite29ServerCode.includes('Preserving active AutoPay mandate'), '29.3 DELETE /api/auth/account preserves AutoPay mandate per business rule');
   const legalModalFile = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/LegalModal.tsx'), 'utf8');
-  assert(legalModalFile.includes('Cancelling Mandate & Wiping Data...'), '29.3 LegalModal displays active mandate cancellation loading state');
+  assert(legalModalFile.includes('active UPI AutoPay subscriptions will continue billing'), '29.3 LegalModal warns that AutoPay continues after deletion');
+  assert(legalModalFile.includes('Wiping Profile & Media...'), '29.3 LegalModal displays updated wiping profile state');
 
   // 29.4 Template Sync & /api/version Endpoint
   assert(suite29ServerCode.includes("app.get('/api/version'"), '29.4 server.ts has GET /api/version endpoint');

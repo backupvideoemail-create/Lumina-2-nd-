@@ -404,18 +404,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [demoVideoPreview, setDemoVideoPreview] = useState('');
   const [demoVideoFile, setDemoVideoFile] = useState<File | null>(null);
 
-  // ADMIN SECURITY & AUTHORIZATION STATE
-  const [adminKey, setAdminKey] = useState(() => {
-    const stored = localStorage.getItem('lumina_admin_key') || '';
-    if (stored === 'ai_prime_admin_secret_key_2026' || stored === 'lumina_admin_secret_key_2026') {
-      localStorage.removeItem('lumina_admin_key');
-      return '';
-    }
-    return stored;
-  });
-  const [adminKeyInput, setAdminKeyInput] = useState('');
+  // ADMIN SECURITY & AUTHORIZATION STATE (Pure server-side verified bearer session)
   const [isAdminVerified, setIsAdminVerified] = useState<boolean | null>(null);
-  const [showKeyInput, setShowKeyInput] = useState(false);
   const [isVerifyingKey, setIsVerifyingKey] = useState(false);
 
   // GLOBAL FEEDBACK
@@ -435,25 +425,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const bannerFileRef = useRef<HTMLInputElement>(null);
   const demoFileRef = useRef<HTMLInputElement>(null);
 
-  const checkAdminAuth = async (candidateKey?: string): Promise<boolean> => {
+  const checkAdminAuth = async (): Promise<boolean> => {
     setIsVerifyingKey(true);
     try {
       const token = localStorage.getItem('lumina_session_token') || '';
-      const keyToUse = candidateKey !== undefined ? candidateKey : (localStorage.getItem('lumina_admin_key') || adminKey || '');
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      if (keyToUse) headers['x-admin-key'] = keyToUse;
 
       const res = await fetch('/api/admin/verify', { headers });
       if (res.ok) {
         setIsAdminVerified(true);
-        if (keyToUse) {
-          localStorage.setItem('lumina_admin_key', keyToUse);
-          setAdminKey(keyToUse);
-        }
-        setShowKeyInput(false);
         return true;
       } else {
         setIsAdminVerified(false);
@@ -467,29 +450,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleSaveAdminKey = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!adminKeyInput.trim()) {
-      showNotification('Please enter your ADMIN_SECRET_KEY', 'error');
-      return;
-    }
-    const success = await checkAdminAuth(adminKeyInput.trim());
-    if (success) {
-      showNotification('Admin Key verified! Full studio access unlocked.');
-      setAdminKeyInput('');
-    } else {
-      showNotification('Invalid ADMIN_SECRET_KEY. Please verify your secret key.', 'error');
-    }
-  };
-
   const getAdminHeaders = () => {
     const token = localStorage.getItem('lumina_session_token') || '';
-    const storedKey = localStorage.getItem('lumina_admin_key') || adminKey || '';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    if (storedKey) headers['x-admin-key'] = storedKey;
     return headers;
   };
 
@@ -653,11 +619,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           fetchPricingBannerConfig();
         }
       } else {
-        const errMsg = resData.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to add banner (HTTP ${res.status})`);
+        const errMsg = resData.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to add banner (HTTP ${res.status})`);
         showNotification(errMsg, 'error');
         if (res.status === 403) {
           setIsAdminVerified(false);
-          setShowKeyInput(true);
         }
       }
     } catch (err: any) {
@@ -1139,11 +1104,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setEditingTemplate(null);
         } else {
           const errData = await res.json().catch(() => null);
-          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to update template (HTTP ${res.status})`);
+          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to update template (HTTP ${res.status})`);
           showNotification(errMsg, 'error');
           if (res.status === 403) {
             setIsAdminVerified(false);
-            setShowKeyInput(true);
           }
         }
       } else {
@@ -1208,11 +1172,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setImportNotice(null);
         } else {
           const errData = await res.json().catch(() => null);
-          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to create template (HTTP ${res.status})`);
+          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to create template (HTTP ${res.status})`);
           showNotification(errMsg, 'error');
           if (res.status === 403) {
             setIsAdminVerified(false);
-            setShowKeyInput(true);
           }
         }
       }
@@ -1741,14 +1704,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           body: JSON.stringify({ mediaBase64: bannerMediaPreview, filename: 'banner' })
         });
         const uploadData = await uploadRes.json().catch(() => null);
-        if (!uploadRes.ok || !uploadData?.url) {
-          const errMsg = uploadData?.error || (uploadRes.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Media upload failed (HTTP ${uploadRes.status})`);
+          const errMsg = uploadData?.error || (uploadRes.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Media upload failed (HTTP ${uploadRes.status})`);
           if (uploadRes.status === 403) {
             setIsAdminVerified(false);
-            setShowKeyInput(true);
           }
           throw new Error(errMsg);
-        }
         mediaUrl = uploadData.url;
       }
 
@@ -1819,10 +1779,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         setEditingBannerId(null);
       } else {
         const errData = await res.json().catch(() => null);
-        const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to update banners (HTTP ${res.status})`);
+        const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to update banners (HTTP ${res.status})`);
         if (res.status === 403) {
           setIsAdminVerified(false);
-          setShowKeyInput(true);
         }
         showNotification(errMsg, 'error');
       }
@@ -1927,10 +1886,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
         const uploadData = await uploadRes.json().catch(() => null);
         if (!uploadRes.ok || !uploadData?.url) {
-          const errMsg = uploadData?.error || (uploadRes.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Upload failed with HTTP ${uploadRes.status}`);
+          const errMsg = uploadData?.error || (uploadRes.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Upload failed with HTTP ${uploadRes.status}`);
           if (uploadRes.status === 403) {
             setIsAdminVerified(false);
-            setShowKeyInput(true);
           }
           throw new Error(errMsg);
         }
@@ -1949,10 +1907,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         setDemoVideoPreview('');
         showNotification('Face Swap Demo Video updated! Home is immediately live with this video.');
       } else {
-        const errMsg = resData?.error || (res.status === 403 ? 'Admin authorization failed. Please enter your ADMIN_SECRET_KEY.' : `Failed to update demo video (HTTP ${res.status})`);
+        const errMsg = resData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to update demo video (HTTP ${res.status})`);
         if (res.status === 403) {
           setIsAdminVerified(false);
-          setShowKeyInput(true);
         }
         throw new Error(errMsg);
       }
@@ -2613,23 +2570,19 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </button>
         </div>
 
-        {/* Admin Authorization Status & Key Unlock Banner */}
+        {/* Admin Authorization Status Banner */}
         <div className="px-4 pt-3">
           {isAdminVerified === true ? (
             <div className="p-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span className="text-xs font-semibold text-emerald-300">
-                  Verified Studio Admin Access Active
+                  Verified Studio Admin Access Active ({user?.email || 'Authorized Lead'})
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowKeyInput(!showKeyInput)}
-                className="text-[11px] text-stone-400 hover:text-white underline cursor-pointer"
-              >
-                {showKeyInput ? 'Hide Key' : 'Manage Key'}
-              </button>
+              <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                Server-Authenticated
+              </span>
             </div>
           ) : isAdminVerified === false ? (
             <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 space-y-2">
@@ -2637,60 +2590,24 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="text-xs font-bold text-amber-300">
-                    Admin Key Required to Upload & Publish
+                    Administrator Authorization Required
                   </p>
                   <p className="text-[11px] text-stone-300 mt-0.5">
-                    To upload demo videos, hero banners, and new templates, enter your ADMIN_SECRET_KEY below or sign in with your verified owner account.
+                    To manage templates and system banners, please sign in with an authorized administrator account (backupvideoemail@gmail.com or ai.prime.studio.pro@gmail.com).
                   </p>
                 </div>
               </div>
-              <form onSubmit={handleSaveAdminKey} className="flex gap-2 pt-1">
-                <input
-                  type="password"
-                  value={adminKeyInput}
-                  onChange={(e) => setAdminKeyInput(e.target.value)}
-                  placeholder="Enter ADMIN_SECRET_KEY..."
-                  className="flex-1 px-3 py-1.5 rounded-xl bg-black/60 border border-amber-500/30 text-white text-xs placeholder:text-stone-500 focus:outline-none focus:border-amber-400"
-                />
-                <button
-                  type="submit"
-                  disabled={isVerifyingKey || !adminKeyInput.trim()}
-                  className="px-3 py-1.5 rounded-xl bg-[#ff9f00] text-black font-bold text-xs uppercase tracking-wider hover:brightness-110 active:scale-95 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                >
-                  {isVerifyingKey ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
-                  <span>Unlock</span>
-                </button>
-              </form>
               {!user && (
                 <button
                   type="button"
                   onClick={() => setAuthModalOpen(true)}
                   className="w-full mt-1.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-medium text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <span>Or Sign In with Owner Account (backupvideoemail@gmail.com)</span>
+                  <span>Sign In with Authorized Google Account</span>
                 </button>
               )}
             </div>
           ) : null}
-
-          {showKeyInput && isAdminVerified === true && (
-            <form onSubmit={handleSaveAdminKey} className="mt-2 p-2.5 rounded-2xl bg-black/40 border border-white/10 flex gap-2">
-              <input
-                type="password"
-                value={adminKeyInput}
-                onChange={(e) => setAdminKeyInput(e.target.value)}
-                placeholder="Update ADMIN_SECRET_KEY..."
-                className="flex-1 px-3 py-1.5 rounded-xl bg-black border border-white/15 text-white text-xs placeholder:text-stone-500 focus:outline-none focus:border-emerald-400"
-              />
-              <button
-                type="submit"
-                disabled={isVerifyingKey || !adminKeyInput.trim()}
-                className="px-3 py-1.5 rounded-xl bg-emerald-500 text-black font-bold text-xs hover:brightness-110 active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                Save
-              </button>
-            </form>
-          )}
         </div>
 
         {/* Global Feedback Toast */}

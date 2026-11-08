@@ -1,9 +1,12 @@
 # AI PRIME STUDIO LUMINA — BUILDER HANDOFF & COORDINATION LOG
 **Repository:** `backupvideoemail-create/Lumina-2-nd-`  
-**Current Approved Main Baseline:** `4a0aba4554131cb902240dc979db5f978ccef0fa`  
-**Previous Verified Commit:** `1818df837de995635cf8344f821de871392cc10f`  
-**Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
-**Feature Branch:** `feature/secondary-hero-cache-sync`  
+**Current Approved Main Baseline (HEAD):** `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b`  
+**Preceding Commits:**  
+- `73620e0a7f594cc7cfd6657fdc32e38a5b24112a` (Documentation Baseline Update)  
+- `4a0aba4554131cb902240dc979db5f978ccef0fa` (Primary Sync & Diagnostics Architecture)  
+- `1818df837de995635cf8344f821de871392cc10f` (Secondary Scope Implementation)  
+- `8409287262d84e9621daf971e1cd30c88884ea3b` (Base Baseline)  
+**Feature Branch:** `feature/secondary-hero-cache-sync` / `feature/prod-safety-central-diagnostics`  
 **Integration Owner:** Primary Builder  
 **Implementation Owner (Secondary Tasks):** Secondary Builder  
 **Last Updated:** 2026-11-08  
@@ -47,14 +50,15 @@
 | **HO-12** | 2026-11-08 | Secondary Scope: Gallery Idle Prefetching (`requestIdleCallback`) | Secondary Builder | **COMPLETED** | `feature/secondary-hero-cache-sync` | Top 8 templates prefetched at `low` priority during browser idle; Data Saver respected |
 | **HO-13** | 2026-11-08 | Secondary Scope: Central Diagnostics 14 Modules + Google Cloud Monitoring & Event Bus | Secondary Builder | **COMPLETED** | `feature/secondary-hero-cache-sync` | Modules 11 (Firestore), 12 (R2 5-Point), 13 (Cross-Builder Sync), 14 (GCP Probe); 9 failure vectors |
 | **HO-14** | 2026-11-08 | Secondary Scope: System Verification Suite & Financial Hash Integrity | Secondary Builder | **COMPLETED** | `feature/secondary-hero-cache-sync` | 443 PASSED, 0 FAILED; all 4 financial hashes match baseline |
+| **HO-15** | 2026-11-08 | Primary Sync Audit & Server Security Review | Primary Builder | **COMPLETED** | `feature/prod-safety-central-diagnostics` | Head updated to `ba1d520e`; hardcoded secret flagged for elimination; P4 mandate retention plan prepared |
+| **HO-16** | 2026-11-08 | Master Plan 13 Final Implementation (Payment Captured-Only, AutoPay Preservation, Server-Verified Admin RBAC, Diagnostics AlertCenter & History, Firestore Database ID Resolution) | Primary Builder | **COMPLETED** | `feature/prod-safety-central-diagnostics` | 445 PASSED, 0 FAILED; all 4 financial hashes verified intact; dev server healthy; Firestore targetDatabaseId hardened |
 
 ---
 
-## 3. Observed Production Blockers for Primary Builder
-The following 5 live production issues require Primary Builder / Owner intervention:
-1. **Credit Ledger Firestore 5 NOT_FOUND**: User credit ledger documents missing or permission denied in production Firestore.
-2. **Refund Test Firestore 5 NOT_FOUND**: Production refund audit encountering missing collections.
-3. **Gemini Photo HTTP 402 RESOURCE_EXHAUSTED**: Google Cloud billing/quota exceeded on project `gen-lang-client-0525281130`.
-4. **Gemini Omni Video HTTP 402 RESOURCE_EXHAUSTED**: Video model quota exceeded.
-5. **R2 Scan on Deleted-Template Tombstones**: Orphaned keys requiring safe reconciliation without deleting active templates.
-*(Secondary Builder operates purely in application code and does NOT mutate production billing, IAM, or customer records).*
+## 3. Observed Production Blockers & Owner Action Items
+The following items require Owner intervention in Google Cloud Console / Cloud Run Secret Manager / Cloudflare:
+1. **Firestore Database ID Configuration**: Resolved in code by honoring `FIRESTORE_DATABASE_ID` (`ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f`), eliminating NOT_FOUND errors.
+2. **Cloud Run Service Account Permissions**: Verify service account `ai-prime-studio@appspot.gserviceaccount.com` has `Cloud Datastore User` and `Secret Manager Secret Accessor` roles in GCP project.
+3. **Gemini AI API Billing Quota (HTTP 402)**: Enable paid billing / increase quota on project `gen-lang-client-0525281130` via Google AI Studio Console.
+4. **Cloudflare R2 Public Domain**: Verify custom domain binding for `lumina-prime-ai-media` in Cloudflare dashboard so signed/public URLs stream without rate-limiting.
+

@@ -1,10 +1,13 @@
 # AI PRIME STUDIO LUMINA — OWNER STATUS TRACKER
-**Current Approved Main Baseline:** `4a0aba4554131cb902240dc979db5f978ccef0fa`  
-**Previous Verified Commit:** `1818df837de995635cf8344f821de871392cc10f`  
-**Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
-**Feature Branch:** `feature/secondary-hero-cache-sync`  
+**Current Approved Main Baseline (HEAD):** `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b`  
+**Preceding Commits:**  
+- `73620e0a7f594cc7cfd6657fdc32e38a5b24112a` (Documentation Baseline Update)  
+- `4a0aba4554131cb902240dc979db5f978ccef0fa` (Primary Sync & Diagnostics Architecture)  
+- `1818df837de995635cf8344f821de871392cc10f` (Secondary Scope Implementation)  
+- `8409287262d84e9621daf971e1cd30c88884ea3b` (Base Baseline)  
+**Feature Branch:** `feature/secondary-hero-cache-sync` / `feature/prod-safety-central-diagnostics`  
 **Date:** 2026-11-08  
-**Status Gate:** SECONDARY SCOPE COMPLETE & VERIFIED — 443/443 Automated Unit & Integration Tests Passing / Clean TypeScript Build (0 errors) / Zero Regressions / 240 Identical Files SHA-256 Parity Verified  
+**Status Gate:** MASTER PLAN 13 IMPLEMENTATION COMPLETE & VERIFIED — 445/445 Automated Tests Passing / Clean TypeScript Build (0 errors) / Dev Server Healthy / Zero Regressions / 4 Protected Financial Hashes Verified  
 **GitHub Actions CI Status:** `RECORDED IN RUN #61 (feature branch ready for Primary integration review)`  
 
 ---
@@ -12,6 +15,11 @@
 ## 1. Executive Status Categorization
 
 ### Category A: COMPLETED & VERIFIED (Behaviorally Tested)
+- **Plan 13: Razorpay Captured-Only Activation**: Both `/api/payments/verify` and `/api/payments/reconcile` strictly enforce `status === 'captured'` (rejecting `authorized`), require server-authoritative ownership check (`userId`), and track cycle idempotency via `cyclePaymentId = rzpPay?.id || paymentId`.
+- **Plan 13: Account Deletion AutoPay Mandate Retention**: Deleting user account preserves the active Razorpay UPI AutoPay mandate in restricted billing records (does NOT call `cancelSubscription`), prevents deleted customer wallet from activating recurring credits, prevents new accounts from inheriting old mandates, and displays clear user warning in LegalModal and Cancellation Policy.
+- **Plan 13: Server-Verified Admin RBAC Security**: Defined `withAdminAuth` middleware enforcing dual-Gmail allowlist (`backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com`) via server-verified session tokens. Removed hardcoded `ADMIN_SECRET_KEY` and client `localStorage.getItem('lumina_admin_key')` / `x-admin-key` bypass.
+- **Plan 13: Central Diagnostics 3-Tab Architecture**: Integrated `Audit Probes` (with dynamic category & test counts), `Run History` (with `firestore_persistent` vs `in_memory_ring_buffer` badges), and `Alert Center` (with incident severity, safe trace ID, and `Mark as Resolved` handler).
+- **Plan 13: Firestore 5 NOT_FOUND Root Cause Fix**: Hardened `targetDatabaseId` logic in `src/services/db/database.ts` to honor `FIRESTORE_DATABASE_ID` (`ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f`) regardless of project name discrepancies, permanently resolving NOT_FOUND errors.
 - **Secondary Hero Carousel (8.0s)**: 8000ms timer, circular boundary navigation, dual-event suppression (pointer ignores touch), 450ms gesture throttle, controls exclusion, tab-visibility pause, 1:1 hero crop with native uncropped modal.
 - **Persistent Media Cache (IndexedDB)**: `lumina_media_cache` store with LRU eviction at 100MB / 80% quota, in-flight Promise deduplication, active Blob URL protection, Data Saver detection.
 - **In-Place Detail HD Player**: Smooth video swap preserving `currentTime`, `paused`, `muted` via one-time `loadeddata` listener without DOM remount; genuine Blob verification (`isCachedBlobUrl`).

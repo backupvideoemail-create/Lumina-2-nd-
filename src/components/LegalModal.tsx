@@ -100,6 +100,9 @@ export const LegalModal: React.FC = () => {
               <p>
                 <strong>3. Support Disputes:</strong> If you experience any billing discrepancies or accidental double-charges, contact our customer support desk at <span className="text-[#d4af37]">backupvideoemail@gmail.com</span> for prompt resolution within 24 hours.
               </p>
+              <p>
+                <strong>4. Account Deletion & AutoPay:</strong> Deleting your user profile deletes personal data, creations, and login access, but does not cancel active bank or UPI AutoPay mandates. Existing AutoPay renewals remain active until separately cancelled via your UPI application or bank.
+              </p>
             </>
           )}
 
@@ -110,7 +113,7 @@ export const LegalModal: React.FC = () => {
                 <div className="text-xs text-red-200">
                   <p className="font-bold">Permanent Deletion Warning</p>
                   <p className="mt-1 text-red-300/80">
-                    Deleting your account will immediately cancel any active Razorpay AutoPay mandates, wipe all uploaded media, delete creations history, and clear your credit wallet balance. This action cannot be reversed.
+                    Account deletion permanently clears your creations and personal profile. However, active UPI AutoPay subscriptions will continue billing recurring cycles unless cancelled through your bank/UPI app. Type DELETE to proceed.
                   </p>
                 </div>
               </div>
@@ -141,7 +144,7 @@ export const LegalModal: React.FC = () => {
                 className="w-full py-3 px-4 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>{isDeleting ? 'Cancelling Mandate & Wiping Data...' : 'Permanently Delete Account & Media'}</span>
+                <span>{isDeleting ? 'Wiping Profile & Media...' : 'Permanently Delete Account & Media'}</span>
               </button>
             </div>
           )}

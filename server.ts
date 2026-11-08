@@ -125,37 +125,37 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
+// Authorized Admin Gmail allowlist (Strict dual-identity server-side enforcement)
+const AUTHORIZED_ADMIN_EMAILS = [
+  'ai.prime.studio.pro@gmail.com',
+  'backupvideoemail@gmail.com'
+];
+
 // Server-side verified admin identity check (verifies authenticated user profile from verified token)
 function isServerVerifiedAdmin(user: UserProfile | null): boolean {
   if (!user || !user.email) return false;
   const email = user.email.toLowerCase().trim();
-  return (
-    user.role === 'admin' ||
-    email === 'ai.prime.studio.pro@gmail.com' ||
-    email === 'backupvideoemail@gmail.com' ||
-    (Boolean(process.env.ADMIN_EMAIL) && email === process.env.ADMIN_EMAIL!.toLowerCase().trim())
-  );
+  // Server-side admin verification strictly requires one of the 2 authorized admin emails
+  return AUTHORIZED_ADMIN_EMAILS.includes(email);
 }
 
-// Admin Authorization Guard (Strict: Requires verified ADMIN_SECRET_KEY or server-verified admin account)
-function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim();
-  const configuredSecret = (process.env.ADMIN_SECRET_KEY || 'lumina_admin_secret_2026_secure').trim();
-
-  // 1. Valid ADMIN_SECRET_KEY -> allow
-  if (configuredSecret && adminKey && adminKey === configuredSecret) {
-    return next();
-  }
-
-  // 2. Authenticated user with server-verified admin identity -> allow
+// Server-Side withAdminAuth Middleware for all /api/admin/* endpoints
+function withAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const user = getAuthenticatedUser(req);
   if (isServerVerifiedAdmin(user)) {
+    (req as any).user = user;
     return next();
   }
 
-  // 3. Otherwise -> 403 Forbidden
-  return res.status(403).json({ error: 'Forbidden: Valid ADMIN_SECRET_KEY or verified admin account required' });
+  // Pure Server-Side Security: No hardcoded secret fallback, no browser x-admin-key bypass
+  return res.status(403).json({
+    error: 'Forbidden: Server-verified admin account required',
+    code: 'ADMIN_AUTH_REQUIRED'
+  });
 }
+
+// Map requireAdmin to withAdminAuth for universal consistency across all admin routes
+const requireAdmin = withAdminAuth;
 
 // Rate Limiter
 const rateLimitMap: Record<string, { count: number; resetTime: number }> = {};
@@ -479,20 +479,15 @@ app.post('/api/auth/logout', (req, res) => {
 app.delete('/api/auth/account', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
 
-  // 1. If user has active AutoPay mandate / subscription on Razorpay, cancel it immediately
+  // 1. Owner AutoPay Preservation Policy: DO NOT cancel active AutoPay mandate on Razorpay
+  // Recurring billing schedule and restricted billing records are preserved for webhook reconciliation
   const existingSub = prodDb.getSubscription(user.id);
   const mandateId = existingSub?.mandateId || existingSub?.id;
-  if (mandateId && mandateId.startsWith('sub_')) {
-    try {
-      console.log(`[Account Deletion] Cancelling active AutoPay mandate ${mandateId} on Razorpay for user ${user.id}...`);
-      await razorpayAdapter.cancelSubscription(mandateId);
-      console.log(`[Account Deletion] Mandate ${mandateId} cancelled successfully on Razorpay.`);
-    } catch (cancelErr: any) {
-      console.warn(`[Account Deletion] Razorpay mandate cancellation note: ${cancelErr.message}`);
-    }
+  if (mandateId) {
+    console.log(`[Account Deletion] Preserving active AutoPay mandate ${mandateId} for user ${user.id} in restricted records (no cancellation).`);
   }
 
-  // 2. Wipe customer uploaded media and creations from storage
+  // 2. Await wiping customer uploaded media and creations from storage
   await mediaStorage.deleteUserMedia(user.id);
 
   // 3. Wipe database profile, wallet, generations, and auth session tokens
@@ -500,7 +495,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   if (success) {
     return res.json({
       success: true,
-      message: 'Account, active AutoPay mandates, and associated media wiped permanently.'
+      message: 'Account profile, session tokens, and associated media wiped permanently. Active AutoPay mandate preserved in restricted billing records.'
     });
   }
   res.status(404).json({ error: 'User not found' });
@@ -2428,7 +2423,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   if (!payRec && paymentId) {
     try {
       const rzpPayment = await razorpayAdapter.getPayment(paymentId);
-      if (rzpPayment && (rzpPayment.status === 'captured' || rzpPayment.status === 'authorized')) {
+      if (rzpPayment && rzpPayment.status === 'captured') {
         const isIntro = rzpPayment.amount === 100 || itemId === 'plan_intro_daily';
         payRec = {
           id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -2439,7 +2434,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
           amount: rzpPayment.amount / 100,
           currency: 'INR',
           type: isIntro ? 'intro_mandate' : 'one_time',
-          status: rzpPayment.status,
+          status: 'captured',
           isAutoPay: Boolean(rzpPayment.notes?.isAutoPay === 'true' || req.body.subscriptionId || rzpPayment.subscription_id),
           verificationStatus: 'verified',
           subscriptionId: req.body.subscriptionId || rzpPayment.subscription_id || undefined,
@@ -2460,7 +2455,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   if (!payRec && effectiveSubId) {
     try {
       const rzpSub = await razorpayAdapter.getSubscription(effectiveSubId);
-      if (rzpSub && ['active', 'authenticated', 'created', 'completed'].includes(rzpSub.status)) {
+      if (rzpSub && ['active', 'authenticated'].includes(rzpSub.status)) {
         payRec = {
           id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
           orderId: effectiveSubId,
@@ -2489,6 +2484,15 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(404).json({
       error: `Stored payment record for '${orderId}' not found on server. Please retry or contact support.`,
       code: 'ORDER_NOT_FOUND'
+    });
+  }
+
+  // Server-Authoritative Ownership Verification: Stored order MUST belong to authenticated user
+  if (payRec.userId !== user.id) {
+    console.warn(`[Payment Verification] Ownership mismatch! Record user: ${payRec.userId}, Authenticated user: ${user.id}`);
+    return res.status(403).json({
+      error: 'Payment ownership mismatch. This order belongs to another customer account.',
+      code: 'PAYMENT_OWNERSHIP_MISMATCH'
     });
   }
 
@@ -2712,19 +2716,40 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
       return res.status(404).json({ error: 'No transaction or mandate found on Razorpay with the provided identifiers.' });
     }
 
-    // Verify status
-    const isPaymentCaptured = rzpPay && (rzpPay.status === 'captured' || rzpPay.status === 'authorized');
-    const isSubActive = rzpSub && ['active', 'authenticated', 'created', 'completed'].includes(rzpSub.status);
+    // Verify status: Strictly captured (authorized is NOT accepted for credit activation)
+    const isPaymentCaptured = rzpPay && rzpPay.status === 'captured';
+    const isSubActive = rzpSub && ['active', 'authenticated'].includes(rzpSub.status);
 
     if (!isPaymentCaptured && !isSubActive) {
       return res.status(400).json({
-        error: `Transaction not confirmed. Payment status: ${rzpPay?.status || 'N/A'}, Mandate status: ${rzpSub?.status || 'N/A'}`
+        error: `Transaction not confirmed. Payment status: ${rzpPay?.status || 'N/A'} (must be captured), Mandate status: ${rzpSub?.status || 'N/A'}`
+      });
+    }
+
+    // Verify Customer Ownership: Stored order or notes must match authenticated user
+    const storedRec = (paymentId ? prodDb.getPaymentByPaymentId(paymentId) : null) ||
+      (effectiveSubId ? prodDb.getPayment(effectiveSubId) : null) ||
+      (rzpPay?.order_id ? prodDb.getPayment(rzpPay.order_id) : null);
+
+    if (storedRec && storedRec.userId !== user.id) {
+      return res.status(403).json({
+        error: 'Payment ownership mismatch. This payment is associated with a different user account.',
+        code: 'PAYMENT_OWNERSHIP_MISMATCH'
+      });
+    }
+
+    const notesUserId = rzpPay?.notes?.userId || rzpSub?.notes?.userId;
+    if (notesUserId && notesUserId !== user.id) {
+      return res.status(403).json({
+        error: 'Payment notes ownership mismatch.',
+        code: 'PAYMENT_OWNERSHIP_MISMATCH'
       });
     }
 
     const isIntro = (rzpPay && rzpPay.amount === 100) || Boolean(effectiveSubId);
     const plan = isIntro ? getSubscriptionPlanById('plan_intro_daily') : getSubscriptionPlanById('plan_weekly_pass');
-    const referenceId = paymentId || effectiveSubId;
+    const cyclePaymentId = rzpPay?.id || paymentId;
+    const referenceId = cyclePaymentId || effectiveSubId;
 
     // Check if already processed
     const alreadyProcessed =
@@ -4419,13 +4444,26 @@ app.get('/api/admin/diagnostics/history', requireAdmin, async (_req, res) => {
       if (!snap.empty) {
         const history: DiagnosticRunSummary[] = [];
         snap.forEach((doc: any) => history.push(doc.data() as DiagnosticRunSummary));
-        return res.json({ success: true, history });
+        return res.json({
+          success: true,
+          isPersistent: true,
+          source: 'firestore_persistent',
+          firestoreConnected: true,
+          history
+        });
       }
     } catch (err: any) {
       console.warn('[Diagnostics History] Firestore fetch note:', err.message);
     }
   }
-  return res.json({ success: true, history: diagnosticsHistoryBuffer.slice(0, 10) });
+  return res.json({
+    success: true,
+    isPersistent: false,
+    source: 'in_memory_ring_buffer',
+    firestoreConnected: Boolean(adminFirestoreDb),
+    warning: 'Firestore persistence unavailable or empty. Displaying local in-memory buffer.',
+    history: diagnosticsHistoryBuffer.slice(0, 10)
+  });
 });
 
 app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
@@ -5172,11 +5210,28 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   });
 });
 
-// Live Cloud Monitoring Alerts & History Endpoint
-app.get('/api/admin/monitoring/alerts', requireAdmin, (_req, res) => {
+// Live Cloud Monitoring Alerts & History Endpoint (Integrates Firestore incidents with local fallback)
+app.get('/api/admin/monitoring/alerts', requireAdmin, async (_req, res) => {
+  let firestoreIncidents: any[] = [];
+  let isPersistent = false;
+  if (adminFirestoreDb) {
+    try {
+      const snap = await adminFirestoreDb.collection('incidents').orderBy('timestamp', 'desc').limit(20).get();
+      if (!snap.empty) {
+        snap.forEach((doc: any) => firestoreIncidents.push(doc.data()));
+        isPersistent = true;
+      }
+    } catch (e: any) {
+      console.warn('[Monitoring] Firestore incidents read note:', e.message);
+    }
+  }
+  const localAlerts = getLiveAlerts();
   res.json({
     success: true,
-    alerts: getLiveAlerts()
+    isPersistent,
+    source: isPersistent ? 'firestore_incidents' : 'in_memory_event_bus',
+    firestoreConnected: Boolean(adminFirestoreDb),
+    alerts: isPersistent && firestoreIncidents.length > 0 ? firestoreIncidents : localAlerts
   });
 });
 
