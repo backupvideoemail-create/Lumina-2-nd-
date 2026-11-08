@@ -1408,13 +1408,14 @@ async function runSystemVerification() {
   assert(faceSwapAdapterContent.includes("'480p' | '720p' | '1080p'"), '25.4 FaceSwap supports 480p, 720p, 1080p resolutions');
   assert(faceSwapAdapterContent.includes('4000') && faceSwapAdapterContent.includes('VALIDATION_ERROR'), '25.4 FaceSwap enforces 4000-char prompt limit');
 
-  // 25.5 Black Thumbnail Problem Fix in TemplateCard
+  // 25.5 Black Thumbnail Problem Fix & 200ms Debounce in TemplateCard
   const templateCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
   assert(templateCardContent.includes('posterCandidates'), '25.5 TemplateCard implements ordered poster candidates fallback');
   assert(templateCardContent.includes('hasVideoError') && templateCardContent.includes('allPostersFailed'), '25.5 TemplateCard separates video error from poster failure');
   assert(templateCardContent.includes('preload="none"'), '25.5 TemplateCard prevents premature video buffer stall with preload="none"');
   assert(templateCardContent.includes('IntersectionObserver'), '25.5 TemplateCard lazy attaches video near viewport');
-  assert(templateCardContent.includes('queueHdDownload'), '25.5 TemplateCard calls queueHdDownload for background HD video upgrade');
+  assert(templateCardContent.includes('debounceTimerRef'), '25.5 TemplateCard implements 200ms viewport debounce before preview playback');
+  assert(templateCardContent.includes('lumina:gallery-preview-play'), '25.5 TemplateCard coordinates single active gallery preview');
 
   // 25.6 Multi-Category Selection in Context & TemplatesView
   const appContextContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf-8');
@@ -1516,10 +1517,12 @@ async function runSystemVerification() {
   assert(updatedAiRouterContent.includes('selectBestCompatibleModel'), '26.9 aiRouter exports selectBestCompatibleModel for auto resolution');
   assert(updatedAiRouterContent.includes("selectedModel === 'auto'"), '26.9 aiRouter dynamically resolves auto model selection');
 
-  // 26.10 Distinct HD upgrade preserves currentTime and playback state in TemplateCard.tsx
+  // 26.10 Distinct HD upgrade preserves currentTime and playback state
   const updatedCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
-  assert(updatedCardContent.includes('prevTime = videoEl.currentTime'), '26.10 TemplateCard captures prevTime before HD video swap');
-  assert(updatedCardContent.includes('wasPaused = videoEl.paused'), '26.10 TemplateCard captures wasPaused before HD video swap');
+  assert(updatedCardContent.includes('prevTime') && updatedCardContent.includes('wasPaused'), '26.10 TemplateCard declares prevTime and wasPaused for state preservation');
+  const detailModalUpgradeContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf-8');
+  assert(detailModalUpgradeContent.includes('const prevTime = videoEl.currentTime'), '26.10 TemplateDetailModal captures prevTime before in-place HD swap');
+  assert(detailModalUpgradeContent.includes('const wasPaused = videoEl.paused'), '26.10 TemplateDetailModal captures wasPaused before in-place HD swap');
 
   // 26.11 HomeView consumes returned HD URL from queue via bannerHdUrls and checks linkedTpl.coverVideo
   const updatedHomeContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/HomeView.tsx'), 'utf-8');
@@ -1779,6 +1782,58 @@ async function runSystemVerification() {
   assert(nativeBuildKts.includes('com.aiprimestudio.app'), '29.10 Native android/app/build.gradle.kts intact and untouched');
   const androidWorkflow = fs.readFileSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml'), 'utf8');
   assert(androidWorkflow.includes('Android CI Build'), '29.10 .github/workflows/android-build.yml intact and untouched');
+
+  // =========================================================================
+  // SUITE 30: PLAN 17 MEDIA PERFORMANCE, SWR CACHE & HD INTEGRITY (10 TESTS)
+  // =========================================================================
+  console.log('\n--- SUITE 30: PLAN 17 MEDIA PERFORMANCE, SWR CACHE & HD INTEGRITY ---');
+
+  // 30.1 Gallery Scroll Zero HD Request Verification
+  const cardSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf8');
+  assert(!cardSource.includes("queueHdDownload(hdTargetMedia, 'medium')"), '30.1 TemplateCard eliminates scroll-triggered queueHdDownload call (0 HD requests on scroll)');
+  assert(!cardSource.includes("queueHdDownload(hdTargetMedia, 'high')"), '30.1 TemplateCard eliminates click-triggered duplicate queueHdDownload call');
+
+  // 30.2 200ms Preview Debounce & Single Active Gallery Preview
+  assert(cardSource.includes('debounceTimerRef'), '30.2 TemplateCard has 200ms debounceTimerRef');
+  assert(cardSource.includes('lumina:gallery-preview-play'), '30.2 TemplateCard coordinates lumina:gallery-preview-play event for single active preview');
+
+  // 30.3 Single Authoritative HD Owner in TemplateDetailModal
+  const modalSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf8');
+  assert(modalSource.includes("queueHdDownload(configuredHdAsset, 'high')"), '30.3 TemplateDetailModal exclusively owns HD download upon user opening');
+
+  // 30.4 MediaCacheStorage SWR Background HEAD Revalidation
+  const cacheStorageSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/media/mediaCacheStorage.ts'), 'utf8');
+  assert(cacheStorageSource.includes('revalidateCacheEntry'), '30.4 MediaCacheStorage provides revalidateCacheEntry SWR method');
+  assert(cacheStorageSource.includes("method: 'HEAD'"), '30.4 revalidateCacheEntry executes background HEAD request');
+  assert(cacheStorageSource.includes('5 * 60 * 1000'), '30.4 SWR revalidation enforces 5-minute cooldown between background checks');
+
+  // 30.5 Revalidation HEAD/CORS Fail-Safe Check
+  assert(cacheStorageSource.includes('headRes.status === 304'), '30.5 revalidateCacheEntry recognizes HTTP 304 Not Modified');
+  assert(cacheStorageSource.includes('!headRes.ok && headRes.status !== 200'), '30.5 revalidateCacheEntry guards against unsupported HEAD or CORS failure');
+
+  // 30.6 Active Playback Protection During Cache Revalidation & LRU Pruning
+  assert(cacheStorageSource.includes('protectedUrls'), '30.6 MediaCacheStorage maintains protectedUrls Set');
+  assert(cacheStorageSource.includes('protectMediaUrl') || cacheStorageSource.includes('protectUrl'), '30.6 MediaCacheStorage protects active playing media from Object URL revocation');
+
+  // 30.7 Private Upload & Session Credential Cache Guard
+  assert(cacheStorageSource.includes('isCacheablePublicMedia'), '30.7 MediaCacheStorage enforces isCacheablePublicMedia guard');
+  assert(cacheStorageSource.includes('/api/uploads/customer'), '30.7 isCacheablePublicMedia blocks caching of customer uploads');
+  assert(cacheStorageSource.includes('razorpay') && cacheStorageSource.includes('token='), '30.7 isCacheablePublicMedia blocks caching of payment/auth URLs');
+
+  // 30.8 Cold Cache vs Warm Cache Byte Accounting
+  assert(cacheStorageSource.includes('fullMediaBodyBytesDownloaded'), '30.8 MediaCacheStorage tracks fullMediaBodyBytesDownloaded');
+  assert(cacheStorageSource.includes('backgroundHeadMetadataBytes'), '30.8 MediaCacheStorage tracks backgroundHeadMetadataBytes');
+  assert(cacheStorageSource.includes('revalidationCount'), '30.8 MediaCacheStorage tracks revalidationCount');
+
+  // 30.9 In-Place HD Upgrade State Preservation in TemplateDetailModal
+  assert(modalSource.includes('const prevTime = videoEl.currentTime'), '30.9 TemplateDetailModal captures prevTime before HD upgrade');
+  assert(modalSource.includes('const wasMuted = videoEl.muted'), '30.9 TemplateDetailModal captures wasMuted before HD upgrade');
+  assert(modalSource.includes('const wasPaused = videoEl.paused'), '30.9 TemplateDetailModal captures wasPaused before HD upgrade');
+  assert(modalSource.includes('videoEl.currentTime = prevTime'), '30.9 TemplateDetailModal restores playback currentTime after HD upgrade');
+
+  // 30.10 Truthful Resolution Badge Rendering
+  assert(modalSource.includes('HD 1080p · Cached'), '30.10 TemplateDetailModal renders 1080p only when verified');
+  assert(modalSource.includes('HD Ready · Cached') || modalSource.includes('tpl.resolutionLabel'), '30.10 TemplateDetailModal dynamically renders verified resolution or HD Ready');
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

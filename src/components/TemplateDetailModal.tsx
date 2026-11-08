@@ -886,7 +886,13 @@ export const TemplateDetailModal: React.FC = () => {
                     {hdStatus === 'upgraded' ? (
                       <>
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                        <span>HD 1080p · Cached</span>
+                        <span>
+                          {tpl.resolutionLabel === '1080p'
+                            ? 'HD 1080p · Cached'
+                            : tpl.resolutionLabel
+                            ? `HD ${tpl.resolutionLabel} · Cached`
+                            : 'HD Ready · Cached'}
+                        </span>
                       </>
                     ) : hdStatus === 'downloading' ? (
                       <>

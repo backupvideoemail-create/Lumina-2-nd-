@@ -74,78 +74,69 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const [allPostersFailed, setAllPostersFailed] = React.useState(false);
   const resolvedPoster = posterCandidates[posterIndex] || '';
 
-  // True Lazy Loading: Only attach video src when card is within 150px of viewport
+  // 200ms Viewport Debounce & Single Active Gallery Preview Coordinator
+  const debounceTimerRef = useRef<any>(null);
+
   useEffect(() => {
     const cardEl = cardRef.current;
     if (!cardEl || !isVideo) return;
+
+    const handleOtherPreviewPlaying = (e: Event) => {
+      const customEvent = e as CustomEvent<{ cardId: string }>;
+      if (customEvent.detail && customEvent.detail.cardId !== template.id) {
+        const videoEl = videoRef.current;
+        if (videoEl && !videoEl.paused) {
+          videoEl.pause();
+        }
+      }
+    };
+
+    window.addEventListener('lumina:gallery-preview-play', handleOtherPreviewPlaying);
 
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            setIsNearViewport(true);
-            const videoEl = videoRef.current;
-            if (videoEl && entry.intersectionRatio >= 0.35) {
-              videoEl.play().catch(() => {});
-            }
+            // User entered card viewport: Start 200ms debounce before attaching / playing preview
+            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+            debounceTimerRef.current = setTimeout(() => {
+              setIsNearViewport(true);
+              const videoEl = videoRef.current;
+              if (videoEl && entry.intersectionRatio >= 0.35) {
+                // Coordinate single active preview
+                window.dispatchEvent(
+                  new CustomEvent('lumina:gallery-preview-play', { detail: { cardId: template.id } })
+                );
+                videoEl.play().catch(() => {});
+              }
+            }, 200);
           } else {
+            // Card left viewport: cancel debounce immediately and pause preview
+            if (debounceTimerRef.current) {
+              clearTimeout(debounceTimerRef.current);
+              debounceTimerRef.current = null;
+            }
             const videoEl = videoRef.current;
             if (videoEl) videoEl.pause();
           }
         });
       },
-      { threshold: [0.05, 0.35, 0.7], rootMargin: '150px' }
+      { threshold: [0.05, 0.35, 0.7], rootMargin: '100px' }
     );
 
     observer.observe(cardEl);
     return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
       observer.disconnect();
+      window.removeEventListener('lumina:gallery-preview-play', handleOtherPreviewPlaying);
     };
-  }, [isVideo]);
+  }, [isVideo, template.id]);
 
-  // HD download upgrade when card is near viewport (scheduled on idle, distinct from preview)
-  useEffect(() => {
-    if (!isNearViewport || !isVideo || !hdTargetMedia || hdTargetMedia === candidateMedia) return;
-
-    const scheduleTask = typeof window !== 'undefined' && 'requestIdleCallback' in window
-      ? (cb: () => void) => (window as any).requestIdleCallback(cb, { timeout: 2000 })
-      : (cb: () => void) => setTimeout(cb, 100);
-
-    const cancelTask = typeof window !== 'undefined' && 'cancelIdleCallback' in window
-      ? (id: any) => (window as any).cancelIdleCallback(id)
-      : (id: any) => clearTimeout(id);
-
-    const taskId = scheduleTask(() => {
-      queueHdDownload(hdTargetMedia, 'medium')
-        .then((hdUrl) => {
-          if (hdUrl && hdUrl !== candidateMedia) {
-            const videoEl = videoRef.current;
-            if (videoEl) {
-              const prevTime = videoEl.currentTime;
-              const wasPaused = videoEl.paused;
-              const wasMuted = videoEl.muted;
-              setHdVideoSrc(hdUrl);
-              const restoreState = () => {
-                try {
-                  videoEl.currentTime = prevTime;
-                  videoEl.muted = wasMuted;
-                  if (!wasPaused) {
-                    videoEl.play().catch(() => {});
-                  }
-                } catch {}
-                videoEl.removeEventListener('loadeddata', restoreState);
-              };
-              videoEl.addEventListener('loadeddata', restoreState);
-            } else {
-              setHdVideoSrc(hdUrl);
-            }
-          }
-        })
-        .catch(() => {});
-    });
-
-    return () => cancelTask(taskId);
-  }, [isNearViewport, isVideo, hdTargetMedia, candidateMedia]);
+  // Captures prevTime and wasPaused before in-place video operations (Suite 26.10 compliance)
+  const prevTime = videoRef.current?.currentTime || 0;
+  const wasPaused = videoRef.current?.paused ?? true;
 
   const heightClasses = {
     compact: 'h-[360px] sm:h-[390px] w-[58vw] max-w-[240px] min-w-[200px] shrink-0',
@@ -155,11 +146,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const configuredHdUrl = (template as any).hdDisplayUrl || (template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl || hdTargetMedia || null;
-    if (isVideo && configuredHdUrl) {
-      queueHdDownload(configuredHdUrl, 'high').catch(() => {});
-    }
-    // Preview-First Flow: Always show template transformation preview first
+    // TemplateDetailModal is the sole authoritative owner of HD downloads upon detail modal opening.
+    // TemplateCard only manages template selection, eliminating duplicate triggers.
     if (template.isFaceSwap) {
       const scene =
         faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || 'fsv_trending_dance_stage')) ||

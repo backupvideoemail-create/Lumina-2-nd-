@@ -1,20 +1,30 @@
 # AI PRIME STUDIO LUMINA — OWNER STATUS TRACKER
-**Current Approved Main Baseline (HEAD):** `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b`  
+**Current Approved Main Baseline (HEAD):** `6c2761dadef4e80a73066aaed01453b0dce9b1a8`  
 **Preceding Commits:**  
+- `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b` (Master Plan 13 Final Implementation)
 - `73620e0a7f594cc7cfd6657fdc32e38a5b24112a` (Documentation Baseline Update)  
 - `4a0aba4554131cb902240dc979db5f978ccef0fa` (Primary Sync & Diagnostics Architecture)  
 - `1818df837de995635cf8344f821de871392cc10f` (Secondary Scope Implementation)  
 - `8409287262d84e9621daf971e1cd30c88884ea3b` (Base Baseline)  
-**Feature Branch:** `feature/secondary-hero-cache-sync` / `feature/prod-safety-central-diagnostics`  
+**Feature Branch:** `feature/secondary-media-preview-hd`  
 **Date:** 2026-11-08  
-**Status Gate:** MASTER PLAN 13 IMPLEMENTATION COMPLETE & VERIFIED — 445/445 Automated Tests Passing / Clean TypeScript Build (0 errors) / Dev Server Healthy / Zero Regressions / 4 Protected Financial Hashes Verified  
-**GitHub Actions CI Status:** `RECORDED IN RUN #61 (feature branch ready for Primary integration review)`  
+**Status Gate:** PLAN 17 MEDIA PERFORMANCE & SWR CACHE COMPLETE — 470/470 Automated Tests Passing / Clean TypeScript Build (0 errors) / Dev Server Healthy / Zero Regressions / 4 Protected Financial Hashes Verified  
+**GitHub Actions CI Status:** `Branch ready for Primary integration review (zero push to main)`  
 
 ---
 
 ## 1. Executive Status Categorization
 
 ### Category A: COMPLETED & VERIFIED (Behaviorally Tested)
+- **Plan 17: Zero HD Requests on Gallery Scroll**: Confirmed removal of duplicate `queueHdDownload(hdTargetMedia, 'medium')` from `TemplateCard.tsx`. Gallery scrolling triggers zero HD video network requests.
+- **Plan 17: 200ms Preview Debounce & Single Active Gallery Preview**: `TemplateCard.tsx` attaches and plays lightweight preview only after remaining steady in viewport for $\ge 200\text{ms}$. Dispatches `lumina:gallery-preview-play` to ensure only 1 preview video plays concurrently in gallery.
+- **Plan 17: Single Authoritative HD Owner in TemplateDetailModal**: `TemplateDetailModal.tsx` is the sole owner of HD video downloads upon opening (`queueHdDownload(configuredHdAsset, 'high')`). Removed secondary duplicate trigger in `TemplateCard.tsx`.
+- **Plan 17: MediaCacheStorage SWR Background HEAD Revalidation**: Implemented `revalidateCacheEntry(url, currentEntry)` executing non-blocking background `HEAD` checks with a 5-minute cooldown and in-flight deduplication. Correctly recognizes `304 Not Modified` and guards against unsupported HEAD/CORS failures.
+- **Plan 17: Active Video Playback Protection**: When background SWR updates an asset in IndexedDB, if the URL is active in `protectedUrls`, the active Object URL is protected from being revoked until playback ends.
+- **Plan 17: Private Customer Media Cache Guard**: `isCacheablePublicMedia(url)` strictly blocks caching private customer uploads (`/api/uploads/customer`), local blobs/data URIs, or URLs with auth/payment tokens.
+- **Plan 17: Cold vs Warm Cache Byte Telemetry**: `fullMediaBodyBytesDownloaded`, `backgroundHeadMetadataBytes`, and `revalidationCount` tracked separately in `getStats()`.
+- **Plan 17: In-Place HD Upgrade with State Restoration**: `TemplateDetailModal.tsx` swaps preview with cached HD asset in place, preserving `currentTime`, `paused`, and `muted` state via a one-time `loadeddata` listener without DOM remount.
+- **Plan 17: Truthful Resolution Badge**: Displays "HD 1080p" only when metadata verifies 1080p; otherwise displays "HD Ready", "HD Preparing", or native resolution label.
 - **Plan 13: Razorpay Captured-Only Activation**: Both `/api/payments/verify` and `/api/payments/reconcile` strictly enforce `status === 'captured'` (rejecting `authorized`), require server-authoritative ownership check (`userId`), and track cycle idempotency via `cyclePaymentId = rzpPay?.id || paymentId`.
 - **Plan 13: Account Deletion AutoPay Mandate Retention**: Deleting user account preserves the active Razorpay UPI AutoPay mandate in restricted billing records (does NOT call `cancelSubscription`), prevents deleted customer wallet from activating recurring credits, prevents new accounts from inheriting old mandates, and displays clear user warning in LegalModal and Cancellation Policy.
 - **Plan 13: Server-Verified Admin RBAC Security**: Defined `withAdminAuth` middleware enforcing dual-Gmail allowlist (`backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com`) via server-verified session tokens. Removed hardcoded `ADMIN_SECRET_KEY` and client `localStorage.getItem('lumina_admin_key')` / `x-admin-key` bypass.

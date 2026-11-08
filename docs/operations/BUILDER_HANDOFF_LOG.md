@@ -1,12 +1,13 @@
 # AI PRIME STUDIO LUMINA — BUILDER HANDOFF & COORDINATION LOG
 **Repository:** `backupvideoemail-create/Lumina-2-nd-`  
-**Current Approved Main Baseline (HEAD):** `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b`  
+**Current Approved Main Baseline (HEAD):** `6c2761dadef4e80a73066aaed01453b0dce9b1a8`  
 **Preceding Commits:**  
+- `ba1d520ea672f69a7dddc4e2960b991d2c4d5d5b` (Master Plan 13 Final Implementation)
 - `73620e0a7f594cc7cfd6657fdc32e38a5b24112a` (Documentation Baseline Update)  
 - `4a0aba4554131cb902240dc979db5f978ccef0fa` (Primary Sync & Diagnostics Architecture)  
 - `1818df837de995635cf8344f821de871392cc10f` (Secondary Scope Implementation)  
 - `8409287262d84e9621daf971e1cd30c88884ea3b` (Base Baseline)  
-**Feature Branch:** `feature/secondary-hero-cache-sync` / `feature/prod-safety-central-diagnostics`  
+**Feature Branch:** `feature/secondary-media-preview-hd`  
 **Integration Owner:** Primary Builder  
 **Implementation Owner (Secondary Tasks):** Secondary Builder  
 **Last Updated:** 2026-11-08  
@@ -14,14 +15,14 @@
 ---
 
 ## 1. Governance & Multi-Builder Operating Protocol
-1. **Single Source of Truth**: All builders operate strictly on `backupvideoemail-create/Lumina-2-nd-` and its approved main baseline (`4a0aba4554131cb902240dc979db5f978ccef0fa`).
+1. **Single Source of Truth**: All builders operate strictly on `backupvideoemail-create/Lumina-2-nd-` and its approved main baseline (`6c2761dadef4e80a73066aaed01453b0dce9b1a8`).
 2. **240-File Hash Parity Verified**: Workspace ZIP comparison confirmed 240 identical source files with matching SHA-256 content across Primary and Secondary builder snapshots.
 3. **Android Firebase Configuration Files Protected**: Primary ZIP contains two additional Android Firebase configuration files (e.g. `google-services.json`). They must NOT be deleted, overwritten, reverted, or pushed without full inspection and explicit Owner authorization.
-4. **Feature Branch Rule**: Secondary Builder work is isolated to `feature/secondary-hero-cache-sync`. Direct pushes to `main` are strictly prohibited.
+4. **Feature Branch Rule**: Secondary Builder work is isolated to `feature/secondary-media-preview-hd`. Direct pushes to `main` are strictly prohibited.
 5. **Primary Review Gate**: Before any changes merge to `main`, Primary Builder must:
-   - Verify base commit matches latest approved commit (`4a0aba4554131cb902240dc979db5f978ccef0fa`).
+   - Verify base commit matches latest approved commit (`6c2761dadef4e80a73066aaed01453b0dce9b1a8`).
    - Inspect diff against protected financial and native files (`razorpayAdapter.ts`, `cashfreeAdapter.ts`, `googlePlayService.ts`, `pricingAndConfig.ts`, `android/`, `.github/workflows/android-build.yml`).
-   - Run `npx tsc --noEmit` and `npx tsx scripts/verify_system_fixes.ts` (443 PASSED, 0 FAILED verified).
+   - Run `npx tsc --noEmit` and `npx tsx scripts/verify_system_fixes.ts` (470 PASSED, 0 FAILED verified).
    - Confirm zero regression on live website, Firebase Auth, and payment gateways.
 6. **Primary Builder Exclusive Ownership**:
    - Razorpay, Cashfree, Google Play Billing adapters and webhooks.
@@ -52,6 +53,7 @@
 | **HO-14** | 2026-11-08 | Secondary Scope: System Verification Suite & Financial Hash Integrity | Secondary Builder | **COMPLETED** | `feature/secondary-hero-cache-sync` | 443 PASSED, 0 FAILED; all 4 financial hashes match baseline |
 | **HO-15** | 2026-11-08 | Primary Sync Audit & Server Security Review | Primary Builder | **COMPLETED** | `feature/prod-safety-central-diagnostics` | Head updated to `ba1d520e`; hardcoded secret flagged for elimination; P4 mandate retention plan prepared |
 | **HO-16** | 2026-11-08 | Master Plan 13 Final Implementation (Payment Captured-Only, AutoPay Preservation, Server-Verified Admin RBAC, Diagnostics AlertCenter & History, Firestore Database ID Resolution) | Primary Builder | **COMPLETED** | `feature/prod-safety-central-diagnostics` | 445 PASSED, 0 FAILED; all 4 financial hashes verified intact; dev server healthy; Firestore targetDatabaseId hardened |
+| **HO-17** | 2026-11-08 | Plan 17 Final: Media Performance Audit & Progressive Preview/HD Fix | Secondary Builder | **COMPLETED** | `feature/secondary-media-preview-hd` | 0 HD downloads on gallery scroll; 200ms preview debounce; single active preview coordinator; SWR HEAD background check with 5-minute cooldown; cold vs warm cache byte telemetry; in-place HD upgrade with state restoration; truthful resolution badge; Suite 30 verified (470 PASSED, 0 FAILED) |
 
 ---
 

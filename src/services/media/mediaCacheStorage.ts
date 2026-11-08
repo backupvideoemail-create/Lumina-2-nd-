@@ -35,6 +35,9 @@ export interface MediaCacheTelemetry {
   itemCount: number;
   evictionCount: number;
   hitRatePercent: number;
+  fullMediaBodyBytesDownloaded: number;
+  backgroundHeadMetadataBytes: number;
+  revalidationCount: number;
 }
 
 const DB_NAME = 'lumina_media_cache';
@@ -50,6 +53,38 @@ export class MediaCacheStorage {
   private hitCount = 0;
   private missCount = 0;
   private evictionCount = 0;
+  private fullMediaBodyBytesDownloaded = 0;
+  private backgroundHeadMetadataBytes = 0;
+  private revalidationCount = 0;
+  private revalidationInFlight = new Map<string, Promise<boolean>>();
+  private lastRevalidationTime = new Map<string, number>();
+
+  /**
+   * Guard: Only approved public template and hero media should be cached.
+   * Never cache private customer uploads, generated outputs, auth tokens, or private signed URLs.
+   */
+  public isCacheablePublicMedia(url?: string | null): boolean {
+    if (!url || typeof url !== 'string') return false;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+
+    // Disallow private customer upload endpoints or local file blobs
+    if (url.includes('/api/uploads/customer') || url.includes('/uploads/customer')) return false;
+    if (url.includes('blob:') || url.includes('data:')) return false;
+
+    // Disallow private signed URLs containing auth tokens or payment references
+    const lower = url.toLowerCase();
+    if (
+      lower.includes('token=') ||
+      lower.includes('session=') ||
+      lower.includes('razorpay') ||
+      lower.includes('signature=') ||
+      lower.includes('auth=')
+    ) {
+      return false;
+    }
+
+    return true;
+  }
 
   /**
    * Protect an active media URL (e.g. playing in modal) from being evicted by LRU pruning.
@@ -106,8 +141,132 @@ export class MediaCacheStorage {
   }
 
   /**
+   * Stale-While-Revalidate background HEAD check for public template assets.
+   * Compares origin ETag and Last-Modified against local IndexedDB metadata.
+   * If remote asset changed, downloads fresh media in the background.
+   * If asset is currently playing/active, protects the active Object URL from being revoked.
+   */
+  public async revalidateCacheEntry(url: string, currentEntry: CachedMediaEntry): Promise<boolean> {
+    if (!this.isCacheablePublicMedia(url)) return false;
+
+    // Cooldown check: 5 minutes between background HEAD checks for the same URL
+    const now = Date.now();
+    const lastCheck = this.lastRevalidationTime.get(url) || 0;
+    if (now - lastCheck < 5 * 60 * 1000) {
+      return false;
+    }
+
+    // In-flight deduplication: reuse ongoing revalidation promise
+    if (this.revalidationInFlight.has(url)) {
+      return this.revalidationInFlight.get(url)!;
+    }
+
+    const revalidationPromise = (async () => {
+      this.lastRevalidationTime.set(url, now);
+      this.revalidationCount++;
+
+      try {
+        const headHeaders: Record<string, string> = {};
+        if (currentEntry.etag) {
+          headHeaders['If-None-Match'] = currentEntry.etag;
+        }
+        if (currentEntry.lastModified) {
+          headHeaders['If-Modified-Since'] = currentEntry.lastModified;
+        }
+
+        const headRes = await fetch(url, {
+          method: 'HEAD',
+          mode: 'cors',
+          headers: headHeaders
+        });
+
+        // Approximate background HEAD metadata bytes (~350 bytes per HTTP HEAD request/response headers)
+        this.backgroundHeadMetadataBytes += 350;
+
+        // HTTP 304 Not Modified: Cache is perfectly fresh
+        if (headRes.status === 304) {
+          return false;
+        }
+
+        if (!headRes.ok && headRes.status !== 200) {
+          // If HEAD is unsupported (e.g. 405 Method Not Allowed) or CORS-blocked, do not falsely report fresh
+          return false;
+        }
+
+        const remoteEtag = headRes.headers.get('etag');
+        const remoteLastModified = headRes.headers.get('last-modified');
+
+        // Check if metadata actually indicates a new version
+        const isEtagSame = Boolean(remoteEtag && currentEntry.etag && remoteEtag === currentEntry.etag);
+        const isModifiedSame = Boolean(
+          remoteLastModified && currentEntry.lastModified && remoteLastModified === currentEntry.lastModified
+        );
+
+        if (isEtagSame || isModifiedSame) {
+          return false;
+        }
+
+        // Remote asset has changed or updated: Fetch updated asset in background
+        const fullRes = await fetch(url, { mode: 'cors' });
+        if (!fullRes.ok) return false;
+
+        const updatedBlob = await fullRes.blob();
+        this.fullMediaBodyBytesDownloaded += updatedBlob.size;
+
+        const newEtag = fullRes.headers.get('etag') || remoteEtag || undefined;
+        const newLastMod = fullRes.headers.get('last-modified') || remoteLastModified || undefined;
+
+        // If URL is currently playing/active, do NOT abruptly replace or revoke the existing Object URL
+        const isProtected = this.protectedUrls.has(url);
+
+        const db = await this.getDb();
+        if (db) {
+          const updatedEntry: CachedMediaEntry = {
+            ...currentEntry,
+            blob: updatedBlob,
+            sizeBytes: updatedBlob.size,
+            mimeType: updatedBlob.type || currentEntry.mimeType,
+            etag: newEtag,
+            lastModified: newLastMod,
+            cachedAt: Date.now(),
+            lastAccessedAt: Date.now()
+          };
+
+          const tx = db.transaction(STORE_NAME, 'readwrite');
+          const store = tx.objectStore(STORE_NAME);
+          store.put(updatedEntry);
+        }
+
+        // Update in-memory Object URL only if not actively playing
+        if (!isProtected) {
+          const oldObjUrl = this.objectUrlMap.get(url);
+          if (oldObjUrl) {
+            try {
+              URL.revokeObjectURL(oldObjUrl);
+            } catch {}
+          }
+          try {
+            const newObjUrl = URL.createObjectURL(updatedBlob);
+            this.objectUrlMap.set(url, newObjUrl);
+          } catch {}
+        }
+
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.revalidationInFlight.delete(url);
+      }
+    })();
+
+    this.revalidationInFlight.set(url, revalidationPromise);
+    return revalidationPromise;
+  }
+
+  /**
    * Retrieves a cached media Blob by URL, touches lastAccessedAt timestamp for LRU ordering,
-   * and returns a safe Object URL for immediate video/image playback.
+   * returns a safe Object URL for immediate video/image playback, and schedules background
+   * SWR revalidation if applicable.
    */
   public async get(url: string): Promise<{ blob: Blob; objectUrl: string; etag?: string } | null> {
     if (!url || typeof url !== 'string') return null;
@@ -151,6 +310,19 @@ export class MediaCacheStorage {
               }
             }
 
+            // Schedule background Stale-While-Revalidate check asynchronously
+            if (this.isCacheablePublicMedia(url)) {
+              if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+                (window as any).requestIdleCallback(() => {
+                  this.revalidateCacheEntry(url, entry).catch(() => {});
+                });
+              } else {
+                setTimeout(() => {
+                  this.revalidateCacheEntry(url, entry).catch(() => {});
+                }, 100);
+              }
+            }
+
             resolve({
               blob: entry.blob,
               objectUrl: objUrl,
@@ -188,6 +360,14 @@ export class MediaCacheStorage {
     }
   ): Promise<string> {
     if (!url || !blob) return url;
+
+    // Never cache private customer uploads or session credentials
+    if (!this.isCacheablePublicMedia(url)) {
+      return url;
+    }
+
+    // Track total full media body bytes downloaded
+    this.fullMediaBodyBytesDownloaded += blob.size;
 
     // Create or reuse Object URL
     let objectUrl = this.objectUrlMap.get(url);
@@ -453,7 +633,10 @@ export class MediaCacheStorage {
       quotaBytes,
       itemCount,
       evictionCount: this.evictionCount,
-      hitRatePercent
+      hitRatePercent,
+      fullMediaBodyBytesDownloaded: this.fullMediaBodyBytesDownloaded,
+      backgroundHeadMetadataBytes: this.backgroundHeadMetadataBytes,
+      revalidationCount: this.revalidationCount
     };
   }
 }
