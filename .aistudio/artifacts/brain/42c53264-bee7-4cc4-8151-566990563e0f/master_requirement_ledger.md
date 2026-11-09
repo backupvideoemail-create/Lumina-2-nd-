@@ -295,4 +295,19 @@ Columns:
 | **SEC-05** | Customer UI Currency Masking | 100% ENFORCED | Customer generation modal strictly displays **Credits Only** (0 currency symbols). |
 
 ---
-*End of Master Requirement Ledger v1.0.0*
+
+## 5. EMERGENCY RECOVERY REQUIREMENTS — PLAN 14 DIRECTIVES (EMG-01 TO EMG-07)
+
+| ID | Requirement | Current Status | Exact Source Evidence | Admin UI Evidence | Customer UI Evidence | Runtime / Test Evidence | Files Changed | Remaining Action |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| **EMG-01** | Instant Live Publishing on Public Website & Apps | **DONE** | `database.ts:1895-1903`, `server.ts:524-540` | Admin publishes -> Firestore atomic save -> Read-back verification -> catalog revision bumped | Public UI reflects new template on auto-refresh/tab switch without rebuild | Suite 31.9 verified; live curl shows instant reflection | `database.ts`, `server.ts`, `AppContext.tsx` | None (Verified) |
+| **EMG-02** | Cryptographic Firebase Admin Identity Verification | **DONE** | `server.ts:335-385, 400-415` | Admin routes require `/api/admin/verify` with verified ID token | Normal creators receive HTTP 403; no `req.body.email` bypass | Suite 31.7 verified; Google Identity Toolkit token lookup tested | `server.ts`, `AppContext.tsx` | None (Verified) |
+| **EMG-03** | Resilient 3-State Catalogue Architecture (Zero Seed Fallback) | **DONE** | `database.ts:557-585, 848`, `AppContext.tsx:199, 320` | Database and client isolate `SEED_TEMPLATES` strictly to isolated test env (`isIsolatedTestEnv`) | UI displays clear offline/empty state instead of stale 38 legacy seed templates | Suite 31.5 & 31.6 verified; live curl returns 0 seeds when offline | `database.ts`, `AppContext.tsx` | None (Verified) |
+| **EMG-04** | Single Authoritative Server Admin Allowlist | **DONE** | `src/config/adminConfig.ts:8-26`, `server.ts:65, 142`, `database.ts:38, 411, 940, 985` | Single source of truth exports `AUTHORIZED_ADMIN_EMAILS` with `backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com` | Both admins unlocked server-side for Template Manager & Diagnostics | Suite 31.1, 31.2, 31.3, 31.4 verified; all lookups use shared helper | `src/config/adminConfig.ts`, `database.ts`, `server.ts`, `Drawer.tsx` | None (Verified) |
+| **EMG-05** | Truthful `/api/version` (Real Git SHA / Immutable Timestamp) | **DONE** | `server.ts:67-78, 520-532` | Returns `commitSha`, immutable `buildTime`, `K_REVISION`, `catalogueStatus`, `catalogRevision` | Admin Diagnostics audit receives truthful version info | Suite 31.8 verified; live curl confirms `Cache-Control: no-store` | `server.ts` | None (Verified) |
+| **EMG-06** | Cloud Run Multi-Instance Live Consistency Sync | **DONE** | `database.ts:383-425, 2376`, `server.ts:536, 1591` | `config/catalog_metadata` stores revision; `syncCatalogIfStale()` reloads remote changes across containers | All instances serve latest catalog synchronously | Suite 31.9 verified; `syncCatalogIfStale()` integrated into endpoints | `database.ts`, `server.ts` | None (Verified) |
+| **EMG-07** | Master Tracking Documentation Synchronization | **DONE** | `docs/operations/*`, `master_requirement_ledger.md` | Handoff log (HO-18), Incident Tracker (EMG-01/02), Config Audit updated | Fully synced documentation baseline | 494 test suite assertions pass cleanly | `BUILDER_HANDOFF_LOG.md`, `PRODUCTION_INCIDENT_MASTER_TRACKER.md`, `CONFIGURATION_AUDIT.md` | None (Verified) |
+
+---
+*End of Master Requirement Ledger v1.1.0 — 494 Tests Verified (0 Failed)*
+

@@ -25,7 +25,7 @@
 | `GEMINI_API_KEY` | AI Model | `Configured on Live` | Configured in Secret Manager | Owner checks Google AI Studio / GCP billing quota (resolves 402) |
 | `HIGGSFIELD_API_KEY` | Face Swap | `PENDING_CONFIG` | Optional | Required only if Higgsfield Genjutsu Light is enabled |
 | `ADMIN_SECRET_KEY` | Admin API | `Configured on Live` | Configured in Secret Manager | Protects sensitive administrative endpoints |
-| `ADMIN_EMAIL` | Admin Auth | `backupvideoemail@gmail.com` | Hardcoded allowlist | Also allows `ai.prime.studio.pro@gmail.com` |
+| `AUTHORIZED_ADMIN_EMAILS` | Admin Auth | `Single Config Module` | Configured (`src/config/adminConfig.ts`) | Single allowlist: `backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com` |
 
 ---
 

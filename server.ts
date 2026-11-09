@@ -62,7 +62,21 @@ import type {
   FaceSwapScene
 } from './src/types/index.ts';
 
+import { execSync } from 'child_process';
+import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from './src/config/adminConfig.ts';
+
 dotenv.config({ override: true });
+
+// Resolve immutable build-time Git commit SHA & immutable startup timestamp
+let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || '';
+if (!resolvedCommitSha) {
+  try {
+    resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500 }).trim();
+  } catch {
+    resolvedCommitSha = 'UNVERIFIED/BLOCKED';
+  }
+}
+const SERVER_STARTUP_IMMUTABLE_BUILD_TIME = process.env.BUILD_TIME || new Date().toISOString();
 
 function parsePort(): number {
   const portArgIdx = process.argv.indexOf('--port');
@@ -125,18 +139,10 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-// Authorized Admin Gmail allowlist (Strict dual-identity server-side enforcement)
-const AUTHORIZED_ADMIN_EMAILS = [
-  'ai.prime.studio.pro@gmail.com',
-  'backupvideoemail@gmail.com'
-];
-
-// Server-side verified admin identity check (verifies authenticated user profile from verified token)
+// Server-side verified admin identity check (verifies authenticated user profile from authoritative allowlist)
 function isServerVerifiedAdmin(user: UserProfile | null): boolean {
   if (!user || !user.email) return false;
-  const email = user.email.toLowerCase().trim();
-  // Server-side admin verification strictly requires one of the 2 authorized admin emails
-  return AUTHORIZED_ADMIN_EMAILS.includes(email);
+  return isAuthorizedAdminEmail(user.email);
 }
 
 // Server-Side withAdminAuth Middleware for all /api/admin/* endpoints
@@ -333,6 +339,7 @@ app.post('/api/media/upload', requireAuth, rateLimit(60000, 30), async (req, res
 async function verifyFirebaseToken(idToken: string): Promise<{
   uid: string;
   email?: string;
+  emailVerified?: boolean;
   phone?: string;
   name?: string;
   avatar?: string;
@@ -370,6 +377,7 @@ async function verifyFirebaseToken(idToken: string): Promise<{
     return {
       uid: userRecord.localId,
       email: userRecord.email,
+      emailVerified: Boolean(userRecord.emailVerified),
       phone: userRecord.phoneNumber,
       name: userRecord.displayName,
       avatar: userRecord.photoUrl
@@ -397,6 +405,9 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       });
     }
 
+    // Cryptographic Identity Enforcement:
+    // Email is strictly extracted from the cryptographically verified token (verified.email).
+    // Client-supplied req.body.email is strictly rejected to prevent privilege escalation or impersonation.
     const { user, token, isNewUser } = prodDb.getOrCreateUser({
       firebaseUid: verified.uid,
       email: verified.email,
@@ -511,9 +522,11 @@ app.get('/api/version', (_req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.json({
-    commitSha: process.env.COMMIT_SHA || process.env.GIT_COMMIT || 'UNKNOWN',
-    buildTime: process.env.BUILD_TIME || new Date().toISOString(),
+    commitSha: resolvedCommitSha || 'UNVERIFIED/BLOCKED',
+    buildTime: SERVER_STARTUP_IMMUTABLE_BUILD_TIME,
     cloudRunRevision: process.env.K_REVISION || 'local-dev',
+    catalogueStatus: prodDb.getCatalogueStatus(),
+    catalogRevision: prodDb.getCatalogRevision(),
     templateCount: prodDb.getTemplates().length,
     faceswapSceneCount: prodDb.getFaceSwapScenes(true).length,
     databaseMode: adminFirestoreDb ? 'firestore_authoritative' : 'local_authoritative'
@@ -521,10 +534,12 @@ app.get('/api/version', (_req, res) => {
 });
 
 // Publicly browseable templates (no login required! Strict no-store to prevent stale CDN cache)
-app.get('/api/templates', (req, res) => {
+app.get('/api/templates', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+
+  await prodDb.syncCatalogIfStale();
 
   const { category, type, search } = req.query;
   let results = prodDb.getTemplates();
@@ -561,7 +576,13 @@ app.get('/api/templates', (req, res) => {
   res.json({ templates: results });
 });
 
-app.get('/api/templates/:id', (req, res) => {
+app.get('/api/templates/:id', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  await prodDb.syncCatalogIfStale();
+
   const tpl = prodDb.getTemplates().find((t) => t.id === req.params.id);
   if (!tpl) {
     return res.status(404).json({ error: 'Template not found' });
@@ -1566,17 +1587,21 @@ app.get('/api/admin/provider-catalog', requireAdmin, async (_req, res) => {
   }
 });
 
-// Home Hero Banners API
-app.get('/api/banners', (_req, res) => {
+// Home Hero Banners API (Strict no-store and multi-instance sync)
+app.get('/api/banners', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  await prodDb.syncCatalogIfStale();
   res.json({ banners: prodDb.getBanners() });
 });
 
-app.put('/api/admin/banners', requireAdmin, (req, res) => {
+app.put('/api/admin/banners', requireAdmin, async (req, res) => {
   const { banners } = req.body;
   if (!Array.isArray(banners)) {
     return res.status(400).json({ error: 'Expected banners array' });
   }
-  prodDb.setBanners(banners);
+  await prodDb.setBanners(banners);
   res.json({ success: true, banners: prodDb.getBanners() });
 });
 

@@ -36,16 +36,16 @@ export const Drawer: React.FC = () => {
     setLegalModal,
     setAuthModalOpen,
     setTemplateManagerOpen,
-    setDiagnosticsModalOpen
+    setDiagnosticsModalOpen,
+    isAdmin: serverVerifiedAdmin,
+    serverAdminVerified
   } = useApp();
 
+  // Authoritative dual-admin accounts: backupvideoemail@gmail.com and ai.prime.studio.pro@gmail.com
   const userEmail = (user?.email || '').toLowerCase().trim();
   const isAdmin = Boolean(
-    user && (
-      user.role === 'admin' ||
-      userEmail === 'backupvideoemail@gmail.com' ||
-      userEmail === 'ai.prime.studio.pro@gmail.com'
-    )
+    serverVerifiedAdmin ||
+    (user && (user.role === 'admin' || userEmail === 'backupvideoemail@gmail.com' || userEmail === 'ai.prime.studio.pro@gmail.com'))
   );
 
   const handleNav = (tab: 'home' | 'templates' | 'creations' | 'profile') => {

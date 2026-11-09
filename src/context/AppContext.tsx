@@ -60,9 +60,12 @@ interface AppContextType {
   likedTemplates: string[];
   toggleLikeTemplate: (templateId: string) => Promise<void>;
   refreshTemplates: () => Promise<void>;
+  catalogueStatus: 'loading' | 'ready' | 'empty' | 'offline_error';
 
-  // User & Wallet
+  // User & Wallet & Admin
   user: UserProfile | null;
+  isAdmin: boolean;
+  serverAdminVerified: boolean;
   wallet: CreditWallet | null;
   activeSubscription: UserSubscription | null;
   transactions: CreditTransaction[];
@@ -193,7 +196,10 @@ export async function safeParseJsonResponse<T = any>(
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'home' | 'templates' | 'creations' | 'profile'>('home');
-  const [templates, setTemplates] = useState<Template[]>(SEED_TEMPLATES);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [catalogueStatus, setCatalogueStatus] = useState<'loading' | 'ready' | 'empty' | 'offline_error'>('loading');
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [serverAdminVerified, setServerAdminVerified] = useState<boolean>(false);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [selectedCategoryState, setSelectedCategoryState] = useState<string>('Trending');
@@ -314,19 +320,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const res = await fetch(`/api/templates?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        if (data?.templates && data.templates.length > 0) {
-          setTemplates(data.templates);
-        }
+        const incoming = Array.isArray(data?.templates) ? data.templates : [];
+        setTemplates(incoming);
+        setCatalogueStatus(incoming.length > 0 ? 'ready' : 'empty');
+      } else {
+        setCatalogueStatus('offline_error');
       }
     } catch {
-      // Keep existing
+      setCatalogueStatus('offline_error');
     } finally {
       setLoadingTemplates(false);
     }
-  }, [filterType, selectedCategory, searchQuery]);
+  }, [filterType, selectedCategory, selectedCategories, searchQuery]);
 
   useEffect(() => {
     fetchTemplates();
+  }, [fetchTemplates]);
+
+  // Auto-refresh public catalogue on window focus and every 60s to reflect new admin publishes immediately
+  useEffect(() => {
+    const onFocus = () => {
+      fetchTemplates();
+    };
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(onFocus, 60000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
   }, [fetchTemplates]);
 
   // Fetch Face Swap Scenes (Dynamic from server)
@@ -358,6 +379,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setTransactions([]);
       setGenerations([]);
       setIsIntroEligible(true);
+      setIsAdmin(false);
+      setServerAdminVerified(false);
       return;
     }
 
@@ -375,10 +398,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (typeof data.isIntroEligible === 'boolean') {
             setIsIntroEligible(data.isIntroEligible);
           }
+
+          // Server-side cryptographic admin verification
+          try {
+            const adminCheckRes = await fetch('/api/admin/verify', {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (adminCheckRes.ok) {
+              const adminData = await adminCheckRes.json();
+              if (adminData.authorized) {
+                setIsAdmin(true);
+                setServerAdminVerified(true);
+              } else {
+                setIsAdmin(false);
+                setServerAdminVerified(false);
+              }
+            } else {
+              setIsAdmin(false);
+              setServerAdminVerified(false);
+            }
+          } catch {
+            setIsAdmin(false);
+            setServerAdminVerified(false);
+          }
         } else {
           // Token expired or invalid
           localStorage.removeItem('lumina_session_token');
           setUser(null);
+          setIsAdmin(false);
+          setServerAdminVerified(false);
         }
       }
     } catch {
@@ -540,6 +588,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.ok) {
         localStorage.removeItem('lumina_session_token');
         setUser(null);
+        setIsAdmin(false);
+        setServerAdminVerified(false);
         setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
         setGenerations([]);
         setTransactions([]);
@@ -562,6 +612,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
     localStorage.removeItem('lumina_session_token');
     setUser(null);
+    setIsAdmin(false);
+    setServerAdminVerified(false);
     setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
     setGenerations([]);
     setTransactions([]);
@@ -984,7 +1036,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         likedTemplates,
         toggleLikeTemplate,
         refreshTemplates: fetchTemplates,
+        catalogueStatus,
         user,
+        isAdmin,
+        serverAdminVerified,
         wallet,
         activeSubscription,
         transactions,

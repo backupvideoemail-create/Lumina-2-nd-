@@ -1,6 +1,6 @@
 {
-  "summary":  "Revised Plan 13 incorporating the final 3 acceptance conditions: 1) Account Deletion with Continuing AutoPay restricted billing mapping and webhook reconciliation without crediting wiped wallets, 2) Non-duplicative cancellation policy inspection and clear deletion confirmation dialog, 3) Honest dynamic executed test counts without fixed minimums or hidden blocked checks.",
-  "updatedAt":  "2026-11-08T13:11:23.687451536Z",
+  "summary":  "Revised Emergency Production Catalog & Admin Access Recovery Plan (Plan 14) incorporating the Owner's four mandatory acceptance criteria: 1) Instant live publishing of new templates & hero banners on Public Website without rebuild/redeploy, 2) Strict cryptographic Firebase ID Token verification rejecting client req.body.email bypass, 3) Explicit three-state catalogue handling (OFFLINE/DEGRADED vs EMPTY vs READY) with zero seed fallback in production, and 4) Single server-side authoritative admin allowlist with permanent regression tests.",
+  "updatedAt":  "2026-11-09T09:01:33.158176123Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

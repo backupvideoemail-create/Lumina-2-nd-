@@ -1835,6 +1835,60 @@ async function runSystemVerification() {
   assert(modalSource.includes('HD 1080p · Cached'), '30.10 TemplateDetailModal renders 1080p only when verified');
   assert(modalSource.includes('HD Ready · Cached') || modalSource.includes('tpl.resolutionLabel'), '30.10 TemplateDetailModal dynamically renders verified resolution or HD Ready');
 
+  // =========================================================================
+  // SUITE 31: EMERGENCY PRODUCTION CATALOG & ADMIN ACCESS RECOVERY (10 TESTS)
+  // =========================================================================
+  console.log('\n--- SUITE 31: EMERGENCY PRODUCTION CATALOG & ADMIN ACCESS RECOVERY ---');
+
+  // 31.1 Single Authoritative Admin Configuration Module
+  const adminConfigSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/config/adminConfig.ts'), 'utf8');
+  assert(adminConfigSource.includes('backupvideoemail@gmail.com') && adminConfigSource.includes('ai.prime.studio.pro@gmail.com'), '31.1 adminConfig.ts exports authoritative list with both backupvideoemail and ai.prime.studio.pro');
+
+  // 31.2 adminConfig.ts validation logic
+  const { isAuthorizedAdminEmail, AUTHORIZED_ADMIN_EMAILS } = await import('../src/config/adminConfig.ts');
+  assert(AUTHORIZED_ADMIN_EMAILS.length === 2, '31.2 AUTHORIZED_ADMIN_EMAILS contains exactly 2 authoritative admins');
+  assert(isAuthorizedAdminEmail('backupvideoemail@gmail.com') === true, '31.2 isAuthorizedAdminEmail recognizes backupvideoemail@gmail.com');
+  assert(isAuthorizedAdminEmail('  AI.PRIME.STUDIO.PRO@GMAIL.COM  ') === true, '31.2 isAuthorizedAdminEmail recognizes case-insensitive/trimmed ai.prime.studio.pro@gmail.com');
+  assert(isAuthorizedAdminEmail('attacker@evil.com') === false, '31.2 isAuthorizedAdminEmail strictly rejects unauthorized email');
+  assert(isAuthorizedAdminEmail(null) === false && isAuthorizedAdminEmail(undefined) === false, '31.2 isAuthorizedAdminEmail rejects null/undefined');
+
+  // 31.3 database.ts imports and uses isAuthorizedAdminEmail
+  const dbSource31 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  assert(dbSource31.includes("from '../../config/adminConfig.ts'"), '31.3 database.ts imports admin allowlist from adminConfig.ts');
+  assert(dbSource31.includes('isAuthorizedAdminEmail(u.email)'), '31.3 database.ts uses isAuthorizedAdminEmail in users sync & lookup');
+  assert(dbSource31.includes('isAuthorizedAdminEmail(params.email)'), '31.3 database.ts uses isAuthorizedAdminEmail in getOrCreateUser');
+
+  // 31.4 server.ts imports and uses isAuthorizedAdminEmail
+  const serverSource31 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(serverSource31.includes("from './src/config/adminConfig.ts'"), '31.4 server.ts imports admin allowlist from adminConfig.ts');
+  assert(serverSource31.includes('return isAuthorizedAdminEmail(user.email)'), '31.4 server.ts uses isAuthorizedAdminEmail in isServerVerifiedAdmin');
+
+  // 31.5 Zero SEED_TEMPLATES merging in live production (!isIsolatedTestEnv) in database.ts
+  assert(dbSource31.includes('if (isIsolatedTestEnv) {\n          SEED_TEMPLATES.forEach'), '31.5 database.ts strictly gates SEED_TEMPLATES behind isIsolatedTestEnv in syncFromFirestore');
+  assert(dbSource31.includes('templates: isIsolatedTestEnv ? [...SEED_TEMPLATES] : []'), '31.5 database.ts getInitialState sets templates: [] in production');
+
+  // 31.6 Zero SEED_TEMPLATES in initial state of AppContext.tsx and resilient catalogue status
+  const appContextSource31 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(appContextSource31.includes('const [templates, setTemplates] = useState<Template[]>([]);'), '31.6 AppContext.tsx initializes templates to [] (zero seed templates in client state)');
+  assert(appContextSource31.includes("catalogueStatus: 'loading' | 'ready' | 'empty' | 'offline_error'"), '31.6 AppContext.tsx provides resilient 4-state catalogue status');
+
+  // 31.7 Server-side cryptographic token verification rejecting req.body.email
+  assert(serverSource31.includes('emailVerified: Boolean(userRecord.emailVerified)'), '31.7 verifyFirebaseToken extracts verified emailVerified boolean from Google Identity Toolkit');
+  assert(serverSource31.includes('// Client-supplied req.body.email is strictly rejected'), '31.7 server.ts strictly extracts email from verified.email, rejecting req.body.email');
+
+  // 31.8 Strict no-store headers on /api/version, /api/templates, and /api/banners
+  assert(serverSource31.includes("app.get('/api/version'") && serverSource31.includes("res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')"), '31.8 /api/version sets strict no-store headers');
+  assert(serverSource31.includes("app.get('/api/banners', async") && serverSource31.includes("res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')"), '31.8 /api/banners sets strict no-store headers');
+
+  // 31.9 Cloud Run multi-instance live catalog consistency tracking in database.ts
+  assert(dbSource31.includes('catalog_metadata'), '31.9 database.ts persists catalog revision to config/catalog_metadata');
+  assert(dbSource31.includes('syncCatalogIfStale'), '31.9 database.ts provides syncCatalogIfStale for multi-instance Cloud Run containers');
+  assert(serverSource31.includes('await prodDb.syncCatalogIfStale()'), '31.9 server.ts invokes syncCatalogIfStale on /api/templates and /api/banners');
+
+  // 31.10 Drawer navigation strictly gated by server-verified isAdmin state from useApp()
+  const drawerSource31 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
+  assert(drawerSource31.includes('serverVerifiedAdmin') && drawerSource31.includes('serverAdminVerified'), '31.10 Drawer.tsx consumes server-verified isAdmin and serverAdminVerified from useApp()');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

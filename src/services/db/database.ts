@@ -35,6 +35,7 @@ import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
 import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
 import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts';
+import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from '../../config/adminConfig.ts';
 
 // Authoritative Firebase Admin instance for server persistence
 let adminFirestoreDb: any = null;
@@ -382,6 +383,57 @@ export class ProductionDatabase {
   private dbFilePath: string;
   public quarantinedTemplates: Array<{ template: any; reason: string; quarantinedAt: string }> = [];
   public readyPromise: Promise<void>;
+  private catalogueStatus: 'READY' | 'EMPTY' | 'OFFLINE' = 'READY';
+  private catalogRevision: number = 0;
+  private lastCatalogCheckTime: number = 0;
+
+  public getCatalogueStatus(): 'READY' | 'EMPTY' | 'OFFLINE' {
+    return this.catalogueStatus;
+  }
+
+  public getCatalogRevision(): number {
+    return this.catalogRevision;
+  }
+
+  public async bumpCatalogRevision(): Promise<number> {
+    this.catalogRevision += 1;
+    this.lastCatalogCheckTime = Date.now();
+    if (adminFirestoreDb) {
+      try {
+        await adminFirestoreDb.collection('config').doc('catalog_metadata').set({
+          revision: this.catalogRevision,
+          lastUpdatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err: any) {
+        console.warn('[Database] Failed to bump catalog metadata revision:', err.message);
+      }
+    }
+    return this.catalogRevision;
+  }
+
+  public async syncCatalogIfStale(force = false): Promise<void> {
+    if (!adminFirestoreDb || isIsolatedTestEnv) return;
+    const now = Date.now();
+    // Throttle checks to once every 2 seconds unless forced
+    if (!force && (now - this.lastCatalogCheckTime < 2000)) {
+      return;
+    }
+    this.lastCatalogCheckTime = now;
+    try {
+      const metaDoc = await adminFirestoreDb.collection('config').doc('catalog_metadata').get();
+      if (metaDoc.exists) {
+        const data = metaDoc.data();
+        const remoteRev = typeof data?.revision === 'number' ? data.revision : 0;
+        if (remoteRev > this.catalogRevision) {
+          console.log(`[Database] Detected remote catalog revision ${remoteRev} > local ${this.catalogRevision}. Reloading templates & banners...`);
+          await this.reloadTemplatesFromFirestore();
+          this.catalogRevision = remoteRev;
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Database] syncCatalogIfStale check failed:', err.message);
+    }
+  }
 
   constructor(customDbFile?: string) {
     this.dbFilePath = customDbFile || DB_FILE;
@@ -404,11 +456,11 @@ export class ProductionDatabase {
         this.db.wallets[d.id] = d.data();
       });
 
-      // 2. Users
+      // 2. Users (Server Authoritative Admin Role Assignment for Allowlisted Emails)
       const usersSnap = await adminFirestoreDb.collection('users').get();
       usersSnap.forEach((d: any) => {
         const u = d.data() as UserProfile;
-        if (u && (u.email?.toLowerCase() === 'backupvideoemail@gmail.com' || (process.env.ADMIN_EMAIL && u.email?.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase()))) {
+        if (u && isAuthorizedAdminEmail(u.email)) {
           u.role = 'admin';
         }
         this.db.users[d.id] = u;
@@ -502,11 +554,13 @@ export class ProductionDatabase {
             firestoreTemplates.push(d.data() as Template);
           });
         }
-        // Merge: custom/updated Firestore templates override seed by ID, while strictly excluding deleted templates and quarantining incomplete templates
+        // Production Resilience: In live environments (!isIsolatedTestEnv), templates strictly originate from Firestore documents without merging legacy hardcoded seeds.
         const templateMap = new Map<string, Template>();
-        SEED_TEMPLATES.forEach(t => {
-          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
-        });
+        if (isIsolatedTestEnv) {
+          SEED_TEMPLATES.forEach(t => {
+            if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
+          });
+        }
         (this.db.templates || []).forEach(t => {
           if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
         });
@@ -527,6 +581,9 @@ export class ProductionDatabase {
           }
         });
         this.db.templates = Array.from(templateMap.values());
+        if (!isIsolatedTestEnv) {
+          this.catalogueStatus = this.db.templates.length > 0 ? 'READY' : 'EMPTY';
+        }
       } else {
         console.warn('[Database] Preserving existing safe in-memory template catalog without merging seeds to prevent reviving deleted templates.');
       }
@@ -575,8 +632,14 @@ export class ProductionDatabase {
         // config docs optional
       }
 
+      if (!isIsolatedTestEnv) {
+        this.catalogueStatus = this.db.templates.length > 0 ? 'READY' : 'EMPTY';
+      }
       console.log('[Database] Complete authoritative state synchronized from Firestore');
     } catch (err: any) {
+      if (!isIsolatedTestEnv) {
+        this.catalogueStatus = 'OFFLINE';
+      }
       console.warn('[Database] Firestore authoritative sync note:', err.message);
     }
   }
@@ -618,9 +681,11 @@ export class ProductionDatabase {
       });
     }
     const templateMap = new Map<string, Template>();
-    SEED_TEMPLATES.forEach(t => {
-      if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
-    });
+    if (isIsolatedTestEnv) {
+      SEED_TEMPLATES.forEach(t => {
+        if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
+      });
+    }
     (this.db.templates || []).forEach(t => {
       if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
     });
@@ -641,6 +706,9 @@ export class ProductionDatabase {
       }
     });
     this.db.templates = Array.from(templateMap.values());
+    if (!isIsolatedTestEnv) {
+      this.catalogueStatus = this.db.templates.length > 0 ? 'READY' : 'EMPTY';
+    }
 
     // 2. Face Swap Scenes & Config
     try {
@@ -698,6 +766,10 @@ export class ProductionDatabase {
     };
   }
 
+  public async reloadTemplatesFromFirestore(): Promise<any> {
+    return this.refreshCatalogFromFirestore();
+  }
+
   private init(): ProductionDatabaseSchema {
     try {
       if (!fs.existsSync(DATA_DIR)) {
@@ -717,9 +789,11 @@ export class ProductionDatabase {
         parsed.subscriptions = parsed.subscriptions || {};
         const deletedIds = new Set(parsed.deletedTemplateIds || []);
         const tplMap = new Map<string, Template>();
-        SEED_TEMPLATES.forEach(t => {
-          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) tplMap.set(t.id, t);
-        });
+        if (isIsolatedTestEnv) {
+          SEED_TEMPLATES.forEach(t => {
+            if (!deletedIds.has(t.id) && validateTemplate(t).isValid) tplMap.set(t.id, t);
+          });
+        }
         (parsed.templates || []).forEach((t: Template) => {
           if (!deletedIds.has(t.id)) {
             const v = validateTemplate(t);
@@ -737,7 +811,7 @@ export class ProductionDatabase {
           }
         });
         parsed.templates = Array.from(tplMap.values());
-        parsed.banners = (parsed.banners && parsed.banners.length > 0) ? parsed.banners : [...HOME_HERO_BANNERS];
+        parsed.banners = Array.isArray(parsed.banners) ? parsed.banners : (isIsolatedTestEnv ? [...HOME_HERO_BANNERS] : []);
         parsed.faceSwapDemoVideoUrl = parsed.faceSwapDemoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4';
         
         const sceneMap = new Map<string, FaceSwapScene>();
@@ -773,8 +847,8 @@ export class ProductionDatabase {
       jobs: [],
       payments: {},
       subscriptions: {},
-      templates: [...SEED_TEMPLATES],
-      banners: [...HOME_HERO_BANNERS],
+      templates: isIsolatedTestEnv ? [...SEED_TEMPLATES] : [],
+      banners: isIsolatedTestEnv ? [...HOME_HERO_BANNERS] : [],
       faceSwapDemoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-field-of-yellow-flowers-40277-large.mp4',
       faceSwapScenes: SEED_FACE_SWAP_SCENES.map(s => ({ ...s, isActive: true, status: 'published' })),
       userLikes: {},
@@ -864,10 +938,7 @@ export class ProductionDatabase {
     if (!token) return null;
     const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
       if (!u) return null;
-      const isAdminEmail = Boolean(
-        (u.email && u.email.toLowerCase() === 'backupvideoemail@gmail.com') ||
-        (process.env.ADMIN_EMAIL && u.email && u.email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
-      );
+      const isAdminEmail = isAuthorizedAdminEmail(u.email);
       if (isAdminEmail && u.role !== 'admin') {
         u.role = 'admin';
         this.syncToFirestore('users', u.id, u);
@@ -908,16 +979,16 @@ export class ProductionDatabase {
     let existingUser = this.getUserByFirebaseUid(params.firebaseUid);
     const sessionToken = `session_${crypto.randomBytes(24).toString('hex')}`;
 
-    const isAdminEmail = Boolean(
-      (params.email && params.email.toLowerCase() === 'backupvideoemail@gmail.com') ||
-      (process.env.ADMIN_EMAIL && params.email && params.email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
-    );
+    const isAdminEmail = isAuthorizedAdminEmail(params.email) || isAuthorizedAdminEmail(existingUser?.email);
 
     if (existingUser) {
+      if (params.email && (!existingUser.email || existingUser.email !== params.email)) {
+        existingUser.email = params.email;
+      }
       if (isAdminEmail && existingUser.role !== 'admin') {
         existingUser.role = 'admin';
-        this.syncToFirestore('users', existingUser.id, existingUser);
       }
+      this.syncToFirestore('users', existingUser.id, existingUser);
       const identity = this.db.authIdentities[existingUser.id];
       if (identity) {
         identity.sessionTokens.push(sessionToken);
@@ -1899,6 +1970,7 @@ export class ProductionDatabase {
       this.db.templates.unshift(tpl);
     }
     this.save();
+    await this.bumpCatalogRevision();
     return tpl;
   }
 
@@ -1932,6 +2004,7 @@ export class ProductionDatabase {
     // Apply mutation to local in-memory catalog ONLY AFTER Firestore succeeds
     Object.assign(existingTpl, updates);
     this.save();
+    await this.bumpCatalogRevision();
     return existingTpl;
   }
 
@@ -2012,6 +2085,7 @@ export class ProductionDatabase {
       this.db.deletedTemplateIds.push(id);
     }
     this.save();
+    await this.bumpCatalogRevision();
     return true;
   }
 
@@ -2373,10 +2447,11 @@ export class ProductionDatabase {
     return this.db.banners || [];
   }
 
-  public setBanners(banners: HomeBannerItem[]): void {
+  public async setBanners(banners: HomeBannerItem[]): Promise<void> {
     this.db.banners = banners;
     this.save();
     this.syncToFirestore('config', 'banners', { banners, updatedAt: new Date().toISOString() });
+    await this.bumpCatalogRevision();
   }
 
   public getPricingBanner(): PricingBannerConfig | null {
