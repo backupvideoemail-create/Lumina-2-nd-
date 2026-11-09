@@ -431,7 +431,19 @@ export class ProductionDatabase {
         }
       }
     } catch (err: any) {
-      console.warn('[Database] syncCatalogIfStale check failed:', err.message);
+      // 5 NOT_FOUND: When 'config/catalog_metadata' has not been created yet in Firestore (initial clean state),
+      // or if the Firestore database is currently unseeded/offline, treat local catalog as current without noisy logs.
+      const errMsg = String(err?.message || err?.details || err || '');
+      if (
+        err?.code === 5 ||
+        err?.status === 5 ||
+        errMsg.includes('5 NOT_FOUND') ||
+        errMsg.includes('NOT_FOUND') ||
+        errMsg.includes('not found')
+      ) {
+        return;
+      }
+      console.warn('[Database] syncCatalogIfStale check failed:', errMsg);
     }
   }
 
