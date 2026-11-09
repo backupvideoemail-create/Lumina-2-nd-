@@ -7,7 +7,10 @@ import {
   Phone,
   ShieldCheck,
   KeyRound,
-  CheckCircle2
+  CheckCircle2,
+  AlertTriangle,
+  Copy,
+  Check
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { useApp } from '../context/AppContext';
@@ -30,6 +33,8 @@ export const AuthModal: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
 
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
@@ -40,6 +45,8 @@ export const AuthModal: React.FC = () => {
       setPhoneNumber('');
       setOtpCode('');
       setErrorMessage('');
+      setUnauthorizedDomain(null);
+      setCopiedDomain(false);
       setConfirmationResult(null);
     }
   }, [authModalOpen]);
@@ -81,10 +88,15 @@ export const AuthModal: React.FC = () => {
       }
     } catch (err: any) {
       setLoading(false);
-      console.error('[Google Auth Error]:', err);
       if (err.code === 'auth/popup-closed-by-user') {
         setErrorMessage('Sign-in popup was closed. Please try again.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        const domain = window.location.hostname;
+        console.warn('[Google Auth Note]: Domain not yet authorized in Firebase Console:', domain);
+        setUnauthorizedDomain(domain);
+        setErrorMessage(`Hosting domain (${domain}) is not authorized in Firebase Authentication.`);
       } else {
+        console.error('[Google Auth Error]:', err);
         setErrorMessage(err.message || 'Google Sign-In failed.');
       }
     }
@@ -122,12 +134,17 @@ export const AuthModal: React.FC = () => {
       setLoading(false);
     } catch (err: any) {
       setLoading(false);
-      console.error('[Firebase Phone Send Error]:', err);
       if (err.code === 'auth/invalid-phone-number') {
         setErrorMessage('The mobile number format is invalid. Please include country code (+91).');
       } else if (err.code === 'auth/too-many-requests') {
         setErrorMessage('Too many SMS requests sent. Please wait a few minutes.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        const domain = window.location.hostname;
+        console.warn('[Firebase Phone Send Note]: Domain not yet authorized in Firebase Console:', domain);
+        setUnauthorizedDomain(domain);
+        setErrorMessage(`Hosting domain (${domain}) is not authorized in Firebase Authentication.`);
       } else {
+        console.error('[Firebase Phone Send Error]:', err);
         setErrorMessage(err.message || 'Failed to dispatch SMS verification code.');
       }
     }
@@ -234,8 +251,45 @@ export const AuthModal: React.FC = () => {
           </p>
         </div>
 
-        {/* Error message */}
-        {errorMessage && (
+        {/* Unauthorized Domain Diagnostic Guide */}
+        {unauthorizedDomain && (
+          <div className="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs text-left">
+            <div className="flex items-center gap-2 text-amber-300 font-bold mb-1.5">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>Firebase Domain Authorization Required</span>
+            </div>
+            <p className="text-[11px] text-stone-300 leading-relaxed mb-2">
+              This deployment host is not yet added to Firebase Authentication Authorized Domains:
+            </p>
+            <div className="flex items-center justify-between p-2 rounded-xl bg-black/60 border border-amber-500/25 text-amber-200 font-mono text-[11px] break-all mb-2.5">
+              <span className="truncate select-all">{unauthorizedDomain}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(unauthorizedDomain);
+                  setCopiedDomain(true);
+                  setTimeout(() => setCopiedDomain(false), 2000);
+                }}
+                className="ml-2 px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-sans font-bold shrink-0 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                {copiedDomain ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedDomain ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+            <div className="text-[11px] text-stone-300 space-y-1 bg-white/5 p-2.5 rounded-xl border border-white/5">
+              <div className="font-semibold text-amber-300">Quick 1-Minute Fix:</div>
+              <ol className="list-decimal list-inside space-y-1 text-stone-400">
+                <li>Go to <span className="text-white font-medium">console.firebase.google.com</span></li>
+                <li>Project: <span className="text-white font-medium">gen-lang-client-0525281130</span> or <span className="text-white font-medium">ai-prime-studio</span></li>
+                <li>Open <span className="text-white font-medium">Authentication</span> → <span className="text-white font-medium">Settings</span> → <span className="text-white font-medium">Authorized Domains</span></li>
+                <li>Click <span className="text-white font-medium">Add domain</span> and paste the copied host</li>
+              </ol>
+            </div>
+          </div>
+        )}
+
+        {/* Error message (when not unauthorized domain) */}
+        {errorMessage && !unauthorizedDomain && (
           <div className="mb-4 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold text-center">
             {errorMessage}
           </div>
