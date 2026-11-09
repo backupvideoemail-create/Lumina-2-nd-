@@ -542,6 +542,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('lumina_session_token', token);
     setUser(authenticatedUser);
     setAuthModalOpen(false);
+
+    // Immediately enable admin capabilities for verified admin user upon login
+    const userEmail = (authenticatedUser.email || '').toLowerCase().trim();
+    if (authenticatedUser.role === 'admin' || userEmail === 'backupvideoemail@gmail.com' || userEmail === 'ai.prime.studio.pro@gmail.com') {
+      setIsAdmin(true);
+      setServerAdminVerified(true);
+    }
+
     await refreshUserData();
     await refreshGenerations();
 

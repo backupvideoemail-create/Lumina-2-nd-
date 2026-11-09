@@ -2337,10 +2337,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             probableCause: upRes.status === 413
               ? 'Photo payload exceeded server limit.'
               : upRes.status === 403
-                ? 'Admin secret key authorization failed or expired.'
+                ? 'Admin authorization expired or unauthorized account.'
                 : 'Server storage driver error.',
             nextStep: upRes.status === 403
-              ? 'Please re-enter your ADMIN_SECRET_KEY in the top right.'
+              ? 'Please sign in with your authorized administrator Google account.'
               : 'Try compressing the photo or selecting another image.'
           });
           return; // ABORT: Do not proceed to subsequent uploads

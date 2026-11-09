@@ -127,9 +127,21 @@ function getAuthenticatedUser(req: express.Request): UserProfile | null {
   return null;
 }
 
+// Asynchronous multi-instance token resolver (queries Firestore across Cloud Run containers)
+async function getAuthenticatedUserAsync(req: express.Request): Promise<UserProfile | null> {
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    if (token) {
+      return await prodDb.getUserByTokenAsync(token);
+    }
+  }
+  return null;
+}
+
 // Strict Auth Guard Middleware for sensitive financial and generation endpoints
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const user = getAuthenticatedUser(req);
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = await getAuthenticatedUserAsync(req);
   if (!user) {
     return res.status(401).json({
       error: 'Authentication required. Please sign in to continue.'
@@ -146,8 +158,8 @@ function isServerVerifiedAdmin(user: UserProfile | null): boolean {
 }
 
 // Server-Side withAdminAuth Middleware for all /api/admin/* endpoints
-function withAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const user = getAuthenticatedUser(req);
+async function withAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = (req as any).user || await getAuthenticatedUserAsync(req);
   if (isServerVerifiedAdmin(user)) {
     (req as any).user = user;
     return next();
@@ -408,7 +420,7 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     // Cryptographic Identity Enforcement:
     // Email is strictly extracted from the cryptographically verified token (verified.email).
     // Client-supplied req.body.email is strictly rejected to prevent privilege escalation or impersonation.
-    const { user, token, isNewUser } = prodDb.getOrCreateUser({
+    const { user, token, isNewUser } = await prodDb.getOrCreateUserAsync({
       firebaseUid: verified.uid,
       email: verified.email,
       phone: verified.phone,
@@ -435,8 +447,8 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
 });
 
 // Current User Profile & Isolated Wallet State (Returns null user for unauthenticated visitors)
-app.get('/api/auth/me', (req, res) => {
-  const user = getAuthenticatedUser(req);
+app.get('/api/auth/me', async (req, res) => {
+  const user = await getAuthenticatedUserAsync(req);
   if (!user) {
     return res.json({
       user: null,
@@ -604,7 +616,7 @@ app.post('/api/templates/:id/like', requireAuth, (req, res) => {
 
 // Admin Verification Route (Allows Content Studio to verify admin access state and live backend status)
 app.get('/api/admin/verify', requireAdmin, (req, res) => {
-  const user = getAuthenticatedUser(req);
+  const user = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
   const storageStatus = mediaStorage.getStatus();
   res.json({
     authorized: true,

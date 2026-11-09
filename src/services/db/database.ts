@@ -966,6 +966,41 @@ export class ProductionDatabase {
     return null;
   }
 
+  public async getUserByFirebaseUidAsync(firebaseUid: string): Promise<UserProfile | null> {
+    const memUser = this.getUserByFirebaseUid(firebaseUid);
+    if (memUser) return memUser;
+
+    if (!adminFirestoreDb) return null;
+    try {
+      const snap = await adminFirestoreDb
+        .collection('auth_identities')
+        .where('firebaseUid', '==', firebaseUid)
+        .limit(1)
+        .get();
+      if (!snap.empty) {
+        const docSnap = snap.docs[0];
+        const identity = docSnap.data() as AuthIdentity;
+        const userId = docSnap.id;
+        this.db.authIdentities[userId] = identity;
+
+        if (!this.db.users[userId]) {
+          const userDoc = await adminFirestoreDb.collection('users').doc(userId).get();
+          if (userDoc.exists) {
+            const u = userDoc.data() as UserProfile;
+            if (u && isAuthorizedAdminEmail(u.email)) {
+              u.role = 'admin';
+            }
+            this.db.users[userId] = u;
+          }
+        }
+        return this.db.users[userId] || null;
+      }
+    } catch (err: any) {
+      console.warn('[Database] Async getUserByFirebaseUid notice:', err.message);
+    }
+    return null;
+  }
+
   public getUserByToken(token: string): UserProfile | null {
     if (!token) return null;
     const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
@@ -996,6 +1031,62 @@ export class ProductionDatabase {
       } catch {}
     }
     return null;
+  }
+
+  public async getUserByTokenAsync(token: string): Promise<UserProfile | null> {
+    if (!token) return null;
+    const memUser = this.getUserByToken(token);
+    if (memUser) return memUser;
+
+    if (!adminFirestoreDb) return null;
+
+    const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
+      if (!u) return null;
+      const isAdminEmail = isAuthorizedAdminEmail(u.email);
+      if (isAdminEmail && u.role !== 'admin') {
+        u.role = 'admin';
+        this.syncToFirestore('users', u.id, u);
+      }
+      return u;
+    };
+
+    try {
+      const snap = await adminFirestoreDb
+        .collection('auth_identities')
+        .where('sessionTokens', 'array-contains', token)
+        .limit(1)
+        .get();
+      if (!snap.empty) {
+        const docSnap = snap.docs[0];
+        const identity = docSnap.data() as AuthIdentity;
+        const userId = docSnap.id;
+        this.db.authIdentities[userId] = identity;
+
+        if (!this.db.users[userId]) {
+          const userDoc = await adminFirestoreDb.collection('users').doc(userId).get();
+          if (userDoc.exists) {
+            this.db.users[userId] = userDoc.data() as UserProfile;
+          }
+        }
+        return ensureAdminRole(this.db.users[userId]);
+      }
+    } catch (err: any) {
+      console.warn('[Database] Async getUserByToken notice:', err.message);
+    }
+    return null;
+  }
+
+  public async getOrCreateUserAsync(params: {
+    firebaseUid: string;
+    email?: string;
+    phone?: string;
+    name?: string;
+    avatar?: string;
+  }): Promise<{ user: UserProfile; token: string; isNewUser: boolean }> {
+    if (!this.getUserByFirebaseUid(params.firebaseUid)) {
+      await this.getUserByFirebaseUidAsync(params.firebaseUid);
+    }
+    return this.getOrCreateUser(params);
   }
 
   /**

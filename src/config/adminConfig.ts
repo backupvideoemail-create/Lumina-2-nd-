@@ -19,8 +19,5 @@ export type AuthorizedAdminEmail = typeof AUTHORIZED_ADMIN_EMAILS[number];
 export function isAuthorizedAdminEmail(email?: string | null): boolean {
   if (!email || typeof email !== 'string') return false;
   const normalized = email.toLowerCase().trim();
-  return (
-    AUTHORIZED_ADMIN_EMAILS.includes(normalized as AuthorizedAdminEmail) ||
-    Boolean(process.env.ADMIN_EMAIL && normalized === process.env.ADMIN_EMAIL.toLowerCase().trim())
-  );
+  return AUTHORIZED_ADMIN_EMAILS.includes(normalized as AuthorizedAdminEmail);
 }
