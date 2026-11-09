@@ -388,49 +388,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.user) {
-          setUser(data.user);
-          if (data.wallet) setWallet(data.wallet);
-          setActiveSubscription(data.activeSubscription || null);
-          if (data.likedTemplates) setLikedTemplates(data.likedTemplates);
-          if (typeof data.isIntroEligible === 'boolean') {
-            setIsIntroEligible(data.isIntroEligible);
-          }
 
-          // Server-side cryptographic admin verification
-          try {
-            const adminCheckRes = await fetch('/api/admin/verify', {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            if (adminCheckRes.ok) {
-              const adminData = await adminCheckRes.json();
-              if (adminData.authorized) {
-                setIsAdmin(true);
-                setServerAdminVerified(true);
-              } else {
-                setIsAdmin(false);
-                setServerAdminVerified(false);
-              }
+      // Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401
+      if (res.status === 401) {
+        console.warn('[AppContext] Server explicitly confirmed session invalid/expired (HTTP 401). Clearing token.');
+        localStorage.removeItem('lumina_session_token');
+        setUser(null);
+        setIsAdmin(false);
+        setServerAdminVerified(false);
+        return;
+      }
+
+      // Preserve session during temporary outages (Firestore OFFLINE, 5xx, timeouts, network errors)
+      if (!res.ok) {
+        console.warn(`[AppContext] /api/auth/me returned HTTP ${res.status}. Preserving session token for outage recovery.`);
+        return;
+      }
+
+      const data = await res.json();
+      if (data?.user) {
+        setUser(data.user);
+        if (data.wallet) setWallet(data.wallet);
+        setActiveSubscription(data.activeSubscription || null);
+        if (data.likedTemplates) setLikedTemplates(data.likedTemplates);
+        if (typeof data.isIntroEligible === 'boolean') {
+          setIsIntroEligible(data.isIntroEligible);
+        }
+
+        // Server-side cryptographic admin verification:
+        // Keep "/api/admin/verify" as the SOLE source of "serverAdminVerified = true".
+        // Never set "serverAdminVerified" merely from "user.role" or a client-side Gmail comparison.
+        try {
+          const adminCheckRes = await fetch('/api/admin/verify', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (adminCheckRes.ok) {
+            const adminData = await adminCheckRes.json();
+            if (adminData.authorized === true) {
+              setIsAdmin(true);
+              setServerAdminVerified(true);
             } else {
               setIsAdmin(false);
               setServerAdminVerified(false);
             }
-          } catch {
+          } else {
             setIsAdmin(false);
             setServerAdminVerified(false);
           }
-        } else {
-          // Token expired or invalid
-          localStorage.removeItem('lumina_session_token');
-          setUser(null);
+        } catch {
           setIsAdmin(false);
           setServerAdminVerified(false);
         }
+      } else {
+        // If response is 200 but user object is not yet populated (e.g. database syncing or offline),
+        // DO NOT delete session token. Keep token for automatic recovery.
+        console.warn('[AppContext] User record not returned in /api/auth/me. Preserving session token for recovery.');
       }
-    } catch {
-      // Keep current state
+    } catch (err) {
+      // Network errors, fetch aborts, or client offline: preserve token and keep current state
+      console.warn('[AppContext] Network or timeout error during session refresh. Preserving session token:', err);
     }
   }, []);
 

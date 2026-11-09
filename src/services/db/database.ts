@@ -238,12 +238,32 @@ if (isIsolatedTestEnv) {
 
       if (credentialObj) {
         const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
-        const isConfigProject = projectId === (firebaseConfig as any).projectId;
+        const configProjectId = (firebaseConfig as any).projectId;
+        const isConfigProject = projectId === configProjectId;
         const explicitDbId = process.env.FIRESTORE_DATABASE_ID?.trim();
         const configDbId = (firebaseConfig as any).firestoreDatabaseId?.trim();
-        const targetDatabaseId = (explicitDbId && explicitDbId !== '(default)')
-          ? explicitDbId
-          : (configDbId || undefined);
+
+        // FIX 1: Select the configured named database only when it belongs to the same project
+        // as the runtime service-account credentials. Otherwise use the existing "(default)"
+        // database in "ai-prime-studio", after verifying the "FIRESTORE_DATABASE_ID"
+        // Secret Manager override does not force the invalid database.
+        let targetDatabaseId: string | undefined = undefined;
+
+        if (isConfigProject && configDbId) {
+          targetDatabaseId = configDbId;
+        }
+
+        if (explicitDbId && explicitDbId !== '(default)') {
+          const isForeignConfigDb = Boolean(configDbId && explicitDbId === configDbId);
+          const isKnownDevDbPattern = explicitDbId.startsWith('ai-studio-lumina2nd-');
+          if (!isConfigProject && (isForeignConfigDb || isKnownDevDbPattern)) {
+            console.warn(`[Database] Ignoring invalid FIRESTORE_DATABASE_ID override '${explicitDbId}' for project '${projectId}'; using '(default)' authoritative database`);
+            targetDatabaseId = undefined;
+          } else {
+            targetDatabaseId = explicitDbId;
+          }
+        }
+
         const adminApp = initAdminApp({
           credential: cert(credentialObj),
           projectId
