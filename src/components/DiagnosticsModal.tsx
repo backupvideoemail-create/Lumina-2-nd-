@@ -197,12 +197,15 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
         }
       });
       const data = await res.json().catch(() => null);
-      if (data?.alerts) {
+      if (data && Array.isArray(data.alerts)) {
         setAlerts(data.alerts);
         setAlertsSource(data.source || '');
+      } else {
+        setAlerts([]);
       }
     } catch (e) {
       console.error('[Alerts Fetch Error]:', e);
+      setAlerts([]);
     } finally {
       setLoadingAlerts(false);
     }
@@ -235,7 +238,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
     blocked: 0,
     warning: 0
   };
-  const unresolvedAlertsCount = alerts.filter((a) => !a.resolved).length;
+  const alertsList = Array.isArray(alerts) ? alerts : [];
+  const unresolvedAlertsCount = alertsList.filter((a) => !a.resolved).length;
 
   const filteredResults = results.filter((r) => {
     if (activeFilter === 'critical') return r.severity === 'CRITICAL';
@@ -376,13 +380,13 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
               </button>
             </div>
 
-            {alerts.length === 0 ? (
+            {alertsList.length === 0 ? (
               <div className="text-center py-12 text-stone-500 text-xs flex flex-col items-center gap-2">
                 <CheckCircle2 className="w-8 h-8 text-emerald-400/60" />
                 <span>No active production incidents or alerts detected.</span>
               </div>
             ) : (
-              alerts.map((alert, idx) => (
+              alertsList.map((alert, idx) => (
                 <div
                   key={alert.id || idx}
                   className={`p-3.5 rounded-2xl border space-y-2 ${
