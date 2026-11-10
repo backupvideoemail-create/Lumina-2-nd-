@@ -1211,6 +1211,14 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         method: 'POST',
         headers: getAdminHeaders()
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        const errMsg = `R2 Scan failed (HTTP ${res.status}): ${text.slice(0, 120) || 'Non-JSON server response'}`;
+        setRecoveryNotice(errMsg);
+        showNotification(errMsg, 'error');
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         if (data.recoveredCount > 0) {
@@ -2570,45 +2578,60 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </button>
         </div>
 
-        {/* Admin Authorization Status Banner */}
-        <div className="px-4 pt-3">
-          {isAdminVerified === true ? (
-            <div className="p-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="text-xs font-semibold text-emerald-300">
-                  Verified Studio Admin Access Active ({user?.email || 'Authorized Lead'})
+        {/* Authoritative Server Verification Gate */}
+        {isAdminVerified === null ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-12 text-center space-y-3 min-h-[320px]">
+            <RefreshCw className="w-8 h-8 text-[#ff9f00] animate-spin" />
+            <p className="text-sm font-bold text-white">Verifying Studio Admin Credentials...</p>
+            <p className="text-xs text-stone-400">Authenticating session token with server allowlist</p>
+          </div>
+        ) : isAdminVerified === false ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4 min-h-[340px]">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+              <Lock className="w-7 h-7" />
+            </div>
+            <div className="max-w-md space-y-1.5">
+              <h4 className="text-base font-bold text-white">Administrator Access Required</h4>
+              <p className="text-xs text-stone-400 leading-relaxed">
+                Content Studio is strictly restricted to authorized studio administrators (<span className="text-amber-300 font-mono">backupvideoemail@gmail.com</span> and <span className="text-amber-300 font-mono">ai.prime.studio.pro@gmail.com</span>).
+              </p>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  setAuthModalOpen(true);
+                }}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition-all cursor-pointer shadow-lg"
+              >
+                Sign In with Admin Google Account
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-stone-300 text-xs font-semibold transition-all cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Admin Authorization Status Banner */}
+            <div className="px-4 pt-3">
+              <div className="p-2.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="text-xs font-semibold text-emerald-300">
+                    Verified Studio Admin Access Active ({user?.email || 'Authorized Lead'})
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  Server-Authenticated
                 </span>
               </div>
-              <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                Server-Authenticated
-              </span>
             </div>
-          ) : isAdminVerified === false ? (
-            <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 space-y-2">
-              <div className="flex items-start gap-2">
-                <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="text-xs font-bold text-amber-300">
-                    Administrator Authorization Required
-                  </p>
-                  <p className="text-[11px] text-stone-300 mt-0.5">
-                    To manage templates and system banners, please sign in with an authorized administrator account (backupvideoemail@gmail.com or ai.prime.studio.pro@gmail.com).
-                  </p>
-                </div>
-              </div>
-              {!user && (
-                <button
-                  type="button"
-                  onClick={() => setAuthModalOpen(true)}
-                  className="w-full mt-1.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-medium text-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <span>Sign In with Authorized Google Account</span>
-                </button>
-              )}
-            </div>
-          ) : null}
-        </div>
 
         {/* Global Feedback Toast */}
         {feedback && (
@@ -6588,6 +6611,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               </div>
             </div>
           </div>
+        )}
+          </>
         )}
       </motion.div>
     </div>

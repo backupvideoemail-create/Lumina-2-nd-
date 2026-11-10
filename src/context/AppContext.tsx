@@ -543,13 +543,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUser(authenticatedUser);
     setAuthModalOpen(false);
 
-    // Immediately enable admin capabilities for verified admin user upon login
-    const userEmail = (authenticatedUser.email || '').toLowerCase().trim();
-    if (authenticatedUser.role === 'admin' || userEmail === 'backupvideoemail@gmail.com' || userEmail === 'ai.prime.studio.pro@gmail.com') {
-      setIsAdmin(true);
-      setServerAdminVerified(true);
-    }
-
+    // Authoritative server-side verification: refreshUserData() calls /api/admin/verify
+    // which is the sole authoritative source of truth for isAdmin and serverAdminVerified
     await refreshUserData();
     await refreshGenerations();
 

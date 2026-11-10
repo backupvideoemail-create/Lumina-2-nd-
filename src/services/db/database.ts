@@ -1086,7 +1086,17 @@ export class ProductionDatabase {
     if (!this.getUserByFirebaseUid(params.firebaseUid)) {
       await this.getUserByFirebaseUidAsync(params.firebaseUid);
     }
-    return this.getOrCreateUser(params);
+    const result = this.getOrCreateUser(params);
+    // Explicitly await durable Firestore persistence to eliminate multi-instance container session race
+    const identity = this.db.authIdentities[result.user.id];
+    if (identity) {
+      await this.syncToFirestore('auth_identities', result.user.id, identity);
+    }
+    await this.syncToFirestore('users', result.user.id, result.user);
+    if (result.isNewUser && this.db.wallets[result.user.id]) {
+      await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
+    }
+    return result;
   }
 
   /**

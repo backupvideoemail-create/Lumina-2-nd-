@@ -22,7 +22,9 @@ export const TemplatesView: React.FC = () => {
     faceSwapScenes,
     setSelectedFaceSwapScene,
     setFaceSwapModalOpen,
-    setTemplateManagerOpen
+    setTemplateManagerOpen,
+    isAdmin,
+    serverAdminVerified
   } = useApp();
 
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
@@ -143,14 +145,16 @@ export const TemplatesView: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setTemplateManagerOpen(true)}
-              className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm"
-              title="Add or Manage Templates from Phone"
-            >
-              <Plus className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">New Template</span>
-            </button>
+            {Boolean(serverAdminVerified && isAdmin) && (
+              <button
+                onClick={() => setTemplateManagerOpen(true)}
+                className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-sm"
+                title="Add or Manage Templates from Phone"
+              >
+                <Plus className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">New Template</span>
+              </button>
+            )}
 
             {/* Quick Segmented Control for Photo / Video */}
             <div className="flex items-center p-1 rounded-xl bg-stone-900 border border-white/10">

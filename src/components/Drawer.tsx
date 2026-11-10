@@ -42,11 +42,8 @@ export const Drawer: React.FC = () => {
   } = useApp();
 
   // Authoritative dual-admin accounts: backupvideoemail@gmail.com and ai.prime.studio.pro@gmail.com
-  const userEmail = (user?.email || '').toLowerCase().trim();
-  const isAdmin = Boolean(
-    serverVerifiedAdmin ||
-    (user && (user.role === 'admin' || userEmail === 'backupvideoemail@gmail.com' || userEmail === 'ai.prime.studio.pro@gmail.com'))
-  );
+  // Admin UI is strictly isolated to server-verified session (eliminating client-side user.role/email fallback)
+  const isAdmin = Boolean(serverAdminVerified && serverVerifiedAdmin);
 
   const handleNav = (tab: 'home' | 'templates' | 'creations' | 'profile') => {
     setActiveTab(tab);

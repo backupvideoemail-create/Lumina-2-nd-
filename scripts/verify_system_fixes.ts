@@ -1889,6 +1889,50 @@ async function runSystemVerification() {
   const drawerSource31 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
   assert(drawerSource31.includes('serverVerifiedAdmin') && drawerSource31.includes('serverAdminVerified'), '31.10 Drawer.tsx consumes server-verified isAdmin and serverAdminVerified from useApp()');
 
+  // --- SUITE 32: SINGLE AUTHORITATIVE ADMIN ACCESS & RESTRICTED STUDIO GATING ---
+  console.log('\n--- SUITE 32: SINGLE AUTHORITATIVE ADMIN ACCESS & RESTRICTED STUDIO GATING ---');
+
+  // 32.1 TemplatesView.tsx gates "New Template" button behind serverAdminVerified && isAdmin
+  const templatesViewSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/TemplatesView.tsx'), 'utf8');
+  assert(templatesViewSource.includes('Boolean(serverAdminVerified && isAdmin)'), '32.1 TemplatesView gates New Template button behind server-verified admin check');
+  assert(!templatesViewSource.includes('<button\n              onClick={() => setTemplateManagerOpen(true)}\n              className="px-2.5 py-1.5 rounded-xl bg-amber-500/15'), '32.1 New Template button cannot render unconditionally for normal users');
+
+  // 32.2 TemplateManagerModal.tsx gates controls and tabs
+  const tplModalSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateManagerModal.tsx'), 'utf8');
+  assert(tplModalSource.includes('Verifying Studio Admin Credentials...'), '32.2 TemplateManagerModal shows pending loading state when isAdminVerified === null');
+  assert(tplModalSource.includes('Administrator Access Required'), '32.2 TemplateManagerModal renders unauthorized block when isAdminVerified === false');
+  assert(tplModalSource.includes('Content Studio is strictly restricted to authorized studio administrators'), '32.2 TemplateManagerModal explains dual authorized admin requirement');
+  assert(tplModalSource.includes('isAdminVerified === false ?') && tplModalSource.includes('Verified Studio Admin Access Active'), '32.2 TemplateManagerModal renders full Content Studio only when verified true');
+
+  // 32.3 handleScanAndRecoverR2 safe JSON handling
+  assert(tplModalSource.includes("contentType.includes('application/json')"), '32.3 handleScanAndRecoverR2 checks content-type before res.json()');
+  assert(tplModalSource.includes('Non-JSON server response'), '32.3 handleScanAndRecoverR2 handles HTML and 5xx outage responses safely');
+
+  // 32.4 Drawer.tsx eliminates client-side role/email fallback
+  const drawerSource32 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
+  assert(drawerSource32.includes('const isAdmin = Boolean(serverAdminVerified && serverVerifiedAdmin);'), '32.4 Drawer.tsx strictly uses server-verified admin state');
+  assert(!drawerSource32.includes("user.role === 'admin' || userEmail === 'backupvideoemail@gmail.com'"), '32.4 Drawer.tsx eliminated client-side role/email fallback bypass');
+
+  // 32.5 adminConfig.ts single authoritative allowlist
+  const adminConfigSource32 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/config/adminConfig.ts'), 'utf8');
+  assert(!adminConfigSource32.includes('process.env.ADMIN_EMAIL'), '32.5 adminConfig.ts eliminated arbitrary ADMIN_EMAIL environment override');
+  assert(adminConfigSource32.includes('backupvideoemail@gmail.com') && adminConfigSource32.includes('ai.prime.studio.pro@gmail.com'), '32.5 adminConfig.ts retains both authorized admin emails');
+
+  // 32.6 database.ts getOrCreateUserAsync persists session tokens
+  const dbSource32 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  assert(dbSource32.includes('getOrCreateUserAsync'), '32.6 database.ts exports getOrCreateUserAsync');
+  assert(dbSource32.includes("await this.syncToFirestore('auth_identities', result.user.id, identity)"), '32.6 getOrCreateUserAsync awaits auth_identities write before returning session');
+  assert(dbSource32.includes("await this.syncToFirestore('users', result.user.id, result.user)"), '32.6 getOrCreateUserAsync awaits users write before returning session');
+
+  // 32.7 Multi-instance token resolution logic in database.ts
+  assert(dbSource32.includes('getUserByTokenAsync'), '32.7 database.ts provides getUserByTokenAsync');
+  assert(dbSource32.includes("where('sessionTokens', 'array-contains', token)"), '32.7 getUserByTokenAsync queries sessionTokens across Cloud Run containers');
+
+  // 32.8 server.ts async authentication middlewares
+  const serverSource32 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(serverSource32.includes('getAuthenticatedUserAsync'), '32.8 server.ts uses getAuthenticatedUserAsync');
+  assert(serverSource32.includes('await prodDb.getOrCreateUserAsync'), '32.8 server.ts invokes getOrCreateUserAsync in /api/auth/firebase-session');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');
