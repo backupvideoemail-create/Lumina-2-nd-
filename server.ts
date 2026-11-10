@@ -4975,10 +4975,10 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       category: 'Authoritative Database',
       severity: 'CRITICAL',
       testType: 'LIVE_PROBE',
-      endpointOrProvider: 'Firestore · ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f',
+      endpointOrProvider: 'Firestore · ai-prime-studio/(default)',
       expectedResult: 'Authoritative Firestore project connected with active read/write/read-back verification',
       execute: async () => {
-        const projectId = process.env.GCP_PROJECT || firebaseConfig.projectId || 'gen-lang-client-0525281130';
+        const projectId = process.env.GCP_PROJECT || firebaseConfig.projectId || 'ai-prime-studio';
         const isConnected = Boolean(adminFirestoreDb);
         if (!isConnected) {
           return {
@@ -5150,7 +5150,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       category: 'Google Cloud Monitoring & Observability',
       severity: 'HIGH',
       testType: 'MONITORING_EVENT',
-      endpointOrProvider: 'Cloud Run · gen-lang-client-0525281130 · asia-southeast1',
+      endpointOrProvider: 'Cloud Run · ai-prime-studio · asia-southeast1',
       expectedResult: 'Cloud Run service ai-prime-studio-photo-video monitored across 9 failure vectors with deduplicated live alerts',
       execute: async () => {
         try {

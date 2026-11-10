@@ -51,8 +51,8 @@ export interface CloudMonitoringProbeResult {
   alerts: MonitoringAlert[];
 }
 
-const AUTHORITATIVE_GCP_PROJECT_ID = 'gen-lang-client-0525281130';
-const AUTHORITATIVE_GCP_PROJECT_NUMBER = '221269328833';
+const AUTHORITATIVE_GCP_PROJECT_ID = 'ai-prime-studio';
+const AUTHORITATIVE_GCP_PROJECT_NUMBER = '855598524398';
 const AUTHORITATIVE_CLOUD_RUN_SERVICE = 'ai-prime-studio-photo-video';
 const AUTHORITATIVE_REGION = 'asia-southeast1';
 const AUTHORITATIVE_CUSTOM_DOMAIN = 'https://ai-prime-studio-photo-video.ai.studio';

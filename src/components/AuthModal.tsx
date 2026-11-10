@@ -280,7 +280,7 @@ export const AuthModal: React.FC = () => {
               <div className="font-semibold text-amber-300">Quick 1-Minute Fix:</div>
               <ol className="list-decimal list-inside space-y-1 text-stone-400">
                 <li>Go to <span className="text-white font-medium">console.firebase.google.com</span></li>
-                <li>Project: <span className="text-white font-medium">gen-lang-client-0525281130</span> or <span className="text-white font-medium">ai-prime-studio</span></li>
+                <li>Project: <span className="text-white font-medium">ai-prime-studio</span></li>
                 <li>Open <span className="text-white font-medium">Authentication</span> → <span className="text-white font-medium">Settings</span> → <span className="text-white font-medium">Authorized Domains</span></li>
                 <li>Click <span className="text-white font-medium">Add domain</span> and paste the copied host</li>
               </ol>
