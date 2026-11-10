@@ -1094,7 +1094,7 @@ export class ProductionDatabase {
       await this.getUserByFirebaseUidAsync(params.firebaseUid);
     }
     const result = this.getOrCreateUser(params);
-    let allPersisted = true;
+    let allPersisted = Boolean(adminFirestoreDb || isIsolatedTestEnv);
 
     // Explicitly await durable Firestore persistence to eliminate multi-instance container session race
     const identity = this.db.authIdentities[result.user.id];

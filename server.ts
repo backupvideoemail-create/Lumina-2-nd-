@@ -29,7 +29,7 @@ import {
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
-import { prodDb, adminFirestoreDb, adminAuthInstance } from './src/services/db/database.ts';
+import { prodDb, adminFirestoreDb, adminAuthInstance, isIsolatedTestEnv } from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
@@ -451,6 +451,17 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     const isUserAdmin = isServerVerifiedAdmin(user);
     const wallet = prodDb.getWallet(user.id);
     const subscription = prodDb.getSubscription(user.id);
+
+    // Fail-Closed Session Resilience:
+    // If running in production with Firestore configured and persistence failed, reject session issuance
+    // to prevent split-brain logout loops across multi-instance Cloud Run containers.
+    if (adminFirestoreDb && !cloudPersisted && !isIsolatedTestEnv) {
+      console.error(`[Firebase Session] Persistence failure for user ${user.id} (${user.email || 'no-email'}). Aborting session issuance.`);
+      return res.status(503).json({
+        error: 'Database session persistence is temporarily unavailable. Please retry in a moment.',
+        code: 'PERSISTENCE_FAILED'
+      });
+    }
 
     return res.json({
       success: true,
