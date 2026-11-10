@@ -30,6 +30,7 @@ import type {
 } from '../../types/index.ts';
 import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
 import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfig.ts';
@@ -37,9 +38,10 @@ import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
 import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts';
 import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from '../../config/adminConfig.ts';
 
-// Authoritative Firebase Admin instance for server persistence
+// Authoritative Firebase Admin instances for server persistence & cryptographic auth
 let adminFirestoreDb: any = null;
-export { adminFirestoreDb };
+let adminAuthInstance: any = null;
+export { adminFirestoreDb, adminAuthInstance };
 
 export const isIsolatedTestEnv = process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test';
 
@@ -274,6 +276,11 @@ if (isIsolatedTestEnv) {
         try {
           adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
         } catch {}
+        try {
+          adminAuthInstance = getAdminAuth(adminApp);
+        } catch (authInitErr: any) {
+          console.warn('[Database] Firebase Admin Auth initialization note:', authInitErr.message);
+        }
         console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
       }
     }
@@ -920,25 +927,25 @@ export class ProductionDatabase {
     if (!adminFirestoreDb) {
       return { success: false, cloudPersisted: false, error: 'Firestore Admin SDK not connected' };
     }
-    try {
-      const sanitized = JSON.parse(JSON.stringify(data));
-      await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
-      return { success: true, cloudPersisted: true };
-    } catch (err: any) {
-      console.warn(`[Firestore Sync] ${collectionName}/${docId}:`, err.message);
-      if (collectionName === 'templates') {
-        try {
-          await new Promise(r => setTimeout(r, 200));
-          const sanitized = JSON.parse(JSON.stringify(data));
-          await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
-          return { success: true, cloudPersisted: true };
-        } catch (retryErr: any) {
-          console.error(`[Firestore Sync Critical] Template ${docId} persistence failed:`, retryErr.message);
-          return { success: false, cloudPersisted: false, error: retryErr.message };
+    const sanitized = JSON.parse(JSON.stringify(data));
+    const isCritical = ['auth_identities', 'users', 'wallets', 'templates'].includes(collectionName);
+    const maxAttempts = isCritical ? 3 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
+        return { success: true, cloudPersisted: true };
+      } catch (err: any) {
+        if (attempt === maxAttempts) {
+          console.error(`[Firestore Sync Critical] ${collectionName}/${docId} failed after ${attempt} attempts:`, err.message);
+          return { success: false, cloudPersisted: false, error: err.message };
         }
+        const delay = attempt * 150;
+        console.warn(`[Firestore Sync Retry] ${collectionName}/${docId} attempt ${attempt} failed: ${err.message}. Retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
       }
-      return { success: false, cloudPersisted: false, error: err.message };
     }
+    return { success: false, cloudPersisted: false, error: 'Firestore sync failed' };
   }
 
   private async deleteFromFirestore(collectionName: string, docId: string): Promise<void> {
@@ -1082,21 +1089,27 @@ export class ProductionDatabase {
     phone?: string;
     name?: string;
     avatar?: string;
-  }): Promise<{ user: UserProfile; token: string; isNewUser: boolean }> {
+  }): Promise<{ user: UserProfile; token: string; isNewUser: boolean; cloudPersisted: boolean }> {
     if (!this.getUserByFirebaseUid(params.firebaseUid)) {
       await this.getUserByFirebaseUidAsync(params.firebaseUid);
     }
     const result = this.getOrCreateUser(params);
+    let allPersisted = true;
+
     // Explicitly await durable Firestore persistence to eliminate multi-instance container session race
     const identity = this.db.authIdentities[result.user.id];
     if (identity) {
-      await this.syncToFirestore('auth_identities', result.user.id, identity);
+      const syncRes = await this.syncToFirestore('auth_identities', result.user.id, identity);
+      if (!syncRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
     }
-    await this.syncToFirestore('users', result.user.id, result.user);
+    const userRes = await this.syncToFirestore('users', result.user.id, result.user);
+    if (!userRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
+
     if (result.isNewUser && this.db.wallets[result.user.id]) {
-      await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
+      const walletRes = await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
+      if (!walletRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
     }
-    return result;
+    return { ...result, cloudPersisted: allPersisted };
   }
 
   /**
@@ -1125,6 +1138,9 @@ export class ProductionDatabase {
       const identity = this.db.authIdentities[existingUser.id];
       if (identity) {
         identity.sessionTokens.push(sessionToken);
+        if (identity.sessionTokens.length > 15) {
+          identity.sessionTokens = identity.sessionTokens.slice(-15);
+        }
         identity.lastLoginAt = new Date().toISOString();
         if (params.email && !identity.email) identity.email = params.email;
         if (params.phone && !identity.phone) identity.phone = params.phone;

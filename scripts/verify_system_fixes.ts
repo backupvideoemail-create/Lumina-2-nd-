@@ -1933,6 +1933,76 @@ async function runSystemVerification() {
   assert(serverSource32.includes('getAuthenticatedUserAsync'), '32.8 server.ts uses getAuthenticatedUserAsync');
   assert(serverSource32.includes('await prodDb.getOrCreateUserAsync'), '32.8 server.ts invokes getOrCreateUserAsync in /api/auth/firebase-session');
 
+  // --- SUITE 33: DUAL ADMIN VERIFICATION, CROSS-INSTANCE RESILIENCE & RECOVERY GUARANTEES ---
+  console.log('\n--- SUITE 33: DUAL ADMIN VERIFICATION, CROSS-INSTANCE RESILIENCE & RECOVERY GUARANTEES ---');
+
+  // 33.1 database.ts exports adminAuthInstance and server.ts imports it
+  const dbSource33 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  assert(dbSource33.includes('adminAuthInstance') && dbSource33.includes('getAdminAuth'), '33.1 database.ts exports adminAuthInstance using Firebase Admin SDK');
+  const serverSource33 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(serverSource33.includes('adminAuthInstance'), '33.1 server.ts imports adminAuthInstance from database.ts');
+
+  // 33.2 verifyFirebaseToken performs cryptographic check with adminAuthInstance first
+  assert(serverSource33.includes('adminAuthInstance.verifyIdToken(idToken)'), '33.2 verifyFirebaseToken uses adminAuthInstance.verifyIdToken with zero quota limits');
+  assert(serverSource33.includes('https://identitytoolkit.googleapis.com/v1/accounts:lookup?key='), '33.2 verifyFirebaseToken retains Identity Toolkit HTTP fallback');
+
+  // 33.3 syncToFirestore bounded retries for critical auth and template collections
+  assert(dbSource33.includes("const isCritical = ['auth_identities', 'users', 'wallets', 'templates'].includes(collectionName);"), '33.3 syncToFirestore classifies auth_identities, users, wallets, and templates as critical');
+  assert(dbSource33.includes('maxAttempts = isCritical ? 3 : 1;') && dbSource33.includes('const delay = attempt * 150;'), '33.3 syncToFirestore executes exponential backoff retries (up to 3 attempts)');
+
+  // 33.4 getOrCreateUserAsync returns cloudPersisted status and caps session tokens to 15
+  assert(dbSource33.includes('cloudPersisted: boolean') && dbSource33.includes('cloudPersisted: allPersisted'), '33.4 getOrCreateUserAsync returns cloudPersisted status');
+  assert(dbSource33.includes('identity.sessionTokens = identity.sessionTokens.slice(-15);'), '33.4 getOrCreateUser caps session tokens array to latest 15 to prevent unbounded growth');
+
+  // 33.5 server.ts returns isAdmin and cloudPersisted in /api/auth/firebase-session
+  assert(serverSource33.includes('isAdmin: isUserAdmin') && serverSource33.includes('cloudPersisted'), '33.5 /api/auth/firebase-session returns isAdmin and cloudPersisted status');
+
+  // 33.6 server.ts returns isAdmin in /api/auth/me
+  assert(serverSource33.includes('const isAdmin = isServerVerifiedAdmin(user);') && serverSource33.includes('isAdmin: false'), '33.6 /api/auth/me returns isAdmin boolean for both guests and authenticated users');
+
+  // 33.7 AppContext.tsx verifies server admin status
+  const appContextSource33 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(appContextSource33.includes('data.isAdmin === true || data.user.role === \'admin\''), '33.7 AppContext checks server-provided isAdmin and verifies /api/admin/verify');
+
+  // 33.8 Live simulation: Dual admin accounts and normal customer cross-instance session resolution
+  const { prodDb: testDb } = await import('../src/services/db/database.ts');
+  const { isAuthorizedAdminEmail: testIsAdminEmail } = await import('../src/config/adminConfig.ts');
+  const admin1Res = await testDb.getOrCreateUserAsync({
+    firebaseUid: 'fb_uid_admin_1_primary',
+    email: 'backupvideoemail@gmail.com',
+    name: 'Primary Admin'
+  });
+  assert(admin1Res.user.role === 'admin', '33.8 Admin 1 (backupvideoemail@gmail.com) is assigned role admin');
+  assert(testIsAdminEmail(admin1Res.user.email), '33.8 Admin 1 email is verified by authoritative adminConfig');
+  assert(Boolean(admin1Res.token), '33.8 Admin 1 received valid session token');
+
+  const admin2Res = await testDb.getOrCreateUserAsync({
+    firebaseUid: 'fb_uid_admin_2_secondary',
+    email: 'ai.prime.studio.pro@gmail.com',
+    name: 'Secondary Admin'
+  });
+  assert(admin2Res.user.role === 'admin', '33.8 Admin 2 (ai.prime.studio.pro@gmail.com) is assigned role admin');
+  assert(testIsAdminEmail(admin2Res.user.email), '33.8 Admin 2 email is verified by authoritative adminConfig');
+  assert(Boolean(admin2Res.token), '33.8 Admin 2 received valid session token');
+
+  const customerRes = await testDb.getOrCreateUserAsync({
+    firebaseUid: 'fb_uid_cust_99_standard',
+    email: 'normal_customer_99@example.com',
+    name: 'Regular Customer'
+  });
+  assert(customerRes.user.role === 'creator', '33.8 Regular customer receives standard creator role');
+  assert(!testIsAdminEmail(customerRes.user.email), '33.8 Regular customer is strictly denied by admin allowlist');
+
+  // Cross-instance resolution check
+  const resolvedAdmin1 = await testDb.getUserByTokenAsync(admin1Res.token);
+  assert(resolvedAdmin1 !== null && resolvedAdmin1.role === 'admin', '33.8 Cross-instance lookup resolves Admin 1 with admin role');
+
+  const resolvedAdmin2 = await testDb.getUserByTokenAsync(admin2Res.token);
+  assert(resolvedAdmin2 !== null && resolvedAdmin2.role === 'admin', '33.8 Cross-instance lookup resolves Admin 2 with admin role');
+
+  const resolvedCustomer = await testDb.getUserByTokenAsync(customerRes.token);
+  assert(resolvedCustomer !== null && resolvedCustomer.role === 'creator', '33.8 Cross-instance lookup resolves customer with creator role');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

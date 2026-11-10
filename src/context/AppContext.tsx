@@ -417,25 +417,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Server-side cryptographic admin verification:
         // Keep "/api/admin/verify" as the SOLE source of "serverAdminVerified = true".
-        // Never set "serverAdminVerified" merely from "user.role" or a client-side Gmail comparison.
-        try {
-          const adminCheckRes = await fetch('/api/admin/verify', {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          if (adminCheckRes.ok) {
-            const adminData = await adminCheckRes.json();
-            if (adminData.authorized === true) {
-              setIsAdmin(true);
-              setServerAdminVerified(true);
+        // Never set "serverAdminVerified" merely from a client-side Gmail comparison.
+        if (data.isAdmin === true || data.user.role === 'admin') {
+          try {
+            const adminCheckRes = await fetch('/api/admin/verify', {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (adminCheckRes.ok) {
+              const adminData = await adminCheckRes.json();
+              if (adminData.authorized === true) {
+                setIsAdmin(true);
+                setServerAdminVerified(true);
+              } else {
+                setIsAdmin(false);
+                setServerAdminVerified(false);
+              }
             } else {
               setIsAdmin(false);
               setServerAdminVerified(false);
             }
-          } else {
+          } catch {
             setIsAdmin(false);
             setServerAdminVerified(false);
           }
-        } catch {
+        } else {
           setIsAdmin(false);
           setServerAdminVerified(false);
         }

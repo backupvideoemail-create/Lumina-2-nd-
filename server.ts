@@ -29,7 +29,7 @@ import {
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
-import { prodDb, adminFirestoreDb } from './src/services/db/database.ts';
+import { prodDb, adminFirestoreDb, adminAuthInstance } from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
@@ -358,6 +358,26 @@ async function verifyFirebaseToken(idToken: string): Promise<{
 } | null> {
   if (!idToken || typeof idToken !== 'string') return null;
 
+  // 1. Direct cryptographic verification with Firebase Admin SDK (Offline public cert cache, zero HTTP quota limits)
+  if (adminAuthInstance) {
+    try {
+      const decoded = await adminAuthInstance.verifyIdToken(idToken);
+      if (decoded && decoded.uid) {
+        return {
+          uid: decoded.uid,
+          email: decoded.email,
+          emailVerified: Boolean(decoded.email_verified),
+          phone: decoded.phone_number,
+          name: decoded.name,
+          avatar: decoded.picture
+        };
+      }
+    } catch (adminErr: any) {
+      console.warn('[Firebase Token Verification] Admin SDK verification note, trying Identity Toolkit:', adminErr.message);
+    }
+  }
+
+  // 2. Identity Toolkit HTTP API fallback
   try {
     const apiKey = firebaseConfig.apiKey;
     if (!apiKey) {
@@ -420,7 +440,7 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     // Cryptographic Identity Enforcement:
     // Email is strictly extracted from the cryptographically verified token (verified.email).
     // Client-supplied req.body.email is strictly rejected to prevent privilege escalation or impersonation.
-    const { user, token, isNewUser } = await prodDb.getOrCreateUserAsync({
+    const { user, token, isNewUser, cloudPersisted } = await prodDb.getOrCreateUserAsync({
       firebaseUid: verified.uid,
       email: verified.email,
       phone: verified.phone,
@@ -428,12 +448,15 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       avatar: verified.avatar || avatar
     });
 
+    const isUserAdmin = isServerVerifiedAdmin(user);
     const wallet = prodDb.getWallet(user.id);
     const subscription = prodDb.getSubscription(user.id);
 
     return res.json({
       success: true,
       user,
+      isAdmin: isUserAdmin,
+      cloudPersisted,
       wallet,
       token,
       subscription,
@@ -452,6 +475,7 @@ app.get('/api/auth/me', async (req, res) => {
   if (!user) {
     return res.json({
       user: null,
+      isAdmin: false,
       wallet: {
         userId: '',
         balance: 0,
@@ -464,6 +488,7 @@ app.get('/api/auth/me', async (req, res) => {
     });
   }
 
+  const isAdmin = isServerVerifiedAdmin(user);
   const wallet = prodDb.getWallet(user.id);
   const activeSubscription = prodDb.getSubscription(user.id);
   const likedTemplates = prodDb.getUserLikedTemplates(user.id);
@@ -479,6 +504,7 @@ app.get('/api/auth/me', async (req, res) => {
 
   res.json({
     user,
+    isAdmin,
     wallet,
     activeSubscription,
     likedTemplates,
