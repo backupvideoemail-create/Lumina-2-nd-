@@ -17,7 +17,9 @@ import {
   Zap,
   Lock,
   Mail,
-  Heart
+  Heart,
+  UploadCloud,
+  Cpu
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
@@ -38,8 +40,14 @@ export const ProfileView: React.FC = () => {
     updateProfile,
     templates,
     likedTemplates,
-    setSelectedTemplate
+    setSelectedTemplate,
+    setTemplateManagerOpen,
+    setDiagnosticsModalOpen,
+    isAdmin: serverVerifiedAdmin,
+    serverAdminVerified
   } = useApp();
+
+  const isAdmin = Boolean(serverAdminVerified && serverVerifiedAdmin);
 
   const [isEditing, setIsEditing] = useState(false);
   const [nameInput, setNameInput] = useState(user?.name || '');
@@ -202,6 +210,59 @@ export const ProfileView: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Studio Admin Tools - Strictly visible only when authenticated as authorized admin */}
+        {isAdmin && (
+          <div className="p-5 rounded-3xl bg-gradient-to-br from-[#1c150c] via-[#120f09] to-[#0a0907] border border-[#ff9f00]/40 shadow-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
+                <h4 className="text-sm font-bold text-white">Studio Admin Controls</h4>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#ff9f00]/20 text-[#ff9f00] border border-[#ff9f00]/30">
+                Authoritative Admin
+              </span>
+            </div>
+
+            <p className="text-xs text-stone-300">
+              Direct access for authorized administrators ({user?.email}):
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+              <button
+                onClick={() => setTemplateManagerOpen(true)}
+                className="p-3.5 rounded-2xl bg-black/60 border border-[#ff9f00]/30 hover:border-[#ff9f00] text-left transition-colors flex items-center justify-between group cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-[#ff9f00]/15 flex items-center justify-center">
+                    <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-white group-hover:text-[#ff9f00] transition-colors">Template Manager</h5>
+                    <p className="text-[10px] text-stone-400">Add, Edit & Publish Templates</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-stone-500 group-hover:text-[#ff9f00] transition-colors" />
+              </button>
+
+              <button
+                onClick={() => setDiagnosticsModalOpen(true)}
+                className="p-3.5 rounded-2xl bg-black/60 border border-emerald-500/30 hover:border-emerald-400 text-left transition-colors flex items-center justify-between group cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                    <Cpu className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-white group-hover:text-emerald-300 transition-colors">System Diagnostics</h5>
+                    <p className="text-[10px] text-stone-400">14 Live Health Probes</p>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-stone-500 group-hover:text-emerald-400 transition-colors" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* 3. Subscription & Plan Status Card */}
         <div className="p-5 rounded-3xl bg-stone-900/80 border border-white/10 space-y-3">
