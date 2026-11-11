@@ -37,6 +37,7 @@ export const Drawer: React.FC = () => {
     setAuthModalOpen,
     setTemplateManagerOpen,
     setDiagnosticsModalOpen,
+    setAdminDashboardOpen,
     isAdmin: serverVerifiedAdmin,
     serverAdminVerified
   } = useApp();
@@ -244,32 +245,16 @@ export const Drawer: React.FC = () => {
                     <button
                       onClick={() => {
                         setDrawerOpen(false);
-                        setTemplateManagerOpen(true);
+                        setAdminDashboardOpen(true);
                       }}
-                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-[#ff9f00] hover:bg-[#ff9f00]/10 transition-colors"
+                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-[#ff9f00]/15 to-transparent border border-[#ff9f00]/30 hover:border-[#ff9f00] transition-colors"
                     >
                       <div className="flex items-center gap-3">
-                        <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
-                        <span>Template Manager (Gallery)</span>
+                        <Shield className="w-4 h-4 text-[#ff9f00]" />
+                        <span>Admin Dashboard</span>
                       </div>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#ff9f00]/20 text-[#ff9f00]">
-                        Admin
-                      </span>
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        setDrawerOpen(false);
-                        setDiagnosticsModalOpen(true);
-                      }}
-                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-emerald-300 hover:bg-emerald-500/10 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Cpu className="w-4 h-4 text-emerald-400" />
-                        <span>System Diagnostics</span>
-                      </div>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                        Live
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#ff9f00] text-black">
+                        PRO
                       </span>
                     </button>
                   </div>

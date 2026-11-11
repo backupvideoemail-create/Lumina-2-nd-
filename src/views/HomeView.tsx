@@ -57,7 +57,25 @@ export const HomeView: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-rotating Hero Carousel State (8.0s timer with reset on interaction & swipe gestures)
-  const [banners, setBanners] = useState<HomeBannerItem[]>(HOME_HERO_BANNERS);
+  // Cache-first: Load last verified real admin banners from localStorage to eliminate dummy banner flash
+  const [banners, setBanners] = useState<HomeBannerItem[]>(() => {
+    try {
+      const cached = localStorage.getItem('lumina_admin_banners_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [bannersLoading, setBannersLoading] = useState<boolean>(() => {
+    try {
+      const cached = localStorage.getItem('lumina_admin_banners_cache');
+      return !cached;
+    } catch {
+      return true;
+    }
+  });
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [timerResetKey, setTimerResetKey] = useState(0);
@@ -209,12 +227,22 @@ export const HomeView: React.FC = () => {
     fetch('/api/banners')
       .then((res) => res.json())
       .then((data) => {
-        if (isMounted && data.banners && Array.isArray(data.banners) && data.banners.length > 0) {
-          const active = data.banners.filter((b: any) => b.isActive !== false);
-          if (active.length > 0) setBanners(active);
+        if (isMounted) {
+          if (data.banners && Array.isArray(data.banners) && data.banners.length > 0) {
+            const active = data.banners.filter((b: any) => b.isActive !== false);
+            if (active.length > 0) {
+              setBanners(active);
+              try {
+                localStorage.setItem('lumina_admin_banners_cache', JSON.stringify(active));
+              } catch {}
+            }
+          }
+          setBannersLoading(false);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (isMounted) setBannersLoading(false);
+      });
     return () => {
       isMounted = false;
     };
@@ -395,15 +423,25 @@ export const HomeView: React.FC = () => {
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
-        <div
-          className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          onTouchCancel={handleTouchCancel}
-          onPointerDown={handlePointerDown}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerCancel}
-        >
+        {bannersLoading && banners.length === 0 ? (
+          <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-[#121118] flex flex-col justify-end p-6 animate-pulse">
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
+            <div className="relative z-10 space-y-3">
+              <div className="h-6 w-3/4 rounded-xl bg-white/10" />
+              <div className="h-4 w-1/2 rounded-lg bg-white/5" />
+              <div className="h-9 w-32 rounded-xl bg-[#ff9f00]/20" />
+            </div>
+          </div>
+        ) : banners.length === 0 ? null : (
+          <div
+            className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+          >
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
@@ -520,6 +558,7 @@ export const HomeView: React.FC = () => {
             ))}
           </div>
         </div>
+        )}
       </section>
 
       {/* 3. QUICK CATEGORY ICONS ROW (Compact, Space-Saving) */}

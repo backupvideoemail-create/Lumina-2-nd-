@@ -324,6 +324,15 @@ export interface AdminTestRun {
   createdAt: string;
 }
 
+export interface AdminActivityLog {
+  id: string;
+  actorEmail: string;
+  action: 'TEMPLATE_CREATED' | 'TEMPLATE_UPDATED' | 'TEMPLATE_DELETED' | 'BANNER_CREATED' | 'BANNER_UPDATED' | 'BANNER_DELETED' | 'ADMIN_AUTH_VERIFIED' | 'SYSTEM_CONFIG_UPDATED';
+  targetId: string;
+  details: string;
+  timestamp: string;
+}
+
 export interface ProductionDatabaseSchema {
   users: Record<string, UserProfile>;
   authIdentities: Record<string, AuthIdentity>;
@@ -345,6 +354,7 @@ export interface ProductionDatabaseSchema {
   categoryPrompts?: Record<string, string>;
   pricingBanner?: PricingBannerConfig | null;
   deletedTemplateIds?: string[];
+  adminLogs?: AdminActivityLog[];
 }
 
 export interface PricingBannerItem {
@@ -667,6 +677,18 @@ export class ProductionDatabase {
         if (pricingBannerDoc.exists && pricingBannerDoc.data()) {
           this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
         }
+
+        // 13. Admin Activity Logs
+        try {
+          const logsSnap = await adminFirestoreDb.collection('admin_logs').get();
+          if (!logsSnap.empty) {
+            const loadedLogs: AdminActivityLog[] = [];
+            logsSnap.forEach((d: any) => {
+              loadedLogs.push(d.data() as AdminActivityLog);
+            });
+            this.db.adminLogs = loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          }
+        } catch {}
       } catch {
         // config docs optional
       }
@@ -869,6 +891,7 @@ export class ProductionDatabase {
         parsed.adminTestRuns = parsed.adminTestRuns || [];
         parsed.pricingBanner = parsed.pricingBanner || null;
         parsed.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS, ...(parsed.categoryPrompts || {}) };
+        parsed.adminLogs = parsed.adminLogs || [];
         return parsed;
       }
     } catch (err) {
@@ -895,7 +918,8 @@ export class ProductionDatabase {
       reports: [],
       adminTestRuns: [],
       pricingBanner: null,
-      categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS }
+      categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
+      adminLogs: []
     };
   }
 
@@ -3263,6 +3287,40 @@ export class ProductionDatabase {
     this.deleteFromFirestore('user_likes', userId);
 
     return true;
+  }
+
+  /* =========================================================================
+     ADMIN ACTIVITY LOGS
+  ========================================================================= */
+  public async logAdminActivity(log: Omit<AdminActivityLog, 'id' | 'timestamp'>): Promise<AdminActivityLog> {
+    const entry: AdminActivityLog = {
+      id: `log_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      actorEmail: log.actorEmail,
+      action: log.action,
+      targetId: log.targetId,
+      details: log.details,
+      timestamp: new Date().toISOString()
+    };
+
+    if (!this.db.adminLogs) {
+      this.db.adminLogs = [];
+    }
+
+    this.db.adminLogs.unshift(entry);
+    if (this.db.adminLogs.length > 500) {
+      this.db.adminLogs = this.db.adminLogs.slice(0, 500);
+    }
+    this.save();
+
+    await this.syncToFirestore('admin_logs', entry.id, entry);
+    return entry;
+  }
+
+  public getAdminLogs(limit = 50, offset = 0): { logs: AdminActivityLog[]; total: number } {
+    const all = this.db.adminLogs || [];
+    const total = all.length;
+    const logs = all.slice(offset, offset + limit);
+    return { logs, total };
   }
 }
 

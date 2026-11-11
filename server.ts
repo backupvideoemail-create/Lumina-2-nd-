@@ -655,6 +655,14 @@ app.post('/api/templates/:id/like', requireAuth, (req, res) => {
 app.get('/api/admin/verify', requireAdmin, (req, res) => {
   const user = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
   const storageStatus = mediaStorage.getStatus();
+  if (user?.email) {
+    prodDb.logAdminActivity({
+      actorEmail: user.email,
+      action: 'ADMIN_AUTH_VERIFIED',
+      targetId: user.id,
+      details: 'Administrator access authenticated and session verified.'
+    }).catch(() => {});
+  }
   res.json({
     authorized: true,
     user: user ? { id: user.id, email: user.email, role: user.role } : null,
@@ -667,6 +675,101 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
       r2MissingEnvVars: storageStatus.missingEnvVars,
       activeStorageDriver: storageStatus.activeDriver
     }
+  });
+});
+
+// Admin Health Check Endpoint
+app.get('/api/admin/health-check', requireAdmin, (req, res) => {
+  const user = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+  const storageStatus = mediaStorage.getStatus();
+
+  res.json({
+    authorized: true,
+    actorEmail: user?.email || 'admin',
+    timestamp: new Date().toISOString(),
+    clientFirebase: {
+      projectId: (firebaseConfig as any).projectId,
+      authDomain: (firebaseConfig as any).authDomain,
+      appId: (firebaseConfig as any).appId,
+      storageBucket: (firebaseConfig as any).storageBucket
+    },
+    adminSdk: {
+      initialized: Boolean(adminFirestoreDb),
+      projectId: adminFirestoreDb?.projectId || (firebaseConfig as any).projectId,
+      databaseId: adminFirestoreDb?.databaseId || '(default)'
+    },
+    firestoreMode: isIsolatedTestEnv ? 'IN_MEMORY_TEST' : 'LIVE_CLOUD_FIRESTORE',
+    databaseId: adminFirestoreDb?.databaseId || '(default)',
+    sessionPersistence: 'FIRESTORE_SESSION_DURABLE',
+    cloudRunRevision: process.env.K_REVISION || 'local-dev',
+    gitCommitSha: resolvedCommitSha,
+    startupTime: SERVER_STARTUP_IMMUTABLE_BUILD_TIME,
+    storage: {
+      driver: storageStatus.activeDriver,
+      r2Configured: storageStatus.r2Configured,
+      bucket: storageStatus.bucket || null
+    }
+  });
+});
+
+// Admin System Health Metrics Endpoint (latency probe + storage stats)
+app.get('/api/admin/system-health', requireAdmin, async (req, res) => {
+  const startTime = Date.now();
+  let firestoreLatencyMs = -1;
+  let firestoreStatus = 'HEALTHY';
+
+  try {
+    if (adminFirestoreDb && !isIsolatedTestEnv) {
+      await adminFirestoreDb.collection('config').doc('global_prompt').get();
+      firestoreLatencyMs = Date.now() - startTime;
+      firestoreStatus = 'HEALTHY';
+    } else {
+      firestoreLatencyMs = 0;
+      firestoreStatus = isIsolatedTestEnv ? 'HEALTHY_IN_MEMORY' : 'DISCONNECTED';
+    }
+  } catch (err: any) {
+    firestoreLatencyMs = Date.now() - startTime;
+    firestoreStatus = `ERROR: ${err.message || 'Latency probe failed'}`;
+  }
+
+  const storageStatus = mediaStorage.getStatus();
+  const mem = process.memoryUsage();
+
+  res.json({
+    status: 'ONLINE',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    firestore: {
+      status: firestoreStatus,
+      latencyMs: firestoreLatencyMs,
+      projectId: adminFirestoreDb?.projectId || (firebaseConfig as any).projectId,
+      databaseId: adminFirestoreDb?.databaseId || '(default)'
+    },
+    storage: {
+      driver: storageStatus.activeDriver,
+      r2Configured: storageStatus.r2Configured,
+      bucket: storageStatus.bucket || null
+    },
+    memory: {
+      rssMb: Math.round(mem.rss / 1024 / 1024),
+      heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+      heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024)
+    },
+    recentErrorsCount: 0
+  });
+});
+
+// Admin Activity Logs Paginated Endpoint
+app.get('/api/admin/logs', requireAdmin, (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+  const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+
+  const result = prodDb.getAdminLogs(limit, offset);
+  res.json({
+    logs: result.logs,
+    total: result.total,
+    limit,
+    offset
   });
 });
 
@@ -1025,6 +1128,15 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     try {
       const saved = await prodDb.addTemplate(newTemplate);
+      const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+      if (adminUser?.email) {
+        prodDb.logAdminActivity({
+          actorEmail: adminUser.email,
+          action: 'TEMPLATE_CREATED',
+          targetId: saved.id,
+          details: `Template "${saved.title}" created in category "${saved.category}".`
+        }).catch(() => {});
+      }
       res.json({ success: true, template: saved });
     } catch (saveErr: any) {
       // In case of Firestore write failure, preserve uploaded R2 assets safely in unassigned inventory
@@ -1380,6 +1492,16 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
 
+    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+    if (adminUser?.email) {
+      prodDb.logAdminActivity({
+        actorEmail: adminUser.email,
+        action: 'TEMPLATE_UPDATED',
+        targetId: id,
+        details: `Template "${updated.title}" updated.`
+      }).catch(() => {});
+    }
+
     res.json({ success: true, template: updated });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to update template' });
@@ -1390,6 +1512,15 @@ app.delete('/api/admin/templates/:id', requireAdmin, async (req, res) => {
   try {
     const success = await prodDb.deleteTemplate(req.params.id);
     if (success) {
+      const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+      if (adminUser?.email) {
+        prodDb.logAdminActivity({
+          actorEmail: adminUser.email,
+          action: 'TEMPLATE_DELETED',
+          targetId: req.params.id,
+          details: `Template ID "${req.params.id}" deleted.`
+        }).catch(() => {});
+      }
       return res.json({ success: true, message: 'Template removed successfully' });
     }
     res.status(404).json({ error: 'Template not found' });
@@ -1651,6 +1782,15 @@ app.put('/api/admin/banners', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Expected banners array' });
   }
   await prodDb.setBanners(banners);
+  const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+  if (adminUser?.email) {
+    prodDb.logAdminActivity({
+      actorEmail: adminUser.email,
+      action: 'BANNER_UPDATED',
+      targetId: 'home_banners',
+      details: `Home banners updated (${banners.length} banners saved).`
+    }).catch(() => {});
+  }
   res.json({ success: true, banners: prodDb.getBanners() });
 });
 

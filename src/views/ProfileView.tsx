@@ -43,6 +43,7 @@ export const ProfileView: React.FC = () => {
     setSelectedTemplate,
     setTemplateManagerOpen,
     setDiagnosticsModalOpen,
+    setAdminDashboardOpen,
     isAdmin: serverVerifiedAdmin,
     serverAdminVerified
   } = useApp();
@@ -213,11 +214,11 @@ export const ProfileView: React.FC = () => {
 
         {/* Studio Admin Tools - Strictly visible only when authenticated as authorized admin */}
         {isAdmin && (
-          <div className="p-5 rounded-3xl bg-gradient-to-br from-[#1c150c] via-[#120f09] to-[#0a0907] border border-[#ff9f00]/40 shadow-xl space-y-3">
+          <div className="p-5 rounded-3xl bg-gradient-to-br from-[#1c150c] via-[#120f09] to-[#0a0907] border border-[#ff9f00]/40 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
-                <h4 className="text-sm font-bold text-white">Studio Admin Controls</h4>
+                <Shield className="w-5 h-5 text-[#ff9f00]" />
+                <h4 className="text-base font-bold text-white">Studio Admin Controls</h4>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#ff9f00]/20 text-[#ff9f00] border border-[#ff9f00]/30">
                 Authoritative Admin
@@ -225,21 +226,29 @@ export const ProfileView: React.FC = () => {
             </div>
 
             <p className="text-xs text-stone-300">
-              Direct access for authorized administrators ({user?.email}):
+              Authorized session for <strong className="text-amber-200">{user?.email}</strong>. Access full system controls below:
             </p>
+
+            <button
+              onClick={() => setAdminDashboardOpen(true)}
+              className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow-[0_8px_25px_rgba(255,159,0,0.35)] cursor-pointer hover:scale-[1.01] transition-all"
+            >
+              <Shield className="w-4 h-4 text-black stroke-[2.5]" />
+              <span>Open Admin Dashboard (5 Sections)</span>
+            </button>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
               <button
                 onClick={() => setTemplateManagerOpen(true)}
-                className="p-3.5 rounded-2xl bg-black/60 border border-[#ff9f00]/30 hover:border-[#ff9f00] text-left transition-colors flex items-center justify-between group cursor-pointer"
+                className="p-3 rounded-2xl bg-black/60 border border-[#ff9f00]/30 hover:border-[#ff9f00] text-left transition-colors flex items-center justify-between group cursor-pointer"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-xl bg-[#ff9f00]/15 flex items-center justify-center">
-                    <UploadCloud className="w-4 h-4 text-[#ff9f00]" />
+                  <div className="w-7 h-7 rounded-xl bg-[#ff9f00]/15 flex items-center justify-center">
+                    <UploadCloud className="w-3.5 h-3.5 text-[#ff9f00]" />
                   </div>
                   <div>
                     <h5 className="text-xs font-bold text-white group-hover:text-[#ff9f00] transition-colors">Template Manager</h5>
-                    <p className="text-[10px] text-stone-400">Add, Edit & Publish Templates</p>
+                    <p className="text-[10px] text-stone-400">Add, Edit & Publish</p>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-stone-500 group-hover:text-[#ff9f00] transition-colors" />
@@ -247,11 +256,11 @@ export const ProfileView: React.FC = () => {
 
               <button
                 onClick={() => setDiagnosticsModalOpen(true)}
-                className="p-3.5 rounded-2xl bg-black/60 border border-emerald-500/30 hover:border-emerald-400 text-left transition-colors flex items-center justify-between group cursor-pointer"
+                className="p-3 rounded-2xl bg-black/60 border border-emerald-500/30 hover:border-emerald-400 text-left transition-colors flex items-center justify-between group cursor-pointer"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-xl bg-emerald-500/15 flex items-center justify-center">
-                    <Cpu className="w-4 h-4 text-emerald-400" />
+                  <div className="w-7 h-7 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                    <Cpu className="w-3.5 h-3.5 text-emerald-400" />
                   </div>
                   <div>
                     <h5 className="text-xs font-bold text-white group-hover:text-emerald-300 transition-colors">System Diagnostics</h5>

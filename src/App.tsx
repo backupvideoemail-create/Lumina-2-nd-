@@ -21,9 +21,10 @@ import { AuthModal } from './components/AuthModal';
 import { FaceSwapModal } from './components/FaceSwapModal';
 import { TemplateManagerModal } from './components/TemplateManagerModal';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
+import { AdminDashboardModal } from './components/AdminDashboardModal';
 
 const AppContent: React.FC = () => {
-  const { activeTab, templateManagerOpen, setTemplateManagerOpen, diagnosticsModalOpen, setDiagnosticsModalOpen, selectedTemplate } = useApp();
+  const { activeTab, templateManagerOpen, setTemplateManagerOpen, diagnosticsModalOpen, setDiagnosticsModalOpen, adminDashboardOpen, setAdminDashboardOpen, selectedTemplate } = useApp();
   const [screenshotWarning, setScreenshotWarning] = useState(false);
   const [isWindowBlurred, setIsWindowBlurred] = useState(false);
 
@@ -169,6 +170,7 @@ const AppContent: React.FC = () => {
       <FaceSwapModal />
       <TemplateManagerModal isOpen={templateManagerOpen} onClose={() => setTemplateManagerOpen(false)} />
       <DiagnosticsModal isOpen={diagnosticsModalOpen} onClose={() => setDiagnosticsModalOpen(false)} />
+      <AdminDashboardModal isOpen={adminDashboardOpen} onClose={() => setAdminDashboardOpen(false)} />
     </div>
   );
 };

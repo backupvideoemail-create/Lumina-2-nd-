@@ -139,6 +139,8 @@ interface AppContextType {
   setTemplateManagerOpen: (open: boolean) => void;
   diagnosticsModalOpen: boolean;
   setDiagnosticsModalOpen: (open: boolean) => void;
+  adminDashboardOpen: boolean;
+  setAdminDashboardOpen: (open: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -272,6 +274,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transactionsModalOpen, setTransactionsModalOpen] = useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
+  const [adminDashboardOpen, setAdminDashboardOpen] = useState(false);
   const [isIntroEligible, setIsIntroEligible] = useState<boolean>(true);
 
   // Active Plan Check: strictly require active or trial subscription (cancelled or expired do NOT count)
@@ -1112,7 +1115,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         templateManagerOpen,
         setTemplateManagerOpen,
         diagnosticsModalOpen,
-        setDiagnosticsModalOpen
+        setDiagnosticsModalOpen,
+        adminDashboardOpen,
+        setAdminDashboardOpen
       }}
     >
       {children}
