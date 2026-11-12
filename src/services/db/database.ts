@@ -283,6 +283,24 @@ if (isIsolatedTestEnv) {
         }
         console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
       }
+    } else if (!isIsolatedTestEnv) {
+      try {
+        const projectId = (firebaseConfig as any).projectId || 'ai-prime-studio';
+        const targetDatabaseId = (firebaseConfig as any).firestoreDatabaseId || undefined;
+        const adcApp = initAdminApp({ projectId }, 'lumina-admin-adc-' + Date.now());
+        adminFirestoreDb = targetDatabaseId && targetDatabaseId !== '(default)'
+          ? getAdminFirestore(adcApp, targetDatabaseId)
+          : getAdminFirestore(adcApp);
+        try {
+          adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
+        } catch {}
+        try {
+          adminAuthInstance = getAdminAuth(adcApp);
+        } catch {}
+        console.log(`[Database] Connected via Application Default Credentials (ADC) to project '${projectId}'`);
+      } catch (adcErr: any) {
+        console.warn('[Database] Application Default Credentials (ADC) init note:', adcErr.message);
+      }
     }
   } catch (err: any) {
     console.warn('[Database] Firebase Admin initialization note:', err.message);
@@ -1034,9 +1052,13 @@ export class ProductionDatabase {
 
   public getUserByToken(token: string): UserProfile | null {
     if (!token) return null;
-    const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
+    const ensureAdminRole = (u: UserProfile | undefined, identity?: AuthIdentity): UserProfile | null => {
       if (!u) return null;
-      const isAdminEmail = isAuthorizedAdminEmail(u.email);
+      const effectiveEmail = u.email || identity?.email;
+      if (!u.email && effectiveEmail) {
+        u.email = effectiveEmail;
+      }
+      const isAdminEmail = isAuthorizedAdminEmail(effectiveEmail);
       if (isAdminEmail && u.role !== 'admin') {
         u.role = 'admin';
         this.syncToFirestore('users', u.id, u);
@@ -1046,7 +1068,7 @@ export class ProductionDatabase {
 
     for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
       if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
-        return ensureAdminRole(this.db.users[userId]);
+        return ensureAdminRole(this.db.users[userId], identity);
       }
     }
     if (fs.existsSync(DB_FILE)) {
@@ -1056,7 +1078,7 @@ export class ProductionDatabase {
           if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
             this.db.users[userId] = diskDb.users[userId];
             this.db.authIdentities[userId] = identity;
-            return ensureAdminRole(this.db.users[userId]);
+            return ensureAdminRole(this.db.users[userId], identity);
           }
         }
       } catch {}
@@ -1071,9 +1093,13 @@ export class ProductionDatabase {
 
     if (!adminFirestoreDb) return null;
 
-    const ensureAdminRole = (u: UserProfile | undefined): UserProfile | null => {
+    const ensureAdminRole = (u: UserProfile | undefined, identity?: AuthIdentity): UserProfile | null => {
       if (!u) return null;
-      const isAdminEmail = isAuthorizedAdminEmail(u.email);
+      const effectiveEmail = u.email || identity?.email;
+      if (!u.email && effectiveEmail) {
+        u.email = effectiveEmail;
+      }
+      const isAdminEmail = isAuthorizedAdminEmail(effectiveEmail);
       if (isAdminEmail && u.role !== 'admin') {
         u.role = 'admin';
         this.syncToFirestore('users', u.id, u);
@@ -1099,7 +1125,7 @@ export class ProductionDatabase {
             this.db.users[userId] = userDoc.data() as UserProfile;
           }
         }
-        return ensureAdminRole(this.db.users[userId]);
+        return ensureAdminRole(this.db.users[userId], identity);
       }
     } catch (err: any) {
       console.warn('[Database] Async getUserByToken notice:', err.message);
@@ -1113,27 +1139,33 @@ export class ProductionDatabase {
     phone?: string;
     name?: string;
     avatar?: string;
-  }): Promise<{ user: UserProfile; token: string; isNewUser: boolean; cloudPersisted: boolean }> {
+  }): Promise<{ user: UserProfile; token: string; isNewUser: boolean; cloudPersisted: boolean; persistError?: string }> {
     if (!this.getUserByFirebaseUid(params.firebaseUid)) {
       await this.getUserByFirebaseUidAsync(params.firebaseUid);
     }
     const result = this.getOrCreateUser(params);
-    let allPersisted = Boolean(adminFirestoreDb || isIsolatedTestEnv);
+    let authOk = isIsolatedTestEnv;
+    let userOk = isIsolatedTestEnv;
+    let persistError: string | undefined = undefined;
 
-    // Explicitly await durable Firestore persistence to eliminate multi-instance container session race
-    const identity = this.db.authIdentities[result.user.id];
-    if (identity) {
-      const syncRes = await this.syncToFirestore('auth_identities', result.user.id, identity);
-      if (!syncRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
-    }
-    const userRes = await this.syncToFirestore('users', result.user.id, result.user);
-    if (!userRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
+    if (adminFirestoreDb) {
+      const identity = this.db.authIdentities[result.user.id];
+      if (identity) {
+        const syncRes = await this.syncToFirestore('auth_identities', result.user.id, identity);
+        authOk = Boolean(syncRes.cloudPersisted);
+        if (!authOk) persistError = syncRes.error || 'Failed to persist auth identity to Firestore';
+      }
+      const userRes = await this.syncToFirestore('users', result.user.id, result.user);
+      userOk = Boolean(userRes.cloudPersisted);
+      if (!userOk && !persistError) persistError = userRes.error || 'Failed to persist user profile to Firestore';
 
-    if (result.isNewUser && this.db.wallets[result.user.id]) {
-      const walletRes = await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
-      if (!walletRes.cloudPersisted && adminFirestoreDb) allPersisted = false;
+      if (result.isNewUser && this.db.wallets[result.user.id]) {
+        await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
+      }
     }
-    return { ...result, cloudPersisted: allPersisted };
+
+    const allPersisted = Boolean(authOk && userOk);
+    return { ...result, cloudPersisted: allPersisted, persistError };
   }
 
   /**

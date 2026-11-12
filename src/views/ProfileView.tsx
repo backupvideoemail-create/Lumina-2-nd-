@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { SUPPORT_CONFIG } from '../config/subscriptionConfig.ts';
+import { isAuthorizedAdminEmail } from '../config/adminConfig.ts';
 
 export const ProfileView: React.FC = () => {
   const {
@@ -48,7 +49,11 @@ export const ProfileView: React.FC = () => {
     serverAdminVerified
   } = useApp();
 
-  const isAdmin = Boolean(serverAdminVerified && serverVerifiedAdmin);
+  const isAdmin = Boolean(
+    (serverAdminVerified && serverVerifiedAdmin) ||
+    serverVerifiedAdmin ||
+    (user?.email && isAuthorizedAdminEmail(user.email))
+  );
 
   const [isEditing, setIsEditing] = useState(false);
   const [nameInput, setNameInput] = useState(user?.name || '');

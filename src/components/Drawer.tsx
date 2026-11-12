@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
@@ -39,12 +39,20 @@ export const Drawer: React.FC = () => {
     setDiagnosticsModalOpen,
     setAdminDashboardOpen,
     isAdmin: serverVerifiedAdmin,
-    serverAdminVerified
+    serverAdminVerified,
+    refreshUserData
   } = useApp();
 
   // Authoritative dual-admin accounts: backupvideoemail@gmail.com and ai.prime.studio.pro@gmail.com
   // Admin UI is strictly isolated to server-verified session (eliminating client-side user.role/email fallback)
   const isAdmin = Boolean(serverAdminVerified && serverVerifiedAdmin);
+
+  // Proactively re-verify admin session when drawer opens if verification is pending
+  useEffect(() => {
+    if (drawerOpen && user && !serverAdminVerified) {
+      refreshUserData();
+    }
+  }, [drawerOpen, user, serverAdminVerified, refreshUserData]);
 
   const handleNav = (tab: 'home' | 'templates' | 'creations' | 'profile') => {
     setActiveTab(tab);

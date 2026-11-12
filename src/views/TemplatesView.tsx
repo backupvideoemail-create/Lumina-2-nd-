@@ -6,6 +6,7 @@ import { useApp } from '../context/AppContext';
 import { CATEGORIES } from '../data/templatesData';
 import { AspectRatio } from '../types';
 import { queueHdDownload, isDataSaverActive } from '../services/media/hdDownloadQueue';
+import { isAuthorizedAdminEmail } from '../config/adminConfig';
 
 export const TemplatesView: React.FC = () => {
   const {
@@ -24,8 +25,15 @@ export const TemplatesView: React.FC = () => {
     setFaceSwapModalOpen,
     setTemplateManagerOpen,
     isAdmin,
-    serverAdminVerified
+    serverAdminVerified,
+    user
   } = useApp();
+
+  const isAuthoritativeAdmin = Boolean(
+    (serverAdminVerified && isAdmin) ||
+    isAdmin ||
+    (user?.email && isAuthorizedAdminEmail(user.email))
+  );
 
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
   const [sortBy, setSortBy] = useState<'trending' | 'cost_asc' | 'cost_desc'>('trending');

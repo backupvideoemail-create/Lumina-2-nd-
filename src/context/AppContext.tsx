@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
+import { isAuthorizedAdminEmail } from '../config/adminConfig';
 
 export type PendingAction =
   | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
@@ -204,8 +205,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [serverAdminVerified, setServerAdminVerified] = useState<boolean>(false);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
-  const [selectedCategoryState, setSelectedCategoryState] = useState<string>('Trending');
-  const [selectedCategoriesState, setSelectedCategoriesState] = useState<string[]>(['Trending']);
+  const [selectedCategoryState, setSelectedCategoryState] = useState<string>('All');
+  const [selectedCategoriesState, setSelectedCategoriesState] = useState<string[]>([]);
 
   const selectedCategory = selectedCategoryState;
   const selectedCategories = selectedCategoriesState;
@@ -421,7 +422,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Server-side cryptographic admin verification:
         // Keep "/api/admin/verify" as the SOLE source of "serverAdminVerified = true".
         // Never set "serverAdminVerified" merely from a client-side Gmail comparison.
-        if (data.isAdmin === true || data.user.role === 'admin') {
+        const isCandidateAdmin = Boolean(
+          (data.isAdmin === true || data.user.role === 'admin') ||
+          isAuthorizedAdminEmail(data.user.email)
+        );
+
+        if (isCandidateAdmin) {
           try {
             const adminCheckRes = await fetch('/api/admin/verify', {
               headers: { Authorization: `Bearer ${token}` }
@@ -550,6 +556,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('lumina_session_token', token);
     setUser(authenticatedUser);
     setAuthModalOpen(false);
+
+    // If authenticated user is an authorized admin candidate, proactively enable pending verification
+    if (authenticatedUser.role === 'admin' || isAuthorizedAdminEmail(authenticatedUser.email)) {
+      setIsAdmin(true);
+      try {
+        const verifyRes = await fetch('/api/admin/verify', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (verifyRes.ok) {
+          const vData = await verifyRes.json();
+          if (vData.authorized === true) {
+            setServerAdminVerified(true);
+          }
+        }
+      } catch {}
+    }
 
     // Authoritative server-side verification: refreshUserData() calls /api/admin/verify
     // which is the sole authoritative source of truth for isAdmin and serverAdminVerified

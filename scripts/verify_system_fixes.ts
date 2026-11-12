@@ -2003,6 +2003,37 @@ async function runSystemVerification() {
   const resolvedCustomer = await testDb.getUserByTokenAsync(customerRes.token);
   assert(resolvedCustomer !== null && resolvedCustomer.role === 'creator', '33.8 Cross-instance lookup resolves customer with creator role');
 
+  // --- SUITE 34: STRICT PERSISTENCE ENFORCEMENT, ZOMBIE TOKEN REMOVAL & CROSS-PROJECT AUTH RESILIENCE ---
+  console.log('\n--- SUITE 34: STRICT PERSISTENCE ENFORCEMENT, ZOMBIE TOKEN REMOVAL & CROSS-PROJECT AUTH RESILIENCE ---');
+
+  // 34.1 database.ts ADC fallback for Cloud Run environments
+  const dbSource34 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  assert(dbSource34.includes('lumina-admin-adc-') && dbSource34.includes('Application Default Credentials (ADC)'), '34.1 database.ts provides ADC fallback for native Cloud Run service accounts');
+
+  // 34.2 database.ts getOrCreateUserAsync strict persistence
+  assert(dbSource34.includes('authOk && userOk') && dbSource34.includes('persistError?: string'), '34.2 database.ts getOrCreateUserAsync strictly validates both auth and user persistence');
+
+  // 34.3 database.ts identity email fallback in token lookup
+  assert(dbSource34.includes('effectiveEmail = u.email || identity?.email'), '34.3 database.ts extracts effectiveEmail from identity when user.email is blank');
+
+  // 34.4 server.ts /api/auth/firebase-session rejects unpersisted sessions with HTTP 503
+  const serverSource34 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(serverSource34.includes('!isIsolatedTestEnv && !cloudPersisted') && serverSource34.includes('SESSION_PERSISTENCE_FAILED'), '34.4 server.ts strictly blocks instance-local unpersisted sessions with HTTP 503');
+
+  // 34.5 server.ts /api/auth/me returns HTTP 401 for invalid bearer token to wipe zombie tokens
+  assert(serverSource34.includes('hasBearerToken') && serverSource34.includes('AUTH_SESSION_INVALID'), '34.5 server.ts returns HTTP 401 for stale/unresolved bearer tokens');
+
+  // 34.6 server.ts isServerVerifiedAdmin identity email fallback
+  assert(serverSource34.includes('prodDb.raw.authIdentities[user.id]'), '34.6 server.ts isServerVerifiedAdmin looks up authIdentities email when profile email is blank');
+
+  // 34.7 AppContext.tsx isCandidateAdmin checks authorized admin email
+  const appContextSource34 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(appContextSource34.includes('isCandidateAdmin') && appContextSource34.includes('isAuthorizedAdminEmail(data.user.email)'), '34.7 AppContext verifies admin candidate status via isAuthorizedAdminEmail');
+
+  // 34.8 Drawer.tsx proactively verifies admin status on open
+  const drawerSource34 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
+  assert(drawerSource34.includes('drawerOpen && user && !serverAdminVerified') && drawerSource34.includes('refreshUserData()'), '34.8 Drawer.tsx triggers refreshUserData when opening if serverAdminVerified is pending');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

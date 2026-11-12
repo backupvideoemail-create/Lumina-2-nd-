@@ -1,6 +1,0 @@
-{
-  "summary":  "Plan 17 incorporates the 10-point Acceptance Test & Evidence Protocol: 1) Zero HD requests on scroll, 2) Measured Cold vs Warm cache bytes, 3) 200ms preview debounce and single active preview, 4) Single HD download on selection, 5) ETag/Last-Modified change & no-change validation, 6) HEAD/CORS verification without false freshness, 7) LRU, 100MB limit, storage full, and active video protection, 8) Playback timestamp & mute preservation, 9) Hero carousel regression suite, 10) Explicit DEVICE_TEST_PENDING status.",
-  "updatedAt":  "2026-11-08T15:05:29.076893869Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

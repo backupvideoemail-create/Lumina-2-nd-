@@ -153,7 +153,17 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
 
 // Server-side verified admin identity check (verifies authenticated user profile from authoritative allowlist)
 function isServerVerifiedAdmin(user: UserProfile | null): boolean {
-  if (!user || !user.email) return false;
+  if (!user) return false;
+  let email = user.email;
+  if (!email && user.id) {
+    const identity = prodDb.raw.authIdentities[user.id];
+    if (identity && identity.email) {
+      email = identity.email;
+      user.email = identity.email;
+    }
+  }
+  user.email = email;
+  if (!user.email) return false;
   return isAuthorizedAdminEmail(user.email);
 }
 
@@ -358,6 +368,15 @@ async function verifyFirebaseToken(idToken: string): Promise<{
 } | null> {
   if (!idToken || typeof idToken !== 'string') return null;
 
+  // Audit token claims (aud & iss) across projects
+  try {
+    const parts = idToken.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+      console.log(`[Firebase Token Audit] aud: "${payload.aud}", iss: "${payload.iss}", email: "${payload.email || 'none'}"`);
+    }
+  } catch {}
+
   // 1. Direct cryptographic verification with Firebase Admin SDK (Offline public cert cache, zero HTTP quota limits)
   if (adminAuthInstance) {
     try {
@@ -440,13 +459,25 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     // Cryptographic Identity Enforcement:
     // Email is strictly extracted from the cryptographically verified token (verified.email).
     // Client-supplied req.body.email is strictly rejected to prevent privilege escalation or impersonation.
-    const { user, token, isNewUser, cloudPersisted } = await prodDb.getOrCreateUserAsync({
+    const { user, token, isNewUser, cloudPersisted, persistError } = await prodDb.getOrCreateUserAsync({
       firebaseUid: verified.uid,
       email: verified.email,
       phone: verified.phone,
       name: verified.name || name,
       avatar: verified.avatar || avatar
     });
+
+    // In production, strictly enforce that session is written to Firestore before issuing token
+    if (!isIsolatedTestEnv && !cloudPersisted) {
+      console.error(`[Auth Session Critical] Session for user ${user.id} (${verified.email || 'no-email'}) could not be persisted to Firestore: ${persistError}. Rejecting unpersisted instance-local session.`);
+      return res.status(503).json({
+        success: false,
+        error: 'Database session persistence is unavailable or currently synchronizing. Please retry in a moment.',
+        code: 'SESSION_PERSISTENCE_FAILED',
+        details: persistError,
+        retryable: true
+      });
+    }
 
     const isUserAdmin = isServerVerifiedAdmin(user);
     const wallet = prodDb.getWallet(user.id);
@@ -467,7 +498,7 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       success: true,
       user,
       isAdmin: isUserAdmin,
-      cloudPersisted,
+      cloudPersisted: true,
       wallet,
       token,
       subscription,
@@ -482,8 +513,18 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
 
 // Current User Profile & Isolated Wallet State (Returns null user for unauthenticated visitors)
 app.get('/api/auth/me', async (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const hasBearerToken = Boolean(authHeader && authHeader.startsWith('Bearer ') && authHeader.substring(7).trim());
   const user = await getAuthenticatedUserAsync(req);
   if (!user) {
+    if (hasBearerToken) {
+      // Client presented a session token that is invalid, revoked, or unpersisted in Firestore.
+      // Explicit 401 forces frontend to wipe the zombie token and re-authenticate cleanly.
+      return res.status(401).json({
+        error: 'Session invalid or expired. Please sign in again.',
+        code: 'AUTH_SESSION_INVALID'
+      });
+    }
     return res.json({
       user: null,
       isAdmin: false,

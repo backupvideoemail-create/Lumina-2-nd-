@@ -305,7 +305,7 @@ export const HomeView: React.FC = () => {
     }
   }, [currentBannerIndex, banners]);
 
-  const activeBanner: HomeBannerItem = banners[currentBannerIndex] || banners[0] || HOME_HERO_BANNERS[0];
+  const activeBanner: HomeBannerItem | null = (banners.length > 0 ? (banners[currentBannerIndex] || banners[0]) : null);
 
   const handleBannerClick = (banner: HomeBannerItem) => {
     setFullVideoBanner(banner);
@@ -432,7 +432,38 @@ export const HomeView: React.FC = () => {
               <div className="h-9 w-32 rounded-xl bg-[#ff9f00]/20" />
             </div>
           </div>
-        ) : banners.length === 0 ? null : (
+        ) : banners.length === 0 ? (
+          <div className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-amber-500/20 aspect-square w-full max-w-[460px] bg-gradient-to-b from-[#1a141e] via-[#0d0c14] to-[#070609] flex flex-col justify-between p-6">
+            <div className="flex items-center justify-between z-10">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black tracking-wide uppercase bg-gradient-to-r from-[#ff9f00]/20 to-[#ea580c]/20 text-[#ffb703] border border-[#ff9f00]/30 shadow-sm">
+                <Sparkles className="w-3.5 h-3.5 text-[#ffb703] fill-[#ffb703]" /> AI Prime Studio
+              </span>
+              <span className="text-[11px] font-semibold text-stone-400">Featured Showcase</span>
+            </div>
+
+            <div className="relative z-10 space-y-3 my-auto text-center py-4">
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-[#ff9f00]/20 to-orange-600/10 border border-amber-500/30 flex items-center justify-center text-[#ffb703] shadow-[0_0_25px_rgba(255,159,0,0.2)]">
+                <Sparkles className="w-8 h-8" />
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                Create Viral AI Magic
+              </h2>
+              <p className="text-xs text-stone-300 max-w-[280px] mx-auto leading-relaxed">
+                Transform any photo into cinematic videos, vintage portraits & royal avatars with 1-click AI templates.
+              </p>
+            </div>
+
+            <div className="z-10 pt-3 border-t border-white/5 flex items-center justify-between text-xs text-stone-400">
+              <span className="text-[11px] text-amber-300/80 font-medium">✦ Select a template below to start</span>
+              <button
+                onClick={() => setPlansModalOpen(true)}
+                className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black hover:brightness-110 transition shadow-[0_0_15px_rgba(255,159,0,0.4)] cursor-pointer"
+              >
+                Get Pro
+              </button>
+            </div>
+          </div>
+        ) : activeBanner ? (
           <div
             className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
             onTouchStart={handleTouchStart}
@@ -558,7 +589,7 @@ export const HomeView: React.FC = () => {
             ))}
           </div>
         </div>
-        )}
+        ) : null}
       </section>
 
       {/* 3. QUICK CATEGORY ICONS ROW (Compact, Space-Saving) */}
