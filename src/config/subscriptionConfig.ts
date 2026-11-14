@@ -11,7 +11,7 @@
  */
 
 export const SUPPORT_CONFIG = {
-  email: 'backupvideoemail@gmail.com',
+  email: 'ai.prime.studio.pro@gmail.com',
   name: 'AI Prime Studio Support Desk',
   responseTime: 'Within 24 hours'
 } as const;
@@ -42,7 +42,7 @@ export const CENTRAL_SUBSCRIPTION_PLANS: CentralSubscriptionPlan[] = [
     id: 'plan_intro_daily',
     name: 'Trail Offer',
     cardTitle: 'Trail Offer',
-    validityLabel: '1 day validity',
+    validityLabel: '24 Hours Validity',
     price: 1,
     periodLabel: '24 hours',
     includedCredits: 40, // 40 credits immediately unlocked for 24 hours

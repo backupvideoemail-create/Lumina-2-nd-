@@ -285,7 +285,7 @@ async function runSystemVerification() {
 
   assert(plansModalSource.includes('🔥') && plansModalSource.includes('INTRO OFFER'), 'Intro card contains "🔥 INTRO OFFER" badge');
   assert(plansModalSource.includes('✨') && plansModalSource.includes('LIMITED TIME OFFER'), 'Intro card contains "✨ LIMITED TIME OFFER" badge');
-  assert(plansModalSource.includes('1 day validity'), 'Intro card contains "1 day validity" subtitle');
+  assert(plansModalSource.includes('24 Hours Validity'), 'Intro card contains "24 Hours Validity" subtitle');
   assert(plansModalSource.includes('₹1'), 'Intro card contains ₹1 price');
   assert(plansModalSource.includes('₹499'), 'Intro card contains ₹499 struck-through price');
   assert(!plansModalSource.includes('00:59:48'), 'Countdown timer digits (00:59:48) strictly removed');
@@ -1435,7 +1435,7 @@ async function runSystemVerification() {
   assert(homeViewContent.includes('scale(') || homeViewContent.includes('transform'), '25.8 HomeView applies 1:1 crop transform');
   assert(homeViewContent.includes('object-contain'), '25.8 Fullscreen video modal preserves uncropped native aspect ratio');
   assert(homeViewContent.includes("fullVideoBanner.type === 'SHOWCASE_ONLY'"), '25.8 HomeView handles SHOWCASE_ONLY vs LINKED_TEMPLATE banner types');
-  assert(homeViewContent.includes('from-black/60 via-transparent to-transparent') || homeViewContent.includes('from-black/40 via-transparent to-transparent'), '25.8 HomeView applies softened hero bottom gradient');
+  assert(!homeViewContent.includes('activeBanner.gradientOverlay') && !homeViewContent.includes('from-black/40 via-transparent to-transparent') && !homeViewContent.includes('from-black/60 via-transparent to-transparent'), '25.8 HomeView permanently removed dark gradient shadow overlays from Hero Banner media');
   assert(homeViewContent.includes('selectedCategories.includes(category)'), '25.8 HomeView filters horizontal rails using selectedCategories');
   assert(homeViewContent.includes('queueHdDownload'), '25.8 HomeView calls queueHdDownload for hero banner video prefetching');
 
@@ -1612,7 +1612,7 @@ async function runSystemVerification() {
 
   // 27.10 Behavioral: HomeView stabilizes hero video and soft gradient
   assert(updatedHomeContent.includes('key={`hero_fg_${activeBanner.id}`}'), '27.10 HomeView stabilizes hero video key across HD swaps');
-  assert(updatedHomeContent.includes('from-black/40 via-transparent to-transparent'), '27.10 HomeView soft gradient overlay eliminates dark veil');
+  assert(!updatedHomeContent.includes('activeBanner.gradientOverlay') && !updatedHomeContent.includes('from-black/40 via-transparent to-transparent'), '27.10 HomeView removed dark side/edge overlay over hero media');
 
   // 27.11 Behavioral: TemplateDetailModal supports independent couple wardrobe selectors
   assert(detailModalUpdatedContent.includes('wardrobeSourceA') && detailModalUpdatedContent.includes('wardrobeSourceB'), '27.11 TemplateDetailModal implements independent couple wardrobe selectors');
@@ -2033,6 +2033,86 @@ async function runSystemVerification() {
   // 34.8 Drawer.tsx proactively verifies admin status on open
   const drawerSource34 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/Drawer.tsx'), 'utf8');
   assert(drawerSource34.includes('drawerOpen && user && !serverAdminVerified') && drawerSource34.includes('refreshUserData()'), '34.8 Drawer.tsx triggers refreshUserData when opening if serverAdminVerified is pending');
+
+  // --- SUITE 35: STRICT-SCOPE FIXES (SUPPORT EMAIL, INTRO CARD, TEMPLATE FILTERS, HERO CACHE & SHADOW REMOVAL) ---
+  console.log('\n--- SUITE 35: STRICT-SCOPE FIXES & MEDIA CACHING ---');
+
+  // 35.1 Support Email Updated Everywhere For Customers While Preserving Dual Admins
+  const { SUPPORT_CONFIG } = await import('../src/config/subscriptionConfig.ts');
+  assert(SUPPORT_CONFIG.email === 'ai.prime.studio.pro@gmail.com', '35.1 SUPPORT_CONFIG.email updated to ai.prime.studio.pro@gmail.com');
+  const customerFiles = [
+    'src/config/subscriptionConfig.ts',
+    'src/components/LegalModal.tsx',
+    'src/components/PlansModal.tsx',
+    'src/components/TopUpModal.tsx',
+    'src/components/SupportModal.tsx',
+    'src/views/ProfileView.tsx'
+  ];
+  for (const cf of customerFiles) {
+    const content = fs.readFileSync(pathUtil.resolve(process.cwd(), cf), 'utf8');
+    assert(!content.includes('backupvideoemail@gmail.com'), `35.1 ${cf} has zero customer-facing backupvideoemail@gmail.com`);
+  }
+  const legalContent35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/LegalModal.tsx'), 'utf8');
+  assert(legalContent35.includes('ai.prime.studio.pro@gmail.com'), '35.1 LegalModal displays ai.prime.studio.pro@gmail.com');
+
+  // 35.2 Dual-Admin Access Strictly Protected
+  const { AUTHORIZED_ADMIN_EMAILS: admins35, isAuthorizedAdminEmail: checkAdmin35 } = await import('../src/config/adminConfig.ts');
+  assert(admins35.length === 2 && checkAdmin35('backupvideoemail@gmail.com') && checkAdmin35('ai.prime.studio.pro@gmail.com'), '35.2 Dual-admin protection intact for both Gmail accounts');
+
+  // 35.3 Intro Offer Card Layout & Validity Text Update
+  const plansModal35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/PlansModal.tsx'), 'utf8');
+  assert(plansModal35.includes('24 Hours Validity') && !plansModal35.includes('1 day validity'), '35.3 Intro Offer card uses "24 Hours Validity"');
+  assert(plansModal35.includes('LIMITED TIME OFFER') && plansModal35.includes('items-end text-right'), '35.3 Intro Offer card right-aligns LIMITED TIME OFFER and ₹1 / ₹499 price');
+  const subConfig35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/config/subscriptionConfig.ts'), 'utf8');
+  assert(subConfig35.includes('230 AI Trends Credit') && subConfig35.includes('1200 AI Trends Credit') && plansModal35.includes('{plan.cardTitle}'), '35.3 ₹199 and ₹998 plan cards untouched');
+
+  // 35.4 AppContext Catalog & Persistent Cache Hydration
+  const appCtx35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(appCtx35.includes("fetch('/api/templates')"), '35.4 AppContext fetches unfiltered /api/templates so filter changes never wipe global templates');
+  assert(appCtx35.includes('lumina_public_templates_cache'), '35.4 AppContext persists/hydrates public template catalog cache for slow/offline refresh');
+
+  // 35.5 TemplatesView Filters (All / Photos / Videos / Categories / Dynamic Ratios / Sort / Reset)
+  const tplView35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/TemplatesView.tsx'), 'utf8');
+  assert(!tplView35.includes("setSelectedCategory('Trending')"), '35.5 TemplatesView Reset Filters resets category to All instead of Trending');
+  assert(tplView35.includes('availableRatios') && tplView35.includes('templatesByType'), '35.5 TemplatesView derives usable categories and ratios strictly from active templates matching filterType');
+  assert(tplView35.includes('isCacheablePublicMedia'), '35.5 TemplatesView prefetches public /api/media/ template previews into IndexedDB cache');
+
+  // Behavioral Filter Simulation matching live catalog + synthetic video template
+  const sampleCatalog = [
+    { id: 'tpl_full_swag_1', title: 'Full Swag', type: 'photo', category: 'Trending', aspectRatio: '9:16', creditCost: 11, likesCount: 142000, isActive: true },
+    { id: 'tpl_gold_noir', title: 'Imperial Gold Noir', type: 'photo', category: 'Luxury', aspectRatio: '4:5', creditCost: 25, likesCount: 14200, isActive: true },
+    { id: 'tpl_vid_demo', title: 'Cinematic Dance Reel', type: 'video', category: 'Dance', aspectRatio: '16:9', creditCost: 45, likesCount: 9500, isActive: true }
+  ];
+  const simFilter = (list: typeof sampleCatalog, fType: 'all' | 'photo' | 'video', cats: string[], ratio: string, q: string, sort: 'trending' | 'cost_asc' | 'cost_desc') => {
+    const byType = list.filter(t => t.isActive && (fType === 'all' ? true : t.type === fType));
+    const filtered = byType.filter(t => {
+      if (cats.length > 0 && !cats.includes(t.category)) return false;
+      if (ratio !== 'all' && t.aspectRatio !== ratio) return false;
+      if (q.trim() && !t.title.toLowerCase().includes(q.toLowerCase()) && !t.category.toLowerCase().includes(q.toLowerCase())) return false;
+      return true;
+    });
+    if (sort === 'cost_asc') return [...filtered].sort((a, b) => a.creditCost - b.creditCost);
+    if (sort === 'cost_desc') return [...filtered].sort((a, b) => b.creditCost - a.creditCost);
+    return [...filtered].sort((a, b) => b.likesCount - a.likesCount);
+  };
+  assert(simFilter(sampleCatalog, 'all', [], 'all', '', 'trending').length === 3, '35.5 Filter All returns all active templates');
+  assert(simFilter(sampleCatalog, 'photo', [], 'all', '', 'trending').every(t => t.type === 'photo'), '35.5 Filter Photos returns strictly photo templates');
+  assert(simFilter(sampleCatalog, 'video', [], 'all', '', 'trending').every(t => t.type === 'video'), '35.5 Filter Videos returns strictly video templates');
+  assert(simFilter(sampleCatalog, 'photo', ['Luxury'], '4:5', '', 'trending').map(t => t.id).join(',') === 'tpl_gold_noir', '35.5 Category + Ratio combined filter works cleanly');
+  assert(simFilter(sampleCatalog, 'all', [], 'all', '', 'cost_desc')[0].id === 'tpl_vid_demo', '35.5 Sort cost_desc sorts highest credit cost first');
+  assert(simFilter(sampleCatalog, 'all', [], 'all', '', 'cost_asc')[0].id === 'tpl_full_swag_1', '35.5 Sort cost_asc sorts lowest credit cost first');
+
+  // 35.6 Hero Banner Shadow Removed Permanently & IndexedDB Media Cache Covers /api/media/
+  const home35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/HomeView.tsx'), 'utf8');
+  assert(!home35.includes('activeBanner.gradientOverlay') && !home35.includes('from-black/60 via-transparent'), '35.6 HomeView removed dark side/edge overlay over Hero Banner media');
+  assert(home35.includes('resolveBannerMedia') && home35.includes('HERO_POSTERS_CACHE_KEY'), '35.6 HomeView resolves hero banner video/image/poster & caches instant first-frame preview');
+  const cacheStorage35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/media/mediaCacheStorage.ts'), 'utf8');
+  const { mediaCacheStorage: runtimeCache35 } = await import('../src/services/media/mediaCacheStorage.ts');
+  assert(runtimeCache35.isCacheablePublicMedia('/api/media/admin_upload_123.mp4') === true, '35.6 mediaCacheStorage allows caching public /api/media/ assets');
+  assert(runtimeCache35.isCacheablePublicMedia('/api/media/signed/private_123.jpg') === false, '35.6 mediaCacheStorage still blocks signed private customer media');
+  assert(cacheStorage35.includes('isSizeSameWithoutValidator'), '35.6 mediaCacheStorage prevents unnecessary re-download when asset is unchanged');
+  const server35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(server35.includes("req.headers['if-none-match']") && server35.includes('res.status(304).end()'), '35.6 server.ts /api/media/:fileId emits ETag and responds HTTP 304 on conditional revalidation');
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

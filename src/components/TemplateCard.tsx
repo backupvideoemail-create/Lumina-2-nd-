@@ -5,6 +5,7 @@ import { Template } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { queueHdDownload } from '../services/media/hdDownloadQueue';
+import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
 
 interface TemplateCardProps {
   template: Template;
@@ -73,6 +74,51 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const [posterIndex, setPosterIndex] = React.useState(0);
   const [allPostersFailed, setAllPostersFailed] = React.useState(false);
   const resolvedPoster = posterCandidates[posterIndex] || '';
+  const [cachedPosterSrc, setCachedPosterSrc] = React.useState<string>('');
+  const [cachedPreviewVideoSrc, setCachedPreviewVideoSrc] = React.useState<string>('');
+
+  // Resolve lightweight preview poster & any already-cached preview video from IndexedDB
+  // Wait-free instant display on refresh/offline without re-downloading from network
+  useEffect(() => {
+    let cancelled = false;
+    setCachedPosterSrc('');
+
+    if (resolvedPoster) {
+      mediaCacheStorage
+        .get(resolvedPoster)
+        .then((cached) => {
+          if (cancelled) return;
+          if (cached?.objectUrl) {
+            setCachedPosterSrc(cached.objectUrl);
+            setIsMediaLoaded(true);
+          } else if (mediaCacheStorage.isCacheablePublicMedia(resolvedPoster)) {
+            queueHdDownload(resolvedPoster, 'low')
+              .then((cachedUrl) => {
+                if (!cancelled && cachedUrl && cachedUrl.startsWith('blob:')) {
+                  setCachedPosterSrc(cachedUrl);
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+
+    if (isVideo && candidateMedia) {
+      mediaCacheStorage
+        .get(candidateMedia)
+        .then((cached) => {
+          if (!cancelled && cached?.objectUrl) {
+            setCachedPreviewVideoSrc(cached.objectUrl);
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedPoster, isVideo, candidateMedia]);
 
   // 200ms Viewport Debounce & Single Active Gallery Preview Coordinator
   const debounceTimerRef = useRef<any>(null);
@@ -170,13 +216,13 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       className={`group relative rounded-[24px] p-[1.5px] cursor-pointer transition-all duration-300 laser-light-border shadow-[0_16px_36px_-10px_rgba(0,0,0,0.85)] hover:shadow-[0_22px_45px_-8px_rgba(0,0,0,0.95),0_0_20px_rgba(212,175,55,0.25)] select-none protected-media gpu-accelerated ${heightClasses[size]}`}
     >
       {/* Full-Frame Card Chassis */}
-      <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-black flex flex-col justify-between">
+      <div className="relative w-full h-full rounded-[22.5px] overflow-hidden bg-[#16141d] flex flex-col justify-between">
         
         {/* Loading Media Skeleton / Spinner - Only while loading, removed as soon as loaded */}
         {!isMediaLoaded && !allPostersFailed && (
-          <div className="absolute inset-0 z-[5] bg-stone-900/95 flex flex-col items-center justify-center gap-2.5 pointer-events-none animate-pulse">
+          <div className="absolute inset-0 z-[5] bg-gradient-to-br from-[#231e31] via-[#181523] to-[#12101a] flex flex-col items-center justify-center gap-2.5 pointer-events-none animate-pulse">
             <div className="w-7 h-7 border-2 border-amber-400/20 border-t-amber-400 rounded-full animate-spin" />
-            <span className="text-[11px] tracking-wide text-amber-200/80 font-medium">Loading media…</span>
+            <span className="text-[11px] tracking-wide text-amber-200/80 font-medium">Loading preview…</span>
           </div>
         )}
 
@@ -188,16 +234,20 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           </div>
         )}
 
-        {/* Guaranteed Underlying Poster Image: Advances across poster candidates on error */}
-        {resolvedPoster && (
+        {/* Guaranteed Underlying Poster Image: Prefers IndexedDB cached Blob URL for offline/instant replay */}
+        {(cachedPosterSrc || resolvedPoster) && (
           <img
             key={resolvedPoster}
-            src={resolvedPoster}
+            src={cachedPosterSrc || resolvedPoster}
             alt={template.title}
-            loading="lazy"
+            loading="eager"
             draggable={false}
             onLoad={() => setIsMediaLoaded(true)}
             onError={() => {
+              if (cachedPosterSrc) {
+                setCachedPosterSrc('');
+                return;
+              }
               if (posterIndex < posterCandidates.length - 1) {
                 setPosterIndex((idx) => idx + 1);
               } else {
@@ -214,8 +264,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
         {isVideo && isNearViewport && (
           <video
             ref={videoRef}
-            src={hdVideoSrc || candidateMedia}
-            poster={resolvedPoster}
+            src={hdVideoSrc || cachedPreviewVideoSrc || candidateMedia}
+            poster={cachedPosterSrc || resolvedPoster}
             loop
             muted
             playsInline

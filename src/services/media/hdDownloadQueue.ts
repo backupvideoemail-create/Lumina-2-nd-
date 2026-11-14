@@ -63,7 +63,7 @@ class HdDownloadQueueManager {
    * Low: Idle background prefetching for templates further down the list.
    */
   public queueHdDownload(url: string, priority: QueuePriority = 'medium'): Promise<string> {
-    if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+    if (!url || typeof url !== 'string' || !mediaCacheStorage.isCacheablePublicMedia(url)) {
       return Promise.resolve(url);
     }
 
@@ -80,13 +80,8 @@ class HdDownloadQueueManager {
       return this.inFlight.get(url)!;
     }
 
-    // If Data Saver / slow cellular is active and priority is not high, skip download to respect customer bandwidth
-    if (this.isDataSaverActive() && (priority === 'low' || priority === 'medium')) {
-      return Promise.resolve(url);
-    }
-
     const downloadPromise = (async () => {
-      // Check persistent IndexedDB cache first
+      // Check persistent IndexedDB cache FIRST (works even offline / on slow networks with 0 bytes spent)
       try {
         const cached = await mediaCacheStorage.get(url);
         if (cached && cached.objectUrl) {
@@ -95,6 +90,11 @@ class HdDownloadQueueManager {
           return cached.objectUrl;
         }
       } catch {}
+
+      // If Data Saver / slow cellular is active and priority is low, skip uncached network prefetch
+      if (this.isDataSaverActive() && priority === 'low') {
+        return url;
+      }
 
       // If not in cache, queue for concurrency-governed download
       return new Promise<string>((resolve, reject) => {

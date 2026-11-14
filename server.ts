@@ -276,6 +276,7 @@ app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (_req, res) => {
 app.get('/api/media/:fileId', async (req, res) => {
   const fileId = path.basename(req.params.fileId);
   const user = getAuthenticatedUser(req);
+  const stableEtag = `"media-${fileId}"`;
   try {
     const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
     if (fs.existsSync(localPath)) {
@@ -283,8 +284,23 @@ app.get('/api/media/:fileId', async (req, res) => {
       if (meta && !meta.isPublic && meta.ownerUserId && (!user || user.id !== meta.ownerUserId)) {
         return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
       }
-      res.setHeader('Cache-Control', 'public, max-age=86400');
+      if (!meta || meta.isPublic !== false) {
+        res.setHeader('ETag', stableEtag);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        if (req.headers['if-none-match'] === stableEtag && !req.headers.range) {
+          return res.status(304).end();
+        }
+      }
       return res.sendFile(localPath, { acceptRanges: true });
+    }
+
+    if (!req.headers.range && req.headers['if-none-match'] === stableEtag) {
+      const meta = await mediaStorage.getMetadata(fileId);
+      if (!meta || meta.isPublic || (user && user.id === meta.ownerUserId)) {
+        res.setHeader('ETag', stableEtag);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.status(304).end();
+      }
     }
 
     const rangeHeader = req.headers.range;
@@ -305,6 +321,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     }
     res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('ETag', stableEtag);
     res.setHeader('Cache-Control', 'public, max-age=86400');
     if (typeof authResult.body.pipe === 'function') {
       authResult.body.pipe(res);

@@ -34,7 +34,55 @@ import {
   HomeBannerItem
 } from '../config/homeBannersConfig';
 import { Template } from '../types';
-import { queueHdDownload } from '../services/media/hdDownloadQueue';
+import { queueHdDownload, protectMediaUrl, unprotectMediaUrl } from '../services/media/hdDownloadQueue';
+import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
+import { isVideoMedia } from '../utils/mediaUtils';
+
+const HERO_POSTERS_CACHE_KEY = 'lumina_hero_posters_v1';
+
+const resolveBannerMedia = (banner: HomeBannerItem, templatesList: Template[]) => {
+  const linkedTpl =
+    banner.type === 'LINKED_TEMPLATE' && banner.targetTemplateId
+      ? templatesList.find((t) => t.id === banner.targetTemplateId)
+      : null;
+
+  const effectiveVideoUrl =
+    banner.videoUrl ||
+    (isVideoMedia(banner.image) ? banner.image : undefined) ||
+    linkedTpl?.coverVideo ||
+    (isVideoMedia(linkedTpl?.cover) ? linkedTpl?.cover : undefined);
+
+  const effectiveImage =
+    (!isVideoMedia(banner.image) && banner.image ? banner.image : '') ||
+    linkedTpl?.coverImage ||
+    (!isVideoMedia(linkedTpl?.cover) ? linkedTpl?.cover : '') ||
+    (!isVideoMedia(linkedTpl?.preview) ? linkedTpl?.preview : '') ||
+    '';
+
+  const rawPoster =
+    (banner.coverMedia && !isVideoMedia(banner.coverMedia) ? banner.coverMedia : '') ||
+    effectiveImage ||
+    '';
+
+  const isVideoBanner = Boolean(
+    banner.mediaType === 'video' ||
+      effectiveVideoUrl ||
+      isVideoMedia(banner.image)
+  );
+
+  const primaryMediaUrl = isVideoBanner
+    ? (effectiveVideoUrl || banner.image || '')
+    : effectiveImage;
+
+  return {
+    linkedTpl,
+    effectiveVideoUrl,
+    effectiveImage,
+    rawPoster,
+    isVideoBanner,
+    primaryMediaUrl
+  };
+};
 
 export const HomeView: React.FC = () => {
   const {
@@ -258,52 +306,143 @@ export const HomeView: React.FC = () => {
   }, [isPaused, fullVideoBanner, banners.length, timerResetKey]);
 
   const [bannerHdUrls, setBannerHdUrls] = useState<Record<string, string>>({});
+  const [heroPosters, setHeroPosters] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem(HERO_POSTERS_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {};
+  });
+  const [readyHeroIds, setReadyHeroIds] = useState<Record<string, boolean>>({});
   const heroVideoRef = useRef<HTMLVideoElement>(null);
 
-  // HD video prefetch for hero banners with seamless playback preservation
+  const captureHeroFramePoster = (bannerId: string, videoEl: HTMLVideoElement) => {
+    if (!bannerId || !videoEl || heroPosters[bannerId]) return;
+    try {
+      const vw = videoEl.videoWidth;
+      const vh = videoEl.videoHeight;
+      if (!vw || !vh) return;
+      const targetWidth = Math.min(360, vw);
+      const targetHeight = Math.round((vh / vw) * targetWidth);
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(videoEl, 0, 0, targetWidth, targetHeight);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+      if (dataUrl && dataUrl.startsWith('data:image/')) {
+        setHeroPosters((prev) => {
+          if (prev[bannerId]) return prev;
+          const next = { ...prev, [bannerId]: dataUrl };
+          const keys = Object.keys(next);
+          if (keys.length > 8) {
+            delete next[keys[0]];
+          }
+          try {
+            localStorage.setItem(HERO_POSTERS_CACHE_KEY, JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+      }
+    } catch {
+      // Canvas may be tainted on strict third-party CORS; ignore safely
+    }
+  };
+
+  // Immediate IndexedDB Hydration + Top-First Progressive Hero Banner Caching (no re-download on refresh)
   useEffect(() => {
     if (!banners || banners.length === 0) return;
-    const current = banners[currentBannerIndex];
-    if (current?.videoUrl) {
-      queueHdDownload(current.videoUrl, 'high')
-        .then((hdUrl) => {
-          if (hdUrl && hdUrl !== current.videoUrl) {
-            const videoEl = heroVideoRef.current;
-            if (videoEl) {
-              const prevTime = videoEl.currentTime;
-              const wasPaused = videoEl.paused;
-              const wasMuted = videoEl.muted;
-              setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
-              const restoreState = () => {
-                try {
-                  videoEl.currentTime = prevTime;
-                  videoEl.muted = wasMuted;
-                  if (!wasPaused) {
-                    videoEl.play().catch(() => {});
-                  }
-                } catch {}
-                videoEl.removeEventListener('loadeddata', restoreState);
-              };
-              videoEl.addEventListener('loadeddata', restoreState);
-            } else {
-              setBannerHdUrls((prev) => ({ ...prev, [current.id]: hdUrl }));
+    let cancelled = false;
+
+    const hydrateAndPrefetch = async () => {
+      // Step 1: Resolve any already-cached IndexedDB Blob URLs immediately (0 bytes downloaded)
+      await Promise.all(
+        banners.map(async (b) => {
+          const { primaryMediaUrl, rawPoster } = resolveBannerMedia(b, templates);
+          if (primaryMediaUrl) {
+            const cachedPrimary = await mediaCacheStorage.get(primaryMediaUrl).catch(() => null);
+            if (!cancelled && cachedPrimary?.objectUrl) {
+              setBannerHdUrls((prev) =>
+                prev[b.id] === cachedPrimary.objectUrl ? prev : { ...prev, [b.id]: cachedPrimary.objectUrl }
+              );
+            }
+          }
+          if (rawPoster && rawPoster !== primaryMediaUrl) {
+            const cachedPoster = await mediaCacheStorage.get(rawPoster).catch(() => null);
+            if (!cancelled && cachedPoster?.objectUrl) {
+              setHeroPosters((prev) => (prev[b.id] ? prev : { ...prev, [b.id]: cachedPoster.objectUrl }));
             }
           }
         })
-        .catch(() => {});
-    }
-    const nextIndex = (currentBannerIndex + 1) % banners.length;
-    const next = banners[nextIndex];
-    if (next?.videoUrl) {
-      queueHdDownload(next.videoUrl, 'medium')
-        .then((hdUrl) => {
-          if (hdUrl && hdUrl !== next.videoUrl) {
-            setBannerHdUrls((prev) => ({ ...prev, [next.id]: hdUrl }));
-          }
-        })
-        .catch(() => {});
-    }
-  }, [currentBannerIndex, banners]);
+      );
+
+      // Step 2: Top Hero Banners download first: Active banner ('high'), then remaining banners ('medium')
+      const current = banners[currentBannerIndex];
+      const ordered = current
+        ? [current, ...banners.filter((b) => b.id !== current.id)]
+        : banners;
+
+      for (let i = 0; i < ordered.length; i++) {
+        if (cancelled) break;
+        const banner = ordered[i];
+        const { primaryMediaUrl, rawPoster } = resolveBannerMedia(banner, templates);
+        const priority = i === 0 ? 'high' : 'medium';
+
+        if (rawPoster && rawPoster !== primaryMediaUrl && mediaCacheStorage.isCacheablePublicMedia(rawPoster)) {
+          queueHdDownload(rawPoster, priority)
+            .then((cachedPosterUrl) => {
+              if (!cancelled && cachedPosterUrl && cachedPosterUrl.startsWith('blob:')) {
+                setHeroPosters((prev) => ({ ...prev, [banner.id]: cachedPosterUrl }));
+              }
+            })
+            .catch(() => {});
+        }
+
+        if (primaryMediaUrl && mediaCacheStorage.isCacheablePublicMedia(primaryMediaUrl)) {
+          queueHdDownload(primaryMediaUrl, priority)
+            .then((hdUrl) => {
+              if (cancelled || !hdUrl || hdUrl === primaryMediaUrl) return;
+              if (i === 0 && heroVideoRef.current) {
+                const videoEl = heroVideoRef.current;
+                const prevTime = videoEl.currentTime;
+                const wasPaused = videoEl.paused;
+                const wasMuted = videoEl.muted;
+                setBannerHdUrls((prev) => ({ ...prev, [banner.id]: hdUrl }));
+                const restoreState = () => {
+                  try {
+                    videoEl.currentTime = prevTime;
+                    videoEl.muted = wasMuted;
+                    if (!wasPaused) {
+                      videoEl.play().catch(() => {});
+                    }
+                  } catch {}
+                  videoEl.removeEventListener('loadeddata', restoreState);
+                };
+                videoEl.addEventListener('loadeddata', restoreState);
+              } else {
+                setBannerHdUrls((prev) => ({ ...prev, [banner.id]: hdUrl }));
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    };
+
+    hydrateAndPrefetch();
+
+    const active = banners[currentBannerIndex];
+    const activeUrl = active ? resolveBannerMedia(active, templates).primaryMediaUrl : '';
+    if (activeUrl) protectMediaUrl(activeUrl);
+
+    return () => {
+      cancelled = true;
+      if (activeUrl) unprotectMediaUrl(activeUrl);
+    };
+  }, [currentBannerIndex, banners, templates]);
 
   const activeBanner: HomeBannerItem | null = (banners.length > 0 ? (banners[currentBannerIndex] || banners[0]) : null);
 
@@ -465,7 +604,7 @@ export const HomeView: React.FC = () => {
           </div>
         ) : activeBanner ? (
           <div
-            className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-black group select-none touch-pan-y"
+            className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-[#16141d] group select-none touch-pan-y"
             onTouchStart={handleTouchStart}
             onTouchEnd={handleTouchEnd}
             onTouchCancel={handleTouchCancel}
@@ -476,10 +615,10 @@ export const HomeView: React.FC = () => {
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
-              initial={{ opacity: 0, scale: 1.05 }}
+              initial={{ opacity: 0.9, scale: 1.02 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              transition={{ duration: 0.5, ease: 'easeOut' }}
+              exit={{ opacity: 0.9, scale: 0.99 }}
+              transition={{ duration: 0.35, ease: 'easeOut' }}
               onClick={() => {
                 if (isSwipingRef.current) {
                   isSwipingRef.current = false;
@@ -489,62 +628,80 @@ export const HomeView: React.FC = () => {
               }}
               className="absolute inset-0 cursor-pointer"
             >
-              {/* Media Container: 1:1 Square Theater Frame on Clean Black Canvas with Zero Blurred Duplicate Video */}
+              {/* Media Container: Clean 1:1 Square Frame with Instant Still Preview & Zero Dark Scrim Shadow Overlays */}
               {(() => {
-                const linkedTpl = (activeBanner.type === 'LINKED_TEMPLATE' && activeBanner.targetTemplateId)
-                  ? templates.find((t) => t.id === activeBanner.targetTemplateId)
-                  : null;
-                const effectiveVideoUrl = activeBanner.videoUrl || linkedTpl?.coverVideo || (linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl.cover : undefined);
-                const effectiveImage = activeBanner.image || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || linkedTpl?.preview || '';
-                const effectivePoster = activeBanner.coverMedia || linkedTpl?.coverImage || (!linkedTpl?.cover?.endsWith('.mp4') ? linkedTpl?.cover : undefined) || '';
+                const {
+                  effectiveImage,
+                  rawPoster,
+                  isVideoBanner,
+                  primaryMediaUrl
+                } = resolveBannerMedia(activeBanner, templates);
 
                 const cropStyle: React.CSSProperties = activeBanner.crop ? {
                   transform: `scale(${activeBanner.crop.zoom || 1}) translate(${activeBanner.crop.positionX || 0}%, ${activeBanner.crop.positionY || 0}%)`,
                   transformOrigin: 'center center'
                 } : {};
 
-                const isVideoBanner = Boolean(
-                  activeBanner.mediaType === 'video' ||
-                  effectiveVideoUrl ||
-                  effectiveImage?.endsWith('.mp4') ||
-                  effectiveImage?.endsWith('.webm') ||
-                  effectiveImage?.startsWith('data:video/')
-                );
-
-                const heroVideoSrc = bannerHdUrls[activeBanner.id] || effectiveVideoUrl || effectiveImage;
+                const instantPoster = heroPosters[activeBanner.id] || rawPoster || '';
+                const heroVideoSrc = bannerHdUrls[activeBanner.id] || primaryMediaUrl;
+                const heroImageSrc = bannerHdUrls[activeBanner.id] || effectiveImage;
+                const isReady = Boolean(readyHeroIds[activeBanner.id]);
 
                 return isVideoBanner ? (
-                  <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
+                  <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-[#181522]">
+                    {instantPoster ? (
+                      <img
+                        src={instantPoster}
+                        alt={activeBanner.title}
+                        style={cropStyle}
+                        className="absolute inset-0 z-[2] w-full h-full object-cover object-center"
+                      />
+                    ) : !isReady ? (
+                      <div className="absolute inset-0 z-[2] bg-gradient-to-br from-[#231e31] via-[#191624] to-[#13111c] animate-pulse flex flex-col items-center justify-center gap-2 pointer-events-none">
+                        <div className="w-8 h-8 border-2 border-amber-400/25 border-t-amber-400 rounded-full animate-spin" />
+                        <span className="text-[11px] font-semibold text-amber-200/80 tracking-wide">Loading preview…</span>
+                      </div>
+                    ) : null}
+
                     <video
                       ref={heroVideoRef}
                       key={`hero_fg_${activeBanner.id}`}
                       src={heroVideoSrc}
-                      poster={effectivePoster || (effectiveImage?.endsWith('.mp4') ? undefined : effectiveImage)}
+                      poster={instantPoster || undefined}
                       autoPlay
                       muted
                       loop
                       playsInline
+                      preload="auto"
+                      crossOrigin="anonymous"
+                      onLoadedData={(e) => {
+                        setReadyHeroIds((prev) => ({ ...prev, [activeBanner.id]: true }));
+                        captureHeroFramePoster(activeBanner.id, e.currentTarget);
+                      }}
                       style={cropStyle}
                       className="relative z-10 w-full h-full object-cover object-center"
                     />
                   </div>
                 ) : (
-                  <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-black">
+                  <div className="relative w-full h-full overflow-hidden flex items-center justify-center bg-[#181522]">
+                    {!isReady && (
+                      <div className="absolute inset-0 z-[2] bg-gradient-to-br from-[#231e31] via-[#191624] to-[#13111c] animate-pulse flex flex-col items-center justify-center gap-2 pointer-events-none">
+                        <div className="w-8 h-8 border-2 border-amber-400/25 border-t-amber-400 rounded-full animate-spin" />
+                        <span className="text-[11px] font-semibold text-amber-200/80 tracking-wide">Loading preview…</span>
+                      </div>
+                    )}
                     <img
-                      src={effectiveImage}
+                      src={heroImageSrc}
                       alt={activeBanner.title}
                       style={cropStyle}
+                      onLoad={() => {
+                        setReadyHeroIds((prev) => ({ ...prev, [activeBanner.id]: true }));
+                      }}
                       className="relative z-10 w-full h-full object-cover object-center"
                     />
                   </div>
                 );
               })()}
-
-              {/* Softened Cinematic Scrims - Vivid media without dark veil, protecting bottom text */}
-              <div
-                className={`absolute inset-0 z-15 bg-gradient-to-r ${activeBanner.gradientOverlay || 'from-black/40 via-transparent to-transparent'}`}
-              />
-              <div className="absolute inset-0 z-15 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
 
               {/* Floating PRO Badge with Video Play Icon (Top Right) */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black text-xs font-black shadow-[0_0_20px_rgba(255,159,0,0.5)]">
@@ -552,9 +709,9 @@ export const HomeView: React.FC = () => {
                 <span>{activeBanner.badge}</span>
               </div>
 
-              {/* Banner Text Overlays (Title, Highlight, Subtitle) */}
+              {/* Banner Text Overlays (Clean text shadow only — zero dark background shadow over Hero Banner media) */}
               <div className="absolute bottom-5 inset-x-5 z-20 max-w-[280px] sm:max-w-md space-y-1">
-                <h2 className="text-2xl sm:text-3xl font-black text-white leading-tight font-display tracking-tight drop-shadow-[0_2px_12px_rgba(0,0,0,0.9)]">
+                <h2 className="text-2xl sm:text-3xl font-black text-white leading-tight font-display tracking-tight drop-shadow-[0_2px_10px_rgba(0,0,0,0.92)]">
                   <span className="text-[#ffb703]">{activeBanner.title}</span>
                   <br />
                   <span className="text-white text-xl sm:text-2xl font-extrabold">
@@ -562,7 +719,7 @@ export const HomeView: React.FC = () => {
                   </span>
                 </h2>
 
-                <p className="text-[11px] sm:text-xs text-stone-300 font-medium line-clamp-1 drop-shadow opacity-90">
+                <p className="text-[11px] sm:text-xs text-stone-100 font-medium line-clamp-1 drop-shadow-[0_1px_6px_rgba(0,0,0,0.92)]">
                   {activeBanner.subtitle}
                 </p>
               </div>
@@ -850,8 +1007,8 @@ export const HomeView: React.FC = () => {
                 <>
                   <video
                     ref={fullVideoRef}
-                    src={fullVideoBanner.videoUrl || fullVideoBanner.image}
-                    poster={fullVideoBanner.coverMedia}
+                    src={bannerHdUrls[fullVideoBanner.id] || fullVideoBanner.videoUrl || fullVideoBanner.image}
+                    poster={heroPosters[fullVideoBanner.id] || (!isVideoMedia(fullVideoBanner.coverMedia) ? fullVideoBanner.coverMedia : undefined)}
                     autoPlay
                     playsInline
                     loop
@@ -899,7 +1056,7 @@ export const HomeView: React.FC = () => {
                 </>
               ) : (
                 <img
-                  src={fullVideoBanner.image}
+                  src={bannerHdUrls[fullVideoBanner.id] || fullVideoBanner.image}
                   alt={fullVideoBanner.title}
                   className="max-h-full max-w-full object-contain rounded-2xl shadow-2xl"
                 />

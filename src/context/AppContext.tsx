@@ -308,34 +308,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
-  // Fetch Templates (Publicly accessible to any visitor)
+  // Hydrate last verified public templates from localStorage on mount for instant offline/slow-network preview
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem('lumina_public_templates_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setTemplates((prev) => (prev.length === 0 ? parsed : prev));
+          setCatalogueStatus('ready');
+        }
+      }
+    } catch {}
+  }, []);
+
+  // Fetch Full Active Template Catalog (Publicly accessible to any visitor; filters apply client-side without wiping catalog)
   const fetchTemplates = useCallback(async () => {
     try {
       setLoadingTemplates(true);
-      const params = new URLSearchParams();
-      if (filterType !== 'all') params.append('type', filterType);
-      if (selectedCategories.length > 0) {
-        params.append('categories', selectedCategories.join(','));
-      } else if (selectedCategory && selectedCategory !== 'All') {
-        params.append('category', selectedCategory);
-      }
-      if (searchQuery.trim()) params.append('search', searchQuery.trim());
-
-      const res = await fetch(`/api/templates?${params.toString()}`);
+      const res = await fetch('/api/templates');
       if (res.ok) {
         const data = await res.json();
         const incoming = Array.isArray(data?.templates) ? data.templates : [];
         setTemplates(incoming);
         setCatalogueStatus(incoming.length > 0 ? 'ready' : 'empty');
+        try {
+          localStorage.setItem('lumina_public_templates_cache', JSON.stringify(incoming));
+        } catch {}
       } else {
-        setCatalogueStatus('offline_error');
+        setCatalogueStatus((prev) => (prev === 'ready' ? 'ready' : 'offline_error'));
       }
     } catch {
-      setCatalogueStatus('offline_error');
+      setCatalogueStatus((prev) => (prev === 'ready' ? 'ready' : 'offline_error'));
     } finally {
       setLoadingTemplates(false);
     }
-  }, [filterType, selectedCategory, selectedCategories, searchQuery]);
+  }, []);
 
   useEffect(() => {
     fetchTemplates();

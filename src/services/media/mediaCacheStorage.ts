@@ -65,7 +65,9 @@ export class MediaCacheStorage {
    */
   public isCacheablePublicMedia(url?: string | null): boolean {
     if (!url || typeof url !== 'string') return false;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) return false;
+    const isHttp = url.startsWith('http://') || url.startsWith('https://');
+    const isPublicMediaApi = url.startsWith('/api/media/') && !url.startsWith('/api/media/signed/');
+    if (!isHttp && !isPublicMediaApi) return false;
 
     // Disallow private customer upload endpoints or local file blobs
     if (url.includes('/api/uploads/customer') || url.includes('/uploads/customer')) return false;
@@ -78,7 +80,8 @@ export class MediaCacheStorage {
       lower.includes('session=') ||
       lower.includes('razorpay') ||
       lower.includes('signature=') ||
-      lower.includes('auth=')
+      lower.includes('auth=') ||
+      lower.includes('/api/media/signed/')
     ) {
       return false;
     }
@@ -195,14 +198,26 @@ export class MediaCacheStorage {
 
         const remoteEtag = headRes.headers.get('etag');
         const remoteLastModified = headRes.headers.get('last-modified');
+        const remoteContentLength = headRes.headers.get('content-length');
 
         // Check if metadata actually indicates a new version
         const isEtagSame = Boolean(remoteEtag && currentEntry.etag && remoteEtag === currentEntry.etag);
         const isModifiedSame = Boolean(
           remoteLastModified && currentEntry.lastModified && remoteLastModified === currentEntry.lastModified
         );
+        const isSizeSameWithoutValidator = Boolean(
+          !remoteEtag &&
+          !remoteLastModified &&
+          remoteContentLength &&
+          Number(remoteContentLength) === currentEntry.sizeBytes
+        );
 
-        if (isEtagSame || isModifiedSame) {
+        if (isEtagSame || isModifiedSame || isSizeSameWithoutValidator) {
+          return false;
+        }
+
+        // If origin did not expose validators at all (common for CORS CDN streams), keep cached asset to avoid wasting data
+        if (!remoteEtag && !remoteLastModified && !remoteContentLength) {
           return false;
         }
 
