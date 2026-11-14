@@ -80,7 +80,7 @@ export class GeminiAdapter {
       );
     }
 
-    const ai = new GoogleGenAI();
+    const ai = new GoogleGenAI({ apiKey });
 
     // Build parts array
     const parts: any[] = [];

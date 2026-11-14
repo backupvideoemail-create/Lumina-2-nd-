@@ -82,9 +82,24 @@ export class InMemoryFirestoreMock {
       }
     });
 
-    const buildQuery = (filters: Array<{ field: string; val: any }>) => ({
-      where: (f: string, _op: string, v: any) => buildQuery([...filters, { field: f, val: v }]),
-      limit: (_n: number) => buildQuery(filters),
+    const buildQuery = (filters: Array<{ field: string; val: any }>, sortField?: string, sortDir: 'asc' | 'desc' = 'asc', limitNum?: number): any => ({
+      where: (f: string, _op: string, v: any) => buildQuery([...filters, { field: f, val: v }], sortField, sortDir, limitNum),
+      orderBy: (f: string, dir: 'asc' | 'desc' = 'asc') => buildQuery(filters, f, dir, limitNum),
+      limit: (n: number) => buildQuery(filters, sortField, sortDir, n),
+      offset: (skip: number) => ({
+        limit: (n: number) => ({
+          get: async () => {
+            const res = await buildQuery(filters, sortField, sortDir, undefined).get();
+            const sliced = res.docs.slice(skip, skip + n);
+            return {
+              empty: sliced.length === 0,
+              size: sliced.length,
+              docs: sliced,
+              forEach: (cb: (doc: any) => void) => sliced.forEach(cb)
+            };
+          }
+        })
+      }),
       get: async () => {
         let matching = Array.from(col.entries()).map(([id, val]) => ({
           id,
@@ -93,6 +108,16 @@ export class InMemoryFirestoreMock {
         }));
         for (const filter of filters) {
           matching = matching.filter(doc => doc.data()[filter.field] === filter.val);
+        }
+        if (sortField) {
+          matching.sort((a, b) => {
+            const av = a.data()[sortField] ?? '';
+            const bv = b.data()[sortField] ?? '';
+            return sortDir === 'desc' ? String(bv).localeCompare(String(av)) : String(av).localeCompare(String(bv));
+          });
+        }
+        if (limitNum !== undefined) {
+          matching = matching.slice(0, limitNum);
         }
         return {
           empty: matching.length === 0,
@@ -106,6 +131,13 @@ export class InMemoryFirestoreMock {
     return {
       doc: makeDocRef,
       where: (f: string, _op: string, v: any) => buildQuery([{ field: f, val: v }]),
+      orderBy: (f: string, dir: 'asc' | 'desc' = 'asc') => buildQuery([], f, dir),
+      limit: (n: number) => buildQuery([], undefined, 'asc', n),
+      count: () => ({
+        get: async () => ({
+          data: () => ({ count: col.size })
+        })
+      }),
       get: async () => {
         const docs = Array.from(col.entries()).map(([id, val]) => ({
           id,
@@ -436,11 +468,17 @@ export function validateTemplate(tpl: any): TemplateValidationResult {
 export class ProductionDatabase {
   private db: ProductionDatabaseSchema;
   private dbFilePath: string;
+  private firestoreOverride?: any;
+  private persistToDisk: boolean = true;
   public quarantinedTemplates: Array<{ template: any; reason: string; quarantinedAt: string }> = [];
   public readyPromise: Promise<void>;
   private catalogueStatus: 'READY' | 'EMPTY' | 'OFFLINE' = 'READY';
   private catalogRevision: number = 0;
   private lastCatalogCheckTime: number = 0;
+
+  private get firestoreDb(): any {
+    return this.firestoreOverride !== undefined ? this.firestoreOverride : adminFirestoreDb;
+  }
 
   public getCatalogueStatus(): 'READY' | 'EMPTY' | 'OFFLINE' {
     return this.catalogueStatus;
@@ -502,10 +540,39 @@ export class ProductionDatabase {
     }
   }
 
-  constructor(customDbFile?: string) {
+  constructor(customDbFile?: string, options?: { firestoreOverride?: any; persistToDisk?: boolean }) {
+    this.firestoreOverride = options?.firestoreOverride;
+    this.persistToDisk = options?.persistToDisk ?? true;
     this.dbFilePath = customDbFile || DB_FILE;
+    if (this.firestoreOverride !== undefined && !this.persistToDisk) {
+      this.db = {
+        users: {},
+        authIdentities: {},
+        wallets: {},
+        creditGrants: [],
+        transactions: [],
+        generations: [],
+        jobs: [],
+        payments: {},
+        subscriptions: {},
+        templates: [],
+        deletedTemplateIds: [],
+        banners: [],
+        faceSwapDemoVideoUrl: '',
+        faceSwapScenes: [],
+        userLikes: {},
+        processedWebhooks: [],
+        reports: [],
+        adminTestRuns: [],
+        pricingBanner: null,
+        categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
+        adminLogs: []
+      };
+      this.readyPromise = Promise.resolve();
+      return;
+    }
     this.db = this.init();
-    if (adminFirestoreDb && !isIsolatedTestEnv) {
+    if (this.firestoreDb && !isIsolatedTestEnv) {
       this.readyPromise = this.loadAuthoritativeFromFirestore().catch((err: any) => {
         console.warn('[Database] Firestore startup sync warning:', err.message);
       });
@@ -942,6 +1009,7 @@ export class ProductionDatabase {
   }
 
   public save(): void {
+    if (!this.persistToDisk) return;
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -966,7 +1034,8 @@ export class ProductionDatabase {
     docId: string,
     data: any
   ): Promise<{ success: boolean; cloudPersisted: boolean; error?: string }> {
-    if (!adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (!fsDb) {
       return { success: false, cloudPersisted: false, error: 'Firestore Admin SDK not connected' };
     }
     const sanitized = JSON.parse(JSON.stringify(data));
@@ -975,7 +1044,7 @@ export class ProductionDatabase {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await adminFirestoreDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
+        await fsDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
         return { success: true, cloudPersisted: true };
       } catch (err: any) {
         if (attempt === maxAttempts) {
@@ -991,9 +1060,10 @@ export class ProductionDatabase {
   }
 
   private async deleteFromFirestore(collectionName: string, docId: string): Promise<void> {
-    if (!adminFirestoreDb) return;
+    const fsDb = this.firestoreDb;
+    if (!fsDb) return;
     try {
-      await adminFirestoreDb.collection(collectionName).doc(docId).delete();
+      await fsDb.collection(collectionName).doc(docId).delete();
     } catch (err: any) {
       console.warn(`[Firestore Delete] ${collectionName}/${docId}:`, err.message);
     }
@@ -1274,13 +1344,14 @@ export class ProductionDatabase {
   }
 
   public async getWalletAuthoritative(userId: string): Promise<CreditWallet> {
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const walletDoc = await adminFirestoreDb.collection('wallets').doc(userId).get();
+        const walletDoc = await fsDb.collection('wallets').doc(userId).get();
         if (walletDoc.exists) {
           this.db.wallets[userId] = walletDoc.data() as CreditWallet;
         }
-        const grantsSnap = await adminFirestoreDb.collection('credit_grants').where('userId', '==', userId).get();
+        const grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
         if (!grantsSnap.empty) {
           const userGrants: CreditGrant[] = [];
           grantsSnap.forEach((d: any) => userGrants.push(d.data() as CreditGrant));
@@ -1694,14 +1765,15 @@ export class ProductionDatabase {
     };
 
     // If Firestore Admin is available, run inside strict ACID Transaction to ensure zero duplicate credits under concurrency
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const result = await adminFirestoreDb.runTransaction(async (t: any) => {
+        const result = await fsDb.runTransaction(async (t: any) => {
           // 1. Strict Idempotency Check in Transaction:
           // Check if transaction with this referenceId already exists
           if (orderId) {
             const existingTxSnap = await t.get(
-              adminFirestoreDb.collection('transactions').where('referenceId', '==', orderId).limit(1)
+              fsDb.collection('transactions').where('referenceId', '==', orderId).limit(1)
             );
             if (!existingTxSnap.empty) {
               console.warn(`[Atomic Firestore Transaction] Duplicate credit prevented for referenceId: ${orderId}`);
@@ -1718,7 +1790,7 @@ export class ProductionDatabase {
           }
 
           // 2. Read Wallet inside Transaction
-          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletRef = fsDb.collection('wallets').doc(userId);
           const walletDoc = await t.get(walletRef);
           let walletData: CreditWallet = walletDoc.exists
             ? (walletDoc.data() as CreditWallet)
@@ -1734,8 +1806,8 @@ export class ProductionDatabase {
               };
 
           // 3. Atomically write Grant, Transaction, and updated Wallet
-          const grantRef = adminFirestoreDb.collection('credit_grants').doc(grant.id);
-          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+          const grantRef = fsDb.collection('credit_grants').doc(grant.id);
+          const txRef = fsDb.collection('transactions').doc(tx.id);
 
           walletData.lifetimeCredits = (walletData.lifetimeCredits || 0) + amount;
           walletData.balance = (walletData.balance || 0) + amount;
@@ -1747,7 +1819,7 @@ export class ProductionDatabase {
 
           // Also set idempotency token if orderId
           if (orderId) {
-            const idempotencyRef = adminFirestoreDb.collection('processed_webhooks').doc(`credit_${orderId}`);
+            const idempotencyRef = fsDb.collection('processed_webhooks').doc(`credit_${orderId}`);
             t.set(idempotencyRef, { referenceId: orderId, creditedAt: now.toISOString() }, { merge: true });
           }
 
@@ -3154,9 +3226,10 @@ export class ProductionDatabase {
   public async isWebhookProcessed(eventId: string): Promise<boolean> {
     if (!eventId) return false;
     if (this.db.processedWebhooks.includes(eventId)) return true;
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const docSnap = await adminFirestoreDb.collection('processed_webhooks').doc(eventId).get();
+        const docSnap = await fsDb.collection('processed_webhooks').doc(eventId).get();
         if (docSnap.exists) {
           if (!this.db.processedWebhooks.includes(eventId)) {
             this.db.processedWebhooks.push(eventId);
@@ -3322,15 +3395,24 @@ export class ProductionDatabase {
   }
 
   /* =========================================================================
-     ADMIN ACTIVITY LOGS
+     ADMIN ACTIVITY LOGS (With Sensitive Field Redaction & Authoritative Query)
   ========================================================================= */
+  private sanitizeLogDetails(raw: string): string {
+    if (!raw || typeof raw !== 'string') return '';
+    return raw
+      .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1[REDACTED_TOKEN]')
+      .replace(/((?:token|secret|key|password|signature|x-amz-signature|x-amz-credential)=)[^&\s"']+/gi, '$1[REDACTED]')
+      .replace(/(https?:\/\/[^\s"'?]+\?)([^"'\s]*(?:X-Amz-|Signature=|token=)[^"'\s]*)/gi, '$1[REDACTED_SIGNED_PARAMS]')
+      .replace(/(rzp_(?:live|test)_[A-Za-z0-9]+|AIza[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,})/g, '[REDACTED_SECRET]');
+  }
+
   public async logAdminActivity(log: Omit<AdminActivityLog, 'id' | 'timestamp'>): Promise<AdminActivityLog> {
     const entry: AdminActivityLog = {
       id: `log_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       actorEmail: log.actorEmail,
       action: log.action,
       targetId: log.targetId,
-      details: log.details,
+      details: this.sanitizeLogDetails(log.details),
       timestamp: new Date().toISOString()
     };
 
@@ -3353,6 +3435,56 @@ export class ProductionDatabase {
     const total = all.length;
     const logs = all.slice(offset, offset + limit);
     return { logs, total };
+  }
+
+  public async getAdminLogsAuthoritative(limit = 50, offset = 0): Promise<{
+    logs: AdminActivityLog[];
+    total: number;
+    source: 'firestore_authoritative' | 'process_local_cache';
+  }> {
+    const fsDb = this.firestoreDb;
+    if (fsDb && !isIsolatedTestEnv) {
+      try {
+        const colRef = fsDb.collection('admin_logs');
+        const snap = await colRef.orderBy('timestamp', 'desc').limit(offset + limit).get();
+        const docs: AdminActivityLog[] = [];
+        snap.forEach((d: any) => {
+          const item = d.data() as AdminActivityLog;
+          if (item) {
+            docs.push({
+              ...item,
+              details: this.sanitizeLogDetails(item.details || '')
+            });
+          }
+        });
+        let totalCount = docs.length;
+        try {
+          if (typeof colRef.count === 'function') {
+            const countSnap = await colRef.count().get();
+            const c = countSnap?.data?.()?.count;
+            if (typeof c === 'number') totalCount = c;
+          } else {
+            const allSnap = await colRef.get();
+            totalCount = allSnap.size ?? docs.length;
+          }
+        } catch {
+          totalCount = Math.max(docs.length, (this.db.adminLogs || []).length);
+        }
+        return {
+          logs: docs.slice(offset, offset + limit),
+          total: totalCount,
+          source: 'firestore_authoritative'
+        };
+      } catch (err: any) {
+        console.warn('[Database] Authoritative admin_logs query fallback:', err.message);
+      }
+    }
+    const local = this.getAdminLogs(limit, offset);
+    return {
+      logs: local.logs.map((l) => ({ ...l, details: this.sanitizeLogDetails(l.details || '') })),
+      total: local.total,
+      source: 'process_local_cache'
+    };
   }
 }
 

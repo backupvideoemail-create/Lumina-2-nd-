@@ -233,7 +233,11 @@ export type SubscriptionStatus =
   | 'trial'
   | 'active'
   | 'past_due'
+  | 'on_hold'
+  | 'grace_period'
+  | 'paused'
   | 'cancelled'
+  | 'revoked'
   | 'expired'
   | 'payment_failed';
 
@@ -269,7 +273,7 @@ export interface PaymentRecord {
   type: 'intro_mandate' | 'recurring_renewal' | 'one_time' | 'subscription';
   status: 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
   isAutoPay: boolean;
-  verificationStatus: 'verified' | 'unverified' | 'failed';
+  verificationStatus: 'verified' | 'unverified' | 'failed' | 'voided' | 'canceled_rtdn' | 'revoked_rtdn';
   signature?: string;
   createdAt: string;
   updatedAt: string;

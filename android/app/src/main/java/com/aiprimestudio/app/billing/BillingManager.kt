@@ -241,7 +241,12 @@ class BillingManager(
             }
             processedTokens.add(token)
 
-            val productId = purchase.products.firstOrNull() ?: "sub_double_bonanza_weekly"
+            val productId = purchase.products.firstOrNull()
+            if (productId.isNullOrBlank()) {
+                processedTokens.remove(token)
+                _purchaseStatus.value = "Purchase verification error: missing product ID on Google Play purchase."
+                return
+            }
 
             scope.launch(Dispatchers.IO) {
                 _purchaseStatus.value = "Verifying purchase with server..."
@@ -252,28 +257,39 @@ class BillingManager(
                 )
 
                 if (result.isSuccess) {
-                    _purchaseStatus.value = "Success! Credits synced."
-
                     val isTopUp = productId.startsWith("topup_")
 
                     if (isTopUp) {
-                        // Consumable top-up: consume so it can be bought again
+                        // Consumable top-up: confirm local BillingClient consume completes cleanly or allow retry
                         val consumeParams = ConsumeParams.newBuilder()
                             .setPurchaseToken(purchase.purchaseToken)
                             .build()
-                        billingClient.consumeAsync(consumeParams) { _, _ ->
-                            // Consumed on Google Play
-                        }
-                    } else {
-                        // Auto-renewing subscriptions: acknowledge within 3 days
-                        if (!purchase.isAcknowledged) {
-                            val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
-                                .setPurchaseToken(purchase.purchaseToken)
-                                .build()
-                            billingClient.acknowledgePurchase(acknowledgePurchaseParams) { _ ->
-                                // Subscription acknowledged on Google Play
+                        billingClient.consumeAsync(consumeParams) { consumeResult, _ ->
+                            if (consumeResult.responseCode == BillingClient.BillingResponseCode.OK ||
+                                consumeResult.responseCode == BillingClient.BillingResponseCode.ITEM_NOT_OWNED
+                            ) {
+                                _purchaseStatus.value = "Success! Credits synced."
+                            } else {
+                                // Backend verification already consumed/verified; allow client retry cleanly if Play cache lags
+                                processedTokens.remove(token)
+                                _purchaseStatus.value = "Credits verified on server, but Play consume sync returned (${consumeResult.responseCode}). Tap Restore Purchases to resync."
                             }
                         }
+                    } else if (!purchase.isAcknowledged) {
+                        // Auto-renewing subscriptions: ensure local Play BillingClient acknowledgement also confirms OK
+                        val acknowledgePurchaseParams = AcknowledgePurchaseParams.newBuilder()
+                            .setPurchaseToken(purchase.purchaseToken)
+                            .build()
+                        billingClient.acknowledgePurchase(acknowledgePurchaseParams) { ackResult ->
+                            if (ackResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                                _purchaseStatus.value = "Success! Credits synced."
+                            } else {
+                                processedTokens.remove(token)
+                                _purchaseStatus.value = "Purchase verified, awaiting Google Play acknowledgement (${ackResult.responseCode}). Tap Restore Purchases to finalize."
+                            }
+                        }
+                    } else {
+                        _purchaseStatus.value = "Success! Credits synced."
                     }
                 } else {
                     processedTokens.remove(token)
@@ -282,6 +298,8 @@ class BillingManager(
             }
         } else if (purchase.purchaseState == Purchase.PurchaseState.PENDING) {
             _purchaseStatus.value = "Payment is pending Google Play processing. Credits will activate once confirmed."
+        } else {
+            _purchaseStatus.value = "Purchase status is not completed (${purchase.purchaseState}). Please retry or check Google Play."
         }
     }
 }

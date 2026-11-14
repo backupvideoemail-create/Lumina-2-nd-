@@ -134,13 +134,25 @@ export async function verifyPubSubOidcToken(
     return { valid: false, error: `Invalid token issuer: ${payload.iss}` };
   }
 
+  const isStrictProd = process.env.NODE_ENV === 'production' && process.env.BYPASS_PUBSUB_AUTH !== 'true';
+
   // Validate audience
   const targetAudience =
     expectedAudience ||
     process.env.PUBSUB_AUDIENCE ||
     process.env.RTDN_AUDIENCE;
 
-  if (targetAudience && payload.aud) {
+  if (isStrictProd && !targetAudience) {
+    return {
+      valid: false,
+      error: 'Pub/Sub audience (PUBSUB_AUDIENCE / RTDN_AUDIENCE) is not configured in production.'
+    };
+  }
+
+  if (targetAudience) {
+    if (!payload.aud) {
+      return { valid: false, error: 'Google OIDC token missing aud claim' };
+    }
     const normTokenAud = String(payload.aud).replace(/^https?:\/\//, '').replace(/\/$/, '');
     const normTargetAud = targetAudience.replace(/^https?:\/\//, '').replace(/\/$/, '');
     if (normTokenAud !== normTargetAud) {
@@ -151,6 +163,13 @@ export async function verifyPubSubOidcToken(
   // Validate service account email
   const email = payload.email;
   const configuredServiceAccount = allowedServiceAccount || process.env.PUBSUB_SERVICE_ACCOUNT_EMAIL;
+  if (isStrictProd && !configuredServiceAccount) {
+    return {
+      valid: false,
+      error: 'Pub/Sub service account email (PUBSUB_SERVICE_ACCOUNT_EMAIL) is not configured in production.'
+    };
+  }
+
   if (configuredServiceAccount && email !== configuredServiceAccount) {
     return {
       valid: false,
@@ -159,10 +178,10 @@ export async function verifyPubSubOidcToken(
   }
 
   // Verify email belongs to an authorized Google Service Account
-  if (email && !email.endsWith('.gserviceaccount.com')) {
+  if (!email || !email.endsWith('.gserviceaccount.com') || payload.email_verified === false) {
     return {
       valid: false,
-      error: `Token email (${email}) is not a verified Google Service Account`
+      error: `Token email (${email || 'missing'}) is not a verified Google Service Account`
     };
   }
 

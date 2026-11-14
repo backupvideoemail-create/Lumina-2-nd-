@@ -86,7 +86,7 @@ export class VideoProviderAdapter {
           mime_type: imgPayload.mimeType
         });
       } catch (err: any) {
-        console.warn('[VideoProviderAdapter] Starting frame resolution note:', err.message);
+        throw new Error(`Starting frame resolution failed for customer media: ${err.message}`);
       }
     }
 
@@ -97,6 +97,10 @@ export class VideoProviderAdapter {
     });
 
     const targetAspectRatio = params.aspectRatio === '16:9' ? '16:9' : '9:16';
+    const targetDuration = params.durationSeconds && Number(params.durationSeconds) > 0
+      ? `${Math.round(Number(params.durationSeconds))}s`
+      : '5s';
+    const targetResolution = params.resolution === '1080p' ? '1080p' : '720p';
 
     try {
       // 1. Invoke Interactions API for gemini-omni-1.1-flash
@@ -109,8 +113,8 @@ export class VideoProviderAdapter {
         response_format: {
           type: 'video',
           aspect_ratio: targetAspectRatio,
-          duration: '5s',
-          resolution: '720p'
+          duration: targetDuration,
+          resolution: targetResolution
         }
       }, { timeout: 300000 }); // 5 minutes timeout
 

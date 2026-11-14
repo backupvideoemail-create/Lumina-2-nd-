@@ -436,10 +436,34 @@ export const HomeView: React.FC = () => {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
+  const isVideoTpl = (t: Template): boolean =>
+    Boolean(
+      t.type === 'video' ||
+      t.mediaType === 'video' ||
+      t.isFaceSwap ||
+      t.coverVideo ||
+      isVideoMedia(t.cover) ||
+      isVideoMedia(t.preview)
+    );
+
   // Dynamic Data-Driven Category Rails - Filtered by active status AND filterType
-  const activeTemplates = templates.filter((t) => {
-    if (t.isActive === false) return false;
-    if (filterType !== 'all' && t.type !== filterType) return false;
+  const allActiveTemplates = templates.filter((t) => t.isActive !== false);
+  const homePhotoCount = allActiveTemplates.filter((t) => !isVideoTpl(t)).length;
+  const homeVideoCount = allActiveTemplates.filter((t) => isVideoTpl(t)).length;
+  const hasMultipleHomeFormats = homePhotoCount > 0 && homeVideoCount > 0;
+
+  useEffect(() => {
+    if (allActiveTemplates.length === 0) return;
+    if (filterType === 'video' && homeVideoCount === 0) {
+      setFilterType('all');
+    } else if (filterType === 'photo' && homePhotoCount === 0) {
+      setFilterType('all');
+    }
+  }, [allActiveTemplates.length, filterType, homePhotoCount, homeVideoCount, setFilterType]);
+
+  const activeTemplates = allActiveTemplates.filter((t) => {
+    if (filterType === 'video') return isVideoTpl(t);
+    if (filterType === 'photo') return !isVideoTpl(t);
     return true;
   });
 
@@ -786,57 +810,67 @@ export const HomeView: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              setFilterType(
-                filterType === 'all'
-                  ? 'video'
-                  : filterType === 'video'
-                  ? 'photo'
-                  : 'all'
-              );
+              if (hasMultipleHomeFormats) {
+                setFilterType(
+                  filterType === 'all'
+                    ? 'video'
+                    : filterType === 'video'
+                    ? 'photo'
+                    : 'all'
+                );
+              } else {
+                setActiveTab('templates');
+              }
             }}
-            className="p-2 rounded-xl text-stone-300 hover:text-[#ff9f00] hover:bg-white/5 transition-colors cursor-pointer mr-1"
-            title="Toggle Filter Mode"
+            className={`p-2 rounded-xl transition-colors cursor-pointer mr-1 ${
+              filterType !== 'all'
+                ? 'text-[#ff9f00] bg-amber-500/15'
+                : 'text-stone-300 hover:text-[#ff9f00] hover:bg-white/5'
+            }`}
+            title={hasMultipleHomeFormats ? `Filter: ${filterType}` : 'Open Template Gallery Filters'}
           >
             <SlidersHorizontal className="w-4 h-4" />
           </button>
         </div>
       </section>
 
-      {/* 5. QUICK PILL TAGS UNDER SEARCH BAR (Only Active Categories) */}
-      <section className="px-3.5 pt-1.5 pb-2 max-w-4xl mx-auto">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-          {sortedCategories.map((cat) => {
-            const isSelected = cat === 'All' ? selectedCategories.length === 0 : selectedCategories.includes(cat);
-            return (
-              <button
-                key={cat}
-                onClick={() => {
-                  if (cat === 'All') {
-                    setSelectedCategory('All');
-                    setSelectedCategories([]);
-                  } else {
-                    const exists = selectedCategories.includes(cat);
-                    const updated = exists
-                      ? selectedCategories.filter((c) => c !== cat)
-                      : [...selectedCategories, cat];
-                    setSelectedCategories(updated);
-                    setSelectedCategory(
-                      updated.length === 1 ? updated[0] : (updated.length === 0 ? 'All' : updated.join(', '))
-                    );
-                  }
-                }}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all shrink-0 cursor-pointer ${
-                  isSelected
-                    ? 'bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-bold shadow-[0_0_12px_rgba(255,159,0,0.35)]'
-                    : 'bg-[#14131c] text-stone-300 hover:bg-[#1d1b29] hover:text-white border border-white/10'
-                }`}
-              >
-                {cat}
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      {/* 5. QUICK PILL TAGS UNDER SEARCH BAR (Only Active Categories when 2+ exist) */}
+      {sortedCategories.length > 1 && (
+        <section className="px-3.5 pt-1.5 pb-2 max-w-4xl mx-auto">
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+            {sortedCategories.map((cat) => {
+              const isSelected = cat === 'All' ? selectedCategories.length === 0 : selectedCategories.includes(cat);
+              return (
+                <button
+                  key={cat}
+                  onClick={() => {
+                    if (cat === 'All') {
+                      setSelectedCategory('All');
+                      setSelectedCategories([]);
+                    } else {
+                      const exists = selectedCategories.includes(cat);
+                      const updated = exists
+                        ? selectedCategories.filter((c) => c !== cat)
+                        : [...selectedCategories, cat];
+                      setSelectedCategories(updated);
+                      setSelectedCategory(
+                        updated.length === 1 ? updated[0] : (updated.length === 0 ? 'All' : updated.join(', '))
+                      );
+                    }
+                  }}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all shrink-0 cursor-pointer ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-bold shadow-[0_0_12px_rgba(255,159,0,0.35)]'
+                      : 'bg-[#14131c] text-stone-300 hover:bg-[#1d1b29] hover:text-white border border-white/10'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* PRIORITY 1: TOP FEATURED FACE SWAP VIDEO */}
       <div className="px-3.5 pt-1">

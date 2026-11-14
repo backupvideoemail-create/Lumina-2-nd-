@@ -9,12 +9,15 @@ export interface GooglePlayVerificationResult {
   verified: boolean;
   orderId?: string;
   purchaseState?: number;
-  acknowledgementState?: number;
+  subscriptionState?: string | number;
+  acknowledgementState?: number | string;
   consumptionState?: number;
   rawDetails?: any;
   error?: string;
   serverAcknowledged?: boolean;
   serverConsumed?: boolean;
+  acknowledgementPending?: boolean;
+  consumptionPending?: boolean;
   isIntroOffer?: boolean;
   basePlanId?: string;
   expiryTime?: string;
@@ -128,9 +131,9 @@ class GooglePlayService {
    * Authoritatively verifies an in-app product or subscription purchase token
    * directly against the official Google Play Developer API (androidpublisher.googleapis.com).
    * Strictly enforces:
-   * 1. Package name match
-   * 2. Active status (rejects canceled, pending, or expired tokens)
-   * 3. Server-side acknowledgement of subscriptions and consumption of one-time items
+   * 1. Exact package name match (com.aiprimestudio.app)
+   * 2. Active/Grace-Period status (rejects canceled, pending, on-hold, paused, or expired tokens)
+   * 3. Fail-closed server-side acknowledgement of subscriptions and consumption of one-time items
    * 4. Safe failure on verification errors
    */
   async verifyPurchase(
@@ -139,6 +142,13 @@ class GooglePlayService {
     purchaseToken: string,
     isSubscription: boolean
   ): Promise<GooglePlayVerificationResult> {
+    if (packageName !== 'com.aiprimestudio.app') {
+      return {
+        verified: false,
+        error: `Package name mismatch: expected com.aiprimestudio.app, received ${packageName || 'empty'}`
+      };
+    }
+
     const creds = this.getCredentials();
     if (!creds) {
       if (process.env.NODE_ENV === 'development' && process.env.BYPASS_PLAY_VERIFY === 'true') {
@@ -146,6 +156,8 @@ class GooglePlayService {
           verified: true,
           orderId: `dev_${Date.now()}`,
           purchaseState: 0,
+          serverAcknowledged: isSubscription,
+          serverConsumed: !isSubscription,
           error: 'DEVELOPMENT_MODE_BYPASS'
         };
       }
@@ -169,19 +181,39 @@ class GooglePlayService {
           const subData = await resV2.json();
           // subscriptionState: SUBSCRIPTION_STATE_ACTIVE (1) or SUBSCRIPTION_STATE_IN_GRACE_PERIOD (2)
           const state = subData.subscriptionState;
-          const isActive = state === 'SUBSCRIPTION_STATE_ACTIVE' || state === 1;
-          if (!isActive) {
+          const isActiveOrGrace =
+            state === 'SUBSCRIPTION_STATE_ACTIVE' ||
+            state === 1 ||
+            state === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD' ||
+            state === 2;
+          if (!isActiveOrGrace) {
             return {
               verified: false,
+              subscriptionState: state,
               rawDetails: subData,
               error: `Subscription is not active. State: ${state}`
             };
           }
 
           // Acknowledge subscription server-side if not already acknowledged
-          let serverAck = false;
-          if (subData.acknowledgementState === 0 || subData.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_PENDING') {
+          const alreadyAcknowledged =
+            subData.acknowledgementState === 1 ||
+            subData.acknowledgementState === 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED';
+          let serverAck = alreadyAcknowledged;
+          if (!alreadyAcknowledged) {
             serverAck = await this.acknowledgeSubscription(packageName, productId, purchaseToken, accessToken);
+            if (!serverAck) {
+              return {
+                verified: false,
+                orderId: subData.lineItems?.[0]?.latestSuccessfulOrderId || subData.latestOrderId,
+                subscriptionState: state,
+                acknowledgementState: subData.acknowledgementState,
+                rawDetails: subData,
+                serverAcknowledged: false,
+                acknowledgementPending: true,
+                error: 'Google Play subscription acknowledgement failed server-side. Retrying verification is required before granting entitlement.'
+              };
+            }
           }
 
           const lineItem = subData.lineItems?.[0];
@@ -205,8 +237,11 @@ class GooglePlayService {
           return {
             verified: true,
             orderId: lineItem?.latestSuccessfulOrderId || subData.latestOrderId,
+            subscriptionState: state,
+            acknowledgementState: subData.acknowledgementState,
             rawDetails: subData,
             serverAcknowledged: serverAck,
+            acknowledgementPending: false,
             isIntroOffer,
             basePlanId,
             expiryTime,
@@ -239,19 +274,32 @@ class GooglePlayService {
           };
         }
 
-        let serverAck = false;
-        if (dataV1.acknowledgementState === 0) {
+        let serverAck = dataV1.acknowledgementState === 1;
+        if (!serverAck) {
           serverAck = await this.acknowledgeSubscription(packageName, productId, purchaseToken, accessToken);
+          if (!serverAck) {
+            return {
+              verified: false,
+              orderId: dataV1.orderId,
+              acknowledgementState: dataV1.acknowledgementState,
+              rawDetails: dataV1,
+              serverAcknowledged: false,
+              acknowledgementPending: true,
+              error: 'Google Play subscription v1 acknowledgement failed server-side. Retrying verification is required before granting entitlement.'
+            };
+          }
         }
 
         return {
           verified: true,
           orderId: dataV1.orderId,
+          acknowledgementState: dataV1.acknowledgementState,
           rawDetails: dataV1,
-          serverAcknowledged: serverAck
+          serverAcknowledged: serverAck,
+          acknowledgementPending: false
         };
       } else {
-        // Standard In-App One-Time Product (e.g. plan_intro_daily, topup_*)
+        // Standard In-App One-Time Product (e.g. topup_*)
         const urlProduct = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${packageName}/purchases/products/${productId}/tokens/${encodeURIComponent(purchaseToken)}`;
         const resProd = await fetch(urlProduct, {
           headers: { Authorization: `Bearer ${accessToken}` }
@@ -270,15 +318,29 @@ class GooglePlayService {
         if (prodData.purchaseState !== 0) {
           return {
             verified: false,
+            purchaseState: prodData.purchaseState,
             rawDetails: prodData,
             error: `Purchase state is not Purchased (state: ${prodData.purchaseState})`
           };
         }
 
-        // Server-side consumption for consumable one-time products (top-ups and 24h intro pass)
-        let serverConsumed = false;
+        // Server-side consumption for consumable one-time products (top-ups)
+        let serverConsumed = prodData.consumptionState === 1;
         if (prodData.consumptionState === 0) {
           serverConsumed = await this.consumeProduct(packageName, productId, purchaseToken, accessToken);
+          if (!serverConsumed) {
+            return {
+              verified: false,
+              orderId: prodData.orderId,
+              purchaseState: prodData.purchaseState,
+              acknowledgementState: prodData.acknowledgementState,
+              consumptionState: prodData.consumptionState,
+              rawDetails: prodData,
+              serverConsumed: false,
+              consumptionPending: true,
+              error: 'Google Play consumable product consumption failed server-side. Retrying verification is required before granting credits.'
+            };
+          }
         }
 
         return {
@@ -288,7 +350,8 @@ class GooglePlayService {
           acknowledgementState: prodData.acknowledgementState,
           consumptionState: prodData.consumptionState,
           rawDetails: prodData,
-          serverConsumed
+          serverConsumed,
+          consumptionPending: false
         };
       }
     } catch (err: any) {

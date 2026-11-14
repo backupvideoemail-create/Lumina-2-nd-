@@ -1631,8 +1631,8 @@ async function runSystemVerification() {
   };
   const expectedHashes = {
     'src/services/payments/razorpayAdapter.ts': '78d76c04324259a53cb08ac156a7d3f5ba02d5656d939d90e07ceae2491f1e05',
-    'src/services/payments/cashfreeAdapter.ts': 'e2f5f57157f1bdad3f1fbe87c52d7c9f0c14061364f96dda595057aefef84945',
-    'src/services/billing/googlePlayService.ts': '3da6f78c3ab1bde17f7b183fe34ae10610c54b13ef3a0f79fe55026af4d58a42',
+    'src/services/payments/cashfreeAdapter.ts': '094a26d44565c0ebeda6a41af8ac20943af96572ff3b96c87b1087d7a925f9c2',
+    'src/services/billing/googlePlayService.ts': '9a5fa62428df7eac9810718a93467fbef935a225c971d4c7e36bba7773595060',
     'src/services/config/pricingAndConfig.ts': 'bd94bd5c70ba201006c400086a7e4ab223cc38ac9cf6421f4a5a486d04643d83'
   };
   for (const [file, hash] of Object.entries(expectedHashes)) {
@@ -2123,6 +2123,107 @@ async function runSystemVerification() {
   // 35.8 PlansModal Bottom Disclaimer Font-Size Micro-Fix (Exact Text Preserved)
   assert(plansModal35.includes('text-[7.5px] sm:text-[9px]'), '35.8 PlansModal shrinks only disclaimer font size to fit 2 lines on mobile');
   assert(plansModal35.includes('Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.'), '35.8 PlansModal preserves exact disclaimer wording & punctuation');
+
+  // 35.9 Android Support Email & Usable-Only Template Filters
+  const androidProfile35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/java/com/aiprimestudio/app/ui/screens/ProfileScreen.kt'), 'utf8');
+  assert(!androidProfile35.includes('backupvideoemail@gmail.com') && androidProfile35.includes('ai.prime.studio.pro@gmail.com'), '35.9 Android ProfileScreen support email updated to ai.prime.studio.pro@gmail.com');
+  assert(tplView35.includes('hasMultipleFormats') && tplView35.includes('effectiveSelectedCategories') && tplView35.includes('availableRatios.length > 1') && tplView35.includes('hasDistinctCosts'), '35.9 TemplatesView hides unusable format/category/ratio/cost-sort filters based on live dataset');
+  assert(home35.includes('hasMultipleHomeFormats') && home35.includes('isVideoTpl'), '35.9 HomeView uses unified video detection and prevents switching to empty media format');
+
+  // --- SUITE 36: AUTONOMOUS AUDIT FIXES & GOOGLE PLAY RELEASE READINESS ---
+  console.log('\n--- SUITE 36: AUTONOMOUS AUDIT FIXES & GOOGLE PLAY RELEASE READINESS ---');
+
+  // 36.1 Cashfree Adapter Fails Closed & PaymentRouter Defaults to Razorpay
+  const { cashfreeAdapter: cf36 } = await import('../src/services/payments/cashfreeAdapter.ts');
+  const cfVerify36 = await cf36.verifyPayment({ orderId: 'cf_test_1', paymentId: 'cf_pay_1', userId: 'usr_test_36', type: 'plan', itemId: 'plan_intro_daily' }, 40);
+  const cfCancel36 = await cf36.cancelSubscription({ mandateId: 'cf_mandate_1' });
+  assert(cfVerify36.success === false && cfVerify36.creditsAdded === 0, '36.1 cashfreeAdapter.verifyPayment fails closed with zero credits');
+  assert(cfCancel36.success === false, '36.1 cashfreeAdapter.cancelSubscription fails closed instead of returning fake success');
+  const routerContent36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/payments/paymentRouter.ts'), 'utf8');
+  assert(routerContent36.includes("defaultProvider: 'cashfree' | 'razorpay' = 'razorpay'"), '36.1 paymentRouter defaults to authoritative razorpay provider');
+
+  // 36.2 VideoProviderAdapter Fails Closed & Honors Requested Duration/Resolution
+  const videoAdapter36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/videoProviderAdapter.ts'), 'utf8');
+  assert(!videoAdapter36.includes("aspectRatio: params.resolution || '720p'") && videoAdapter36.includes('durationSeconds'), '36.2 videoProviderAdapter honors requested durationSeconds and resolution');
+  assert(videoAdapter36.includes('throw new Error') && videoAdapter36.includes('Starting frame resolution failed for customer media'), '36.2 videoProviderAdapter fails closed if customer source image resolution fails');
+
+  // 36.3 ProductionDatabase Isolated Override & Admin Log Redaction
+  const { ProductionDatabase: ProdDb36, InMemoryFirestoreMock: MockFs36 } = await import('../src/services/db/database.ts');
+  const liveRefDb = new ProdDb36(undefined, { firestoreOverride: new MockFs36() as any, persistToDisk: false });
+  await liveRefDb.readyPromise;
+  const isoDb = new ProdDb36(undefined, { firestoreOverride: new MockFs36() as any, persistToDisk: false });
+  await isoDb.readyPromise;
+  await isoDb.creditWallet('diag_usr_36', 500, 'Isolated Diag Credit', 'ref_diag_36', 'purchase');
+  assert((await isoDb.getWalletAuthoritative('diag_usr_36')).balance === 500, '36.3 Isolated diagnostic ledger calculates 0 + 500 = 500');
+  assert((await liveRefDb.getWalletAuthoritative('diag_usr_36')).balance === 0, '36.3 Isolated diagnostic DB leaves live/separate DB completely untouched');
+  await isoDb.logAdminActivity({
+    actorEmail: 'ai.prime.studio.pro@gmail.com',
+    action: 'SYSTEM_CONFIG_UPDATED',
+    targetId: 't_1',
+    details: 'Bearer secret_jwt_token_12345 https://example.r2.cloudflarestorage.com/obj?X-Amz-Signature=deadbeef&token=abc123'
+  });
+  const logs36 = await isoDb.getAdminLogsAuthoritative(10, 0);
+  assert(Boolean(logs36.logs.length === 1 && !logs36.logs[0].details.includes('secret_jwt_token_12345') && !logs36.logs[0].details.includes('deadbeef')), '36.3 Admin activity log redacts Bearer tokens and signed URL signatures');
+
+  // 36.4 Server Diagnostics Isolation, Truthful TestTypes, R2 5-Point Probe, Cross-Instance Media Auth & Telemetry Window
+  const server36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(server36.includes('testR2Storage5Point()'), '36.4 server.ts Module 12 calls genuine 5-point R2 probe');
+  assert(server36.includes('ISOLATED_SIMULATED_LEDGER_CHECK'), '36.4 server.ts Modules 8 & 9 run on isolated InMemoryFirestoreMock without mutating live DB');
+  assert(server36.includes('persistenceStatus') && server36.includes('persistenceError'), '36.4 server.ts reports genuine diagnostics_history Firestore persistenceStatus');
+  assert(server36.includes('actualObservedSeconds') && server36.includes('windowCoverageStatus') && server36.includes('PROCESS_LOCAL_INSTANCE_ONLY'), '36.4 server.ts system-health exposes genuine telemetry window coverage and scope');
+  assert(server36.includes('getAdminLogsAuthoritative'), '36.4 server.ts /api/admin/logs uses authoritative Firestore query');
+  assert(server36.includes('CREDENTIALS_PRESENT_UNVERIFIED'), '36.4 server.ts adapters/status avoids misleading CONNECTED status from key presence alone');
+  const mediaRouteMatch = server36.slice(server36.indexOf("app.get('/api/media/:fileId'"), server36.indexOf("app.get('/api/media/:fileId'") + 300);
+  assert(mediaRouteMatch.includes('await getAuthenticatedUserAsync(req)'), '36.4 server.ts /api/media/:fileId uses multi-instance getAuthenticatedUserAsync');
+
+  // 36.5 Legal & Account Deletion Direct Web URLs (/privacy, /terms, /refund, /delete-account)
+  const app36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const legal36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/LegalModal.tsx'), 'utf8');
+  assert(app36.includes("'/privacy'") && app36.includes("'/delete-account'") && app36.includes('syncLegalRouteFromPath'), '36.5 App.tsx handles direct /privacy, /terms, /refund, and /delete-account paths');
+  assert(legal36.includes('Account Deletion Request') && legal36.includes('Sign In to Delete Account Now'), '36.5 LegalModal provides standalone unauthenticated deletion guidance + in-app action');
+  assert(!legal36.includes('100% private') && !legal36.includes('never retained'), '36.5 LegalModal contains zero unsupported "100% private" or "never retained" claims');
+
+  // 36.6 Google Play Billing Lifecycle, Pub/Sub Prod Fail-Closed, Mutex & Android BillingManager
+  const { googlePlayService: gp36 } = await import('../src/services/billing/googlePlayService.ts');
+  const badPkgRes = await gp36.verifyPurchase('com.fake.app', 'topup_49', 'tok_123', false);
+  assert(Boolean(badPkgRes.verified === false && badPkgRes.error?.includes('Package name mismatch')), '36.6 googlePlayService rejects mismatched package name');
+  const gpCode36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/billing/googlePlayService.ts'), 'utf8');
+  assert(gpCode36.includes('SUBSCRIPTION_STATE_IN_GRACE_PERIOD') && gpCode36.includes('acknowledgementPending: true') && gpCode36.includes('consumptionPending: true'), '36.6 googlePlayService supports Grace Period and fails closed when server ack/consume fails');
+  assert(server36.includes('inFlightGooglePlayVerifications') && server36.includes('voidedPurchaseNotification') && server36.includes('oneTimeProductNotification') && server36.includes('isStaleEvent'), '36.6 server.ts implements Play verification concurrency mutex + full RTDN lifecycle + out-of-order guard');
+
+  const { verifyPubSubOidcToken: verifyPubSub36 } = await import('../src/services/billing/pubsubAuth.ts');
+  const prevNodeEnv36 = process.env.NODE_ENV;
+  const prevBypass36 = process.env.BYPASS_PUBSUB_AUTH;
+  process.env.NODE_ENV = 'production';
+  delete process.env.BYPASS_PUBSUB_AUTH;
+  const missingAuthRes36 = await verifyPubSub36(undefined);
+  assert(missingAuthRes36.valid === false, '36.6 pubsubAuth rejects missing Authorization header in production');
+  process.env.NODE_ENV = prevNodeEnv36;
+  if (prevBypass36 !== undefined) process.env.BYPASS_PUBSUB_AUTH = prevBypass36;
+  const pubsubCode36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/billing/pubsubAuth.ts'), 'utf8');
+  assert(pubsubCode36.includes('PUBSUB_AUDIENCE / RTDN_AUDIENCE') && pubsubCode36.includes('PUBSUB_SERVICE_ACCOUNT_EMAIL'), '36.6 pubsubAuth fails closed in production when audience or SA email env vars are missing');
+
+  const billingKt36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/java/com/aiprimestudio/app/billing/BillingManager.kt'), 'utf8');
+  assert(billingKt36.includes('consumeResult.responseCode == BillingClient.BillingResponseCode.OK') && billingKt36.includes('ackResult.responseCode == BillingClient.BillingResponseCode.OK'), '36.6 Android BillingManager awaits OK response on consumeAsync & acknowledgePurchase before declaring success');
+
+  // 36.7 Android Adaptive Icon Parity & Real PNG Validation
+  const icXml36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/res/drawable/ic_launcher_foreground.xml'), 'utf8');
+  assert(icXml36.includes('Viewfinder Brackets') && icXml36.includes('Video Play Prism'), '36.7 Android ic_launcher_foreground.xml matches canonical viewfinder + lens + play prism branding');
+  const logoPngHeader36 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'public/logo.png')).subarray(0, 4);
+  assert(logoPngHeader36[0] === 0x89 && logoPngHeader36[1] === 0x50 && logoPngHeader36[2] === 0x4e && logoPngHeader36[3] === 0x47, '36.7 public/logo.png contains genuine PNG image bytes');
+
+  // 36.8 Synthetic FFmpeg Probe & Physical Video Trim Test (Zero Customer/Paid Quota Impact)
+  const { execSync: execSync36 } = await import('child_process');
+  const { videoTrimmer: trimmer36 } = await import('../src/services/video/videoTrimmer.ts');
+  const synthSrcPath = pathUtil.resolve(process.cwd(), '.data', 'temp_trim', 'synth_suite36_src.mp4');
+  fs.mkdirSync(pathUtil.dirname(synthSrcPath), { recursive: true });
+  execSync36(`ffmpeg -y -loglevel error -f lavfi -i color=c=black:s=320x240:d=5.2 -f lavfi -i anullsrc=r=44100:cl=stereo -t 5.2 -c:v libx264 -preset ultrafast -c:a aac -shortest "${synthSrcPath}"`);
+  const probedOrig36 = await trimmer36.probeDuration(synthSrcPath);
+  assert(probedOrig36 >= 4.8 && probedOrig36 <= 5.6, `36.8 FFprobe measured synthetic 5.2s source video (${probedOrig36.toFixed(2)}s)`);
+  const trimmed36 = await trimmer36.trimVideo(synthSrcPath, 4);
+  assert(trimmed36.trimmedDurationSeconds >= 3.8 && trimmed36.trimmedDurationSeconds <= 4.5, `36.8 FFmpeg trimmed video to ~4s (${trimmed36.trimmedDurationSeconds}s)`);
+  if (fs.existsSync(synthSrcPath)) fs.unlinkSync(synthSrcPath);
+  if (fs.existsSync(trimmed36.trimmedFilePath)) fs.unlinkSync(trimmed36.trimmedFilePath);
 
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);

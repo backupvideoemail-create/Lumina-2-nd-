@@ -283,6 +283,133 @@ export class MediaStorageService {
   }
 
   /**
+   * Executes a real 5-point disposable verification against Cloudflare R2:
+   * 1. r2_cfg (Config + HeadBucket)
+   * 2. r2_upl (PutObject to _diag_probes/)
+   * 3. r2_read (HeadObject + GetObject content match)
+   * 4. r2_sign (Presigned GET URL generation check, URL never returned/logged)
+   * 5. r2_del (DeleteObject cleanup in finally block)
+   */
+  public async testR2Storage5Point(): Promise<{
+    configured: boolean;
+    bucket?: string;
+    r2_cfg: 'PASS' | 'FAIL' | 'BLOCKED';
+    r2_upl: 'PASS' | 'FAIL' | 'BLOCKED';
+    r2_read: 'PASS' | 'FAIL' | 'BLOCKED';
+    r2_sign: 'PASS' | 'FAIL' | 'BLOCKED';
+    r2_del: 'PASS' | 'FAIL' | 'BLOCKED';
+    allPassed: boolean;
+    error?: string;
+  }> {
+    const status = this.getStatus();
+    if (!this.s3Client || !this.r2Config.bucketName || !status.r2Configured) {
+      return {
+        configured: false,
+        bucket: this.r2Config.bucketName || undefined,
+        r2_cfg: 'BLOCKED',
+        r2_upl: 'BLOCKED',
+        r2_read: 'BLOCKED',
+        r2_sign: 'BLOCKED',
+        r2_del: 'BLOCKED',
+        allPassed: false,
+        error: `Missing env vars: ${status.missingEnvVars.join(', ')}`
+      };
+    }
+
+    const probeKey = `_diag_probes/r2_probe_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.txt`;
+    const probePayload = `AI_PRIME_R2_PROBE_${crypto.randomBytes(8).toString('hex')}`;
+    let r2_cfg: 'PASS' | 'FAIL' = 'FAIL';
+    let r2_upl: 'PASS' | 'FAIL' = 'FAIL';
+    let r2_read: 'PASS' | 'FAIL' = 'FAIL';
+    let r2_sign: 'PASS' | 'FAIL' = 'FAIL';
+    let r2_del: 'PASS' | 'FAIL' = 'FAIL';
+    let uploaded = false;
+    let firstError: string | undefined;
+
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.r2Config.bucketName }));
+      r2_cfg = 'PASS';
+
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: probeKey,
+          Body: Buffer.from(probePayload, 'utf-8'),
+          ContentType: 'text/plain'
+        })
+      );
+      r2_upl = 'PASS';
+      uploaded = true;
+
+      await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: probeKey
+        })
+      );
+      const getRes: any = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: probeKey
+        })
+      );
+      const bodyStr = await getRes?.Body?.transformToString?.('utf-8');
+      if (bodyStr === probePayload) {
+        r2_read = 'PASS';
+      } else {
+        firstError = 'R2 GetObject content mismatch during read-back verification';
+      }
+
+      const signed = await getSignedUrl(
+        this.s3Client,
+        new GetObjectCommand({ Bucket: this.r2Config.bucketName, Key: probeKey }),
+        { expiresIn: 120 }
+      );
+      if (signed && signed.startsWith('https://')) {
+        r2_sign = 'PASS';
+      } else {
+        firstError = firstError || 'R2 presigned URL generation returned empty/non-HTTPS URL';
+      }
+    } catch (err: any) {
+      firstError = err.message || 'R2 5-point probe error';
+    } finally {
+      if (uploaded) {
+        try {
+          await this.s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: this.r2Config.bucketName,
+              Key: probeKey
+            })
+          );
+          r2_del = 'PASS';
+        } catch (delErr: any) {
+          r2_del = 'FAIL';
+          firstError = firstError || `R2 DeleteObject cleanup failed: ${delErr.message}`;
+        }
+      }
+    }
+
+    const allPassed =
+      r2_cfg === 'PASS' &&
+      r2_upl === 'PASS' &&
+      r2_read === 'PASS' &&
+      r2_sign === 'PASS' &&
+      r2_del === 'PASS';
+
+    return {
+      configured: true,
+      bucket: this.r2Config.bucketName,
+      r2_cfg,
+      r2_upl,
+      r2_read,
+      r2_sign,
+      r2_del,
+      allPassed,
+      error: firstError
+    };
+  }
+
+  /**
    * Ingests and stores media bytes with user isolation metadata.
    */
   public async saveMedia(

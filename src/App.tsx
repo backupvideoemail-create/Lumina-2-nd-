@@ -24,9 +24,28 @@ import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
 
 const AppContent: React.FC = () => {
-  const { activeTab, templateManagerOpen, setTemplateManagerOpen, diagnosticsModalOpen, setDiagnosticsModalOpen, adminDashboardOpen, setAdminDashboardOpen, selectedTemplate } = useApp();
+  const { activeTab, templateManagerOpen, setTemplateManagerOpen, diagnosticsModalOpen, setDiagnosticsModalOpen, adminDashboardOpen, setAdminDashboardOpen, selectedTemplate, setLegalModal } = useApp();
   const [screenshotWarning, setScreenshotWarning] = useState(false);
   const [isWindowBlurred, setIsWindowBlurred] = useState(false);
+
+  // Sync direct web URL routes (/privacy, /terms, /refund, /delete-account) used by Android & Play Console
+  useEffect(() => {
+    const syncLegalRouteFromPath = () => {
+      const normalized = window.location.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+      if (normalized === '/privacy' || normalized === '/privacy-policy') {
+        setLegalModal('privacy');
+      } else if (normalized === '/terms' || normalized === '/terms-of-service') {
+        setLegalModal('terms');
+      } else if (normalized === '/refund' || normalized === '/refund-policy') {
+        setLegalModal('refund');
+      } else if (normalized === '/delete-account') {
+        setLegalModal('delete');
+      }
+    };
+    syncLegalRouteFromPath();
+    window.addEventListener('popstate', syncLegalRouteFromPath);
+    return () => window.removeEventListener('popstate', syncLegalRouteFromPath);
+  }, [setLegalModal]);
 
   // COMPREHENSIVE ANTI-SCREENSHOT & CONTENT PROTECTION
   useEffect(() => {

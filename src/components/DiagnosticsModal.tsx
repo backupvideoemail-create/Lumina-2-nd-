@@ -87,6 +87,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const [activeFilter, setActiveFilter] = useState<'all' | 'critical' | 'issues'>('all');
   const [cacheStats, setCacheStats] = useState<MediaCacheTelemetry | null>(null);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [persistenceStatus, setPersistenceStatus] = useState<'PERSISTED' | 'PERSISTENCE_FAILED' | 'UNAVAILABLE_LOCAL_ONLY' | null>(null);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
 
   const loadCacheTelemetry = async () => {
     try {
@@ -146,6 +148,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
       const data = await res.json().catch(() => null);
       if (data?.runSummary) {
         setRunSummary(data.runSummary);
+        setPersistenceStatus(data.persistenceStatus || null);
+        setPersistenceError(data.persistenceError || null);
         // Automatically expand any failed or blocked tests
         const autoExpanded: Record<string, boolean> = {};
         data.runSummary.results.forEach((r: DiagnosticTestDetail) => {
@@ -668,8 +672,30 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
               </div>
             </div>
 
+            {persistenceStatus && persistenceStatus !== 'PERSISTED' && (
+              <div
+                className={`p-3 rounded-2xl border text-xs flex items-start gap-2 mb-3 ${
+                  persistenceStatus === 'PERSISTENCE_FAILED'
+                    ? 'bg-rose-950/35 border-rose-500/50 text-rose-200'
+                    : 'bg-amber-950/30 border-amber-500/40 text-amber-200'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold uppercase tracking-wider text-[11px]">
+                    {persistenceStatus === 'PERSISTENCE_FAILED'
+                      ? 'PERSISTENCE_FAILED / NOT_SAVED'
+                      : 'LOCAL_BUFFER_ONLY (Firestore Unavailable)'}
+                  </div>
+                  <div className="text-[11px] opacity-90 mt-0.5">
+                    {persistenceError || 'Diagnostic run completed in process memory; Firestore diagnostics_history was not updated.'}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between pb-1 text-[11px] text-stone-400">
-              <span>Showing {filteredResults.length} of {results.length || 10} Diagnostic Test Modules</span>
+              <span>Showing {filteredResults.length} of {results.length || 14} Diagnostic Test Modules</span>
               <div className="flex items-center gap-2">
                 <button onClick={expandAll} className="hover:text-white text-[10px] cursor-pointer">
                   Expand All

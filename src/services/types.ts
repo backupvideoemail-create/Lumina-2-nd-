@@ -23,6 +23,7 @@ export interface VideoGenerationParams {
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
   motionStyle?: string;
   styleWorkflow?: string;

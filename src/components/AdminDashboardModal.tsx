@@ -92,6 +92,10 @@ interface SystemHealthData {
   };
   recentErrorsCount: number;
   recentErrorsWindowMinutes?: number;
+  telemetryStartedAt?: string;
+  actualObservedSeconds?: number;
+  windowScope?: string;
+  windowCoverageStatus?: string;
   recentApiErrors?: RecentApiErrorItem[];
 }
 
@@ -492,8 +496,12 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
     warningsAndMismatches.push(`Cloudflare R2 not configured${missing}; active driver=${healthCheck.storage.driver}.`);
   }
   if (systemHealth && systemHealth.recentErrorsCount > 0) {
+    const coverageNote =
+      systemHealth.windowCoverageStatus === 'PARTIAL_SINCE_STARTUP' && systemHealth.actualObservedSeconds !== undefined
+        ? `observed ${systemHealth.actualObservedSeconds}s since startup, instance-local`
+        : `${systemHealth.recentErrorsWindowMinutes ?? 15}m, instance-local`;
     warningsAndMismatches.push(
-      `${systemHealth.recentErrorsCount} API 4xx/5xx error(s) recorded in last ${systemHealth.recentErrorsWindowMinutes ?? 15} minutes.`
+      `${systemHealth.recentErrorsCount} API 4xx/5xx error(s) recorded (${coverageNote}).`
     );
   }
   if (latestDiagRun && (latestDiagRun.stats.failed > 0 || latestDiagRun.stats.blocked > 0)) {
@@ -600,6 +608,9 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
         memoryHeapTotalMb: systemHealth?.memory?.heapTotalMb ?? 'UNAVAILABLE',
         recentErrorsCount: systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE',
         recentErrorsWindowMinutes: systemHealth?.recentErrorsWindowMinutes ?? 'UNAVAILABLE',
+        actualObservedSeconds: systemHealth?.actualObservedSeconds ?? 'UNAVAILABLE',
+        windowCoverageStatus: systemHealth?.windowCoverageStatus ?? 'UNAVAILABLE',
+        windowScope: systemHealth?.windowScope ?? 'UNAVAILABLE',
         recentApiErrors: systemHealth?.recentApiErrors || [],
         activeMonitoringAlertsCount: activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'
       },
@@ -676,7 +687,7 @@ ${latestDiagRun.results.map((r) => `  - [${r.status.toUpperCase()}] ${r.name} ($
 - Firestore Health: ${systemHealth?.firestore?.status || 'NOT_VERIFIED'}
 - Firestore Latency: ${systemHealth && systemHealth.firestore.latencyMs >= 0 ? `${systemHealth.firestore.latencyMs} ms` : 'UNAVAILABLE'}
 - Container Memory: ${systemHealth ? `${systemHealth.memory.rssMb} MB RSS (Heap ${systemHealth.memory.heapUsedMb}/${systemHealth.memory.heapTotalMb} MB)` : 'UNAVAILABLE'}
-- Recent API 4xx/5xx Errors (${systemHealth?.recentErrorsWindowMinutes ?? 15}m window): ${systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE'}
+- Recent API 4xx/5xx Errors (${systemHealth?.recentErrorsWindowMinutes ?? 15}m max · ${systemHealth?.windowCoverageStatus || 'UNAVAILABLE'}, observed ${systemHealth?.actualObservedSeconds ?? systemHealth?.uptimeSeconds ?? 'N/A'}s, ${systemHealth?.windowScope || 'instance-local'}): ${systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE'}
 ${
   systemHealth?.recentApiErrors && systemHealth.recentApiErrors.length > 0
     ? systemHealth.recentApiErrors.map((e) => `  - [${e.timestamp}] ${e.method} ${e.path} -> HTTP ${e.status}`).join('\n')
@@ -1420,9 +1431,11 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                     </strong>
                   </span>
                 </div>
-                <div className="font-mono tabular-nums">
+                <div className="font-mono tabular-nums text-right">
                   <span>
-                    API 4xx/5xx ({systemHealth?.recentErrorsWindowMinutes ?? 15}m):{' '}
+                    API 4xx/5xx ({systemHealth?.windowCoverageStatus === 'PARTIAL_SINCE_STARTUP'
+                      ? `since start: ${systemHealth?.actualObservedSeconds ?? systemHealth?.uptimeSeconds ?? 0}s`
+                      : `${systemHealth?.recentErrorsWindowMinutes ?? 15}m`}):{' '}
                     <strong
                       className={
                         !systemHealth
@@ -1435,6 +1448,11 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                       {systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE'}
                     </strong>
                   </span>
+                  {systemHealth?.windowScope && (
+                    <span className="block text-[10px] text-stone-400">
+                      Scope: {systemHealth.windowScope}
+                    </span>
+                  )}
                 </div>
               </div>
 

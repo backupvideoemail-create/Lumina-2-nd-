@@ -7,11 +7,19 @@ import { CATEGORIES } from '../data/templatesData';
 import { AspectRatio, Template } from '../types';
 import { queueHdDownload, isDataSaverActive } from '../services/media/hdDownloadQueue';
 import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
+import { isVideoMedia } from '../utils/mediaUtils';
 
 const PREFERRED_RATIO_ORDER: AspectRatio[] = ['9:16', '4:5', '1:1', '16:9'];
 
 const isVideoTemplate = (tpl: Template): boolean =>
-  tpl.type === 'video' || tpl.mediaType === 'video' || Boolean(tpl.isFaceSwap);
+  Boolean(
+    tpl.type === 'video' ||
+    tpl.mediaType === 'video' ||
+    tpl.isFaceSwap ||
+    tpl.coverVideo ||
+    isVideoMedia(tpl.cover) ||
+    isVideoMedia(tpl.preview)
+  );
 
 export const TemplatesView: React.FC = () => {
   const {
@@ -38,11 +46,31 @@ export const TemplatesView: React.FC = () => {
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
   const [sortBy, setSortBy] = useState<'trending' | 'cost_asc' | 'cost_desc'>('trending');
 
-  // 1. Active templates filtered by chosen format type (All / Photos / Videos)
+  // 1. Active templates & actual format availability counts
   const activeTemplates = React.useMemo(
     () => templates.filter((t) => t.isActive !== false),
     [templates]
   );
+
+  const photoCount = React.useMemo(
+    () => activeTemplates.filter((t) => !isVideoTemplate(t)).length,
+    [activeTemplates]
+  );
+  const videoCount = React.useMemo(
+    () => activeTemplates.filter((t) => isVideoTemplate(t)).length,
+    [activeTemplates]
+  );
+  const hasMultipleFormats = photoCount > 0 && videoCount > 0;
+
+  // Guard: If current filterType has 0 matching active templates (data not ready), reset to 'all'
+  React.useEffect(() => {
+    if (activeTemplates.length === 0) return;
+    if (filterType === 'video' && videoCount === 0) {
+      setFilterType('all');
+    } else if (filterType === 'photo' && photoCount === 0) {
+      setFilterType('all');
+    }
+  }, [activeTemplates.length, filterType, photoCount, videoCount, setFilterType]);
 
   const templatesByType = React.useMemo(() => {
     return activeTemplates.filter((tpl) => {
@@ -73,29 +101,6 @@ export const TemplatesView: React.FC = () => {
     return result;
   }, [templatesByType]);
 
-  // 3. Discover only usable Aspect Ratios present in active templates for the chosen type
-  const availableRatios = React.useMemo(() => {
-    const present = new Set<AspectRatio>();
-    templatesByType.forEach((t) => {
-      if (t.aspectRatio) present.add(t.aspectRatio);
-    });
-    const ordered: AspectRatio[] = [];
-    for (const r of PREFERRED_RATIO_ORDER) {
-      if (present.has(r)) ordered.push(r);
-    }
-    present.forEach((r) => {
-      if (!ordered.includes(r)) ordered.push(r);
-    });
-    return ordered;
-  }, [templatesByType]);
-
-  // Guard: If switching All/Photos/Videos leaves an unavailable ratio selected, reset aspectFilter to 'all'
-  React.useEffect(() => {
-    if (aspectFilter !== 'all' && !availableRatios.includes(aspectFilter)) {
-      setAspectFilter('all');
-    }
-  }, [aspectFilter, availableRatios]);
-
   const handleToggleCategory = (cat: string) => {
     if (cat === 'All') {
       setSelectedCategories([]);
@@ -113,18 +118,15 @@ export const TemplatesView: React.FC = () => {
   // Only keep selected categories that actually exist in activeCategories when filtering by type
   const effectiveSelectedCategories = React.useMemo(() => {
     if (selectedCategories.length === 0) return [];
-    return selectedCategories;
-  }, [selectedCategories]);
+    return selectedCategories.filter((cat) => activeCategories.includes(cat));
+  }, [selectedCategories, activeCategories]);
 
-  // 4. Filter templates with AND logic across Type/Aspect/Search, and OR logic across selected Categories
-  const displayList = React.useMemo(() => {
+  // 3. Apply category & search before aspect ratio so availableRatios only shows usable ratios
+  const templatesBeforeAspect = React.useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const filtered = templatesByType.filter((tpl) => {
+    return templatesByType.filter((tpl) => {
       const tplCategory = tpl.category || 'Trending';
       if (effectiveSelectedCategories.length > 0 && !effectiveSelectedCategories.includes(tplCategory)) {
-        return false;
-      }
-      if (aspectFilter !== 'all' && tpl.aspectRatio !== aspectFilter) {
         return false;
       }
       if (q) {
@@ -136,6 +138,39 @@ export const TemplatesView: React.FC = () => {
       }
       return true;
     });
+  }, [templatesByType, effectiveSelectedCategories, searchQuery]);
+
+  // Discover only usable Aspect Ratios present in current filtered templates
+  const availableRatios = React.useMemo(() => {
+    const present = new Set<AspectRatio>();
+    templatesBeforeAspect.forEach((t) => {
+      if (t.aspectRatio) present.add(t.aspectRatio);
+    });
+    const ordered: AspectRatio[] = [];
+    for (const r of PREFERRED_RATIO_ORDER) {
+      if (present.has(r)) ordered.push(r);
+    }
+    present.forEach((r) => {
+      if (!ordered.includes(r)) ordered.push(r);
+    });
+    return ordered;
+  }, [templatesBeforeAspect]);
+
+  // Guard: If switching type/category/search leaves an unavailable ratio selected, reset aspectFilter to 'all'
+  React.useEffect(() => {
+    if (aspectFilter !== 'all' && !availableRatios.includes(aspectFilter)) {
+      setAspectFilter('all');
+    }
+  }, [aspectFilter, availableRatios]);
+
+  // 4. Final display list with aspect filter & sort
+  const displayList = React.useMemo(() => {
+    const filtered = templatesBeforeAspect.filter((tpl) => {
+      if (aspectFilter !== 'all' && tpl.aspectRatio !== aspectFilter) {
+        return false;
+      }
+      return true;
+    });
 
     if (sortBy === 'cost_asc') {
       return [...filtered].sort((a, b) => (a.creditCost || 0) - (b.creditCost || 0));
@@ -143,12 +178,27 @@ export const TemplatesView: React.FC = () => {
     if (sortBy === 'cost_desc') {
       return [...filtered].sort((a, b) => (b.creditCost || 0) - (a.creditCost || 0));
     }
-    return [...filtered].sort((a, b) => (b.likesCount || 0) - (a.likesCount || 0));
-  }, [templatesByType, effectiveSelectedCategories, aspectFilter, searchQuery, sortBy]);
+    return [...filtered].sort(
+      (a, b) =>
+        (b.likesCount || 0) - (a.likesCount || 0) ||
+        (a.sortOrder ?? 999) - (b.sortOrder ?? 999)
+    );
+  }, [templatesBeforeAspect, aspectFilter, sortBy]);
+
+  const hasDistinctCosts = React.useMemo(() => {
+    const costs = new Set(displayList.map((t) => t.creditCost || 0));
+    return costs.size > 1;
+  }, [displayList]);
+
+  React.useEffect(() => {
+    if (!hasDistinctCosts && (sortBy === 'cost_asc' || sortBy === 'cost_desc')) {
+      setSortBy('trending');
+    }
+  }, [hasDistinctCosts, sortBy]);
 
   const hasActiveFilters = Boolean(
     filterType !== 'all' ||
-    selectedCategories.length > 0 ||
+    effectiveSelectedCategories.length > 0 ||
     aspectFilter !== 'all' ||
     searchQuery.trim() !== ''
   );
@@ -204,9 +254,9 @@ export const TemplatesView: React.FC = () => {
 
   const countLabel = loadingTemplates && templates.length === 0
     ? 'Loading AI Templates...'
-    : filterType === 'photo'
+    : filterType === 'photo' || (filterType === 'all' && photoCount > 0 && videoCount === 0)
     ? `${displayList.length} AI Photo ${displayList.length === 1 ? 'Template' : 'Templates'}`
-    : filterType === 'video'
+    : filterType === 'video' || (filterType === 'all' && videoCount > 0 && photoCount === 0)
     ? `${displayList.length} AI Video ${displayList.length === 1 ? 'Template' : 'Templates'}`
     : `${displayList.length} AI Photo & Video ${displayList.length === 1 ? 'Template' : 'Templates'}`;
 
@@ -232,39 +282,41 @@ export const TemplatesView: React.FC = () => {
               </button>
             )}
 
-            {/* Quick Segmented Control for All / Photo / Video */}
-            <div className="flex items-center p-1 rounded-xl bg-stone-900 border border-white/10">
-              <button
-                onClick={() => setFilterType('all')}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  filterType === 'all'
-                    ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
-                    : 'text-stone-400 hover:text-white'
-                }`}
-              >
-                All
-              </button>
-              <button
-                onClick={() => setFilterType('photo')}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  filterType === 'photo'
-                    ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
-                    : 'text-stone-400 hover:text-white'
-                }`}
-              >
-                Photos
-              </button>
-              <button
-                onClick={() => setFilterType('video')}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  filterType === 'video'
-                    ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
-                    : 'text-stone-400 hover:text-white'
-                }`}
-              >
-                Videos
-              </button>
-            </div>
+            {/* Quick Segmented Control for All / Photos / Videos (Only shown when both photo & video templates exist) */}
+            {hasMultipleFormats && (
+              <div className="flex items-center p-1 rounded-xl bg-stone-900 border border-white/10">
+                <button
+                  onClick={() => setFilterType('all')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    filterType === 'all'
+                      ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setFilterType('photo')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    filterType === 'photo'
+                      ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  Photos
+                </button>
+                <button
+                  onClick={() => setFilterType('video')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                    filterType === 'video'
+                      ? 'bg-gradient-to-r from-[#d4af37] to-amber-500 text-stone-950 shadow'
+                      : 'text-stone-400 hover:text-white'
+                  }`}
+                >
+                  Videos
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -290,53 +342,55 @@ export const TemplatesView: React.FC = () => {
           </div>
         </div>
 
-        {/* Horizontally scrollable Category Chips (only categories present for current type) */}
-        <div className="max-w-4xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar pt-3">
-          <button
-            onClick={() => handleToggleCategory('All')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-              selectedCategories.length === 0
-                ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
-                : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'
-            }`}
-          >
-            <span>All Categories</span>
-          </button>
+        {/* Horizontally scrollable Category Chips (Only shown when 2+ usable categories exist) */}
+        {activeCategories.length > 1 && (
+          <div className="max-w-4xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar pt-3">
+            <button
+              onClick={() => handleToggleCategory('All')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                effectiveSelectedCategories.length === 0
+                  ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
+                  : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'
+              }`}
+            >
+              <span>All Categories</span>
+            </button>
 
-          {activeCategories.map((cat) => {
-            const isSelected = selectedCategories.includes(cat);
-            return (
-              <button
-                key={cat}
-                onClick={() => handleToggleCategory(cat)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                  isSelected
-                    ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
-                    : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'
-                }`}
-              >
-                {cat === 'Dance' && <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />}
-                <span>{cat}</span>
-                {isSelected && (
-                  <span className="text-[9px] w-3.5 h-3.5 rounded-full bg-stone-950/30 text-stone-950 font-black flex items-center justify-center">
-                    ✓
-                  </span>
-                )}
-                {cat === 'Dance' && !isSelected && (
-                  <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                    HOT
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+            {activeCategories.map((cat) => {
+              const isSelected = effectiveSelectedCategories.includes(cat);
+              return (
+                <button
+                  key={cat}
+                  onClick={() => handleToggleCategory(cat)}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow-[0_0_15px_rgba(212,175,55,0.4)]'
+                      : 'bg-white/5 text-stone-300 hover:bg-white/10 hover:text-white border border-white/5'
+                  }`}
+                >
+                  {cat === 'Dance' && <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />}
+                  <span>{cat}</span>
+                  {isSelected && (
+                    <span className="text-[9px] w-3.5 h-3.5 rounded-full bg-stone-950/30 text-stone-950 font-black flex items-center justify-center">
+                      ✓
+                    </span>
+                  )}
+                  {cat === 'Dance' && !isSelected && (
+                    <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                      HOT
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Main Grid Content */}
       <div className="max-w-4xl mx-auto px-4 pt-4">
         {/* Spotlight Banner when Dance Category is Selected */}
-        {(selectedCategories.includes('Dance') || selectedCategory === 'Dance') && (
+        {(effectiveSelectedCategories.includes('Dance') || selectedCategory === 'Dance') && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -367,10 +421,10 @@ export const TemplatesView: React.FC = () => {
           </motion.div>
         )}
 
-        {/* Secondary Aspect Ratio & Sort Controls (Only usable Ratios present in active data) */}
-        {(availableRatios.length > 0 || displayList.length > 1) && (
+        {/* Secondary Aspect Ratio & Sort Controls (Only usable Ratios/Sorts present in active data) */}
+        {(availableRatios.length > 1 || displayList.length > 1) && (
           <div className="flex flex-wrap items-center justify-between gap-2 pb-4 text-xs text-stone-400">
-            {availableRatios.length > 0 && (
+            {availableRatios.length > 1 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[11px] uppercase font-semibold text-stone-500">Ratio:</span>
                 {(['all', ...availableRatios] as const).map((r) => (
@@ -389,18 +443,20 @@ export const TemplatesView: React.FC = () => {
               </div>
             )}
 
-            <div className="flex items-center gap-1.5 ml-auto">
-              <span className="text-[11px] uppercase font-semibold text-stone-500">Sort:</span>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as any)}
-                className="bg-stone-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-stone-300 focus:outline-none cursor-pointer"
-              >
-                <option value="trending">Trending (Popular)</option>
-                <option value="cost_asc">Cost: Low to High</option>
-                <option value="cost_desc">Cost: High to Low</option>
-              </select>
-            </div>
+            {displayList.length > 1 && (
+              <div className="flex items-center gap-1.5 ml-auto">
+                <span className="text-[11px] uppercase font-semibold text-stone-500">Sort:</span>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as any)}
+                  className="bg-stone-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-stone-300 focus:outline-none cursor-pointer"
+                >
+                  <option value="trending">Trending (Popular)</option>
+                  {hasDistinctCosts && <option value="cost_asc">Cost: Low to High</option>}
+                  {hasDistinctCosts && <option value="cost_desc">Cost: High to Low</option>}
+                </select>
+              </div>
+            )}
           </div>
         )}
 

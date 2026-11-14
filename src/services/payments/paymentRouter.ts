@@ -9,13 +9,13 @@ import { cashfreeAdapter } from './cashfreeAdapter.ts';
 import { razorpayAdapter } from './razorpayAdapter.ts';
 
 export class PaymentRouter {
-  private defaultProvider: 'cashfree' | 'razorpay' = 'cashfree';
+  private defaultProvider: 'cashfree' | 'razorpay' = 'razorpay';
 
   getAdapter(providerName?: string) {
-    if (providerName === 'razorpay') {
-      return razorpayAdapter;
+    if (providerName === 'cashfree') {
+      return cashfreeAdapter;
     }
-    return cashfreeAdapter;
+    return razorpayAdapter;
   }
 
   async createOrder(params: CreateOrderParams, preferredProvider?: 'cashfree' | 'razorpay'): Promise<OrderResult> {

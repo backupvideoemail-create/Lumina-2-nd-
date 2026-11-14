@@ -326,7 +326,7 @@ fun ProfileScreen(
                         .fillMaxWidth()
                         .clickable {
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                data = Uri.parse("mailto:backupvideoemail@gmail.com")
+                                data = Uri.parse("mailto:ai.prime.studio.pro@gmail.com")
                                 putExtra(Intent.EXTRA_SUBJECT, "AI Prime Studio Support Request")
                             }
                             context.startActivity(Intent.createChooser(intent, "Contact Support"))
@@ -334,7 +334,7 @@ fun ProfileScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Contact Support (backupvideoemail@gmail.com)", color = TextSecondary, fontSize = 12.sp)
+                    Text("Contact Support (ai.prime.studio.pro@gmail.com)", color = TextSecondary, fontSize = 12.sp)
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                 }
 

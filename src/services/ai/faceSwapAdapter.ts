@@ -72,7 +72,7 @@ export class HiggsfieldGenjutsuAdapter {
       fallbackModel: this.fallbackModelName,
       motionControlModel: this.motionControlModel,
       replaceObjectModel: this.replaceObjectModel,
-      status: config.isConfigured ? 'active' : 'pending_credentials',
+      status: config.isConfigured ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'MISSING_SECRET',
       supportedResolutions: ['480p', '720p', '1080p']
     };
   }

@@ -29,7 +29,14 @@ import {
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
 import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
-import { prodDb, adminFirestoreDb, adminAuthInstance, isIsolatedTestEnv } from './src/services/db/database.ts';
+import {
+  prodDb,
+  adminFirestoreDb,
+  adminAuthInstance,
+  isIsolatedTestEnv,
+  ProductionDatabase,
+  InMemoryFirestoreMock
+} from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
 import { verifyPubSubOidcToken } from './src/services/billing/pubsubAuth.ts';
@@ -77,6 +84,7 @@ if (!resolvedCommitSha) {
   }
 }
 const SERVER_STARTUP_IMMUTABLE_BUILD_TIME = process.env.BUILD_TIME || new Date().toISOString();
+const TELEMETRY_STARTED_AT = new Date().toISOString();
 
 function parsePort(): number {
   const portArgIdx = process.argv.indexOf('--port');
@@ -257,17 +265,38 @@ function rateLimit(windowMs: number, maxRequests: number) {
 ========================================================================= */
 
 // Official Brand Logo Route for Razorpay Checkout & External Embeds
-app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (_req, res) => {
+app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Content-Type', 'image/jpeg');
   res.setHeader('Cache-Control', 'public, max-age=86400');
-  const logoPath = path.resolve(process.cwd(), 'public', 'logo.png');
-  if (fs.existsSync(logoPath)) {
-    return res.sendFile(logoPath);
+  const logoPngPath = path.resolve(process.cwd(), 'public', 'logo.png');
+  const altPngPath = path.resolve(process.cwd(), 'public', 'icons', 'icon-512.png');
+  const altJpgPath = path.resolve(process.cwd(), 'public', 'logo.jpg');
+  const legacyJpgPath = path.resolve(process.cwd(), 'src', 'assets', 'images', 'ai_prime_studio_logo_1791382901426.jpg');
+
+  if (req.path === '/logo.jpg' && fs.existsSync(altJpgPath)) {
+    res.setHeader('Content-Type', 'image/jpeg');
+    return res.sendFile(altJpgPath);
   }
-  const altPath = path.resolve(process.cwd(), 'src', 'assets', 'images', 'ai_prime_studio_logo_1791382901426.jpg');
-  if (fs.existsSync(altPath)) {
-    return res.sendFile(altPath);
+  if (fs.existsSync(logoPngPath)) {
+    // Sniff magic bytes cleanly in case logo.png is JPEG-encoded
+    const head = Buffer.alloc(4);
+    const fd = fs.openSync(logoPngPath, 'r');
+    try {
+      fs.readSync(fd, head, 0, 4, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+    res.setHeader('Content-Type', isPng ? 'image/png' : 'image/jpeg');
+    return res.sendFile(logoPngPath);
+  }
+  if (fs.existsSync(altPngPath)) {
+    res.setHeader('Content-Type', 'image/png');
+    return res.sendFile(altPngPath);
+  }
+  if (fs.existsSync(legacyJpgPath)) {
+    res.setHeader('Content-Type', 'image/jpeg');
+    return res.sendFile(legacyJpgPath);
   }
   return res.status(404).end();
 });
@@ -275,7 +304,7 @@ app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (_req, res) => {
 // Serve media safely with user isolation directly from Cloudflare R2 or local cache
 app.get('/api/media/:fileId', async (req, res) => {
   const fileId = path.basename(req.params.fileId);
-  const user = getAuthenticatedUser(req);
+  const user = await getAuthenticatedUserAsync(req);
   const stableEtag = `"media-${fileId}"`;
   try {
     const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
@@ -754,8 +783,8 @@ app.post('/api/templates/:id/like', requireAuth, (req, res) => {
 });
 
 // Admin Verification Route (Allows Content Studio to verify admin access state and live backend status)
-app.get('/api/admin/verify', requireAdmin, (req, res) => {
-  const user = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+app.get('/api/admin/verify', requireAdmin, async (req, res) => {
+  const user = ((req as any).user as UserProfile) || await getAuthenticatedUserAsync(req);
   const storageStatus = mediaStorage.getStatus();
   if (user?.email) {
     prodDb.logAdminActivity({
@@ -781,8 +810,8 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
 });
 
 // Admin Health Check Endpoint
-app.get('/api/admin/health-check', requireAdmin, (req, res) => {
-  const user = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
+  const user = ((req as any).user as UserProfile) || await getAuthenticatedUserAsync(req);
   const storageStatus = mediaStorage.getStatus();
   const adminInitialized = Boolean(adminFirestoreDb);
   const resolvedAdminProjectId = adminFirestoreDb
@@ -866,10 +895,16 @@ app.get('/api/admin/system-health', requireAdmin, async (_req, res) => {
     ? (adminFirestoreDb.databaseId || (adminFirestoreDb as any)._databaseId?.database || '(default)')
     : null;
 
+  const uptimeSeconds = Math.floor(process.uptime());
+
   res.json({
     status: 'ONLINE',
     timestamp: new Date().toISOString(),
-    uptimeSeconds: Math.floor(process.uptime()),
+    uptimeSeconds,
+    telemetryStartedAt: TELEMETRY_STARTED_AT,
+    actualObservedSeconds: uptimeSeconds,
+    windowScope: 'PROCESS_LOCAL_INSTANCE_ONLY',
+    windowCoverageStatus: uptimeSeconds >= 900 ? 'FULL_15M_WINDOW' : 'PARTIAL_SINCE_STARTUP',
     firestore: {
       status: firestoreStatus,
       latencyMs: firestoreLatencyMs,
@@ -893,14 +928,15 @@ app.get('/api/admin/system-health', requireAdmin, async (_req, res) => {
 });
 
 // Admin Activity Logs Paginated Endpoint
-app.get('/api/admin/logs', requireAdmin, (req, res) => {
+app.get('/api/admin/logs', requireAdmin, async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
   const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
 
-  const result = prodDb.getAdminLogs(limit, offset);
+  const result = await prodDb.getAdminLogsAuthoritative(limit, offset);
   res.json({
     logs: result.logs,
     total: result.total,
+    source: result.source,
     limit,
     offset
   });
@@ -926,7 +962,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       model: geminiImgEntry ? geminiImgEntry.modelId : 'gemini-3.1-flash-lite-image',
       provider: 'gemini',
       status: hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET',
-      connectionStatus: hasGeminiKey ? 'CONNECTED' : 'DISCONNECTED',
+      connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
       modelStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: geminiImgEntry ? Object.keys(geminiImgEntry.resolutionTariffs) : ['1080p'],
@@ -944,7 +980,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       ],
       provider: 'higgsfield',
       status: hasHiggsfieldKey ? 'CONFIGURED' : 'MISSING_SECRET',
-      connectionStatus: hasHiggsfieldKey ? 'CONNECTED' : 'DISCONNECTED',
+      connectionStatus: hasHiggsfieldKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
       modelStatus: hfMotionEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'HIGGSFIELD_API_KEY',
       supportedResolutions: {
@@ -962,7 +998,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.1-flash',
       provider: 'gemini',
       status: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET'),
-      connectionStatus: hasGeminiKey ? 'CONNECTED' : 'DISCONNECTED',
+      connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
       modelStatus: 'EVALUATION_ONLY',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: ['720p', '1080p'],
@@ -3166,6 +3202,9 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
   }
 });
 
+// In-flight mutex map to serialize concurrent duplicate Google Play verification calls per token
+const inFlightGooglePlayVerifications = new Map<string, Promise<{ status: number; body: any }>>();
+
 // Google Play In-App Purchase Verification & Unified Balance Sync (Android com.aiprimestudio.app)
 app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), async (req, res) => {
   const user = (req as any).user as UserProfile;
@@ -3175,10 +3214,10 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     return res.status(400).json({ error: 'Missing productId or purchaseToken for Google Play verification' });
   }
 
-  // Strict Package Name Validation
+  // Strict Package Name Validation (always required)
   const EXPECTED_PACKAGE_NAME = 'com.aiprimestudio.app';
-  if (packageName && packageName !== EXPECTED_PACKAGE_NAME) {
-    return res.status(400).json({ error: `Invalid package name: ${packageName}. Expected ${EXPECTED_PACKAGE_NAME}` });
+  if (!packageName || packageName !== EXPECTED_PACKAGE_NAME) {
+    return res.status(400).json({ error: `Invalid or missing package name: ${packageName || 'empty'}. Expected ${EXPECTED_PACKAGE_NAME}` });
   }
 
   // Strict Product ID Validation & Authoritative Mapping
@@ -3211,7 +3250,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
       isIntroPhase = true;
       creditsToAdd = 40;  // 40 credits for 24-hour intro access
       planAmount = 1;     // ₹1 initial intro payment
-      packTitle = 'Double Bonanza Trail Offer (Google Play)';
+      packTitle = 'Double Bonanza Trial Offer (Google Play)';
     }
   } else if (productId === 'sub_weekly_creator' || productId === 'plan_weekly_creator' || productId === 'plan_weekly_pass') {
     const plan = getSubscriptionPlanById('plan_weekly_pass') || CENTRAL_SUBSCRIPTION_PLANS[1];
@@ -3241,169 +3280,204 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
     return res.status(400).json({ error: `Unknown or unsupported Google Play product ID: ${productId}` });
   }
 
-  // Check if this specific orderId was already verified and credited for this billing cycle
-  if (orderId) {
-    const existingOrder = prodDb.getPayment(orderId) || prodDb.getPaymentByPaymentId(orderId);
-    if (existingOrder) {
-      if (existingOrder.userId !== user.id) {
-        return res.status(403).json({ error: 'This purchase order has already been claimed by another account' });
-      }
-      return res.json({
-        success: true,
-        message: 'This billing cycle order was already verified and credited',
-        wallet: prodDb.getWallet(user.id),
-        subscription: prodDb.getSubscription(user.id)
-      });
-    }
-  }
-
-  // For one-time top-ups, check if purchase token was already credited
-  if (!isSubscription) {
-    const existingPayment = prodDb.getPaymentByPaymentId(purchaseToken);
-    if (existingPayment) {
-      if (existingPayment.userId !== user.id) {
-        return res.status(403).json({ error: 'This purchase token has already been claimed by another account' });
-      }
-      return res.json({
-        success: true,
-        message: 'Top-up purchase already verified and credited to your account',
-        wallet: prodDb.getWallet(user.id),
-        subscription: prodDb.getSubscription(user.id)
-      });
-    }
-  }
-
-  // Idempotency key for in-flight protection:
-  // For subscriptions, index by orderId to allow legitimate subsequent renewals with new order IDs
   const tokenHash = crypto.createHash('sha256').update(purchaseToken.trim()).digest('hex');
-  const idempotencyKey = isSubscription && orderId
-    ? `play_sub_${orderId}`
-    : `play_purchase_${tokenHash}`;
+  const lockKey = isSubscription && orderId ? `${tokenHash}_${orderId}` : tokenHash;
 
-  if (await prodDb.isWebhookProcessed(idempotencyKey)) {
-    return res.json({
-      success: true,
-      message: 'Purchase already processed and credited',
-      wallet: prodDb.getWallet(user.id),
-      subscription: prodDb.getSubscription(user.id)
-    });
+  const existingFlight = inFlightGooglePlayVerifications.get(lockKey);
+  if (existingFlight) {
+    const settled = await existingFlight;
+    return res.status(settled.status).json(settled.body);
   }
 
-  // Authoritatively verify purchase token with official Google Play Developer API
-  const playVerification = await googlePlayService.verifyPurchase(
-    EXPECTED_PACKAGE_NAME,
-    productId,
-    purchaseToken,
-    isSubscription
-  );
-
-  if (!playVerification.verified) {
-    return res.status(400).json({
-      error: `Google Play purchase verification failed: ${playVerification.error || 'Invalid, pending, or unacknowledged purchase token'}`
-    });
-  }
-
-  // Update intro vs renewal status authoritatively from Google Play verified resource (lineItems / offer details / duration)
-  if (isSubscription && (productId === 'sub_double_bonanza_weekly' || productId === 'plan_intro_daily' || productId === 'sub_intro_daily')) {
-    if (playVerification.isIntroOffer !== undefined) {
-      isIntroPhase = playVerification.isIntroOffer;
+  const verificationPromise = (async (): Promise<{ status: number; body: any }> => {
+    // Check if this specific orderId was already verified and credited for this billing cycle
+    if (orderId) {
+      const existingOrder = prodDb.getPayment(orderId) || prodDb.getPaymentByPaymentId(orderId);
+      if (existingOrder) {
+        if (existingOrder.userId !== user.id) {
+          return { status: 403, body: { error: 'This purchase order has already been claimed by another account' } };
+        }
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: 'This billing cycle order was already verified and credited',
+            wallet: prodDb.getWallet(user.id),
+            subscription: prodDb.getSubscription(user.id)
+          }
+        };
+      }
     }
-    if (isIntroPhase) {
-      creditsToAdd = 40;
-      planAmount = 1;
-      packTitle = 'Double Bonanza Trail Offer (Google Play)';
-    } else {
-      creditsToAdd = 400;
-      planAmount = 499;
-      packTitle = 'Double Bonanza Weekly Renewal (Google Play)';
+
+    // For one-time top-ups, check if purchase token was already credited
+    if (!isSubscription) {
+      const existingPayment = prodDb.getPaymentByPaymentId(purchaseToken);
+      if (existingPayment) {
+        if (existingPayment.userId !== user.id) {
+          return { status: 403, body: { error: 'This purchase token has already been claimed by another account' } };
+        }
+        return {
+          status: 200,
+          body: {
+            success: true,
+            message: 'Top-up purchase already verified and credited to your account',
+            wallet: prodDb.getWallet(user.id),
+            subscription: prodDb.getSubscription(user.id)
+          }
+        };
+      }
     }
-  }
 
-  // Determine effective order ID
-  const effectiveOrderId = playVerification.orderId || orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const idempotencyKey = isSubscription && orderId
+      ? `play_sub_${orderId}`
+      : `play_purchase_${tokenHash}`;
 
-  // Double check if effectiveOrderId was already recorded (e.g. from developer API response or transaction ledger)
-  const existingEffective = prodDb.getPayment(effectiveOrderId);
-  const alreadyCredited = await prodDb.hasTransactionForReference(effectiveOrderId);
-  if (existingEffective || alreadyCredited) {
-    if (existingEffective && existingEffective.userId !== user.id) {
-      return res.status(403).json({ error: 'This purchase order has already been claimed by another account' });
+    if (await prodDb.isWebhookProcessed(idempotencyKey)) {
+      return {
+        status: 200,
+        body: {
+          success: true,
+          message: 'Purchase already processed and credited',
+          wallet: prodDb.getWallet(user.id),
+          subscription: prodDb.getSubscription(user.id)
+        }
+      };
     }
-    return res.json({
-      success: true,
-      message: 'This billing cycle order was already verified and credited to your account',
-      wallet: prodDb.getWallet(user.id),
-      subscription: prodDb.getSubscription(user.id)
-    });
-  }
 
-  // Record payment in unified database
-  const paymentRecord: PaymentRecord = {
-    id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
-    orderId: effectiveOrderId,
-    paymentId: purchaseToken,
-    userId: user.id,
-    provider: 'google_play',
-    amount: planAmount,
-    currency: 'INR',
-    type: isSubscription ? 'subscription' : 'one_time',
-    status: 'captured',
-    isAutoPay: isSubscription,
-    verificationStatus: 'verified',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  await prodDb.recordPayment(paymentRecord);
+    // Authoritatively verify purchase token with official Google Play Developer API
+    const playVerification = await googlePlayService.verifyPurchase(
+      EXPECTED_PACKAGE_NAME,
+      productId,
+      purchaseToken,
+      isSubscription
+    );
 
-  // Activate / update subscription state
-  let newSub: UserSubscription | null = null;
-  if (isSubscription && planId) {
-    const isDoubleBonanza = planId === 'plan_intro_daily' || productId === 'sub_double_bonanza_weekly';
-    const nextIntervalDays = isDoubleBonanza && isIntroPhase ? 1 : (planId === 'plan_monthly_pass' ? 30 : 7);
-    const nextChargeAt = playVerification.expiryTime || new Date(Date.now() + nextIntervalDays * 86400000).toISOString();
+    if (!playVerification.verified) {
+      const isAckOrConsumeFailure = Boolean(playVerification.acknowledgementPending || playVerification.consumptionPending);
+      return {
+        status: isAckOrConsumeFailure ? 502 : 400,
+        body: {
+          error: `Google Play purchase verification failed: ${playVerification.error || 'Invalid, pending, or unacknowledged purchase token'}`,
+          retryable: isAckOrConsumeFailure,
+          acknowledgementPending: Boolean(playVerification.acknowledgementPending),
+          consumptionPending: Boolean(playVerification.consumptionPending)
+        }
+      };
+    }
 
-    const subscriptionRecord: UserSubscription = {
-      id: effectiveOrderId,
+    // Update intro vs renewal status authoritatively from Google Play verified resource
+    if (isSubscription && (productId === 'sub_double_bonanza_weekly' || productId === 'plan_intro_daily' || productId === 'sub_intro_daily')) {
+      if (playVerification.isIntroOffer !== undefined) {
+        isIntroPhase = playVerification.isIntroOffer;
+      }
+      if (isIntroPhase) {
+        creditsToAdd = 40;
+        planAmount = 1;
+        packTitle = 'Double Bonanza Trial Offer (Google Play)';
+      } else {
+        creditsToAdd = 400;
+        planAmount = 499;
+        packTitle = 'Double Bonanza Weekly Renewal (Google Play)';
+      }
+    }
+
+    const effectiveOrderId = playVerification.orderId || orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+
+    const existingEffective = prodDb.getPayment(effectiveOrderId);
+    const alreadyCredited = await prodDb.hasTransactionForReference(effectiveOrderId);
+    if (existingEffective || alreadyCredited) {
+      if (existingEffective && existingEffective.userId !== user.id) {
+        return { status: 403, body: { error: 'This purchase order has already been claimed by another account' } };
+      }
+      return {
+        status: 200,
+        body: {
+          success: true,
+          message: 'This billing cycle order was already verified and credited to your account',
+          wallet: prodDb.getWallet(user.id),
+          subscription: prodDb.getSubscription(user.id)
+        }
+      };
+    }
+
+    const paymentRecord: PaymentRecord = {
+      id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      orderId: effectiveOrderId,
+      paymentId: purchaseToken,
       userId: user.id,
-      planId,
-      planName: isDoubleBonanza ? 'Double Bonanza' : packTitle,
       provider: 'google_play',
-      mandateId: purchaseToken,
-      status: isDoubleBonanza && isIntroPhase ? 'trial' : 'active',
-      startAt: new Date().toISOString(),
-      nextChargeAt,
-      renewalAmount: isDoubleBonanza ? 499 : (planAmount || 199)
+      amount: planAmount,
+      currency: 'INR',
+      type: isSubscription ? 'subscription' : 'one_time',
+      status: 'captured',
+      isAutoPay: isSubscription,
+      verificationStatus: 'verified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
-    newSub = subscriptionRecord;
-    await prodDb.setSubscription(subscriptionRecord);
+    await prodDb.recordPayment(paymentRecord);
+
+    let newSub: UserSubscription | null = null;
+    if (isSubscription && planId) {
+      const isDoubleBonanza = planId === 'plan_intro_daily' || productId === 'sub_double_bonanza_weekly';
+      const nextIntervalDays = isDoubleBonanza && isIntroPhase ? 1 : (planId === 'plan_monthly_pass' ? 30 : 7);
+      const nextChargeAt = playVerification.expiryTime || new Date(Date.now() + nextIntervalDays * 86400000).toISOString();
+      const isGracePeriod =
+        playVerification.subscriptionState === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD' ||
+        playVerification.subscriptionState === 2;
+
+      const subscriptionRecord: UserSubscription = {
+        id: effectiveOrderId,
+        userId: user.id,
+        planId,
+        planName: isDoubleBonanza ? 'Double Bonanza' : packTitle,
+        provider: 'google_play',
+        mandateId: purchaseToken,
+        status: isGracePeriod ? ('grace_period' as any) : (isDoubleBonanza && isIntroPhase ? 'trial' : 'active'),
+        startAt: new Date().toISOString(),
+        nextChargeAt,
+        renewalAmount: isDoubleBonanza ? 499 : (planAmount || 199)
+      };
+      newSub = subscriptionRecord;
+      await prodDb.setSubscription(subscriptionRecord);
+    }
+
+    const creditType = !isSubscription ? 'topup' : (isIntroPhase ? 'intro' : 'renewal');
+    await prodDb.creditWallet(
+      user.id,
+      creditsToAdd,
+      packTitle,
+      effectiveOrderId,
+      creditType as any,
+      planId || productId
+    );
+
+    await prodDb.markWebhookProcessed(idempotencyKey);
+
+    return {
+      status: 200,
+      body: {
+        success: true,
+        message: `Google Play purchase verified! Added ${creditsToAdd} credits.`,
+        creditsAdded: creditsToAdd,
+        wallet: prodDb.getWallet(user.id),
+        subscription: newSub || prodDb.getSubscription(user.id),
+        profile: prodDb.getUser(user.id),
+        developerApiVerified: playVerification.verified,
+        serverAcknowledged: Boolean(playVerification.serverAcknowledged),
+        serverConsumed: Boolean(playVerification.serverConsumed),
+        orderId: effectiveOrderId
+      }
+    };
+  })();
+
+  inFlightGooglePlayVerifications.set(lockKey, verificationPromise);
+  try {
+    const result = await verificationPromise;
+    return res.status(result.status).json(result.body);
+  } finally {
+    inFlightGooglePlayVerifications.delete(lockKey);
   }
-
-  // Grant credits to unified wallet exactly once with correct expiry source
-  const creditType = !isSubscription ? 'topup' : (isIntroPhase ? 'intro' : 'renewal');
-  await prodDb.creditWallet(
-    user.id,
-    creditsToAdd,
-    packTitle,
-    effectiveOrderId,
-    creditType as any,
-    planId || productId
-  );
-
-  // Mark idempotency key processed
-  await prodDb.markWebhookProcessed(idempotencyKey);
-
-  res.json({
-    success: true,
-    message: `Google Play purchase verified! Added ${creditsToAdd} credits.`,
-    creditsAdded: creditsToAdd,
-    wallet: prodDb.getWallet(user.id),
-    subscription: newSub || prodDb.getSubscription(user.id),
-    profile: prodDb.getUser(user.id),
-    developerApiVerified: playVerification.verified,
-    serverAcknowledged: playVerification.serverAcknowledged,
-    serverConsumed: playVerification.serverConsumed,
-    orderId: effectiveOrderId
-  });
 });
 
 // Real-Time Developer Notifications (RTDN) Endpoint for Google Cloud Pub/Sub
@@ -3430,25 +3504,87 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
     const decodedStr = Buffer.from(pubsubMessage.data, 'base64').toString('utf8');
     const rtdnPayload = JSON.parse(decodedStr);
 
-    const { packageName, subscriptionNotification } = rtdnPayload;
-    if (packageName && packageName !== 'com.aiprimestudio.app') {
+    const {
+      packageName,
+      eventTimeMillis,
+      subscriptionNotification,
+      oneTimeProductNotification,
+      voidedPurchaseNotification,
+      testNotification
+    } = rtdnPayload;
+
+    if (!packageName || packageName !== 'com.aiprimestudio.app') {
       return res.status(400).json({ error: 'Package name mismatch' });
+    }
+
+    if (testNotification) {
+      if (messageId) await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
+      return res.status(200).json({ status: 'acknowledged', type: 'test_notification' });
+    }
+
+    if (voidedPurchaseNotification) {
+      const { purchaseToken, orderId } = voidedPurchaseNotification;
+      const voidedPayment =
+        (orderId ? prodDb.getPayment(orderId) : null) ||
+        (purchaseToken ? prodDb.getPaymentByPaymentId(purchaseToken) : null);
+      if (voidedPayment) {
+        voidedPayment.status = 'refunded';
+        voidedPayment.verificationStatus = 'voided';
+        voidedPayment.updatedAt = new Date().toISOString();
+        await prodDb.recordPayment(voidedPayment);
+      }
+      const sub = purchaseToken ? prodDb.getSubscriptionByMandateOrId(purchaseToken) : null;
+      if (sub) {
+        sub.status = 'revoked' as any;
+        sub.cancelledAt = new Date().toISOString();
+        (sub as any).lastRtdnEventTimeMillis = Number(eventTimeMillis || Date.now());
+        await prodDb.setSubscription(sub);
+      }
+      emitCloudMonitoringEvent(
+        'PAYMENT_FAILURE',
+        'ERROR',
+        `Google Play voided purchase RTDN processed for order ${orderId || 'unknown'}`,
+        { orderId: orderId || 'unknown' }
+      );
+      if (messageId) await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
+      return res.status(200).json({ status: 'success', type: 'voided_purchase' });
+    }
+
+    if (oneTimeProductNotification) {
+      const { notificationType: otpType, purchaseToken, sku } = oneTimeProductNotification;
+      if (otpType === 2 && purchaseToken) {
+        // ONE_TIME_PRODUCT_CANCELED
+        const canceledPayment = prodDb.getPaymentByPaymentId(purchaseToken);
+        if (canceledPayment) {
+          canceledPayment.status = 'failed';
+          canceledPayment.verificationStatus = 'canceled_rtdn';
+          canceledPayment.updatedAt = new Date().toISOString();
+          await prodDb.recordPayment(canceledPayment);
+        }
+      }
+      if (messageId) await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
+      return res.status(200).json({ status: 'acknowledged', type: 'one_time_product', sku, notificationType: otpType });
     }
 
     if (!subscriptionNotification) {
       if (messageId) await prodDb.markWebhookProcessed(`rtdn_${messageId}`);
-      return res.status(200).json({ status: 'acknowledged', type: 'non_subscription' });
+      return res.status(200).json({ status: 'acknowledged', type: 'other_rtdn' });
     }
 
     const { notificationType, purchaseToken, subscriptionId } = subscriptionNotification;
+    const parsedEventMillis = Number(eventTimeMillis || 0);
     console.log(`[Google Play RTDN] Event notificationType: ${notificationType} for ${subscriptionId}`);
 
     const sub = prodDb.getSubscriptionByMandateOrId(purchaseToken);
     if (sub) {
       const userId = sub.userId;
+      const lastEventMillis = Number((sub as any).lastRtdnEventTimeMillis || 0);
+      const isStaleEvent = parsedEventMillis > 0 && lastEventMillis > 0 && parsedEventMillis < lastEventMillis;
 
-      // notificationType 2 = SUBSCRIPTION_RENEWED
+      // Always allow idempotent renewal verification (type 2), even if timestamps arrive close/out-of-order,
+      // while blocking older state transitions from overwriting newer subscription status.
       if (notificationType === 2) {
+        // SUBSCRIPTION_RENEWED
         const verifyResult = await googlePlayService.verifyPurchase(
           'com.aiprimestudio.app',
           subscriptionId || sub.planId,
@@ -3457,7 +3593,7 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
         );
 
         if (verifyResult.verified) {
-          const latestOrderId = verifyResult.orderId || `gplay_renew_${Date.now()}`;
+          const latestOrderId = verifyResult.orderId || `gplay_renew_${parsedEventMillis || Date.now()}`;
           const isAlreadyCredited = await prodDb.hasTransactionForReference(latestOrderId);
 
           if (!isAlreadyCredited) {
@@ -3468,15 +3604,11 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
             await prodDb.creditWallet(
               userId,
               renewalCredits,
-              `${sub.planName} Verified Weekly Renewal`,
+              `${sub.planName} Verified Renewal`,
               latestOrderId,
-              'subscription',
+              'renewal' as any,
               sub.planId
             );
-
-            sub.status = 'active';
-            sub.nextChargeAt = verifyResult.expiryTime || new Date(Date.now() + 7 * 86400000).toISOString();
-            await prodDb.setSubscription(sub);
 
             await prodDb.recordPayment({
               id: `pay_rec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -3494,14 +3626,77 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
               updatedAt: new Date().toISOString()
             });
           }
+
+          if (!isStaleEvent) {
+            sub.status = 'active';
+            sub.cancelledAt = undefined;
+            sub.nextChargeAt = verifyResult.expiryTime || new Date(Date.now() + 7 * 86400000).toISOString();
+            (sub as any).lastRtdnEventTimeMillis = parsedEventMillis || Date.now();
+            await prodDb.setSubscription(sub);
+          }
         }
-      } else if (notificationType === 3) {
-        // SUBSCRIPTION_CANCELED: User cancelled auto-renewal. Access continues until nextChargeAt.
-        sub.cancelledAt = new Date().toISOString();
-        await prodDb.setSubscription(sub);
-      } else if (notificationType === 13) {
-        // SUBSCRIPTION_EXPIRED: Access ends
-        sub.status = 'expired';
+      } else if (!isStaleEvent) {
+        if (notificationType === 1 || notificationType === 7) {
+          // 1 = SUBSCRIPTION_RECOVERED, 7 = SUBSCRIPTION_RESTARTED
+          const verifyResult = await googlePlayService.verifyPurchase(
+            'com.aiprimestudio.app',
+            subscriptionId || sub.planId,
+            purchaseToken,
+            true
+          );
+          if (verifyResult.verified && verifyResult.expiryTime) {
+            sub.nextChargeAt = verifyResult.expiryTime;
+          }
+          sub.status = 'active';
+          if (notificationType === 7) sub.cancelledAt = undefined;
+        } else if (notificationType === 3) {
+          // 3 = SUBSCRIPTION_CANCELED: Auto-renew disabled; keep access until nextChargeAt
+          sub.cancelledAt = new Date().toISOString();
+        } else if (notificationType === 4) {
+          // 4 = SUBSCRIPTION_PURCHASED
+          sub.status = subscriptionId === 'sub_double_bonanza_weekly' ? 'trial' : 'active';
+        } else if (notificationType === 5) {
+          // 5 = SUBSCRIPTION_ON_HOLD
+          sub.status = 'on_hold' as any;
+        } else if (notificationType === 6) {
+          // 6 = SUBSCRIPTION_IN_GRACE_PERIOD
+          sub.status = 'grace_period' as any;
+        } else if (notificationType === 9) {
+          // 9 = SUBSCRIPTION_DEFERRED
+          const verifyResult = await googlePlayService.verifyPurchase(
+            'com.aiprimestudio.app',
+            subscriptionId || sub.planId,
+            purchaseToken,
+            true
+          );
+          if (verifyResult.verified && verifyResult.expiryTime) {
+            sub.nextChargeAt = verifyResult.expiryTime;
+          }
+        } else if (notificationType === 10) {
+          // 10 = SUBSCRIPTION_PAUSED
+          sub.status = 'paused' as any;
+        } else if (notificationType === 12) {
+          // 12 = SUBSCRIPTION_REVOKED (refunded/revoked by Play)
+          sub.status = 'revoked' as any;
+          sub.cancelledAt = new Date().toISOString();
+          const latestPay = prodDb.getPaymentByPaymentId(purchaseToken);
+          if (latestPay) {
+            latestPay.status = 'refunded';
+            latestPay.verificationStatus = 'revoked_rtdn';
+            latestPay.updatedAt = new Date().toISOString();
+            await prodDb.recordPayment(latestPay);
+          }
+          emitCloudMonitoringEvent(
+            'PAYMENT_FAILURE',
+            'ERROR',
+            `Google Play subscription revoked via RTDN for ${subscriptionId || sub.planId}`,
+            { subscriptionId: subscriptionId || sub.planId }
+          );
+        } else if (notificationType === 13) {
+          // 13 = SUBSCRIPTION_EXPIRED
+          sub.status = 'expired';
+        }
+        (sub as any).lastRtdnEventTimeMillis = parsedEventMillis || Date.now();
         await prodDb.setSubscription(sub);
       }
     }
@@ -4816,13 +5011,20 @@ app.get('/api/admin/diagnostics/history', requireAdmin, async (_req, res) => {
 app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   const currentEnv: 'production' | 'staging' | 'sandbox' =
     process.env.NODE_ENV === 'production' ? 'production' : 'sandbox';
-  const commitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || 'UNKNOWN';
+  const commitSha = resolvedCommitSha;
   const cloudRunRevision = process.env.K_REVISION || 'local-dev';
   const runTimestamp = new Date().toISOString();
   const runId = `diag_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
   // Fetch most recent previous run for status comparison
   const previousRun: DiagnosticRunSummary | undefined = diagnosticsHistoryBuffer[0];
+
+  const resolvedDiagProjectId = adminFirestoreDb
+    ? (adminFirestoreDb.projectId || (adminFirestoreDb as any)._settings?.projectId || firebaseConfig.projectId || 'UNAVAILABLE')
+    : (firebaseConfig.projectId || 'UNAVAILABLE');
+  const resolvedDiagDbId = adminFirestoreDb
+    ? (adminFirestoreDb.databaseId || (adminFirestoreDb as any)._databaseId?.database || (firebaseConfig as any).firestoreDatabaseId || '(default)')
+    : ((firebaseConfig as any).firestoreDatabaseId || '(default)');
 
   const testDefinitions: Array<{
     id: string;
@@ -4847,6 +5049,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'Firebase Google Login & Identity Security',
       category: 'Authentication & Identity',
       severity: 'CRITICAL',
+      testType: 'INTEGRATION_CHECK',
       endpointOrProvider: 'Firebase Auth SDK · /api/auth/verify',
       expectedResult: 'Valid Firebase Project ID and active Web API key configured in firebase-applet-config.json',
       execute: async () => {
@@ -4872,6 +5075,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'Firebase Phone OTP & reCAPTCHA Verification Pipeline',
       category: 'Authentication & Identity',
       severity: 'HIGH',
+      testType: 'INTEGRATION_CHECK',
       endpointOrProvider: 'Firebase Phone Auth / reCAPTCHA',
       expectedResult: 'Active authDomain with SMS OTP authentication capability',
       execute: async () => {
@@ -4897,6 +5101,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'High-Intent Action Auth Gate & Multi-Tenant User Isolation',
       category: 'Security & Access',
       severity: 'CRITICAL',
+      testType: 'SECURITY_RBAC',
       endpointOrProvider: 'requireAuth · Internal Security Middleware',
       expectedResult: 'Unauthenticated token resolution returns null; customer data strictly isolated',
       execute: async () => {
@@ -4923,6 +5128,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'Server-Verified Business Admin Access Control (RBAC)',
       category: 'Security & Access',
       severity: 'CRITICAL',
+      testType: 'SECURITY_RBAC',
       endpointOrProvider: 'requireAdmin · /api/admin/*',
       expectedResult: 'Strict HTTP 403 Forbidden for non-admins; verified access for backupvideoemail@gmail.com and ai.prime.studio.pro@gmail.com',
       execute: async () => {
@@ -4983,6 +5189,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'Razorpay UPI AutoPay Mandate & Order Configuration',
       category: 'Payments & Mandates',
       severity: 'CRITICAL',
+      testType: 'INTEGRATION_CHECK',
       endpointOrProvider: 'POST /api/payments/checkout/order · Razorpay Gateway',
       expectedResult: 'Configured RAZORPAY_KEY_ID & KEY_SECRET; architecture supports ₹1 intro mandate and plan orders without live financial side effects',
       execute: async () => {
@@ -5023,6 +5230,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'Cryptographic HMAC-SHA256 Signature Verification & Timing-Safe Equality',
       category: 'Payments & Mandates',
       severity: 'CRITICAL',
+      testType: 'AUTOMATED_UNIT',
       endpointOrProvider: 'POST /api/payments/verify · HMAC-SHA256 Engine',
       expectedResult: 'Valid HMAC signatures accepted; tampered signatures strictly rejected via crypto.timingSafeEqual',
       execute: async () => {
@@ -5072,6 +5280,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'AutoPay Mandate Lifecycle & Calendar Renewal Math',
       category: 'Payments & Mandates',
       severity: 'HIGH',
+      testType: 'INTEGRATION_CHECK',
       endpointOrProvider: 'AutoPay Subscription Scheduler',
       expectedResult: 'Double Bonanza: ₹1 Intro today (40 credits, 24h) -> ₹499 Weekly renewal (400 credits, 7d) starting next calendar day',
       execute: async () => {
@@ -5095,55 +5304,67 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       }
     },
 
-    // Module 8: Webhook Raw Buffer HMAC Verification & Replay Protection
+    // Module 8: Webhook Raw Buffer HMAC Verification & Replay Protection (Isolated Sandbox)
     {
       id: 'webhook_resilience_idempotency',
       name: 'Webhook Raw Buffer HMAC Verification & Replay Protection',
       category: 'Payments & Mandates',
       severity: 'HIGH',
-      endpointOrProvider: 'POST /api/razorpay/webhook · Idempotency Store',
-      expectedResult: 'Webhook signatures verified against raw body buffer; duplicate event IDs detected and deduplicated without double crediting',
+      testType: 'AUTOMATED_UNIT',
+      endpointOrProvider: 'POST /api/razorpay/webhook · Isolated Idempotency Check',
+      expectedResult: 'ISOLATED_SIMULATED_LEDGER_CHECK: Duplicate event IDs detected without mutating live Firestore',
       execute: async () => {
+        const isolatedDiagDb = new ProductionDatabase(undefined, {
+          firestoreOverride: new InMemoryFirestoreMock() as any,
+          persistToDisk: false
+        });
+        await isolatedDiagDb.readyPromise;
         const testEventId = `evt_diag_test_${Date.now()}`;
-        await prodDb.markWebhookProcessed(testEventId);
-        const isRecorded = await prodDb.isWebhookProcessed(testEventId);
+        await isolatedDiagDb.markWebhookProcessed(testEventId);
+        const isRecorded = await isolatedDiagDb.isWebhookProcessed(testEventId);
 
         if (!isRecorded) {
           return {
             status: 'failed',
-            actualResult: 'Idempotency lookup returned false after markWebhookProcessed',
-            failureReason: 'Webhook event ID was not durably recorded in idempotency store',
-            rootCauseHypothesis: 'Idempotency collection write failure in database adapter',
-            recommendedAction: 'Check markWebhookProcessed and processed_webhooks collection'
+            actualResult: 'Isolated idempotency lookup returned false after markWebhookProcessed',
+            failureReason: 'Webhook event ID was not recorded in isolated idempotency store',
+            rootCauseHypothesis: 'Idempotency logic failure in database adapter',
+            recommendedAction: 'Check markWebhookProcessed and isWebhookProcessed in database.ts'
           };
         }
 
         return {
           status: 'passed',
-          actualResult: 'Replay attack defense verified: Duplicate event IDs recognized and acknowledged with 200 OK without re-crediting'
+          actualResult: 'ISOLATED_SIMULATED_LEDGER_CHECK: Replay defense verified in isolated InMemoryFirestoreMock with zero live Firestore mutations.'
         };
       }
     },
 
-    // Module 9: Server-Authoritative Credit Wallet & Atomic Ledger Activation
+    // Module 9: Server-Authoritative Credit Wallet & Atomic Ledger Activation (Isolated Sandbox)
     {
       id: 'credit_activation_ledger_integrity',
       name: 'Server-Authoritative Credit Wallet & Atomic Ledger Activation',
       category: 'Credit Ledger',
       severity: 'CRITICAL',
-      endpointOrProvider: 'POST /api/payments/verify · Wallet Ledger',
+      testType: 'AUTOMATED_UNIT',
+      endpointOrProvider: 'POST /api/payments/verify · Isolated Wallet Ledger Check',
       calculationFormula: 'balance_after === balance_before + pack_credits',
-      expectedResult: 'Initial balance (0) + 500 = 500 credits',
+      expectedResult: 'ISOLATED_SIMULATED_LEDGER_CHECK: Initial balance (0) + 500 = 500 credits with zero live DB writes',
       execute: async () => {
+        const isolatedDiagDb = new ProductionDatabase(undefined, {
+          firestoreOverride: new InMemoryFirestoreMock() as any,
+          persistToDisk: false
+        });
+        await isolatedDiagDb.readyPromise;
         const testUserId = `usr_diag_test_${Date.now()}`;
         const testRefId = `tx_diag_test_${Date.now()}`;
 
         try {
-          const initialWallet = await prodDb.getWalletAuthoritative(testUserId);
+          const initialWallet = await isolatedDiagDb.getWalletAuthoritative(testUserId);
           const initialBalance = initialWallet.balance;
           const creditsToGrant = 500;
 
-          await prodDb.creditWallet(
+          await isolatedDiagDb.creditWallet(
             testUserId,
             creditsToGrant,
             'Diagnostic Test Credit Activation',
@@ -5151,17 +5372,14 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
             'purchase'
           );
 
-          const afterWallet = await prodDb.getWalletAuthoritative(testUserId);
+          const afterWallet = await isolatedDiagDb.getWalletAuthoritative(testUserId);
           const afterBalance = afterWallet.balance;
           const expectedBalance = initialBalance + creditsToGrant;
-
-          // Teardown test user cleanly so zero residual test state lingers
-          prodDb.deleteAccount(testUserId);
 
           if (afterBalance !== expectedBalance) {
             return {
               status: 'failed',
-              actualResult: `Initial balance: ${initialBalance}, Credits added: ${creditsToGrant}, Actual balance after: ${afterBalance} (Expected: ${expectedBalance})`,
+              actualResult: `ISOLATED_SIMULATED_LEDGER_CHECK mismatch: Initial=${initialBalance}, Added=${creditsToGrant}, Actual=${afterBalance}, Expected=${expectedBalance}`,
               failureReason: `Credit activation calculation mismatch: expected ${expectedBalance}, got ${afterBalance}`,
               rootCauseHypothesis: 'Wallet balance calculation formula or grant filter in database.ts',
               recommendedAction: 'Inspect creditWallet and getWallet in database.ts'
@@ -5170,16 +5388,15 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
 
           return {
             status: 'passed',
-            actualResult: `Exact calculation verified: Initial (${initialBalance}) + 500 = ${afterBalance} credits (Formula: balance_after === balance_before + pack_credits)`
+            actualResult: `ISOLATED_SIMULATED_LEDGER_CHECK verified in isolated sandbox (zero live DB mutation): Initial (${initialBalance}) + 500 = ${afterBalance} credits`
           };
         } catch (err: any) {
-          prodDb.deleteAccount(testUserId);
           return {
             status: 'failed',
-            actualResult: `Exception: ${err.message}`,
+            actualResult: `Isolated ledger exception: ${err.message}`,
             failureReason: err.message,
-            rootCauseHypothesis: 'Credit wallet transaction rejected or database write error',
-            recommendedAction: 'Check Firestore permissions and database.ts creditWallet method'
+            rootCauseHypothesis: 'Credit wallet transaction logic error',
+            recommendedAction: 'Inspect database.ts creditWallet method'
           };
         }
       }
@@ -5191,6 +5408,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       name: 'AI Synthesis Provider Readiness & Multi-Tenant Media Isolation',
       category: 'AI Synthesis & Storage',
       severity: 'HIGH',
+      testType: 'STORAGE_AUDIT',
       endpointOrProvider: 'Google Gemini / Veo / Cloudflare R2 / Local Storage',
       expectedResult: 'Cross-user media access blocked; owner-only access verified; provider keys checked without unsolicited paid generation',
       execute: async () => {
@@ -5208,7 +5426,6 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         const intruderCheck = mediaStorage.getAuthorizedFilePath(testMeta.fileId, testIntruderId);
         const ownerCheck = mediaStorage.getAuthorizedFilePath(testMeta.fileId, testOwnerId);
 
-        // Cleanup test media
         mediaStorage.deleteMedia(testMeta.fileId);
 
         if (!intruderCheck.error?.includes('Unauthorized')) {
@@ -5236,7 +5453,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
 
         return {
           status: 'passed',
-          actualResult: `Tenant isolation strictly enforced (Intruder 403 blocked, Owner allowed); AI Provider Key=${geminiApiKeyPresent ? 'Configured' : 'Missing'}; Storage=${r2Config.r2Configured ? 'R2 Durable' : 'Local Fallback'}`
+          actualResult: `Tenant isolation strictly enforced (Intruder 403 blocked, Owner allowed); AI Provider Key=${geminiApiKeyPresent ? 'Present (Unverified)' : 'Missing'}; Storage=${r2Config.r2Configured ? 'R2 Configured' : 'Local Fallback'}`
         };
       }
     },
@@ -5248,15 +5465,14 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       category: 'Authoritative Database',
       severity: 'CRITICAL',
       testType: 'LIVE_PROBE',
-      endpointOrProvider: 'Firestore · ai-prime-studio/(default)',
-      expectedResult: 'Authoritative Firestore project connected with active read/write/read-back verification',
+      endpointOrProvider: `Firestore · ${resolvedDiagProjectId}/${resolvedDiagDbId}`,
+      expectedResult: 'Authoritative Firestore project connected with active write/read-back/delete verification',
       execute: async () => {
-        const projectId = process.env.GCP_PROJECT || firebaseConfig.projectId || 'ai-prime-studio';
         const isConnected = Boolean(adminFirestoreDb);
         if (!isConnected) {
           return {
             status: 'warning',
-            actualResult: `Operating in local durable fallback; Firestore project ID='${projectId}' (Admin credentials pending in sandbox)`,
+            actualResult: `Operating in local durable fallback; Configured Firebase project='${resolvedDiagProjectId}/${resolvedDiagDbId}' (Admin credentials pending in sandbox)`,
             failureReason: 'Firestore Admin SDK not initialized in local sandbox environment',
             rootCauseHypothesis: 'Environment variable GOOGLE_APPLICATION_CREDENTIALS not set in local container',
             recommendedAction: 'Ensure Cloud Run runtime service account credentials are mounted in production'
@@ -5269,57 +5485,54 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
           await testRef.delete();
           return {
             status: 'passed',
-            actualResult: `Authoritative Firestore connected to Project '${projectId}' with verified write-read-delete cycle`
+            actualResult: `Authoritative Firestore connected to '${resolvedDiagProjectId}/${resolvedDiagDbId}' with verified write-read-delete cycle (exists=${snap.exists})`
           };
         } catch (err: any) {
           return {
             status: 'failed',
-            actualResult: `Firestore probe error: ${err.message}`,
+            actualResult: `Firestore probe error on '${resolvedDiagProjectId}/${resolvedDiagDbId}': ${err.message}`,
             failureReason: err.message,
-            rootCauseHypothesis: 'Firestore permission error or network connectivity issue',
-            recommendedAction: 'Verify Cloud Run service account has roles/datastore.user permission'
+            rootCauseHypothesis: 'Firestore permission error or database mismatch',
+            recommendedAction: 'Verify Cloud Run service account has roles/datastore.user permission and matching FIRESTORE_DATABASE_ID'
           };
         }
       }
     },
 
-    // Module 12: Cloudflare R2 5-Point Storage Audit (r2_cfg, r2_upl, r2_read, r2_del, r2_sign)
+    // Module 12: Cloudflare R2 5-Point Storage Audit (r2_cfg, r2_upl, r2_read, r2_sign, r2_del)
     {
       id: 'r2_storage_5point_audit',
-      name: 'Cloudflare R2 5-Point Storage Audit (Config, Upload, Read, Delete, Sign)',
+      name: 'Cloudflare R2 5-Point Storage Audit (Config, Upload, Read, Sign, Delete)',
       category: 'Cloudflare R2 Durable Storage',
       severity: 'HIGH',
       testType: 'STORAGE_AUDIT',
-      endpointOrProvider: 'Cloudflare R2 S3 API (5-Point Audit)',
-      expectedResult: 'r2_cfg, r2_upl, r2_read, r2_del, and r2_sign independently verified without false READY claims',
+      endpointOrProvider: 'Cloudflare R2 S3 API (Real 5-Point Probe)',
+      expectedResult: 'r2_cfg, r2_upl, r2_read, r2_sign, and r2_del independently verified via live disposable probe object',
       execute: async () => {
         const status = mediaStorage.getStatus();
         if (!status.r2Configured) {
           const missingVars = status.missingEnvVars.join(', ');
           return {
             status: 'blocked',
-            actualResult: `r2_cfg: BLOCKED (Missing: ${missingVars}); r2_upl: BLOCKED; r2_read: BLOCKED; r2_del: BLOCKED; r2_sign: BLOCKED. Operating in local secure storage.`,
+            actualResult: `r2_cfg: BLOCKED (Missing: ${missingVars}); r2_upl: BLOCKED; r2_read: BLOCKED; r2_sign: BLOCKED; r2_del: BLOCKED. Operating in local secure storage.`,
             failureReason: `Cloudflare R2 credentials missing: ${missingVars}`,
             rootCauseHypothesis: 'Production R2 storage credentials not yet provisioned in this environment',
             recommendedAction: 'Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME in Cloud Run secrets'
           };
         }
         try {
-          const liveStatus = await mediaStorage.testR2Connection();
-          if (liveStatus.r2LiveAuthenticated) {
-            return {
-              status: 'passed',
-              actualResult: `r2_cfg: PASS (${status.bucket}); r2_upl: PASS; r2_read: PASS; r2_del: PASS; r2_sign: PASS (Live Bucket Authenticated)`
-            };
-          } else {
-            return {
-              status: 'failed',
-              actualResult: `r2_cfg: PASS; live authentication failed: ${liveStatus.r2Error || 'Unknown error'}`,
-              failureReason: liveStatus.r2Error || 'R2 connection failed',
-              rootCauseHypothesis: 'R2 bucket credentials invalid or permission denied',
-              recommendedAction: 'Check Cloudflare R2 API token permissions'
-            };
+          const probe5 = await mediaStorage.testR2Storage5Point();
+          const summaryStr = `r2_cfg: ${probe5.r2_cfg}; r2_upl: ${probe5.r2_upl}; r2_read: ${probe5.r2_read}; r2_sign: ${probe5.r2_sign}; r2_del: ${probe5.r2_del} (${probe5.bucket || status.bucket})`;
+          if (probe5.allPassed) {
+            return { status: 'passed', actualResult: summaryStr };
           }
+          return {
+            status: 'failed',
+            actualResult: `${summaryStr} — ${probe5.error || 'One or more R2 probe steps failed'}`,
+            failureReason: probe5.error || 'R2 5-point probe failed',
+            rootCauseHypothesis: 'R2 bucket permissions (Read/Write/Delete), CORS, or S3 endpoint mismatch',
+            recommendedAction: 'Check Cloudflare R2 API token Object Read & Write permissions'
+          };
         } catch (err: any) {
           return {
             status: 'failed',
@@ -5357,9 +5570,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         if (adminFirestoreDb) {
           try {
             const probeRef = adminFirestoreDb.collection('_sync_probes').doc(probeDocId);
-            // 1. Write synthetic disposable probe
             await probeRef.set(probePayload);
-            // 2. Authoritative read-back
             const snap = await probeRef.get();
             if (!snap.exists) {
               return {
@@ -5380,9 +5591,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
                 recommendedAction: 'Verify Firestore cache bypass'
               };
             }
-            // 3. Delete document
             await probeRef.delete();
-            // 4. Tombstone verification: confirm document no longer exists
             const tombstoneSnap = await probeRef.get();
             if (tombstoneSnap.exists) {
               return {
@@ -5407,10 +5616,9 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
             };
           }
         } else {
-          // Local fallback verification
           return {
-            status: 'passed',
-            actualResult: `Cross-builder sync driver validated in sandbox: Simulated write, read-back (nonce=${probeNonce}), delete, and tombstone verified with zero side effects.`
+            status: 'warning',
+            actualResult: `Sandbox local-only mode: In-memory sync probe simulated (nonce=${probeNonce}); Admin Firestore SDK not initialized here.`
           };
         }
       }
@@ -5423,7 +5631,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       category: 'Google Cloud Monitoring & Observability',
       severity: 'HIGH',
       testType: 'MONITORING_EVENT',
-      endpointOrProvider: 'Cloud Run · ai-prime-studio · asia-southeast1',
+      endpointOrProvider: 'Cloud Run · ai-prime-studio-photo-video · asia-southeast1',
       expectedResult: 'Cloud Run service ai-prime-studio-photo-video monitored across 9 failure vectors with deduplicated live alerts',
       execute: async () => {
         try {
@@ -5541,19 +5749,26 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   diagnosticsHistoryBuffer.unshift(runSummary);
   if (diagnosticsHistoryBuffer.length > 10) diagnosticsHistoryBuffer.pop();
 
-  // Persist permanently to Firestore diagnostics_history collection
+  // Persist permanently to Firestore diagnostics_history collection and track truthful persistence status
+  let persistenceStatus: 'PERSISTED' | 'PERSISTENCE_FAILED' | 'UNAVAILABLE_LOCAL_ONLY' = 'UNAVAILABLE_LOCAL_ONLY';
+  let persistenceError: string | null = null;
   if (adminFirestoreDb) {
     try {
       await adminFirestoreDb.collection('diagnostics_history').doc(runId).set(runSummary);
+      persistenceStatus = 'PERSISTED';
       console.log(`[Diagnostics] Run ${runId} saved permanently to Firestore diagnostics_history collection.`);
     } catch (err: any) {
-      console.warn('[Diagnostics] Firestore history write note:', err.message);
+      persistenceStatus = 'PERSISTENCE_FAILED';
+      persistenceError = `PERSISTENCE_FAILED / NOT_SAVED: ${err.message}`;
+      console.warn('[Diagnostics] Firestore history write failed:', err.message);
     }
   }
 
   return res.json({
     success: true,
-    runSummary
+    runSummary,
+    persistenceStatus,
+    persistenceError
   });
 });
 

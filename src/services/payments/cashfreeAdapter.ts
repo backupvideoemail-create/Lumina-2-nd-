@@ -20,20 +20,20 @@ export class CashfreeAdapter {
     };
   }
 
-  async verifyPayment(params: VerifyPaymentParams, expectedCredits: number): Promise<PaymentVerificationResult> {
+  async verifyPayment(params: VerifyPaymentParams, _expectedCredits: number): Promise<PaymentVerificationResult> {
     return {
-      success: true,
-      creditsAdded: expectedCredits,
+      success: false,
+      creditsAdded: 0,
       orderId: params.orderId,
       provider: this.providerName,
-      transactionRef: params.paymentId || `tx_${params.orderId}`
+      error: 'Cashfree live payment verification is disabled/unimplemented. Use authoritative Razorpay or Google Play verification.'
     };
   }
 
-  async cancelSubscription(params: any): Promise<{ success: boolean; message: string }> {
+  async cancelSubscription(_params: any): Promise<{ success: boolean; message: string }> {
     return {
-      success: true,
-      message: 'Subscription mandate cancelled successfully.'
+      success: false,
+      message: 'Cashfree subscription cancellation is disabled/unimplemented. Use authoritative Razorpay or Google Play billing.'
     };
   }
 }
