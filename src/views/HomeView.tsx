@@ -353,13 +353,13 @@ export const HomeView: React.FC = () => {
     }
   };
 
-  // Immediate IndexedDB Hydration + Top-First Progressive Hero Banner Caching (no re-download on refresh)
+  // Immediate IndexedDB Hydration (0 bytes downloaded) + Click-Triggered Full HD Download (prevents multi-video lag)
   useEffect(() => {
     if (!banners || banners.length === 0) return;
     let cancelled = false;
 
-    const hydrateAndPrefetch = async () => {
-      // Step 1: Resolve any already-cached IndexedDB Blob URLs immediately (0 bytes downloaded)
+    const hydrateExistingCache = async () => {
+      // Read ONLY already-cached IndexedDB Blob URLs (0 network requests, 0 lag)
       await Promise.all(
         banners.map(async (b) => {
           const { primaryMediaUrl, rawPoster } = resolveBannerMedia(b, templates);
@@ -380,51 +380,15 @@ export const HomeView: React.FC = () => {
         })
       );
 
-      // Step 2: Top Hero Banners download first: Active banner ('high'), then remaining banners ('medium')
+      // Warm ONLY lightweight still poster image (never heavy Full-HD video) for current active banner if uncached
       const current = banners[currentBannerIndex];
-      const ordered = current
-        ? [current, ...banners.filter((b) => b.id !== current.id)]
-        : banners;
-
-      for (let i = 0; i < ordered.length; i++) {
-        if (cancelled) break;
-        const banner = ordered[i];
-        const { primaryMediaUrl, rawPoster } = resolveBannerMedia(banner, templates);
-        const priority = i === 0 ? 'high' : 'medium';
-
-        if (rawPoster && rawPoster !== primaryMediaUrl && mediaCacheStorage.isCacheablePublicMedia(rawPoster)) {
-          queueHdDownload(rawPoster, priority)
+      if (!cancelled && current) {
+        const { rawPoster } = resolveBannerMedia(current, templates);
+        if (rawPoster && !isVideoMedia(rawPoster) && mediaCacheStorage.isCacheablePublicMedia(rawPoster)) {
+          queueHdDownload(rawPoster, 'low')
             .then((cachedPosterUrl) => {
               if (!cancelled && cachedPosterUrl && cachedPosterUrl.startsWith('blob:')) {
-                setHeroPosters((prev) => ({ ...prev, [banner.id]: cachedPosterUrl }));
-              }
-            })
-            .catch(() => {});
-        }
-
-        if (primaryMediaUrl && mediaCacheStorage.isCacheablePublicMedia(primaryMediaUrl)) {
-          queueHdDownload(primaryMediaUrl, priority)
-            .then((hdUrl) => {
-              if (cancelled || !hdUrl || hdUrl === primaryMediaUrl) return;
-              if (i === 0 && heroVideoRef.current) {
-                const videoEl = heroVideoRef.current;
-                const prevTime = videoEl.currentTime;
-                const wasPaused = videoEl.paused;
-                const wasMuted = videoEl.muted;
-                setBannerHdUrls((prev) => ({ ...prev, [banner.id]: hdUrl }));
-                const restoreState = () => {
-                  try {
-                    videoEl.currentTime = prevTime;
-                    videoEl.muted = wasMuted;
-                    if (!wasPaused) {
-                      videoEl.play().catch(() => {});
-                    }
-                  } catch {}
-                  videoEl.removeEventListener('loadeddata', restoreState);
-                };
-                videoEl.addEventListener('loadeddata', restoreState);
-              } else {
-                setBannerHdUrls((prev) => ({ ...prev, [banner.id]: hdUrl }));
+                setHeroPosters((prev) => ({ ...prev, [current.id]: cachedPosterUrl }));
               }
             })
             .catch(() => {});
@@ -432,7 +396,7 @@ export const HomeView: React.FC = () => {
       }
     };
 
-    hydrateAndPrefetch();
+    hydrateExistingCache();
 
     const active = banners[currentBannerIndex];
     const activeUrl = active ? resolveBannerMedia(active, templates).primaryMediaUrl : '';
@@ -451,6 +415,18 @@ export const HomeView: React.FC = () => {
     setIsPlayingFullVideo(true);
     setIsFullVideoMuted(true);
     setIsPaused(true);
+
+    // Download/cache Full HD Hero Banner asset ONLY when user actually clicks it
+    const { primaryMediaUrl } = resolveBannerMedia(banner, templates);
+    if (primaryMediaUrl && mediaCacheStorage.isCacheablePublicMedia(primaryMediaUrl)) {
+      queueHdDownload(primaryMediaUrl, 'high')
+        .then((hdUrl) => {
+          if (hdUrl && hdUrl !== primaryMediaUrl) {
+            setBannerHdUrls((prev) => ({ ...prev, [banner.id]: hdUrl }));
+          }
+        })
+        .catch(() => {});
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -672,7 +648,7 @@ export const HomeView: React.FC = () => {
                       muted
                       loop
                       playsInline
-                      preload="auto"
+                      preload="metadata"
                       crossOrigin="anonymous"
                       onLoadedData={(e) => {
                         setReadyHeroIds((prev) => ({ ...prev, [activeBanner.id]: true }));

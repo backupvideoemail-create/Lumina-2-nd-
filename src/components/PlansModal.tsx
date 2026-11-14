@@ -591,7 +591,7 @@ export const PlansModal: React.FC = () => {
                   </motion.button>
 
                   <div className="text-center pt-2 px-5">
-                    <p className="text-[10px] sm:text-[10.5px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
+                    <p className="text-[7.5px] sm:text-[9px] text-stone-400 leading-tight font-normal max-w-sm mx-auto">
                       Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.
                     </p>
                   </div>

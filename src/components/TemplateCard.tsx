@@ -77,8 +77,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const [cachedPosterSrc, setCachedPosterSrc] = React.useState<string>('');
   const [cachedPreviewVideoSrc, setCachedPreviewVideoSrc] = React.useState<string>('');
 
-  // Resolve lightweight preview poster & any already-cached preview video from IndexedDB
-  // Wait-free instant display on refresh/offline without re-downloading from network
+  // Resolve already-cached poster/preview from IndexedDB (0 network calls on mount)
   useEffect(() => {
     let cancelled = false;
     setCachedPosterSrc('');
@@ -91,14 +90,6 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           if (cached?.objectUrl) {
             setCachedPosterSrc(cached.objectUrl);
             setIsMediaLoaded(true);
-          } else if (mediaCacheStorage.isCacheablePublicMedia(resolvedPoster)) {
-            queueHdDownload(resolvedPoster, 'low')
-              .then((cachedUrl) => {
-                if (!cancelled && cachedUrl && cachedUrl.startsWith('blob:')) {
-                  setCachedPosterSrc(cachedUrl);
-                }
-              })
-              .catch(() => {});
           }
         })
         .catch(() => {});
@@ -240,9 +231,25 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             key={resolvedPoster}
             src={cachedPosterSrc || resolvedPoster}
             alt={template.title}
-            loading="eager"
+            loading="lazy"
             draggable={false}
-            onLoad={() => setIsMediaLoaded(true)}
+            onLoad={() => {
+              setIsMediaLoaded(true);
+              if (
+                !cachedPosterSrc &&
+                resolvedPoster &&
+                resolvedPoster !== hdTargetMedia &&
+                !isVideoMedia(resolvedPoster) &&
+                mediaCacheStorage.isCacheablePublicMedia(resolvedPoster)
+              ) {
+                const warmPoster = () => queueHdDownload(resolvedPoster, 'low').catch(() => {});
+                if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+                  (window as any).requestIdleCallback(warmPoster, { timeout: 4000 });
+                } else {
+                  setTimeout(warmPoster, 1500);
+                }
+              }
+            }}
             onError={() => {
               if (cachedPosterSrc) {
                 setCachedPosterSrc('');

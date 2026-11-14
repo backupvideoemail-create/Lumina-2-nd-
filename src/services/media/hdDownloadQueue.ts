@@ -38,7 +38,7 @@ class HdDownloadQueueManager {
   private queue: QueueItem[] = [];
   public inFlight = new Map<string, Promise<string>>(); // Required by verification suite
   private activeDownloads = 0;
-  private maxConcurrency = 2;
+  private maxConcurrency = 1;
   private blobCache = new Map<string, string>();
   private completedCount = 0;
 

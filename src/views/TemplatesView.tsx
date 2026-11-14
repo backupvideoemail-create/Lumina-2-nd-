@@ -162,7 +162,7 @@ export const TemplatesView: React.FC = () => {
     setSortBy('trending');
   };
 
-  // Idle background prefetch for top visible gallery preview media (including /api/media/ public assets)
+  // Gentle idle background cache ONLY for up to 2 lightweight image thumbnails (never auto-download videos or Full HD until user clicks)
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     if (isDataSaverActive()) return;
@@ -171,24 +171,25 @@ export const TemplatesView: React.FC = () => {
     let timerId: any = null;
 
     const performPrefetch = () => {
-      const candidateTemplates = displayList.slice(0, 8);
+      const candidateTemplates = displayList.slice(0, 2);
       candidateTemplates.forEach((tpl) => {
-        const previewUrl =
-          (tpl as any).previewMedia?.url ||
-          (tpl as any).sampleOutputMedia?.url ||
-          tpl.preview ||
-          tpl.coverVideo ||
-          tpl.cover;
-        if (previewUrl && mediaCacheStorage.isCacheablePublicMedia(previewUrl)) {
-          queueHdDownload(previewUrl, 'low').catch(() => {});
+        const hdAsset = (tpl as any).hdDisplayUrl || (tpl as any).hdVideoUrl || (tpl as any).hdMedia;
+        const previewImgUrl = tpl.coverImage || tpl.sampleResult || tpl.sampleAfter || tpl.preview || (!/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(tpl.cover || '') ? tpl.cover : '');
+        if (
+          previewImgUrl &&
+          previewImgUrl !== hdAsset &&
+          !/\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(previewImgUrl) &&
+          mediaCacheStorage.isCacheablePublicMedia(previewImgUrl)
+        ) {
+          queueHdDownload(previewImgUrl, 'low').catch(() => {});
         }
       });
     };
 
     if ('requestIdleCallback' in window) {
-      idleId = (window as any).requestIdleCallback(performPrefetch, { timeout: 3000 });
+      idleId = (window as any).requestIdleCallback(performPrefetch, { timeout: 3500 });
     } else {
-      timerId = setTimeout(performPrefetch, 1200);
+      timerId = setTimeout(performPrefetch, 2500);
     }
 
     return () => {

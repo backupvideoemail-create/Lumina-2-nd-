@@ -2114,6 +2114,16 @@ async function runSystemVerification() {
   const server35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
   assert(server35.includes("req.headers['if-none-match']") && server35.includes('res.status(304).end()'), '35.6 server.ts /api/media/:fileId emits ETag and responds HTTP 304 on conditional revalidation');
 
+  // 35.7 Anti-Lag Click-Only Full-HD Download Architecture
+  const hdQueue35 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/media/hdDownloadQueue.ts'), 'utf8');
+  assert(hdQueue35.includes('private maxConcurrency = 1;'), '35.7 hdDownloadQueue limits background concurrency to 1 to prevent website hang');
+  assert(home35.includes('preload="metadata"') && !home35.includes('for (let i = 0; i < ordered.length; i++)'), '35.7 HomeView stops multi-banner Full-HD batch auto-download and streams lightweight metadata');
+  assert(!tplView35.includes('displayList.slice(0, 8)') && tplView35.includes('displayList.slice(0, 2)'), '35.7 TemplatesView avoids batch-downloading 8 templates/videos simultaneously');
+
+  // 35.8 PlansModal Bottom Disclaimer Font-Size Micro-Fix (Exact Text Preserved)
+  assert(plansModal35.includes('text-[7.5px] sm:text-[9px]'), '35.8 PlansModal shrinks only disclaimer font size to fit 2 lines on mobile');
+  assert(plansModal35.includes('Subscription auto-renews at the fixed price and billing frequency shown on your payment screen, unless cancelled at least 24 hours before renewal.'), '35.8 PlansModal preserves exact disclaimer wording & punctuation');
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');
