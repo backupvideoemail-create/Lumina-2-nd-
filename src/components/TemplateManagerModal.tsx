@@ -16,7 +16,6 @@ import {
   Sliders,
   Film,
   Layers,
-  ArrowLeft,
   ArrowUp,
   ArrowDown,
   RefreshCw,
@@ -328,18 +327,6 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       fetchAdminTemplates();
     }
   }, [isOpen, fetchAdminTemplates]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handlePopState = () => {
-      onClose();
-    };
-    window.history.pushState({ modal: 'template_manager' }, '');
-    window.addEventListener('popstate', handlePopState);
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-    };
-  }, [isOpen, onClose]);
 
   const displayTemplates = adminTemplates.length > 0 ? adminTemplates : templates;
 
@@ -2560,7 +2547,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-2 sm:p-4 bg-black/90 backdrop-blur-xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/90 backdrop-blur-xl overflow-hidden">
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -2583,22 +2570,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
               <p className="text-xs text-stone-400">Manage templates, hero banners & demo video from your phone</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-stone-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back to Dashboard</span>
-            </button>
-            <button
-              onClick={onClose}
-              className="p-2 text-stone-400 hover:text-white rounded-xl hover:bg-white/5 transition-colors cursor-pointer"
-              title="Close and return to Dashboard"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            className="p-2 text-stone-400 hover:text-white rounded-xl hover:bg-white/5 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Authoritative Server Verification Gate */}

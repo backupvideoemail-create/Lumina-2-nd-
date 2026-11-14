@@ -3354,60 +3354,6 @@ export class ProductionDatabase {
     const logs = all.slice(offset, offset + limit);
     return { logs, total };
   }
-
-  public async getAdminLogsAsync(limit = 50, offset = 0): Promise<{ logs: AdminActivityLog[]; total: number }> {
-    if (adminFirestoreDb && !isIsolatedTestEnv) {
-      try {
-        const snap = await adminFirestoreDb
-          .collection('admin_logs')
-          .orderBy('timestamp', 'desc')
-          .offset(offset)
-          .limit(limit)
-          .get();
-        if (!snap.empty) {
-          const logs: AdminActivityLog[] = [];
-          snap.forEach((doc: any) => logs.push(doc.data() as AdminActivityLog));
-          return { logs, total: Math.max(logs.length, (this.db.adminLogs || []).length) };
-        }
-      } catch (err: any) {
-        console.warn('[Database] Firestore admin_logs fetch note:', err.message);
-      }
-    }
-    return this.getAdminLogs(limit, offset);
-  }
-
-  public async saveDiagnosticRunAsync(run: any): Promise<'PERSISTED' | 'PERSISTENCE_FAILED'> {
-    if (adminFirestoreDb && !isIsolatedTestEnv) {
-      try {
-        await adminFirestoreDb.collection('diagnostics_history').doc(run.runId).set(run);
-        return 'PERSISTED';
-      } catch (err: any) {
-        console.warn('[Database] Failed to persist diagnostic run to Firestore:', err.message);
-        return 'PERSISTENCE_FAILED';
-      }
-    }
-    return isIsolatedTestEnv ? 'PERSISTED' : 'PERSISTENCE_FAILED';
-  }
-
-  public async getDiagnosticHistoryAsync(limitCount = 10): Promise<{ history: any[]; source: string; isPersistent: boolean }> {
-    if (adminFirestoreDb && !isIsolatedTestEnv) {
-      try {
-        const snap = await adminFirestoreDb
-          .collection('diagnostics_history')
-          .orderBy('timestamp', 'desc')
-          .limit(limitCount)
-          .get();
-        if (!snap.empty) {
-          const history: any[] = [];
-          snap.forEach((doc: any) => history.push(doc.data()));
-          return { history, source: 'firestore_authoritative', isPersistent: true };
-        }
-      } catch (err: any) {
-        console.warn('[Database] Firestore diagnostic history fetch note:', err.message);
-      }
-    }
-    return { history: [], source: 'local_fallback', isPersistent: false };
-  }
 }
 
 export const prodDb = new ProductionDatabase();

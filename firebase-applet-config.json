@@ -3,10 +3,10 @@
   "appId": "1:855598524398:web:9b76fc4b5bb396c0e990ff",
   "apiKey": "AIzaSyCkJf1nGcofWd_5uKRYt2nQOXmPR_g60qM",
   "authDomain": "ai-prime-studio.firebaseapp.com",
-  "firestoreDatabaseId": "(default)",
+  "firestoreDatabaseId": "ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f",
   "storageBucket": "ai-prime-studio.firebasestorage.app",
   "messagingSenderId": "855598524398",
   "measurementId": "G-CTB15DKKP0",
-  "oAuthClientId": "855598524398-web.apps.googleusercontent.com",
+  "oAuthClientId": "855598524398-ljcakleqr4dgknkkhskp4kr9oph8o1a9.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

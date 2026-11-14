@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'motion/react';
 import {
   X,
@@ -12,42 +12,45 @@ import {
   ExternalLink,
   CheckCircle2,
   AlertTriangle,
+  XCircle,
   Server,
-  ChevronLeft,
-  ChevronRight,
   HardDrive,
   Clock,
   Grid,
-  Play,
-  XCircle
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { mediaCacheStorage, MediaCacheTelemetry } from '../services/media/mediaCacheStorage';
+import { getQueueStats, QueueStats } from '../services/media/hdDownloadQueue';
+import { AUTHORIZED_ADMIN_EMAILS } from '../config/adminConfig';
 
 interface AdminDashboardModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type AdminDashboardTab = 'gallery' | 'diagnostics' | 'health_check' | 'system_health' | 'logs';
-
 interface AdminHealthCheckData {
   authorized: boolean;
-  actorEmail: string;
+  actorEmail: string | null;
   timestamp: string;
+  environment?: string;
+  appVersion?: string;
   clientFirebase: {
-    projectId: string;
-    authDomain: string;
-    appId: string;
-    storageBucket: string;
+    projectId: string | null;
+    firestoreDatabaseId?: string | null;
+    authDomain: string | null;
+    appId: string | null;
+    storageBucket: string | null;
   };
   adminSdk: {
     initialized: boolean;
-    projectId: string;
-    databaseId: string;
+    projectId: string | null;
+    databaseId: string | null;
   };
   firestoreMode: string;
-  databaseId: string;
+  databaseId: string | null;
   sessionPersistence: string;
   cloudRunRevision: string;
   gitCommitSha: string;
@@ -56,7 +59,15 @@ interface AdminHealthCheckData {
     driver: string;
     r2Configured: boolean;
     bucket: string | null;
+    missingEnvVars?: string[];
   };
+}
+
+interface RecentApiErrorItem {
+  timestamp: string;
+  method: string;
+  path: string;
+  status: number;
 }
 
 interface SystemHealthData {
@@ -66,8 +77,8 @@ interface SystemHealthData {
   firestore: {
     status: string;
     latencyMs: number;
-    projectId: string;
-    databaseId: string;
+    projectId: string | null;
+    databaseId: string | null;
   };
   storage: {
     driver: string;
@@ -80,15 +91,8 @@ interface SystemHealthData {
     heapTotalMb: number;
   };
   recentErrorsCount: number;
-}
-
-interface AdminLogItem {
-  id: string;
-  actorEmail: string;
-  action: string;
-  targetId: string;
-  details: string;
-  timestamp: string;
+  recentErrorsWindowMinutes?: number;
+  recentApiErrors?: RecentApiErrorItem[];
 }
 
 interface VersionData {
@@ -102,16 +106,29 @@ interface VersionData {
   databaseMode: string;
 }
 
-interface CatalogSummaryData {
-  adminTotalTemplates: number;
-  adminActiveTemplates: number;
-  adminInactiveTemplates: number;
-  quarantinedCount: number;
-  bannersTotal: number;
-  bannersActive: number;
+interface AdminLogItem {
+  id: string;
+  actorEmail: string;
+  action: string;
+  targetId: string;
+  details: string;
+  timestamp: string;
 }
 
-interface DiagnosticRunData {
+interface DiagnosticProbeResultItem {
+  id: string;
+  name: string;
+  category: string;
+  status: string;
+  severity: string;
+  testType?: string;
+  endpointOrProvider: string;
+  actualResult: string;
+  failureReason?: string;
+  durationMs: number;
+}
+
+interface DiagnosticRunRecord {
   runId: string;
   timestamp: string;
   environment: string;
@@ -125,447 +142,626 @@ interface DiagnosticRunData {
     blocked: number;
     warning: number;
   };
-  results: Array<{
-    id: string;
-    name: string;
-    category: string;
-    status: string;
-    severity: string;
-    actualResult: string;
-    failureReason?: string;
-  }>;
-}
-
-interface AdapterStatusItem {
-  id: string;
-  name: string;
-  status: string;
-  connectionStatus: string;
-  verificationStatus: string;
+  results: DiagnosticProbeResultItem[];
 }
 
 interface MonitoringAlertItem {
-  id?: string;
-  title?: string;
+  id: string;
+  vector?: string;
   severity?: string;
+  message?: string;
+  title?: string;
   resolved?: boolean;
-  timestamp?: string;
+  timestamp: string;
+  safeTraceId?: string;
 }
+
+type DashboardTab = 'gallery' | 'diagnostics' | 'health_check' | 'system_health' | 'logs';
 
 export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen, onClose }) => {
   const {
     user,
     setTemplateManagerOpen,
     setDiagnosticsModalOpen,
-    templates,
-    refreshTemplates
+    templates
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<AdminDashboardTab>('health_check');
+  const [activeTab, setActiveTab] = useState<DashboardTab>('health_check');
 
-  // Authoritative Health Check state
+  // Section states & explicit error tracking (never mask failures as healthy)
   const [healthCheck, setHealthCheck] = useState<AdminHealthCheckData | null>(null);
   const [healthCheckError, setHealthCheckError] = useState<string | null>(null);
 
-  // System Health & Metrics state
   const [systemHealth, setSystemHealth] = useState<SystemHealthData | null>(null);
   const [systemHealthError, setSystemHealthError] = useState<string | null>(null);
   const [pingingFirestore, setPingingFirestore] = useState(false);
 
-  // Catalog & Banners state
-  const [versionData, setVersionData] = useState<VersionData | null>(null);
-  const [catalogSummary, setCatalogSummary] = useState<CatalogSummaryData | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [refreshingCatalog, setRefreshingCatalog] = useState(false);
+  const [versionInfo, setVersionInfo] = useState<VersionData | null>(null);
+  const [versionError, setVersionError] = useState<string | null>(null);
 
-  // Diagnostics Summary, Adapters & Alerts state
-  const [latestDiagRun, setLatestDiagRun] = useState<DiagnosticRunData | null>(null);
+  const [banners, setBanners] = useState<any[] | null>(null);
+  const [bannersError, setBannersError] = useState<string | null>(null);
+
+  const [adminTemplates, setAdminTemplates] = useState<any[] | null>(null);
+  const [adminTemplatesError, setAdminTemplatesError] = useState<string | null>(null);
+
+  const [diagHistory, setDiagHistory] = useState<DiagnosticRunRecord[] | null>(null);
   const [diagHistorySource, setDiagHistorySource] = useState<string>('UNAVAILABLE');
   const [diagHistoryWarning, setDiagHistoryWarning] = useState<string | null>(null);
-  const [diagError, setDiagError] = useState<string | null>(null);
-  const [runningProbes, setRunningProbes] = useState(false);
-  const [adapters, setAdapters] = useState<AdapterStatusItem[]>([]);
-  const [alerts, setAlerts] = useState<MonitoringAlertItem[]>([]);
+  const [diagHistoryError, setDiagHistoryError] = useState<string | null>(null);
 
-  // Admin Logs state
+  const [alerts, setAlerts] = useState<MonitoringAlertItem[] | null>(null);
+  const [alertsError, setAlertsError] = useState<string | null>(null);
+
+  const [cacheStats, setCacheStats] = useState<MediaCacheTelemetry | null>(null);
+  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+
   const [logs, setLogs] = useState<AdminLogItem[]>([]);
-  const [totalLogs, setTotalLogs] = useState(0);
+  const [totalLogs, setTotalLogs] = useState<number | null>(null);
   const [logPage, setLogPage] = useState(0);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
 
-  // Global loading & copy feedback
   const [loading, setLoading] = useState(false);
-  const [copiedReport, setCopiedReport] = useState(false);
-  const [copyError, setCopyError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
 
+  const logPageRef = useRef(0);
+  logPageRef.current = logPage;
   const pageSize = 15;
-  const clientDatabaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || '(default)';
 
   const getHeaders = useCallback((): Record<string, string> => {
     const token = localStorage.getItem('lumina_session_token');
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
 
-  const readErrorMessage = async (res: Response, fallback: string): Promise<string> => {
-    try {
-      const json = await res.json();
-      if (json?.error) return `${fallback} (HTTP ${res.status}: ${json.error})`;
-    } catch {
-      // Ignore JSON parse failures on non-JSON error responses
-    }
-    return `${fallback} (HTTP ${res.status})`;
-  };
-
-  // 1. Fetch Admin Health Check
   const fetchHealthCheck = useCallback(async () => {
     try {
       const res = await fetch('/api/admin/health-check', { headers: getHeaders() });
-      if (!res.ok) {
-        setHealthCheckError(await readErrorMessage(res, 'Failed to load health check'));
-        return;
+      if (res.ok) {
+        const data = await res.json();
+        setHealthCheck(data);
+        setHealthCheckError(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setHealthCheck(null);
+        setHealthCheckError(errData?.error || `HTTP ${res.status}`);
       }
-      const data = await res.json();
-      setHealthCheck(data);
-      setHealthCheckError(null);
     } catch (err: any) {
-      setHealthCheckError(err?.message || 'Network error loading health check');
+      setHealthCheck(null);
+      setHealthCheckError(err?.message || 'Network error');
     }
   }, [getHeaders]);
 
-  // 2. Fetch System Health (Latency & memory)
   const fetchSystemHealth = useCallback(async () => {
     setPingingFirestore(true);
     try {
       const res = await fetch('/api/admin/system-health', { headers: getHeaders() });
-      if (!res.ok) {
-        setSystemHealthError(await readErrorMessage(res, 'Failed to load system health'));
-        return;
+      if (res.ok) {
+        const data = await res.json();
+        setSystemHealth(data);
+        setSystemHealthError(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setSystemHealth(null);
+        setSystemHealthError(errData?.error || `HTTP ${res.status}`);
       }
-      const data = await res.json();
-      setSystemHealth(data);
-      setSystemHealthError(null);
     } catch (err: any) {
-      setSystemHealthError(err?.message || 'Network error loading system health');
+      setSystemHealth(null);
+      setSystemHealthError(err?.message || 'Network error');
     } finally {
       setPingingFirestore(false);
     }
   }, [getHeaders]);
 
-  // 3. Fetch Genuine Catalog, Banners & Version Counts
-  const fetchCatalogSummary = useCallback(async (forceCloudRefresh = false) => {
-    setRefreshingCatalog(true);
-    try {
-      const headers = getHeaders();
-      const tplUrl = forceCloudRefresh ? '/api/admin/templates?refresh=true' : '/api/admin/templates';
-      const [tplRes, bannersRes, versionRes, quarantinedRes] = await Promise.all([
-        fetch(tplUrl, { headers }),
-        fetch('/api/banners'),
-        fetch('/api/version'),
-        fetch('/api/admin/templates/quarantined', { headers })
-      ]);
-
-      if (versionRes.ok) {
-        const vJson = await versionRes.json();
-        setVersionData(vJson);
-      }
-
-      if (!tplRes.ok) {
-        setCatalogError(await readErrorMessage(tplRes, 'Failed to load admin templates'));
-        return;
-      }
-
-      const tplJson = await tplRes.json();
-      const adminList = Array.isArray(tplJson?.templates) ? tplJson.templates : [];
-      const activeCount = adminList.filter((t: any) => t?.isActive !== false).length;
-      const inactiveCount = adminList.length - activeCount;
-
-      let bannersTotal = 0;
-      let bannersActive = 0;
-      if (bannersRes.ok) {
-        const bJson = await bannersRes.json();
-        const bList = Array.isArray(bJson?.banners) ? bJson.banners : [];
-        bannersTotal = bList.length;
-        bannersActive = bList.filter((b: any) => b?.isActive !== false).length;
-      }
-
-      let quarantinedCount = 0;
-      if (quarantinedRes.ok) {
-        const qJson = await quarantinedRes.json();
-        quarantinedCount = Array.isArray(qJson?.quarantinedTemplates) ? qJson.quarantinedTemplates.length : 0;
-      }
-
-      setCatalogSummary({
-        adminTotalTemplates: adminList.length,
-        adminActiveTemplates: activeCount,
-        adminInactiveTemplates: inactiveCount,
-        quarantinedCount,
-        bannersTotal,
-        bannersActive
-      });
-      setCatalogError(null);
-    } catch (err: any) {
-      setCatalogError(err?.message || 'Network error loading catalog summary');
-    } finally {
-      setRefreshingCatalog(false);
-    }
-  }, [getHeaders]);
-
-  // 4. Fetch Diagnostics History, Adapters & Monitoring Alerts
-  const fetchDiagnosticsSummary = useCallback(async () => {
-    try {
-      const headers = getHeaders();
-      const [histRes, adaptersRes, alertsRes] = await Promise.all([
-        fetch('/api/admin/diagnostics/history', { headers }),
-        fetch('/api/admin/adapters/status', { headers }),
-        fetch('/api/admin/monitoring/alerts', { headers })
-      ]);
-
-      if (!histRes.ok) {
-        setDiagError(await readErrorMessage(histRes, 'Failed to load diagnostics history'));
-      } else {
-        const hJson = await histRes.json();
-        const runs = Array.isArray(hJson?.history) ? hJson.history : [];
-        setLatestDiagRun(runs[0] || null);
-        setDiagHistorySource(hJson?.source || 'UNAVAILABLE');
-        setDiagHistoryWarning(hJson?.warning || null);
-        setDiagError(null);
-      }
-
-      if (adaptersRes.ok) {
-        const aJson = await adaptersRes.json();
-        setAdapters(Array.isArray(aJson?.adapters) ? aJson.adapters : []);
-      }
-
-      if (alertsRes.ok) {
-        const alJson = await alertsRes.json();
-        setAlerts(Array.isArray(alJson?.alerts) ? alJson.alerts : []);
-      }
-    } catch (err: any) {
-      setDiagError(err?.message || 'Network error loading diagnostics summary');
-    }
-  }, [getHeaders]);
-
-  // Run Live Diagnostic Probes Directly From Tab 2
-  const handleRunLiveProbes = useCallback(async () => {
-    setRunningProbes(true);
-    setDiagError(null);
-    try {
-      const res = await fetch('/api/admin/diagnostics', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getHeaders()
+  const fetchCatalogAndVersion = useCallback(async () => {
+    await Promise.all([
+      (async () => {
+        try {
+          const res = await fetch('/api/version', { cache: 'no-store' });
+          if (res.ok) {
+            setVersionInfo(await res.json());
+            setVersionError(null);
+          } else {
+            setVersionInfo(null);
+            setVersionError(`HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setVersionInfo(null);
+          setVersionError(err?.message || 'Network error');
         }
-      });
-      if (!res.ok) {
-        setDiagError(await readErrorMessage(res, 'Live diagnostic run failed'));
-        return;
-      }
-      const data = await res.json();
-      if (data?.runSummary) {
-        setLatestDiagRun(data.runSummary);
-      }
-      await fetchDiagnosticsSummary();
-    } catch (err: any) {
-      setDiagError(err?.message || 'Network error running live probes');
-    } finally {
-      setRunningProbes(false);
-    }
-  }, [getHeaders, fetchDiagnosticsSummary]);
+      })(),
+      (async () => {
+        try {
+          const res = await fetch('/api/banners', { cache: 'no-store' });
+          if (res.ok) {
+            const data = await res.json();
+            setBanners(Array.isArray(data?.banners) ? data.banners : []);
+            setBannersError(null);
+          } else {
+            setBanners(null);
+            setBannersError(`HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setBanners(null);
+          setBannersError(err?.message || 'Network error');
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch('/api/admin/templates', { headers: getHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            setAdminTemplates(Array.isArray(data?.templates) ? data.templates : []);
+            setAdminTemplatesError(null);
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            setAdminTemplates(null);
+            setAdminTemplatesError(errData?.error || `HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setAdminTemplates(null);
+          setAdminTemplatesError(err?.message || 'Network error');
+        }
+      })()
+    ]);
+  }, [getHeaders]);
 
-  // 5. Fetch Paginated Logs
+  const fetchDiagnosticsSummary = useCallback(async () => {
+    await Promise.all([
+      (async () => {
+        try {
+          const res = await fetch('/api/admin/diagnostics/history', { headers: getHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            setDiagHistory(Array.isArray(data?.history) ? data.history : []);
+            setDiagHistorySource(data?.source || 'UNAVAILABLE');
+            setDiagHistoryWarning(data?.warning || null);
+            setDiagHistoryError(null);
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            setDiagHistory(null);
+            setDiagHistorySource('UNAVAILABLE');
+            setDiagHistoryError(errData?.error || `HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setDiagHistory(null);
+          setDiagHistorySource('UNAVAILABLE');
+          setDiagHistoryError(err?.message || 'Network error');
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch('/api/admin/monitoring/alerts', { headers: getHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            const rawAlerts = data?.alerts;
+            if (Array.isArray(rawAlerts)) {
+              setAlerts(rawAlerts);
+            } else if (rawAlerts && Array.isArray(rawAlerts.active)) {
+              setAlerts(rawAlerts.active);
+            } else {
+              setAlerts([]);
+            }
+            setAlertsError(null);
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            setAlerts(null);
+            setAlertsError(errData?.error || `HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setAlerts(null);
+          setAlertsError(err?.message || 'Network error');
+        }
+      })()
+    ]);
+  }, [getHeaders]);
+
   const fetchLogs = useCallback(async (page: number) => {
     setLogsLoading(true);
     try {
       const offset = page * pageSize;
       const res = await fetch(`/api/admin/logs?limit=${pageSize}&offset=${offset}`, { headers: getHeaders() });
-      if (!res.ok) {
-        setLogsError(await readErrorMessage(res, 'Failed to load admin logs'));
-        return;
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(Array.isArray(data.logs) ? data.logs : []);
+        setTotalLogs(typeof data.total === 'number' ? data.total : 0);
+        setLogsError(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setLogs([]);
+        setTotalLogs(null);
+        setLogsError(errData?.error || `HTTP ${res.status}`);
       }
-      const data = await res.json();
-      setLogs(Array.isArray(data.logs) ? data.logs : []);
-      setTotalLogs(typeof data.total === 'number' ? data.total : 0);
-      setLogsError(null);
     } catch (err: any) {
-      setLogsError(err?.message || 'Network error loading admin logs');
+      setLogs([]);
+      setTotalLogs(null);
+      setLogsError(err?.message || 'Network error');
     } finally {
       setLogsLoading(false);
     }
   }, [getHeaders]);
 
+  const loadClientMediaStats = useCallback(async () => {
+    try {
+      setQueueStats(getQueueStats());
+      const stats = await mediaCacheStorage.getStats();
+      setCacheStats(stats);
+    } catch {
+      setCacheStats(null);
+      setQueueStats(null);
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
-    await Promise.allSettled([
+    await Promise.all([
       fetchHealthCheck(),
       fetchSystemHealth(),
-      fetchCatalogSummary(false),
+      fetchCatalogAndVersion(),
       fetchDiagnosticsSummary(),
-      fetchLogs(logPage)
+      fetchLogs(logPageRef.current),
+      loadClientMediaStats()
     ]);
     setLoading(false);
-  }, [fetchHealthCheck, fetchSystemHealth, fetchCatalogSummary, fetchDiagnosticsSummary, fetchLogs, logPage]);
+  }, [
+    fetchHealthCheck,
+    fetchSystemHealth,
+    fetchCatalogAndVersion,
+    fetchDiagnosticsSummary,
+    fetchLogs,
+    loadClientMediaStats
+  ]);
 
-  // Only trigger initial load when modal opens (not on logPage change, which handles its own fetchLogs)
   useEffect(() => {
     if (isOpen) {
       refreshAll();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+  }, [isOpen, refreshAll]);
 
-  // Derived truthful checks
-  const backendDatabaseId = healthCheck?.adminSdk.databaseId || healthCheck?.databaseId || null;
-  const projectMismatch = Boolean(
-    healthCheck && healthCheck.clientFirebase.projectId !== healthCheck.adminSdk.projectId
-  );
-  const databaseMismatch = Boolean(
-    backendDatabaseId && clientDatabaseId !== backendDatabaseId
-  );
-  const unresolvedAlertsCount = alerts.filter((a) => !a.resolved).length;
+  // Derived genuine values (NO hardcoded HEALTHY, VERIFIED, 5, or c2f21a6)
+  const clientProjectId = healthCheck?.clientFirebase?.projectId || (firebaseConfig as any).projectId || 'UNAVAILABLE';
+  const clientDatabaseId =
+    healthCheck?.clientFirebase?.firestoreDatabaseId ||
+    (firebaseConfig as any).firestoreDatabaseId ||
+    '(default)';
+  const backendProjectId = healthCheck
+    ? healthCheck.adminSdk.initialized
+      ? healthCheck.adminSdk.projectId || 'UNAVAILABLE'
+      : 'NOT_CONNECTED'
+    : 'NOT_VERIFIED';
+  const backendDatabaseId = healthCheck
+    ? healthCheck.adminSdk.initialized
+      ? healthCheck.adminSdk.databaseId || healthCheck.databaseId || '(default)'
+      : 'NOT_CONNECTED'
+    : 'NOT_VERIFIED';
 
-  // Generate 1-Click Sanitized Diagnostic Markdown Report (Zero fake fallbacks)
+  const projectParityStatus = !healthCheck
+    ? 'NOT_VERIFIED'
+    : !healthCheck.adminSdk.initialized
+    ? 'DISCONNECTED'
+    : clientProjectId === backendProjectId
+    ? 'MATCH'
+    : 'MISMATCH';
+
+  const databaseParityStatus = !healthCheck
+    ? 'NOT_VERIFIED'
+    : !healthCheck.adminSdk.initialized
+    ? 'DISCONNECTED'
+    : clientDatabaseId === backendDatabaseId
+    ? 'MATCH'
+    : 'MISMATCH';
+
+  const commitShaValue = healthCheck?.gitCommitSha || versionInfo?.commitSha || 'UNAVAILABLE';
+  const cloudRunRevValue = healthCheck?.cloudRunRevision || versionInfo?.cloudRunRevision || 'UNAVAILABLE';
+  const appEnvValue = healthCheck?.environment || 'UNAVAILABLE';
+  const appVersionValue = healthCheck?.appVersion || 'UNAVAILABLE';
+  const buildTimeValue = versionInfo?.buildTime || healthCheck?.startupTime || 'UNAVAILABLE';
+
+  const activeBannersCount = banners !== null ? banners.filter((b) => b?.isActive !== false).length : null;
+  const totalBannersCount = banners !== null ? banners.length : null;
+  const adminActiveTemplatesCount = adminTemplates !== null ? adminTemplates.filter((t) => t?.isActive !== false).length : null;
+  const adminInactiveTemplatesCount = adminTemplates !== null ? adminTemplates.filter((t) => t?.isActive === false).length : null;
+  const latestDiagRun = diagHistory && diagHistory.length > 0 ? diagHistory[0] : null;
+  const activeAlertsList = alerts ? alerts.filter((a) => !a.resolved) : null;
+
+  // Compute genuine unresolved warnings & mismatches
+  const warningsAndMismatches: string[] = [];
+  if (healthCheckError) warningsAndMismatches.push(`Health Check Endpoint Failed: ${healthCheckError}`);
+  if (systemHealthError) warningsAndMismatches.push(`System Health Endpoint Failed: ${systemHealthError}`);
+  if (versionError) warningsAndMismatches.push(`Version Endpoint Failed: ${versionError}`);
+  if (bannersError) warningsAndMismatches.push(`Banners Endpoint Failed: ${bannersError}`);
+  if (adminTemplatesError) warningsAndMismatches.push(`Admin Templates Endpoint Failed: ${adminTemplatesError}`);
+  if (diagHistoryError) warningsAndMismatches.push(`Diagnostics History Endpoint Failed: ${diagHistoryError}`);
+  if (logsError) warningsAndMismatches.push(`Admin Logs Endpoint Failed: ${logsError}`);
+  if (projectParityStatus === 'MISMATCH') {
+    warningsAndMismatches.push(`Firebase Project ID Mismatch: Client=${clientProjectId} vs Backend=${backendProjectId}`);
+  }
+  if (databaseParityStatus === 'MISMATCH') {
+    warningsAndMismatches.push(`Firestore Database ID Mismatch: Client=${clientDatabaseId} vs Backend=${backendDatabaseId}`);
+  }
+  if (healthCheck && !healthCheck.adminSdk.initialized) {
+    warningsAndMismatches.push('Firebase Admin SDK is NOT initialized on backend.');
+  }
+  if (commitShaValue === 'UNVERIFIED/BLOCKED' || commitShaValue === 'UNAVAILABLE' || commitShaValue === 'UNKNOWN') {
+    warningsAndMismatches.push(`Git Commit SHA unavailable in runtime (${commitShaValue}).`);
+  }
+  if (healthCheck && !healthCheck.storage.r2Configured) {
+    const missing = healthCheck.storage.missingEnvVars?.length
+      ? ` (missing: ${healthCheck.storage.missingEnvVars.join(', ')})`
+      : '';
+    warningsAndMismatches.push(`Cloudflare R2 not configured${missing}; active driver=${healthCheck.storage.driver}.`);
+  }
+  if (systemHealth && systemHealth.recentErrorsCount > 0) {
+    warningsAndMismatches.push(
+      `${systemHealth.recentErrorsCount} API 4xx/5xx error(s) recorded in last ${systemHealth.recentErrorsWindowMinutes ?? 15} minutes.`
+    );
+  }
+  if (latestDiagRun && (latestDiagRun.stats.failed > 0 || latestDiagRun.stats.blocked > 0)) {
+    warningsAndMismatches.push(
+      `Latest diagnostic run (${latestDiagRun.runId}) reported ${latestDiagRun.stats.failed} FAILED and ${latestDiagRun.stats.blocked} BLOCKED probes.`
+    );
+  }
+  if (activeAlertsList && activeAlertsList.length > 0) {
+    warningsAndMismatches.push(`${activeAlertsList.length} unresolved Cloud Monitoring alert(s) active.`);
+  }
+
+  // Generate 1-Click Complete Sanitized Diagnostic Report (Markdown + Structured JSON)
   const handleCopyReport = async () => {
-    setCopyError(null);
     const now = new Date().toISOString();
-    const firestoreLatency = systemHealth?.firestore.latencyMs;
-    const r2Status = !healthCheck
-      ? 'UNAVAILABLE'
-      : healthCheck.storage.r2Configured
-      ? 'CONNECTED'
-      : 'NOT_CONFIGURED (LOCAL_FALLBACK)';
-    const commitSha = healthCheck?.gitCommitSha || versionData?.commitSha || 'UNAVAILABLE';
-    const cloudRev = healthCheck?.cloudRunRevision || versionData?.cloudRunRevision || 'UNAVAILABLE';
-    const activeActor = user?.email || healthCheck?.actorEmail || 'UNAVAILABLE';
+    const activeActor = user?.email || healthCheck?.actorEmail || 'NOT_VERIFIED';
 
-    const reportMarkdown = `
-# 🛠️ AI PRIME STUDIO — SYSTEM DIAGNOSTIC REPORT
-**Generated At:** \`${now}\`  
-**Actor Email:** \`${activeActor}\`  
-**Git Commit SHA:** \`${commitSha}\`  
-**Cloud Run Revision:** \`${cloudRev}\`  
+    const sanitizedPayload = {
+      reportSchemaVersion: '1.0-lite',
+      generatedAt: now,
+      applicationAndBuild: {
+        environment: appEnvValue,
+        appVersion: appVersionValue,
+        gitCommitSha: commitShaValue,
+        gitBranch: 'UNAVAILABLE (no .git metadata in runtime)',
+        cloudRunRevision: cloudRunRevValue,
+        buildTimestamp: buildTimeValue,
+        uptimeSeconds: systemHealth ? systemHealth.uptimeSeconds : 'UNAVAILABLE'
+      },
+      firebaseAndAuth: {
+        clientProjectId,
+        clientDatabaseId,
+        clientAuthDomain: healthCheck?.clientFirebase?.authDomain || (firebaseConfig as any).authDomain || 'UNAVAILABLE',
+        adminSdkInitialized: healthCheck ? healthCheck.adminSdk.initialized : 'NOT_VERIFIED',
+        adminSdkProjectId: backendProjectId,
+        adminSdkDatabaseId: backendDatabaseId,
+        projectParity: projectParityStatus,
+        databaseParity: databaseParityStatus,
+        firestoreMode: healthCheck?.firestoreMode || 'NOT_VERIFIED',
+        sessionPersistence: healthCheck?.sessionPersistence || 'NOT_VERIFIED',
+        actorEmail: activeActor,
+        authorizedAdminEmails: AUTHORIZED_ADMIN_EMAILS
+      },
+      catalogue: {
+        catalogueStatus: versionInfo?.catalogueStatus || 'UNAVAILABLE',
+        catalogRevision: versionInfo?.catalogRevision ?? 'UNAVAILABLE',
+        publicActiveTemplatesCount: templates.length,
+        adminTotalTemplatesCount: adminTemplates !== null ? adminTemplates.length : 'UNAVAILABLE',
+        adminActiveTemplatesCount: adminActiveTemplatesCount ?? 'UNAVAILABLE',
+        adminInactiveTemplatesCount: adminInactiveTemplatesCount ?? 'UNAVAILABLE',
+        activeHeroBannersCount: activeBannersCount ?? 'UNAVAILABLE',
+        totalHeroBannersCount: totalBannersCount ?? 'UNAVAILABLE',
+        faceswapSceneCount: versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE'
+      },
+      diagnostics: latestDiagRun
+        ? {
+            status: 'AVAILABLE',
+            source: diagHistorySource,
+            runId: latestDiagRun.runId,
+            timestamp: latestDiagRun.timestamp,
+            overallStatus: latestDiagRun.overallStatus,
+            stats: latestDiagRun.stats,
+            probes: latestDiagRun.results.map((r) => ({
+              id: r.id,
+              name: r.name,
+              category: r.category,
+              status: r.status,
+              testType: r.testType || 'LIVE_PROBE',
+              durationMs: r.durationMs,
+              endpointOrProvider: r.endpointOrProvider,
+              failureReason: r.failureReason || null
+            }))
+          }
+        : {
+            status: diagHistoryError ? 'UNAVAILABLE' : 'NOT_TESTED',
+            error: diagHistoryError || null,
+            note: 'No diagnostic run found in history.'
+          },
+      storageAndMediaCache: {
+        storageDriver: healthCheck?.storage?.driver || systemHealth?.storage?.driver || 'UNAVAILABLE',
+        r2Configured: healthCheck ? healthCheck.storage.r2Configured : 'NOT_VERIFIED',
+        r2Bucket: healthCheck?.storage?.bucket || systemHealth?.storage?.bucket || 'UNAVAILABLE',
+        r2StorageUsageAndObjectCount: 'UNAVAILABLE (Not instrumented in current dashboard)',
+        clientMediaCache: cacheStats
+          ? {
+              storedMb: Number((cacheStats.totalBytesStored / (1024 * 1024)).toFixed(2)),
+              cachedItemCount: cacheStats.itemCount,
+              hitCount: cacheStats.hitCount,
+              missCount: cacheStats.missCount,
+              evictionCount: cacheStats.evictionCount,
+              inMemoryQueueCacheSize: queueStats?.cacheSize ?? 'UNAVAILABLE',
+              pendingDownloads: queueStats?.pendingCount ?? 'UNAVAILABLE',
+              activeDownloads: queueStats?.activeCount ?? 'UNAVAILABLE',
+              isDataSaver: queueStats?.isDataSaver ?? 'UNAVAILABLE'
+            }
+          : 'UNAVAILABLE'
+      },
+      backendApiAndHealth: {
+        serverStatus: systemHealth?.status || (systemHealthError ? 'ERROR' : 'NOT_VERIFIED'),
+        firestoreStatus: systemHealth?.firestore?.status || 'NOT_VERIFIED',
+        firestoreLatencyMs:
+          systemHealth && systemHealth.firestore.latencyMs >= 0 ? systemHealth.firestore.latencyMs : 'UNAVAILABLE',
+        memoryRssMb: systemHealth?.memory?.rssMb ?? 'UNAVAILABLE',
+        memoryHeapUsedMb: systemHealth?.memory?.heapUsedMb ?? 'UNAVAILABLE',
+        memoryHeapTotalMb: systemHealth?.memory?.heapTotalMb ?? 'UNAVAILABLE',
+        recentErrorsCount: systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE',
+        recentErrorsWindowMinutes: systemHealth?.recentErrorsWindowMinutes ?? 'UNAVAILABLE',
+        recentApiErrors: systemHealth?.recentApiErrors || [],
+        activeMonitoringAlertsCount: activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'
+      },
+      recentAdminLogs: {
+        totalLogs: totalLogs ?? 'UNAVAILABLE',
+        shownCount: logs.length,
+        entries: logs.map((l) => ({
+          timestamp: l.timestamp,
+          actorEmail: l.actorEmail,
+          action: l.action,
+          targetId: l.targetId,
+          details: l.details
+        }))
+      },
+      warningsAndMismatches: warningsAndMismatches.length > 0 ? warningsAndMismatches : ['None detected in current checks']
+    };
 
----
+    const reportMarkdown = `# AI PRIME STUDIO — SANITIZED DIAGNOSTIC REPORT
+Generated At: ${now}
+Actor Email: ${activeActor}
 
-### 1. FIREBASE & AUTHENTICATION CONFIGURATION
-- **Client Firebase Project ID:** \`${healthCheck?.clientFirebase.projectId || 'UNAVAILABLE'}\`
-- **Client Firestore Database ID:** \`${clientDatabaseId}\`
-- **Admin SDK Initialized:** \`${healthCheck ? String(healthCheck.adminSdk.initialized) : 'UNAVAILABLE'}\`
-- **Admin SDK Project ID:** \`${healthCheck?.adminSdk.projectId || 'UNAVAILABLE'}\`
-- **Backend Firestore Database ID:** \`${backendDatabaseId || 'UNAVAILABLE'}\`
-- **Project / Database Parity:** \`${healthCheck ? (projectMismatch || databaseMismatch ? 'MISMATCH_DETECTED' : 'MATCH') : 'NOT_VERIFIED'}\`
-- **Session Persistence:** \`${healthCheck?.sessionPersistence || 'UNAVAILABLE'}\`
-- **Auth Domain:** \`${healthCheck?.clientFirebase.authDomain || 'UNAVAILABLE'}\`
+## 1. APPLICATION & BUILD
+- Environment: ${appEnvValue}
+- App Version: ${appVersionValue}
+- Git Commit SHA: ${commitShaValue}
+- Git Branch: UNAVAILABLE (no .git metadata in runtime)
+- Cloud Run Revision: ${cloudRunRevValue}
+- Build / Startup Time: ${buildTimeValue}
+- Server Uptime: ${systemHealth ? `${Math.floor(systemHealth.uptimeSeconds / 60)} min (${systemHealth.uptimeSeconds}s)` : 'UNAVAILABLE'}
 
----
+## 2. FIREBASE & AUTHENTICATION
+- Client Project ID: ${clientProjectId}
+- Client Database ID: ${clientDatabaseId}
+- Admin SDK Initialized: ${healthCheck ? String(healthCheck.adminSdk.initialized) : 'NOT_VERIFIED'}
+- Backend Admin SDK Project ID: ${backendProjectId}
+- Backend Admin SDK Database ID: ${backendDatabaseId}
+- Project Parity: ${projectParityStatus}
+- Database Parity: ${databaseParityStatus}
+- Firestore Mode: ${healthCheck?.firestoreMode || 'NOT_VERIFIED'}
+- Session Persistence: ${healthCheck?.sessionPersistence || 'NOT_VERIFIED'}
+- Authorized Admin Allowlist: ${AUTHORIZED_ADMIN_EMAILS.join(', ')}
 
-### 2. CATALOGUE & STORAGE INFRASTRUCTURE
-- **Catalogue Status:** \`${versionData?.catalogueStatus || 'UNAVAILABLE'}\`
-- **Admin Templates (Total / Active / Inactive):** \`${catalogSummary ? `${catalogSummary.adminTotalTemplates} / ${catalogSummary.adminActiveTemplates} / ${catalogSummary.adminInactiveTemplates}` : 'UNAVAILABLE'}\`
-- **Public Templates Loaded:** \`${templates.length}\`
-- **Quarantined Templates:** \`${catalogSummary ? catalogSummary.quarantinedCount : 'UNAVAILABLE'}\`
-- **Hero Banners (Active / Total):** \`${catalogSummary ? `${catalogSummary.bannersActive} / ${catalogSummary.bannersTotal}` : 'UNAVAILABLE'}\`
-- **FaceSwap Scenes:** \`${versionData ? versionData.faceswapSceneCount : 'UNAVAILABLE'}\`
-- **Active Storage Driver:** \`${healthCheck?.storage.driver || 'UNAVAILABLE'}\`
-- **Cloudflare R2 Bucket:** \`${healthCheck?.storage.bucket || 'UNAVAILABLE'}\`
-- **R2 Connection Status:** \`${r2Status}\`
+## 3. TEMPLATES & HERO BANNERS
+- Catalogue Status: ${versionInfo?.catalogueStatus || 'UNAVAILABLE'} (Rev: ${versionInfo?.catalogRevision ?? 'UNAVAILABLE'})
+- Public Active Templates: ${templates.length}
+- Admin Total Templates: ${adminTemplates !== null ? adminTemplates.length : 'UNAVAILABLE'} (Active: ${adminActiveTemplatesCount ?? 'UNAVAILABLE'}, Inactive: ${adminInactiveTemplatesCount ?? 'UNAVAILABLE'})
+- Active Hero Banners: ${activeBannersCount ?? 'UNAVAILABLE'} (Total: ${totalBannersCount ?? 'UNAVAILABLE'})
+- FaceSwap Scenes: ${versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE'}
 
----
+## 4. EXISTING DIAGNOSTICS SUMMARY
+${
+  latestDiagRun
+    ? `- Run ID: ${latestDiagRun.runId} (${latestDiagRun.timestamp})
+- Source: ${diagHistorySource}
+- Overall Status: ${latestDiagRun.overallStatus}
+- Counts: ${latestDiagRun.stats.passed} PASS, ${latestDiagRun.stats.failed} FAIL, ${latestDiagRun.stats.blocked} BLOCKED, ${latestDiagRun.stats.warning} WARNING
+${latestDiagRun.results.map((r) => `  - [${r.status.toUpperCase()}] ${r.name} (${r.testType || 'LIVE_PROBE'}, ${r.durationMs}ms)${r.failureReason ? ` — Reason: ${r.failureReason}` : ''}`).join('\n')}`
+    : `- Status: ${diagHistoryError ? `UNAVAILABLE (${diagHistoryError})` : 'NOT_TESTED (No diagnostic run recorded yet)'}`
+}
 
-### 3. LIVE RUNTIME & LATENCY METRICS
-- **Firestore Health:** \`${systemHealth?.firestore.status || (systemHealthError ? 'ERROR' : 'UNAVAILABLE')}\`
-- **Firestore Roundtrip Latency:** \`${typeof firestoreLatency === 'number' && firestoreLatency >= 0 ? `${firestoreLatency} ms` : 'UNAVAILABLE'}\`
-- **Server Uptime:** \`${systemHealth ? `${Math.floor(systemHealth.uptimeSeconds / 60)} min` : 'UNAVAILABLE'}\`
-- **Memory RSS:** \`${systemHealth ? `${systemHealth.memory.rssMb} MB` : 'UNAVAILABLE'}\`
-- **Heap Used / Total:** \`${systemHealth ? `${systemHealth.memory.heapUsedMb} MB / ${systemHealth.memory.heapTotalMb} MB` : 'UNAVAILABLE'}\`
-- **Recent Errors Counter:** \`${systemHealth ? `${systemHealth.recentErrorsCount} (Backend 4xx/5xx window uninstrumented)` : 'UNAVAILABLE'}\`
-
----
-
-### 4. LATEST DIAGNOSTICS & ADAPTER STATUS
-- **Latest Run ID:** \`${latestDiagRun?.runId || 'NOT_TESTED'}\`
-- **Latest Run Status:** \`${latestDiagRun ? `${latestDiagRun.overallStatus} (${latestDiagRun.stats.passed}/${latestDiagRun.stats.total} passed, ${latestDiagRun.stats.failed} failed, ${latestDiagRun.stats.blocked} blocked)` : 'NOT_TESTED'}\`
-- **History Persistence Source:** \`${diagHistorySource}\`
-- **Unresolved Monitoring Alerts:** \`${alerts.length > 0 ? unresolvedAlertsCount : 0}\`
-- **AI Adapters:** ${adapters.length > 0 ? adapters.map((a) => `\`${a.id}:${a.status}\``).join(', ') : '`UNAVAILABLE`'}
-
----
-
-### 5. RECENT ADMIN AUDIT LOGS (${logs.length} of ${totalLogs} total)
-${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 19).replace('T', ' ') || 'N/A'}]** \`${l?.action || 'UNKNOWN'}\` by *${l?.actorEmail || 'unknown'}*: ${l?.details || ''}`).join('\n') : logsError ? `- Error loading logs: ${logsError}` : '- Zero admin activity logs recorded.'}
-
----
-*Note: Sanitized report generated by AI Prime Studio Admin System. All secrets, private keys, and tokens strictly excluded.*
-`.trim();
-
-    try {
-      await navigator.clipboard.writeText(reportMarkdown);
-      setCopiedReport(true);
-      setTimeout(() => setCopiedReport(false), 2500);
-    } catch (err: any) {
-      setCopyError(err?.message || 'Clipboard permission denied');
-      setTimeout(() => setCopyError(null), 3500);
+## 5. STORAGE & CLIENT MEDIA CACHE
+- Storage Driver: ${healthCheck?.storage?.driver || systemHealth?.storage?.driver || 'UNAVAILABLE'}
+- R2 Configured: ${healthCheck ? String(healthCheck.storage.r2Configured) : 'NOT_VERIFIED'}
+- R2 Bucket: ${healthCheck?.storage?.bucket || systemHealth?.storage?.bucket || 'UNAVAILABLE'}
+- R2 Usage / Object Count: UNAVAILABLE (Not instrumented)
+- Client IndexedDB Cache: ${
+      cacheStats
+        ? `${(cacheStats.totalBytesStored / (1024 * 1024)).toFixed(2)} MB (${cacheStats.itemCount} items, ${cacheStats.hitCount} hits / ${cacheStats.missCount} misses, ${cacheStats.evictionCount} evictions, pending=${queueStats?.pendingCount ?? 'UNAVAILABLE'}, active=${queueStats?.activeCount ?? 'UNAVAILABLE'}, dataSaver=${queueStats?.isDataSaver ? 'ON' : 'OFF'})`
+        : 'UNAVAILABLE'
     }
+
+## 6. BACKEND HEALTH, LATENCY & API ERRORS
+- Server Status: ${systemHealth?.status || (systemHealthError ? `ERROR (${systemHealthError})` : 'NOT_VERIFIED')}
+- Firestore Health: ${systemHealth?.firestore?.status || 'NOT_VERIFIED'}
+- Firestore Latency: ${systemHealth && systemHealth.firestore.latencyMs >= 0 ? `${systemHealth.firestore.latencyMs} ms` : 'UNAVAILABLE'}
+- Container Memory: ${systemHealth ? `${systemHealth.memory.rssMb} MB RSS (Heap ${systemHealth.memory.heapUsedMb}/${systemHealth.memory.heapTotalMb} MB)` : 'UNAVAILABLE'}
+- Recent API 4xx/5xx Errors (${systemHealth?.recentErrorsWindowMinutes ?? 15}m window): ${systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE'}
+${
+  systemHealth?.recentApiErrors && systemHealth.recentApiErrors.length > 0
+    ? systemHealth.recentApiErrors.map((e) => `  - [${e.timestamp}] ${e.method} ${e.path} -> HTTP ${e.status}`).join('\n')
+    : '  - No 4xx/5xx entries in window (or unavailable)'
+}
+- Active Monitoring Alerts: ${activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'}
+
+## 7. RECENT ADMIN ACTIVITY LOGS (${logs.length} of ${totalLogs ?? 'UNAVAILABLE'})
+${
+  logs.length > 0
+    ? logs.map((l) => `- [${l.timestamp.slice(0, 19).replace('T', ' ')}] ${l.action} by ${l.actorEmail} (${l.targetId}): ${l.details}`).join('\n')
+    : logsError
+    ? `- UNAVAILABLE (${logsError})`
+    : '- No admin activity logs recorded yet.'
+}
+
+## 8. KNOWN WARNINGS & UNRESOLVED MISMATCHES
+${warningsAndMismatches.length > 0 ? warningsAndMismatches.map((w) => `- ${w}`).join('\n') : '- None detected.'}
+
+## 9. STRUCTURED JSON DATA
+\`\`\`json
+${JSON.stringify(sanitizedPayload, null, 2)}
+\`\`\`
+
+Note: Strictly sanitized report. API keys, private keys, session tokens, signed URLs, and customer media are excluded.`.trim();
+
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(reportMarkdown);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+
+    if (!copied) {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = reportMarkdown;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      } catch {
+        copied = false;
+      }
+    }
+
+    setCopyStatus(copied ? 'copied' : 'failed');
+    setTimeout(() => setCopyStatus('idle'), 2800);
   };
 
   if (!isOpen) return null;
 
-  const firestoreStatusText = systemHealth?.firestore.status || '';
-  const isFirestoreHealthy = firestoreStatusText === 'HEALTHY';
-  const isFirestoreInMemory = firestoreStatusText === 'HEALTHY_IN_MEMORY';
-
-  const tabItems: Array<{
-    id: AdminDashboardTab;
-    label: string;
-    icon: React.ReactNode;
-    activeClass: string;
-  }> = [
-    {
-      id: 'gallery',
-      label: 'Admin Gallery & Templates',
-      icon: <Grid className="w-3.5 h-3.5 shrink-0" />,
-      activeClass: 'bg-[#15141c] text-[#ff9f00] border-t-2 border-t-[#ff9f00] border-x border-white/10'
-    },
-    {
-      id: 'diagnostics',
-      label: 'System Diagnostics',
-      icon: <Cpu className="w-3.5 h-3.5 shrink-0" />,
-      activeClass: 'bg-[#15141c] text-emerald-400 border-t-2 border-t-emerald-400 border-x border-white/10'
-    },
-    {
-      id: 'health_check',
-      label: 'Admin Health Check',
-      icon: <Shield className="w-3.5 h-3.5 shrink-0" />,
-      activeClass: 'bg-[#15141c] text-amber-300 border-t-2 border-t-amber-400 border-x border-white/10'
-    },
-    {
-      id: 'system_health',
-      label: 'System Health & Metrics',
-      icon: <Activity className="w-3.5 h-3.5 shrink-0" />,
-      activeClass: 'bg-[#15141c] text-sky-400 border-t-2 border-t-sky-400 border-x border-white/10'
-    },
-    {
-      id: 'logs',
-      label: 'Admin Activity Logs',
-      icon: <ScrollText className="w-3.5 h-3.5 shrink-0" />,
-      activeClass: 'bg-[#15141c] text-purple-400 border-t-2 border-t-purple-400 border-x border-white/10'
-    }
-  ];
+  const renderStatusLabel = (status: string) => {
+    const map: Record<string, string> = {
+      MATCH: 'text-emerald-400',
+      VERIFIED: 'text-emerald-400',
+      CONNECTED: 'text-emerald-400',
+      FIRESTORE_SESSION_DURABLE: 'text-emerald-400',
+      LIVE_CLOUD_FIRESTORE: 'text-emerald-400',
+      HEALTHY: 'text-emerald-400',
+      MISMATCH: 'text-rose-400',
+      DISCONNECTED: 'text-rose-400',
+      ERROR: 'text-rose-400',
+      STANDBY_LOCAL: 'text-amber-300',
+      LOCAL_FALLBACK_ONLY: 'text-amber-300',
+      UNVERIFIED: 'text-amber-300',
+      NOT_VERIFIED: 'text-stone-400',
+      UNAVAILABLE: 'text-stone-400'
+    };
+    return map[status] || 'text-stone-300';
+  };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/85 backdrop-blur-md overflow-hidden"
-      role="dialog"
-      aria-modal="true"
-      aria-label="AI Prime Studio Admin Dashboard"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/85 backdrop-blur-md overflow-hidden">
       <motion.div
-        initial={{ opacity: 0, scale: 0.95, y: 12 }}
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 12 }}
-        transition={{ duration: 0.2 }}
-        onClick={(e) => e.stopPropagation()}
+        exit={{ opacity: 0, scale: 0.96, y: 10 }}
+        transition={{ duration: 0.18 }}
         className="relative w-full max-w-4xl h-[92vh] bg-[#0c0c11] border border-white/12 rounded-3xl shadow-[0_25px_70px_rgba(0,0,0,0.9)] flex flex-col overflow-hidden"
       >
         {/* Top Header Bar */}
@@ -584,7 +780,7 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                 </span>
               </div>
               <p className="text-xs text-stone-400 truncate">
-                Verified: <span className="text-stone-200 font-medium">{user?.email || healthCheck?.actorEmail || 'Unverified'}</span>
+                Actor: <span className="text-stone-200 font-medium">{user?.email || healthCheck?.actorEmail || 'NOT_VERIFIED'}</span>
               </p>
             </div>
           </div>
@@ -594,19 +790,29 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
             <button
               type="button"
               onClick={handleCopyReport}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 hover:border-amber-400 text-amber-200 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Copy genuine sanitized Markdown report"
+              className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                copyStatus === 'copied'
+                  ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
+                  : copyStatus === 'failed'
+                  ? 'bg-rose-500/20 border-rose-400/60 text-rose-300'
+                  : 'bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-500/45 hover:border-amber-400 text-amber-200'
+              }`}
+              title="Copy complete sanitized Markdown & JSON diagnostic report"
             >
-              {copiedReport ? (
+              {copyStatus === 'copied' ? (
                 <>
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-emerald-400">Report Copied!</span>
+                  <Check className="w-4 h-4 text-emerald-400" />
+                  <span>Report Copied!</span>
+                </>
+              ) : copyStatus === 'failed' ? (
+                <>
+                  <AlertTriangle className="w-4 h-4 text-rose-400" />
+                  <span>Copy Blocked</span>
                 </>
               ) : (
                 <>
-                  <Copy className="w-3.5 h-3.5 text-amber-300" />
-                  <span className="hidden xs:inline sm:inline">Copy Diagnostic Report</span>
-                  <span className="sm:hidden">Copy Report</span>
+                  <Copy className="w-4 h-4 text-amber-300" />
+                  <span>Copy Diagnostic Report</span>
                 </>
               )}
             </button>
@@ -617,7 +823,7 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
               onClick={refreshAll}
               disabled={loading}
               aria-label="Refresh Dashboard Data"
-              className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center"
+              className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center"
               title="Refresh Dashboard Data"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-[#ff9f00]' : ''}`} />
@@ -628,69 +834,100 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
               type="button"
               onClick={onClose}
               aria-label="Close Admin Dashboard"
-              className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-400 hover:text-white transition-colors cursor-pointer flex items-center justify-center"
+              className="min-h-[40px] min-w-[40px] p-2 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 text-stone-300 hover:text-white transition-colors cursor-pointer flex items-center justify-center"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Five Navigation Tabs */}
+        {/* Five Colour-Coded Navigation Tabs */}
         <div
           role="tablist"
           aria-label="Admin Dashboard Sections"
-          className="px-3 sm:px-4 pt-2.5 border-b border-white/5 bg-black/40 flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0"
+          className="px-3 sm:px-4 pt-2.5 border-b border-white/10 bg-[#08080c] flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0"
         >
-          {tabItems.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveTab(tab.id);
-              }}
-              className={`min-h-[44px] px-3 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                activeTab === tab.id
-                  ? tab.activeClass
-                  : 'text-stone-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-            </button>
-          ))}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'gallery'}
+            onClick={() => setActiveTab('gallery')}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'gallery'
+                ? 'bg-[#181410] text-[#ff9f00] border-t-[#ff9f00] border-x-[#ff9f00]/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <Grid className={`w-4 h-4 ${activeTab === 'gallery' ? 'text-[#ff9f00]' : 'text-[#ff9f00]/75'}`} />
+            <span>Admin Gallery & Templates</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'diagnostics'}
+            onClick={() => setActiveTab('diagnostics')}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'diagnostics'
+                ? 'bg-[#0d1914] text-emerald-400 border-t-emerald-400 border-x-emerald-500/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <Cpu className={`w-4 h-4 ${activeTab === 'diagnostics' ? 'text-emerald-400' : 'text-emerald-400/75'}`} />
+            <span>System Diagnostics</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'health_check'}
+            onClick={() => setActiveTab('health_check')}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'health_check'
+                ? 'bg-[#19160d] text-amber-300 border-t-amber-300 border-x-amber-400/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <Shield className={`w-4 h-4 ${activeTab === 'health_check' ? 'text-amber-300' : 'text-amber-300/75'}`} />
+            <span>Admin Health Check</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'system_health'}
+            onClick={() => setActiveTab('system_health')}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'system_health'
+                ? 'bg-[#0d161e] text-sky-400 border-t-sky-400 border-x-sky-500/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <Activity className={`w-4 h-4 ${activeTab === 'system_health' ? 'text-sky-400' : 'text-sky-400/75'}`} />
+            <span>System Health & Metrics</span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'logs'}
+            onClick={() => setActiveTab('logs')}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'logs'
+                ? 'bg-[#16101e] text-purple-400 border-t-purple-400 border-x-purple-500/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <ScrollText className={`w-4 h-4 ${activeTab === 'logs' ? 'text-purple-400' : 'text-purple-400/75'}`} />
+            <span>Admin Activity Logs</span>
+          </button>
         </div>
 
         {/* Tab Body Content */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
-          {/* Copy / Mismatch Alerts */}
-          {copyError && (
-            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>Copy failed: {copyError}</span>
-            </div>
-          )}
-
-          {(projectMismatch || databaseMismatch) && (
-            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold text-amber-300">Firebase Configuration Parity Alert</p>
-                <p className="text-amber-200/80 mt-0.5">
-                  Client DB: <code className="font-mono">{clientDatabaseId}</code> | Backend DB:{' '}
-                  <code className="font-mono">{backendDatabaseId || 'UNAVAILABLE'}</code> | Client Project:{' '}
-                  <code className="font-mono">{healthCheck?.clientFirebase.projectId}</code> | Admin SDK Project:{' '}
-                  <code className="font-mono">{healthCheck?.adminSdk.projectId}</code>
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 1: Gallery & Templates Quick Management */}
+          {/* TAB 1: Admin Gallery & Templates */}
           {activeTab === 'gallery' && (
-            <div className="space-y-5" role="tabpanel" aria-label="Admin Gallery & Templates">
+            <div className="space-y-5">
               <div className="p-5 rounded-2xl bg-gradient-to-br from-[#1a1510] to-[#100f14] border border-[#ff9f00]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
                   <h4 className="text-base font-bold text-white flex items-center gap-2">
@@ -704,14 +941,12 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={async () => {
-                      await Promise.allSettled([fetchCatalogSummary(true), refreshTemplates()]);
-                    }}
-                    disabled={refreshingCatalog}
-                    className="min-h-[42px] px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-stone-200 font-semibold text-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                    onClick={fetchCatalogAndVersion}
+                    disabled={loading}
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 text-stone-200 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${refreshingCatalog ? 'animate-spin text-[#ff9f00]' : ''}`} />
-                    <span>Sync Catalog</span>
+                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                    <span>Refresh Counts</span>
                   </button>
                   <button
                     type="button"
@@ -719,7 +954,7 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                       onClose();
                       setTemplateManagerOpen(true);
                     }}
-                    className="min-h-[42px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer hover:brightness-110"
+                    className="min-h-[40px] px-4 py-2 rounded-xl bg-gradient-to-r from-[#ff9f00] to-[#ea580c] text-black font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer hover:brightness-105"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Open Full Template Manager</span>
@@ -727,103 +962,81 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                 </div>
               </div>
 
-              {catalogError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    <span>{catalogError}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => fetchCatalogSummary(false)}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold cursor-pointer"
-                  >
-                    Retry
-                  </button>
+              {(adminTemplatesError || bannersError || versionError) && (
+                <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-500/40 text-amber-200 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    {adminTemplatesError && <div>Admin Templates Error: {adminTemplatesError}</div>}
+                    {bannersError && <div>Banners API Error: {bannersError}</div>}
+                    {versionError && <div>Version API Error: {versionError}</div>}
+                  </div>
                 </div>
               )}
 
-              {/* Genuine Authoritative Catalog Stats */}
+              {/* Genuine Catalog Stats */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-4 rounded-xl bg-white/5 border border-white/10">
-                  <span className="text-[11px] text-stone-400 block">Admin Templates (Total)</span>
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Admin Templates</span>
                   <span className="text-2xl font-bold font-mono tabular-nums text-white mt-1 block">
-                    {catalogSummary ? catalogSummary.adminTotalTemplates : loading ? '…' : 'UNAVAILABLE'}
+                    {loading && adminTemplates === null ? '...' : adminTemplates !== null ? adminTemplates.length : 'UNAVAILABLE'}
                   </span>
-                  <span className="text-[11px] text-stone-400 mt-1 block font-mono tabular-nums">
-                    {catalogSummary
-                      ? `${catalogSummary.adminActiveTemplates} active · ${catalogSummary.adminInactiveTemplates} hidden`
+                  <span className="text-[11px] text-stone-400 font-mono tabular-nums mt-1 block">
+                    {adminTemplates !== null
+                      ? `Active ${adminActiveTemplatesCount} · Inactive ${adminInactiveTemplatesCount} · Public ${templates.length}`
                       : `Public UI: ${templates.length}`}
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-white/5 border border-white/10">
-                  <span className="text-[11px] text-stone-400 block">Hero Banners (Persisted)</span>
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Active Hero Banners</span>
                   <span className="text-2xl font-bold font-mono tabular-nums text-[#ff9f00] mt-1 block">
-                    {catalogSummary ? catalogSummary.bannersActive : loading ? '…' : 'UNAVAILABLE'}
+                    {loading && activeBannersCount === null ? '...' : activeBannersCount !== null ? activeBannersCount : 'UNAVAILABLE'}
                   </span>
-                  <span className="text-[11px] text-stone-400 mt-1 block font-mono tabular-nums">
-                    {catalogSummary ? `${catalogSummary.bannersTotal} total persisted` : 'From /api/banners'}
+                  <span className="text-[11px] text-stone-400 font-mono tabular-nums mt-1 block">
+                    {totalBannersCount !== null ? `Persisted Total: ${totalBannersCount}` : 'Source: /api/banners'}
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-white/5 border border-white/10">
-                  <span className="text-[11px] text-stone-400 block">Active Storage Driver</span>
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Storage Driver</span>
                   <span
                     className={`text-sm font-bold mt-2 block truncate ${
-                      !healthCheck
-                        ? 'text-stone-400'
-                        : healthCheck.storage.r2Configured
-                        ? 'text-emerald-400'
-                        : 'text-amber-300'
+                      healthCheck
+                        ? healthCheck.storage.r2Configured
+                          ? 'text-emerald-400'
+                          : 'text-amber-300'
+                        : 'text-stone-400'
                     }`}
                   >
-                    {!healthCheck
-                      ? loading
-                        ? 'Checking…'
-                        : 'UNAVAILABLE'
-                      : healthCheck.storage.r2Configured
-                      ? 'Cloudflare R2 (Connected)'
-                      : 'Local Storage (R2 Pending)'}
+                    {loading && !healthCheck
+                      ? 'Checking...'
+                      : healthCheck
+                      ? healthCheck.storage.r2Configured
+                        ? 'Cloudflare R2'
+                        : healthCheck.storage.driver
+                      : 'NOT_VERIFIED'}
                   </span>
-                  <span className="text-[11px] text-stone-400 mt-1 block truncate font-mono">
-                    {healthCheck?.storage.bucket || 'No R2 bucket active'}
+                  <span className="text-[11px] text-stone-400 font-mono truncate block mt-1">
+                    {healthCheck?.storage?.bucket || 'Bucket: UNAVAILABLE'}
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-white/5 border border-white/10">
-                  <span className="text-[11px] text-stone-400 block">Catalogue & Scenes</span>
-                  <span
-                    className={`text-sm font-bold mt-2 block ${
-                      versionData?.catalogueStatus === 'READY'
-                        ? 'text-emerald-400'
-                        : versionData?.catalogueStatus === 'EMPTY'
-                        ? 'text-amber-300'
-                        : 'text-stone-300'
-                    }`}
-                  >
-                    {versionData ? versionData.catalogueStatus : loading ? 'Checking…' : 'UNAVAILABLE'}
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Catalog Status</span>
+                  <span className="text-sm font-bold font-mono text-stone-200 mt-2 block">
+                    {loading && !versionInfo ? 'Checking...' : versionInfo?.catalogueStatus || 'UNAVAILABLE'}
                   </span>
-                  <span className="text-[11px] text-stone-400 mt-1 block font-mono tabular-nums">
-                    {versionData ? `${versionData.faceswapSceneCount} FaceSwap scenes` : 'From /api/version'}
+                  <span className="text-[11px] text-stone-400 font-mono tabular-nums block mt-1">
+                    {versionInfo ? `Rev ${versionInfo.catalogRevision} · ${versionInfo.databaseMode}` : 'Source: /api/version'}
                   </span>
                 </div>
               </div>
-
-              {catalogSummary && catalogSummary.quarantinedCount > 0 && (
-                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span>
-                    <strong className="font-mono tabular-nums">{catalogSummary.quarantinedCount}</strong> quarantined template(s) excluded due to incomplete schema/media validation.
-                  </span>
-                </div>
-              )}
             </div>
           )}
 
           {/* TAB 2: System Diagnostics */}
           {activeTab === 'diagnostics' && (
-            <div className="space-y-5" role="tabpanel" aria-label="System Diagnostics">
+            <div className="space-y-5">
               <div className="p-5 rounded-2xl bg-gradient-to-br from-[#0e1a14] to-[#0c1210] border border-emerald-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
                   <h4 className="text-base font-bold text-white flex items-center gap-2">
@@ -831,22 +1044,18 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     <span>Automated Diagnostic Suite & Live Probes</span>
                   </h4>
                   <p className="text-xs text-stone-300 mt-1 max-w-xl">
-                    Run live server probes across Firebase, Google Cloud, Razorpay, Cloudflare R2, and AI generation adapters.
+                    Run the existing 14 verification probes across Firebase, Google Cloud, Razorpay, Cloudflare R2, and AI adapters.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={handleRunLiveProbes}
-                    disabled={runningProbes}
-                    className="min-h-[42px] px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-emerald-500/40 text-emerald-200 font-bold text-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                    onClick={fetchDiagnosticsSummary}
+                    disabled={loading}
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 text-stone-200 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
                   >
-                    {runningProbes ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
-                    ) : (
-                      <Play className="w-3.5 h-3.5 fill-emerald-300 text-emerald-300" />
-                    )}
-                    <span>{runningProbes ? 'Running Probes…' : 'Run Live Probes'}</span>
+                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                    <span>Refresh Latest Run</span>
                   </button>
                   <button
                     type="button"
@@ -854,7 +1063,7 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                       onClose();
                       setDiagnosticsModalOpen(true);
                     }}
-                    className="min-h-[42px] px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-black font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer hover:brightness-110"
+                    className="min-h-[40px] px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-black font-bold text-xs flex items-center gap-2 shadow-lg cursor-pointer hover:brightness-105"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Launch Diagnostics Modal</span>
@@ -862,176 +1071,150 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                 </div>
               </div>
 
-              {diagError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    <span>{diagError}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={fetchDiagnosticsSummary}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold cursor-pointer"
-                  >
-                    Retry
-                  </button>
+              {diagHistoryError && (
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Failed to fetch diagnostic run history: {diagHistoryError}</span>
                 </div>
               )}
 
-              {/* Genuine Latest Run Summary */}
-              <div className="p-4 rounded-xl bg-black/40 border border-white/10 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-stone-200 uppercase tracking-wider">
-                    {latestDiagRun ? (
-                      latestDiagRun.overallStatus === 'HEALTHY' ? (
+              {diagHistoryWarning && (
+                <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>{diagHistoryWarning}</span>
+                </div>
+              )}
+
+              {/* Genuine Latest Recorded Run Summary */}
+              {latestDiagRun ? (
+                <div className="p-4 rounded-2xl bg-black/40 border border-white/10 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      {latestDiagRun.overallStatus === 'HEALTHY' ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                       ) : (
                         <AlertTriangle className="w-4 h-4 text-amber-400" />
-                      )
-                    ) : (
-                      <Cpu className="w-4 h-4 text-stone-400" />
-                    )}
-                    <span>Latest Server Diagnostic Run</span>
+                      )}
+                      <span className="font-bold text-white font-mono">{latestDiagRun.runId}</span>
+                      <span className="text-stone-400">·</span>
+                      <span className="font-mono text-stone-300">{latestDiagRun.overallStatus}</span>
+                    </div>
+                    <span className="text-[11px] font-mono text-stone-400 tabular-nums">
+                      {new Date(latestDiagRun.timestamp).toLocaleString()} ({diagHistorySource})
+                    </span>
                   </div>
-                  <span className="text-[11px] font-mono text-stone-400">
-                    History Source: {diagHistorySource}
-                  </span>
-                </div>
 
-                {latestDiagRun ? (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
-                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                        <span className="text-[10px] text-stone-400 block">Overall Status</span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono tabular-nums">
+                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
+                      Passed: {latestDiagRun.stats.passed}
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300">
+                      Failed: {latestDiagRun.stats.failed}
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300">
+                      Blocked: {latestDiagRun.stats.blocked}
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-300">
+                      Warning: {latestDiagRun.stats.warning}
+                    </div>
+                  </div>
+
+                  <div className="divide-y divide-white/5 rounded-xl border border-white/10 bg-black/30 max-h-60 overflow-y-auto">
+                    {latestDiagRun.results.map((probe) => (
+                      <div key={probe.id} className="px-3 py-2 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <div className="text-stone-200 font-medium truncate">{probe.name}</div>
+                          <div className="text-[11px] text-stone-500 font-mono truncate">
+                            {probe.endpointOrProvider} · {probe.durationMs}ms
+                          </div>
+                        </div>
                         <span
-                          className={`font-bold mt-0.5 block ${
-                            latestDiagRun.overallStatus === 'HEALTHY'
+                          className={`font-mono text-[11px] font-bold shrink-0 ${
+                            probe.status === 'passed'
                               ? 'text-emerald-400'
-                              : latestDiagRun.overallStatus === 'ACTION_REQUIRED'
+                              : probe.status === 'failed'
                               ? 'text-rose-400'
                               : 'text-amber-300'
                           }`}
                         >
-                          {latestDiagRun.overallStatus}
+                          {probe.status.toUpperCase()}
                         </span>
                       </div>
-                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                        <span className="text-[10px] text-stone-400 block">Passed</span>
-                        <span className="font-mono tabular-nums font-bold text-emerald-400 mt-0.5 block">
-                          {latestDiagRun.stats.passed} / {latestDiagRun.stats.total}
-                        </span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                        <span className="text-[10px] text-stone-400 block">Failed</span>
-                        <span className="font-mono tabular-nums font-bold text-rose-400 mt-0.5 block">
-                          {latestDiagRun.stats.failed}
-                        </span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                        <span className="text-[10px] text-stone-400 block">Blocked / Warn</span>
-                        <span className="font-mono tabular-nums font-bold text-amber-300 mt-0.5 block">
-                          {latestDiagRun.stats.blocked} / {latestDiagRun.stats.warning}
-                        </span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-white/5 border border-white/5">
-                        <span className="text-[10px] text-stone-400 block">Run Time</span>
-                        <span className="font-mono tabular-nums text-stone-200 mt-0.5 block truncate">
-                          {latestDiagRun.timestamp ? new Date(latestDiagRun.timestamp).toLocaleTimeString() : 'N/A'}
-                        </span>
-                      </div>
-                    </div>
-                    <p className="text-[11px] font-mono text-stone-400">
-                      Run ID: {latestDiagRun.runId} · Env: {latestDiagRun.environment} · Unresolved Monitoring Alerts:{' '}
-                      <span className={unresolvedAlertsCount > 0 ? 'text-rose-400 font-bold' : 'text-stone-200'}>
-                        {unresolvedAlertsCount}
-                      </span>
-                    </p>
+                    ))}
                   </div>
-                ) : (
-                  <p className="text-xs text-stone-400 leading-relaxed">
-                    {loading
-                      ? 'Loading diagnostic run history…'
-                      : 'No server diagnostic run recorded yet. Click "Run Live Probes" above or "Launch Diagnostics Modal" to execute the live probes.'}
-                  </p>
-                )}
-
-                {diagHistoryWarning && (
-                  <p className="text-[11px] text-amber-300/90 border-t border-white/5 pt-2">
-                    Note: {diagHistoryWarning}
-                  </p>
-                )}
-              </div>
-
-              {/* Real AI & Storage Adapter Readiness */}
-              <div className="rounded-xl border border-white/10 bg-black/30 overflow-hidden">
-                <div className="px-4 py-2.5 bg-white/5 border-b border-white/10 flex items-center justify-between text-xs font-semibold text-stone-300">
-                  <span>Live Adapter Readiness (/api/admin/adapters/status)</span>
-                  <span className="font-mono text-[11px] text-stone-400">{adapters.length} adapters</span>
                 </div>
-                {adapters.length > 0 ? (
-                  <div className="divide-y divide-white/5">
-                    {adapters.map((ad) => {
-                      const statusText = typeof ad?.status === 'string' ? ad.status : 'UNKNOWN';
-                      return (
-                        <div key={ad.id} className="px-4 py-2.5 flex items-center justify-between gap-3 text-xs">
-                          <div className="min-w-0">
-                            <span className="font-semibold text-white block truncate">{ad.name}</span>
-                            <span className="text-[11px] font-mono text-stone-400">{ad.id}</span>
-                          </div>
-                          <span
-                            className={`font-mono text-[11px] font-bold shrink-0 ${
-                              statusText.startsWith('CONFIGURED')
-                                ? 'text-emerald-400'
-                                : statusText === 'MISSING_SECRET'
-                                ? 'text-rose-400'
-                                : 'text-amber-300'
-                            }`}
-                          >
-                            {statusText}
-                          </span>
-                        </div>
-                      );
-                    })}
+              ) : (
+                <div className="p-5 rounded-2xl bg-black/40 border border-white/10 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-stone-300 uppercase tracking-wider">
+                    <AlertTriangle className="w-4 h-4 text-amber-400" />
+                    <span>Diagnostic Run Status: {loading ? 'LOADING...' : diagHistoryError ? 'UNAVAILABLE' : 'NOT_TESTED'}</span>
                   </div>
-                ) : (
-                  <p className="p-4 text-xs text-stone-400">
-                    {loading ? 'Loading adapter status…' : 'Adapter status unavailable.'}
+                  <p className="text-xs text-stone-400 leading-relaxed">
+                    {diagHistoryError
+                      ? 'Could not retrieve past diagnostic runs from the server.'
+                      : 'No recent diagnostic run is recorded in history yet. Click "Launch Diagnostics Modal" above to run the 14 existing verification probes.'}
                   </p>
-                )}
+                </div>
+              )}
+
+              <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs text-stone-300">
+                <span>
+                  Authorized Admin Accounts:{' '}
+                  <code className="text-amber-300">{AUTHORIZED_ADMIN_EMAILS.join(', ')}</code>
+                </span>
+                <span className="font-mono tabular-nums text-stone-400">
+                  Monitoring Alerts:{' '}
+                  {alertsError
+                    ? 'UNAVAILABLE'
+                    : activeAlertsList !== null
+                    ? `${activeAlertsList.length} Active`
+                    : 'Loading...'}
+                </span>
               </div>
             </div>
           )}
 
           {/* TAB 3: Admin Health Check Table */}
           {activeTab === 'health_check' && (
-            <div className="space-y-4" role="tabpanel" aria-label="Admin Health Check">
+            <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-amber-400" />
+                  <Shield className="w-4 h-4 text-amber-300" />
                   <span>Authoritative Project & Session Configuration</span>
                 </h4>
                 <span className="text-[11px] text-stone-400 font-mono tabular-nums">
+                  Checked:{' '}
                   {healthCheck
-                    ? `Checked: ${new Date(healthCheck.timestamp).toLocaleTimeString()}`
-                    : loading
-                    ? 'Checking…'
-                    : 'UNAVAILABLE'}
+                    ? new Date(healthCheck.timestamp).toLocaleTimeString()
+                    : healthCheckError
+                    ? 'FAILED'
+                    : 'Loading...'}
                 </span>
               </div>
 
               {healthCheckError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2">
-                    <XCircle className="w-4 h-4 shrink-0" />
-                    <span>{healthCheckError}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={fetchHealthCheck}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold cursor-pointer"
-                  >
-                    Retry
-                  </button>
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Admin Health Check API Error: {healthCheckError}</span>
+                </div>
+              )}
+
+              {(projectParityStatus === 'MISMATCH' || databaseParityStatus === 'MISMATCH') && (
+                <div className="p-3.5 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-rose-300">Configuration Mismatch Detected</div>
+                    {projectParityStatus === 'MISMATCH' && (
+                      <div>
+                        Client Project (<code>{clientProjectId}</code>) differs from Backend Admin SDK (<code>{backendProjectId}</code>).
+                      </div>
+                    )}
+                    {databaseParityStatus === 'MISMATCH' && (
+                      <div>
+                        Client Database ID (<code>{clientDatabaseId}</code>) differs from Backend Database ID (<code>{backendDatabaseId}</code>).
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1040,136 +1223,88 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                   <thead className="bg-white/5 border-b border-white/10 text-stone-400 font-semibold uppercase text-[10px] tracking-wider">
                     <tr>
                       <th className="py-3 px-4">Component</th>
-                      <th className="py-3 px-4">Actual Value</th>
-                      <th className="py-3 px-4">Expected / Target</th>
-                      <th className="py-3 px-4">Real Status</th>
+                      <th className="py-3 px-4">Client / Configured</th>
+                      <th className="py-3 px-4">Backend Authoritative</th>
+                      <th className="py-3 px-4">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 text-stone-300">
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Client Firebase Project</td>
-                      <td className="py-3 px-4 font-mono text-amber-200">
-                        {healthCheck?.clientFirebase.projectId || (loading ? 'Loading…' : 'UNAVAILABLE')}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">ai-prime-studio</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : healthCheck.clientFirebase.projectId === 'ai-prime-studio' ? (
-                          <span className="text-emerald-400">MATCH</span>
-                        ) : (
-                          <span className="text-rose-400">MISMATCH</span>
-                        )}
+                      <td className="py-3 px-4 font-semibold text-white">Firebase Project ID</td>
+                      <td className="py-3 px-4 font-mono text-amber-200">{clientProjectId}</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{backendProjectId}</td>
+                      <td className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(projectParityStatus)}`}>
+                        {projectParityStatus}
                       </td>
                     </tr>
-
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Admin SDK Project ID</td>
-                      <td className="py-3 px-4 font-mono text-amber-200">
-                        {healthCheck?.adminSdk.projectId || (loading ? 'Loading…' : 'UNAVAILABLE')}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">ai-prime-studio</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : !healthCheck.adminSdk.initialized ? (
-                          <span className="text-rose-400">NOT_INITIALIZED</span>
-                        ) : projectMismatch ? (
-                          <span className="text-rose-400">MISMATCH</span>
-                        ) : (
-                          <span className="text-emerald-400">INITIALIZED</span>
-                        )}
+                      <td className="py-3 px-4 font-semibold text-white">Firestore Database ID</td>
+                      <td className="py-3 px-4 font-mono text-amber-200">{clientDatabaseId}</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{backendDatabaseId}</td>
+                      <td className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(databaseParityStatus)}`}>
+                        {databaseParityStatus}
                       </td>
                     </tr>
-
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Firestore Database ID (Client vs Backend)</td>
-                      <td className="py-3 px-4 font-mono text-amber-200">
-                        {backendDatabaseId ? `${clientDatabaseId} / ${backendDatabaseId}` : loading ? 'Loading…' : 'UNAVAILABLE'}
+                      <td className="py-3 px-4 font-semibold text-white">Firebase Admin SDK</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{healthCheck?.firestoreMode || 'NOT_VERIFIED'}</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">
+                        {healthCheck ? (healthCheck.adminSdk.initialized ? 'INITIALIZED' : 'NOT_INITIALIZED') : 'NOT_VERIFIED'}
                       </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">(default) / (default)</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : databaseMismatch ? (
-                          <span className="text-rose-400">MISMATCH</span>
-                        ) : backendDatabaseId === '(default)' ? (
-                          <span className="text-emerald-400">MATCH</span>
-                        ) : (
-                          <span className="text-amber-300">NON_DEFAULT</span>
-                        )}
+                      <td
+                        className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
+                          !healthCheck ? 'NOT_VERIFIED' : healthCheck.adminSdk.initialized ? 'CONNECTED' : 'DISCONNECTED'
+                        )}`}
+                      >
+                        {!healthCheck ? 'NOT_VERIFIED' : healthCheck.adminSdk.initialized ? 'CONNECTED' : 'DISCONNECTED'}
                       </td>
                     </tr>
-
                     <tr>
                       <td className="py-3 px-4 font-semibold text-white">Session Persistence</td>
-                      <td className="py-3 px-4 font-mono text-amber-200">
-                        {healthCheck?.sessionPersistence || (loading ? 'Loading…' : 'UNAVAILABLE')}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">Durable</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : healthCheck.adminSdk.initialized ? (
-                          <span className="text-emerald-400">CONFIGURED</span>
-                        ) : (
-                          <span className="text-amber-300">LOCAL_ONLY</span>
-                        )}
+                      <td className="py-3 px-4 font-mono text-stone-300">Bearer Token Auth</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{healthCheck?.sessionPersistence || 'NOT_VERIFIED'}</td>
+                      <td
+                        className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
+                          healthCheck?.sessionPersistence || 'NOT_VERIFIED'
+                        )}`}
+                      >
+                        {healthCheck?.sessionPersistence || 'NOT_VERIFIED'}
                       </td>
                     </tr>
-
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Storage Driver / Cloudflare R2</td>
-                      <td className="py-3 px-4 font-mono text-amber-200">
-                        {healthCheck
-                          ? `${healthCheck.storage.driver}${healthCheck.storage.bucket ? ` (${healthCheck.storage.bucket})` : ''}`
-                          : loading
-                          ? 'Loading…'
-                          : 'UNAVAILABLE'}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">R2 Authoritative</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : healthCheck.storage.r2Configured ? (
-                          <span className="text-emerald-400">CONNECTED</span>
-                        ) : (
-                          <span className="text-amber-300">LOCAL_FALLBACK</span>
-                        )}
+                      <td className="py-3 px-4 font-semibold text-white">Storage / Cloudflare R2</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{healthCheck?.storage?.driver || 'NOT_VERIFIED'}</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{healthCheck?.storage?.bucket || 'UNAVAILABLE'}</td>
+                      <td
+                        className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
+                          !healthCheck ? 'NOT_VERIFIED' : healthCheck.storage.r2Configured ? 'CONNECTED' : 'STANDBY_LOCAL'
+                        )}`}
+                      >
+                        {!healthCheck ? 'NOT_VERIFIED' : healthCheck.storage.r2Configured ? 'CONNECTED' : 'STANDBY_LOCAL'}
                       </td>
                     </tr>
-
                     <tr>
                       <td className="py-3 px-4 font-semibold text-white">Git Commit SHA</td>
-                      <td className="py-3 px-4 font-mono text-stone-300">
-                        {healthCheck?.gitCommitSha || (loading ? 'Loading…' : 'UNAVAILABLE')}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">Main HEAD</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : healthCheck.gitCommitSha === 'UNVERIFIED/BLOCKED' || !healthCheck.gitCommitSha ? (
-                          <span className="text-amber-300">UNVERIFIED</span>
-                        ) : (
-                          <span className="text-sky-400">PRESENT</span>
-                        )}
+                      <td className="py-3 px-4 font-mono text-stone-300">{commitShaValue}</td>
+                      <td className="py-3 px-4 font-mono text-stone-400">Runtime Env / Git</td>
+                      <td
+                        className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
+                          commitShaValue === 'UNVERIFIED/BLOCKED' || commitShaValue === 'UNAVAILABLE' ? 'UNVERIFIED' : 'VERIFIED'
+                        )}`}
+                      >
+                        {commitShaValue === 'UNVERIFIED/BLOCKED' || commitShaValue === 'UNAVAILABLE' ? 'UNVERIFIED' : 'VERIFIED'}
                       </td>
                     </tr>
-
                     <tr>
                       <td className="py-3 px-4 font-semibold text-white">Cloud Run Revision</td>
-                      <td className="py-3 px-4 font-mono text-stone-300">
-                        {healthCheck?.cloudRunRevision || (loading ? 'Loading…' : 'UNAVAILABLE')}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-stone-400">GCP Service</td>
-                      <td className="py-3 px-4 font-mono text-[11px] font-bold">
-                        {!healthCheck ? (
-                          <span className="text-stone-400">NOT_VERIFIED</span>
-                        ) : healthCheck.cloudRunRevision === 'local-dev' ? (
-                          <span className="text-amber-300">LOCAL_DEV</span>
-                        ) : (
-                          <span className="text-emerald-400">CLOUD_RUN</span>
-                        )}
+                      <td className="py-3 px-4 font-mono text-stone-300">{cloudRunRevValue}</td>
+                      <td className="py-3 px-4 font-mono text-stone-400">Env: {appEnvValue}</td>
+                      <td
+                        className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
+                          cloudRunRevValue === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'VERIFIED'
+                        )}`}
+                      >
+                        {cloudRunRevValue === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'DETECTED'}
                       </td>
                     </tr>
                   </tbody>
@@ -1180,20 +1315,11 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
 
           {/* TAB 4: System Health & Metrics */}
           {activeTab === 'system_health' && (
-            <div className="space-y-5" role="tabpanel" aria-label="System Health & Metrics">
+            <div className="space-y-5">
               {systemHealthError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2">
-                    <XCircle className="w-4 h-4 shrink-0" />
-                    <span>{systemHealthError}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={fetchSystemHealth}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold cursor-pointer"
-                  >
-                    Retry
-                  </button>
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>System Health API Error: {systemHealthError}</span>
                 </div>
               )}
 
@@ -1209,18 +1335,16 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                       type="button"
                       onClick={fetchSystemHealth}
                       disabled={pingingFirestore}
-                      className="min-h-[32px] px-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-[11px] text-sky-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-[11px] text-sky-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3 h-3 ${pingingFirestore ? 'animate-spin' : ''}`} />
                       <span>Ping</span>
                     </button>
                   </div>
                   <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-extrabold font-mono tabular-nums text-white">
+                    <span className="text-2xl sm:text-3xl font-extrabold font-mono tabular-nums text-white">
                       {systemHealth && systemHealth.firestore.latencyMs >= 0
-                        ? `${systemHealth.firestore.latencyMs}`
-                        : loading || pingingFirestore
-                        ? '…'
+                        ? systemHealth.firestore.latencyMs
                         : 'UNAVAILABLE'}
                     </span>
                     {systemHealth && systemHealth.firestore.latencyMs >= 0 && (
@@ -1228,17 +1352,11 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     )}
                   </div>
                   <span
-                    className={`text-[11px] block font-medium break-words ${
-                      !systemHealth
-                        ? 'text-stone-400'
-                        : isFirestoreHealthy
-                        ? 'text-emerald-400'
-                        : isFirestoreInMemory
-                        ? 'text-amber-300'
-                        : 'text-rose-400'
-                    }`}
+                    className={`text-[11px] block font-mono font-medium ${renderStatusLabel(
+                      systemHealth?.firestore?.status || 'NOT_VERIFIED'
+                    )}`}
                   >
-                    Status: {systemHealth ? systemHealth.firestore.status : loading ? 'Probing…' : 'UNAVAILABLE'}
+                    Status: {systemHealth?.firestore?.status || 'NOT_VERIFIED'}
                   </span>
                 </div>
 
@@ -1248,17 +1366,22 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     <HardDrive className="w-4 h-4 text-emerald-400" />
                     <span>Storage Driver</span>
                   </span>
-                  <div className="text-xl font-bold font-display text-white truncate">
-                    {!systemHealth
-                      ? loading
-                        ? 'Checking…'
-                        : 'UNAVAILABLE'
-                      : systemHealth.storage.r2Configured
-                      ? `Cloudflare R2 (${systemHealth.storage.driver})`
-                      : `Local (${systemHealth.storage.driver})`}
+                  <div className="text-xl font-bold font-mono text-white truncate">
+                    {systemHealth?.storage?.driver || 'UNAVAILABLE'}
                   </div>
-                  <span className="text-[11px] text-stone-400 block truncate font-mono">
-                    Bucket: {systemHealth ? systemHealth.storage.bucket || 'NOT_CONFIGURED' : 'UNAVAILABLE'}
+                  <span className="text-[11px] text-stone-400 font-mono block truncate">
+                    Bucket: {systemHealth?.storage?.bucket || 'UNAVAILABLE'}
+                  </span>
+                  <span
+                    className={`text-[11px] font-mono block ${
+                      systemHealth
+                        ? systemHealth.storage.r2Configured
+                          ? 'text-emerald-400'
+                          : 'text-amber-300'
+                        : 'text-stone-400'
+                    }`}
+                  >
+                    R2 Configured: {systemHealth ? (systemHealth.storage.r2Configured ? 'YES' : 'NO') : 'NOT_VERIFIED'}
                   </span>
                 </div>
 
@@ -1269,22 +1392,22 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     <span>Container Memory</span>
                   </span>
                   <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-extrabold font-mono tabular-nums text-white">
-                      {systemHealth ? systemHealth.memory.rssMb : loading ? '…' : 'UNAVAILABLE'}
+                    <span className="text-2xl sm:text-3xl font-extrabold font-mono tabular-nums text-white">
+                      {systemHealth?.memory ? systemHealth.memory.rssMb : 'UNAVAILABLE'}
                     </span>
-                    {systemHealth && <span className="text-xs text-purple-400 font-bold">MB RSS</span>}
+                    {systemHealth?.memory && <span className="text-xs text-purple-400 font-bold">MB RSS</span>}
                   </div>
-                  <span className="text-[11px] text-stone-400 block font-mono tabular-nums">
-                    {systemHealth
+                  <span className="text-[11px] text-stone-400 font-mono tabular-nums block">
+                    {systemHealth?.memory
                       ? `Heap: ${systemHealth.memory.heapUsedMb} / ${systemHealth.memory.heapTotalMb} MB`
                       : 'Heap: UNAVAILABLE'}
                   </span>
                 </div>
               </div>
 
-              {/* Uptime and API Error Counter */}
-              <div className="p-4 rounded-xl bg-white/5 border border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-300">
-                <div className="flex items-center gap-2">
+              {/* Uptime and Real API Error Count */}
+              <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-300">
+                <div className="flex items-center gap-2 font-mono tabular-nums">
                   <div
                     className={`w-2.5 h-2.5 rounded-full ${
                       systemHealth ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500'
@@ -1292,65 +1415,86 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                   />
                   <span>
                     Uptime:{' '}
-                    <strong className="text-white font-mono tabular-nums">
-                      {systemHealth ? `${Math.floor(systemHealth.uptimeSeconds / 60)} minutes` : 'UNAVAILABLE'}
+                    <strong className="text-white">
+                      {systemHealth ? `${Math.floor(systemHealth.uptimeSeconds / 60)} min (${systemHealth.uptimeSeconds}s)` : 'UNAVAILABLE'}
                     </strong>
                   </span>
                 </div>
-                <div className="text-stone-400">
-                  API Error Counter:{' '}
-                  <strong className="text-amber-300 font-mono tabular-nums">
-                    {systemHealth
-                      ? `${systemHealth.recentErrorsCount} (4xx/5xx window not instrumented in backend yet)`
-                      : 'UNAVAILABLE'}
-                  </strong>
+                <div className="font-mono tabular-nums">
+                  <span>
+                    API 4xx/5xx ({systemHealth?.recentErrorsWindowMinutes ?? 15}m):{' '}
+                    <strong
+                      className={
+                        !systemHealth
+                          ? 'text-stone-400'
+                          : systemHealth.recentErrorsCount > 0
+                          ? 'text-rose-400'
+                          : 'text-emerald-400'
+                      }
+                    >
+                      {systemHealth ? systemHealth.recentErrorsCount : 'UNAVAILABLE'}
+                    </strong>
+                  </span>
                 </div>
               </div>
+
+              {/* Recent 4xx/5xx API Error Details when present */}
+              {systemHealth?.recentApiErrors && systemHealth.recentApiErrors.length > 0 && (
+                <div className="rounded-2xl border border-rose-500/30 bg-rose-950/15 p-3.5 space-y-2">
+                  <div className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Recent API Errors (Sanitized)</span>
+                  </div>
+                  <div className="space-y-1 font-mono text-[11px]">
+                    {systemHealth.recentApiErrors.map((err, idx) => (
+                      <div key={`${err.timestamp}-${idx}`} className="flex items-center justify-between text-stone-300">
+                        <span className="truncate">
+                          {err.method} {err.path}
+                        </span>
+                        <span className="text-rose-400 shrink-0 ml-2">
+                          HTTP {err.status} · {err.timestamp.slice(11, 19)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* TAB 5: Admin Activity Logs */}
           {activeTab === 'logs' && (
-            <div className="space-y-4" role="tabpanel" aria-label="Admin Activity Logs">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h4 className="text-sm font-bold text-white flex items-center gap-2">
                     <ScrollText className="w-4 h-4 text-purple-400" />
-                    <span>Durable Admin Audit Trail</span>
+                    <span>Admin Audit Trail</span>
                   </h4>
                   <p className="text-[11px] text-stone-400">
-                    Fetched from <code className="text-amber-300">/api/admin/logs</code> (Page {logPage + 1}).
+                    Loaded from <code className="text-amber-300">/api/admin/logs</code> (backed by <code className="text-amber-300">admin_logs</code>).
                   </p>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-stone-400 font-mono tabular-nums">
-                    Total: {totalLogs} events
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono tabular-nums text-stone-400">
+                    Total: {totalLogs !== null ? `${totalLogs} events` : 'UNAVAILABLE'}
                   </span>
                   <button
                     type="button"
                     onClick={() => fetchLogs(logPage)}
                     disabled={logsLoading}
-                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-stone-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-stone-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${logsLoading ? 'animate-spin text-purple-400' : ''}`} />
-                    <span>Refresh</span>
+                    <RefreshCw className={`w-3.5 h-3.5 ${logsLoading ? 'animate-spin' : ''}`} />
+                    <span>Reload</span>
                   </button>
                 </div>
               </div>
 
               {logsError && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2">
-                    <XCircle className="w-4 h-4 shrink-0" />
-                    <span>{logsError}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => fetchLogs(logPage)}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold cursor-pointer"
-                  >
-                    Retry
-                  </button>
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Failed to load admin logs: {logsError}</span>
                 </div>
               )}
 
@@ -1369,21 +1513,21 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     {logsLoading && logs.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-stone-400">
-                          Loading admin activity logs…
+                          Loading admin activity logs...
                         </td>
                       </tr>
                     ) : logs.length > 0 ? (
                       logs.map((log) => (
                         <tr key={log.id} className="hover:bg-white/5 transition-colors">
                           <td className="py-2.5 px-3 font-mono tabular-nums text-[11px] text-stone-400 whitespace-nowrap">
-                            {String(log?.timestamp || '').slice(0, 19).replace('T', ' ') || 'N/A'}
+                            {log.timestamp.slice(0, 19).replace('T', ' ')}
                           </td>
-                          <td className="py-2.5 px-3 font-medium text-amber-200 truncate max-w-[160px]">
+                          <td className="py-2.5 px-3 font-medium text-amber-200 truncate max-w-[150px]">
                             {log.actorEmail}
                           </td>
-                          <td className="py-2.5 px-3 font-mono text-[10px] font-bold whitespace-nowrap">
+                          <td className="py-2.5 px-3">
                             <span
-                              className={
+                              className={`font-mono text-[11px] font-bold ${
                                 log.action.includes('CREATED')
                                   ? 'text-emerald-400'
                                   : log.action.includes('DELETED')
@@ -1391,12 +1535,12 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                                   : log.action.includes('UPDATED')
                                   ? 'text-amber-300'
                                   : 'text-purple-400'
-                              }
+                              }`}
                             >
                               {log.action}
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 font-mono text-[11px] text-stone-400 truncate max-w-[140px]">
+                          <td className="py-2.5 px-3 font-mono text-[11px] text-stone-400 truncate max-w-[130px]">
                             {log.targetId}
                           </td>
                           <td className="py-2.5 px-3 text-stone-200">
@@ -1407,7 +1551,7 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                     ) : (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-stone-500">
-                          {logsError ? 'Unable to load admin activity logs.' : 'No admin activity logs recorded yet.'}
+                          {logsError ? 'Logs unavailable due to API error.' : 'No admin activity logs recorded yet.'}
                         </td>
                       </tr>
                     )}
@@ -1416,22 +1560,22 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
               </div>
 
               {/* Pagination */}
-              {totalLogs > pageSize && (
+              {totalLogs !== null && totalLogs > pageSize && (
                 <div className="flex items-center justify-between pt-2">
                   <button
                     type="button"
                     disabled={logPage === 0 || logsLoading}
                     onClick={() => {
-                      const next = Math.max(0, logPage - 1);
+                      const next = logPage - 1;
                       setLogPage(next);
                       fetchLogs(next);
                     }}
-                    className="min-h-[40px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-stone-300 disabled:opacity-40 flex items-center gap-1 cursor-pointer"
+                    className="min-h-[40px] px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-stone-200 disabled:opacity-40 flex items-center gap-1 cursor-pointer"
                   >
-                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <ChevronLeft className="w-4 h-4" />
                     <span>Previous</span>
                   </button>
-                  <span className="text-xs text-stone-400 font-mono tabular-nums">
+                  <span className="text-xs font-mono tabular-nums text-stone-400">
                     Page {logPage + 1} of {Math.ceil(totalLogs / pageSize)}
                   </span>
                   <button
@@ -1442,10 +1586,10 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
                       setLogPage(next);
                       fetchLogs(next);
                     }}
-                    className="min-h-[40px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-stone-300 disabled:opacity-40 flex items-center gap-1 cursor-pointer"
+                    className="min-h-[40px] px-3.5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-stone-200 disabled:opacity-40 flex items-center gap-1 cursor-pointer"
                   >
                     <span>Next</span>
-                    <ChevronRight className="w-3.5 h-3.5" />
+                    <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
               )}
@@ -1456,4 +1600,3 @@ ${logs.length > 0 ? logs.map((l) => `- **[${String(l?.timestamp || '').slice(0, 
     </div>
   );
 };
-
