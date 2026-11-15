@@ -21,6 +21,12 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install and Verify FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
       - name: Verify Web Build & Type Check
         run: |
           npm install --legacy-peer-deps --no-audit
