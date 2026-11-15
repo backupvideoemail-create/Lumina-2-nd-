@@ -89,6 +89,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
   const [persistenceStatus, setPersistenceStatus] = useState<'PERSISTED' | 'PERSISTENCE_FAILED' | 'UNAVAILABLE_LOCAL_ONLY' | null>(null);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [isHistoricalSnapshot, setIsHistoricalSnapshot] = useState(false);
 
   const loadCacheTelemetry = async () => {
     try {
@@ -148,6 +149,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
       const data = await res.json().catch(() => null);
       if (data?.runSummary) {
         setRunSummary(data.runSummary);
+        setIsHistoricalSnapshot(false);
         setPersistenceStatus(data.persistenceStatus || null);
         setPersistenceError(data.persistenceError || null);
         // Automatically expand any failed or blocked tests
@@ -517,6 +519,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                     <button
                       onClick={() => {
                         setRunSummary(h);
+                        setIsHistoricalSnapshot(true);
                         setActiveTab('audit');
                       }}
                       className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-white text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
@@ -535,9 +538,18 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
         {activeTab === 'audit' && (
           <>
             {/* Dynamic Summary Badges & Action Bar */}
+            {isHistoricalSnapshot && runSummary && (
+              <div className="px-4 sm:px-5 py-2 bg-amber-950/35 border-b border-amber-500/30 text-[11px] text-amber-200 flex items-center justify-between gap-2">
+                <span>
+                  Viewing <strong>Archived History Snapshot</strong> ({runSummary.runId} · {new Date(runSummary.timestamp).toLocaleString()}). Click <strong>Execute Full Audit</strong> for a live check.
+                </span>
+              </div>
+            )}
             <div className="px-4 sm:px-5 py-3 bg-[#111017] border-b border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
               <div className="flex items-center gap-2 flex-wrap font-mono">
-                <span className="text-stone-400 text-[11px] font-sans font-semibold">Live Audit Summary:</span>
+                <span className="text-stone-400 text-[11px] font-sans font-semibold">
+                  {isHistoricalSnapshot ? 'Archived Snapshot Summary:' : 'Live Audit Summary:'}
+                </span>
                 <span className="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3" />
                   <span>{stats.passed} Passed</span>

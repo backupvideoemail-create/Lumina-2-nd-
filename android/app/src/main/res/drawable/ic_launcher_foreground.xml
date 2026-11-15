@@ -67,18 +67,26 @@
             </aapt:attr>
         </path>
 
-        <!-- 2. Optical Lens Aperture Ring -->
+        <!-- 2. Concentric Precision Optical Lens Aperture Ring (16 dashed segments matching Logo.tsx r=11.5) -->
         <path
-            android:pathData="M22,10.5 A11.5,11.5 0 1,1 21.99,10.5 Z"
+            android:pathData="M22.00,10.50 A11.5,11.5 0 0,1 24.59,10.80 M26.40,11.38 A11.5,11.5 0 0,1 28.65,12.63 M30.13,13.87 A11.5,11.5 0 0,1 31.74,15.88 M32.62,17.60 A11.5,11.5 0 0,1 33.39,20.06 M33.50,22.00 A11.5,11.5 0 0,1 33.20,24.59 M32.62,26.40 A11.5,11.5 0 0,1 31.37,28.65 M30.13,30.13 A11.5,11.5 0 0,1 28.12,31.74 M26.40,32.62 A11.5,11.5 0 0,1 23.94,33.39 M22.00,33.50 A11.5,11.5 0 0,1 19.41,33.20 M17.60,32.62 A11.5,11.5 0 0,1 15.35,31.37 M13.87,30.13 A11.5,11.5 0 0,1 12.26,28.12 M11.38,26.40 A11.5,11.5 0 0,1 10.61,23.94 M10.50,22.00 A11.5,11.5 0 0,1 10.80,19.41 M11.38,17.60 A11.5,11.5 0 0,1 12.63,15.35 M13.87,13.87 A11.5,11.5 0 0,1 15.88,12.26 M17.60,11.38 A11.5,11.5 0 0,1 20.06,10.61"
             android:strokeWidth="1.2"
-            android:strokeAlpha="0.85"
-            android:strokeColor="#D4AF37" />
+            android:strokeLineCap="butt"
+            android:strokeAlpha="0.90">
+            <aapt:attr name="android:strokeColor">
+                <gradient android:startX="10" android:startY="10" android:endX="34" android:endY="34" android:type="linear">
+                    <item android:color="#FFFFFF" android:offset="0.0" />
+                    <item android:color="#D4AF37" android:offset="0.5" />
+                    <item android:color="#5A4512" android:offset="1.0" />
+                </gradient>
+            </aapt:attr>
+        </path>
 
         <!-- 3. Golden Cinematic Video Play Prism -->
         <path
             android:pathData="M18.5,16.5 C18.5,15.65 19.45,15.15 20.15,15.62 L27.4,20.45 C28.05,20.88 28.05,21.85 27.4,22.28 L20.15,27.11 C19.45,27.58 18.5,27.08 18.5,26.23 Z">
             <aapt:attr name="android:fillColor">
-                <gradient android:startX="18.5" android:startY="15.5" android:endX="28" android:endY="27.5" android:type="linear">
+                <gradient android:centerX="22.5" android:centerY="20.8" android:gradientRadius="8.5" android:type="radial">
                     <item android:color="#FFFFFF" android:offset="0.0" />
                     <item android:color="#FAE29C" android:offset="0.35" />
                     <item android:color="#DFB743" android:offset="0.7" />

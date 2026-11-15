@@ -375,6 +375,9 @@ export class MediaStorageService {
     } finally {
       if (uploaded) {
         try {
+          if (!probeKey.startsWith('_diag_probes/r2_probe_') || probeKey.includes('..')) {
+            throw new Error(`SAFETY_ABORT: Refusing R2 cleanup outside disposable _diag_probes/r2_probe_ prefix (${probeKey})`);
+          }
           await this.s3Client.send(
             new DeleteObjectCommand({
               Bucket: this.r2Config.bucketName,

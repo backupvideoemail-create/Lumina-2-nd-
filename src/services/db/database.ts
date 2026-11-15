@@ -45,6 +45,171 @@ export { adminFirestoreDb, adminAuthInstance };
 
 export const isIsolatedTestEnv = process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test';
 
+export const CANONICAL_PROJECT_ID = 'ai-prime-studio';
+export const CANONICAL_PROJECT_NUMBER = '855598524398';
+export const CANONICAL_PROJECT_NAME = 'AI Prime Studio';
+export const CANONICAL_DATABASE_ID = '(default)';
+
+export interface DatabaseGuardState {
+  expectedProjectId: string;
+  expectedDatabaseId: string;
+  projectName: string;
+  projectNumber: string;
+  configuredProjectId: string;
+  configuredDatabaseId: string;
+  envDatabaseOverride: string | null;
+  envOverrideStatus: 'NONE' | 'MATCH_DEFAULT' | 'CRITICAL_BLOCKED';
+  configStatus: 'LOCKED_DEFAULT' | 'CRITICAL_BLOCKED';
+  blocked: boolean;
+  blockedReason: string | null;
+  effectiveDatabaseId: string;
+  connectionSource: 'isolated_test' | 'service_account' | 'adc' | 'blocked' | 'disconnected';
+  runtimeServiceAccountEmail: string | null;
+  cloudRunRegion: string | null;
+}
+
+export function evaluateDatabaseLock(params: {
+  configuredProjectId?: string | null;
+  configuredDatabaseId?: string | null;
+  envDatabaseOverride?: string | null;
+  isIsolatedTest?: boolean;
+}): {
+  blocked: boolean;
+  envOverrideStatus: 'NONE' | 'MATCH_DEFAULT' | 'CRITICAL_BLOCKED';
+  configStatus: 'LOCKED_DEFAULT' | 'CRITICAL_BLOCKED';
+  reason: string | null;
+} {
+  const cfgProject = (params.configuredProjectId || '').trim();
+  const cfgDb = (params.configuredDatabaseId || CANONICAL_DATABASE_ID).trim() || CANONICAL_DATABASE_ID;
+  const envDb = (params.envDatabaseOverride || '').trim();
+
+  const envOverrideStatus: 'NONE' | 'MATCH_DEFAULT' | 'CRITICAL_BLOCKED' =
+    !envDb
+      ? 'NONE'
+      : envDb === CANONICAL_DATABASE_ID
+      ? 'MATCH_DEFAULT'
+      : 'CRITICAL_BLOCKED';
+
+  const configStatus: 'LOCKED_DEFAULT' | 'CRITICAL_BLOCKED' =
+    cfgProject === CANONICAL_PROJECT_ID && cfgDb === CANONICAL_DATABASE_ID
+      ? 'LOCKED_DEFAULT'
+      : 'CRITICAL_BLOCKED';
+
+  if (envOverrideStatus === 'CRITICAL_BLOCKED') {
+    return {
+      blocked: true,
+      envOverrideStatus,
+      configStatus,
+      reason: `CRITICAL_BLOCKED: FIRESTORE_DATABASE_ID override '${envDb}' is invalid; must be '${CANONICAL_DATABASE_ID}' or unset. Silent fallback to any other database is blocked.`
+    };
+  }
+  if (configStatus === 'CRITICAL_BLOCKED') {
+    return {
+      blocked: true,
+      envOverrideStatus,
+      configStatus,
+      reason: `CRITICAL_BLOCKED: Firebase target '${cfgProject || 'UNSET'}/${cfgDb}' mismatches canonical '${CANONICAL_PROJECT_ID}/${CANONICAL_DATABASE_ID}'. Silent fallback is blocked.`
+    };
+  }
+
+  return {
+    blocked: false,
+    envOverrideStatus,
+    configStatus,
+    reason: null
+  };
+}
+
+const initialLockCheck = evaluateDatabaseLock({
+  configuredProjectId: (firebaseConfig as any).projectId,
+  configuredDatabaseId: (firebaseConfig as any).firestoreDatabaseId,
+  envDatabaseOverride: process.env.FIRESTORE_DATABASE_ID,
+  isIsolatedTest: isIsolatedTestEnv
+});
+
+const runtimeDbGuardState: DatabaseGuardState = {
+  expectedProjectId: CANONICAL_PROJECT_ID,
+  expectedDatabaseId: CANONICAL_DATABASE_ID,
+  projectName: CANONICAL_PROJECT_NAME,
+  projectNumber: CANONICAL_PROJECT_NUMBER,
+  configuredProjectId: ((firebaseConfig as any).projectId || '').trim() || 'UNSET',
+  configuredDatabaseId: ((firebaseConfig as any).firestoreDatabaseId || CANONICAL_DATABASE_ID).trim(),
+  envDatabaseOverride: process.env.FIRESTORE_DATABASE_ID?.trim() || null,
+  envOverrideStatus: initialLockCheck.envOverrideStatus,
+  configStatus: initialLockCheck.configStatus,
+  blocked: !isIsolatedTestEnv && initialLockCheck.blocked,
+  blockedReason: !isIsolatedTestEnv ? initialLockCheck.reason : null,
+  effectiveDatabaseId: isIsolatedTestEnv
+    ? 'IN_MEMORY_TEST'
+    : initialLockCheck.blocked
+    ? 'BLOCKED_INVALID_OVERRIDE'
+    : 'DISCONNECTED',
+  connectionSource: isIsolatedTestEnv ? 'isolated_test' : initialLockCheck.blocked ? 'blocked' : 'disconnected',
+  runtimeServiceAccountEmail: null,
+  cloudRunRegion:
+    process.env.CLOUD_RUN_REGION?.trim() ||
+    process.env.GOOGLE_CLOUD_REGION?.trim() ||
+    process.env.FUNCTION_REGION?.trim() ||
+    null
+};
+
+export function enforceRuntimeDatabaseLock(): DatabaseGuardState {
+  const currentCheck = evaluateDatabaseLock({
+    configuredProjectId: (firebaseConfig as any).projectId,
+    configuredDatabaseId: (firebaseConfig as any).firestoreDatabaseId,
+    envDatabaseOverride: process.env.FIRESTORE_DATABASE_ID,
+    isIsolatedTest: isIsolatedTestEnv
+  });
+  runtimeDbGuardState.envDatabaseOverride = process.env.FIRESTORE_DATABASE_ID?.trim() || null;
+  runtimeDbGuardState.envOverrideStatus = currentCheck.envOverrideStatus;
+  runtimeDbGuardState.configStatus = currentCheck.configStatus;
+  if (!isIsolatedTestEnv && currentCheck.blocked) {
+    adminFirestoreDb = null;
+    runtimeDbGuardState.blocked = true;
+    runtimeDbGuardState.blockedReason = currentCheck.reason;
+    runtimeDbGuardState.effectiveDatabaseId = 'BLOCKED_INVALID_OVERRIDE';
+    runtimeDbGuardState.connectionSource = 'blocked';
+    console.error(`[Database CRITICAL BLOCKED] ${currentCheck.reason}`);
+  }
+  return { ...runtimeDbGuardState };
+}
+
+export function getDatabaseGuardState(): DatabaseGuardState {
+  return enforceRuntimeDatabaseLock();
+}
+
+export async function refreshRuntimeGcpMetadata(): Promise<void> {
+  if (isIsolatedTestEnv) return;
+  const fetchMeta = async (metaPath: string): Promise<string | null> => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 900);
+      const resp = await fetch(`http://metadata.google.internal/computeMetadata/v1/${metaPath}`, {
+        headers: { 'Metadata-Flavor': 'Google' },
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (resp.ok) {
+        const txt = (await resp.text()).trim();
+        return txt || null;
+      }
+    } catch {}
+    return null;
+  };
+
+  if (!runtimeDbGuardState.runtimeServiceAccountEmail) {
+    const saEmail = await fetchMeta('instance/service-accounts/default/email');
+    if (saEmail) runtimeDbGuardState.runtimeServiceAccountEmail = saEmail;
+  }
+  if (!runtimeDbGuardState.cloudRunRegion) {
+    const regionRaw = await fetchMeta('instance/region');
+    if (regionRaw) {
+      const parts = regionRaw.split('/').filter(Boolean);
+      runtimeDbGuardState.cloudRunRegion = parts[parts.length - 1] || regionRaw;
+    }
+  }
+}
+
 export class InMemoryFirestoreMock {
   private collections: Map<string, Map<string, any>> = new Map();
 
@@ -258,8 +423,11 @@ export class InMemoryFirestoreMock {
 if (isIsolatedTestEnv) {
   adminFirestoreDb = new InMemoryFirestoreMock();
   console.log('[Database] Operating in ISOLATED TEST mode with In-Memory Firestore (Production data & live Firestore untouched)');
+} else if (initialLockCheck.blocked) {
+  adminFirestoreDb = null;
+  console.error(`[Database CRITICAL BLOCKED] ${initialLockCheck.reason}`);
 } else {
-  // Attempt Firebase Admin initialization if service account is provided
+  // Attempt Firebase Admin initialization targeting canonical ai-prime-studio/(default) ONLY
   try {
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (serviceAccountKey) {
@@ -271,65 +439,51 @@ if (isIsolatedTestEnv) {
       }
 
       if (credentialObj) {
-        const projectId = credentialObj.project_id || (firebaseConfig as any).projectId;
-        const configProjectId = (firebaseConfig as any).projectId;
-        const isConfigProject = projectId === configProjectId;
-        const explicitDbId = process.env.FIRESTORE_DATABASE_ID?.trim();
-        const configDbId = (firebaseConfig as any).firestoreDatabaseId?.trim();
-
-        // FIX 1: Select the configured named database only when it belongs to the same project
-        // as the runtime service-account credentials. Otherwise use the existing "(default)"
-        // database in "ai-prime-studio", after verifying the "FIRESTORE_DATABASE_ID"
-        // Secret Manager override does not force the invalid database.
-        let targetDatabaseId: string | undefined = undefined;
-
-        if (isConfigProject && configDbId) {
-          targetDatabaseId = configDbId;
+        const projectId = credentialObj.project_id || CANONICAL_PROJECT_ID;
+        if (credentialObj.client_email) {
+          runtimeDbGuardState.runtimeServiceAccountEmail = String(credentialObj.client_email);
         }
-
-        if (explicitDbId && explicitDbId !== '(default)') {
-          const isForeignConfigDb = Boolean(configDbId && explicitDbId === configDbId);
-          const isKnownDevDbPattern = explicitDbId.startsWith('ai-studio-lumina2nd-');
-          if (!isConfigProject && (isForeignConfigDb || isKnownDevDbPattern)) {
-            console.warn(`[Database] Ignoring invalid FIRESTORE_DATABASE_ID override '${explicitDbId}' for project '${projectId}'; using '(default)' authoritative database`);
-            targetDatabaseId = undefined;
-          } else {
-            targetDatabaseId = explicitDbId;
+        if (projectId !== CANONICAL_PROJECT_ID) {
+          runtimeDbGuardState.blocked = true;
+          runtimeDbGuardState.connectionSource = 'blocked';
+          runtimeDbGuardState.effectiveDatabaseId = 'BLOCKED_INVALID_PROJECT';
+          runtimeDbGuardState.blockedReason = `CRITICAL_BLOCKED: Service account project_id '${projectId}' mismatches canonical '${CANONICAL_PROJECT_ID}'. Silent cross-project connection blocked.`;
+          console.error(`[Database CRITICAL BLOCKED] ${runtimeDbGuardState.blockedReason}`);
+        } else {
+          const adminApp = initAdminApp({
+            credential: cert(credentialObj),
+            projectId
+          }, 'lumina-admin-app-' + Date.now());
+          // Canonical 1-argument default Firestore SDK initialization (never pass "(default)" string)
+          adminFirestoreDb = getAdminFirestore(adminApp);
+          runtimeDbGuardState.effectiveDatabaseId = CANONICAL_DATABASE_ID;
+          runtimeDbGuardState.connectionSource = 'service_account';
+          try {
+            adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
+          } catch {}
+          try {
+            adminAuthInstance = getAdminAuth(adminApp);
+          } catch (authInitErr: any) {
+            console.warn('[Database] Firebase Admin Auth initialization note:', authInitErr.message);
           }
+          console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '(default)') (Authoritative)`);
         }
-
-        const adminApp = initAdminApp({
-          credential: cert(credentialObj),
-          projectId
-        }, 'lumina-admin-app-' + Date.now());
-        adminFirestoreDb = targetDatabaseId
-          ? getAdminFirestore(adminApp, targetDatabaseId)
-          : getAdminFirestore(adminApp);
-        try {
-          adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
-        } catch {}
-        try {
-          adminAuthInstance = getAdminAuth(adminApp);
-        } catch (authInitErr: any) {
-          console.warn('[Database] Firebase Admin Auth initialization note:', authInitErr.message);
-        }
-        console.log(`[Database] Firebase Admin SDK connected to Firestore project '${projectId}' (database: '${targetDatabaseId || '(default)'}') (Authoritative)`);
       }
     } else if (!isIsolatedTestEnv) {
       try {
-        const projectId = (firebaseConfig as any).projectId || 'ai-prime-studio';
-        const targetDatabaseId = (firebaseConfig as any).firestoreDatabaseId || undefined;
+        const projectId = CANONICAL_PROJECT_ID;
         const adcApp = initAdminApp({ projectId }, 'lumina-admin-adc-' + Date.now());
-        adminFirestoreDb = targetDatabaseId && targetDatabaseId !== '(default)'
-          ? getAdminFirestore(adcApp, targetDatabaseId)
-          : getAdminFirestore(adcApp);
+        // Canonical 1-argument default Firestore SDK initialization
+        adminFirestoreDb = getAdminFirestore(adcApp);
+        runtimeDbGuardState.effectiveDatabaseId = CANONICAL_DATABASE_ID;
+        runtimeDbGuardState.connectionSource = 'adc';
         try {
           adminFirestoreDb.settings({ ignoreUndefinedProperties: true });
         } catch {}
         try {
           adminAuthInstance = getAdminAuth(adcApp);
         } catch {}
-        console.log(`[Database] Connected via Application Default Credentials (ADC) to project '${projectId}'`);
+        console.log(`[Database] Connected via Application Default Credentials (ADC) to project '${projectId}' (database: '(default)')`);
       } catch (adcErr: any) {
         console.warn('[Database] Application Default Credentials (ADC) init note:', adcErr.message);
       }
@@ -475,6 +629,8 @@ export class ProductionDatabase {
   private catalogueStatus: 'READY' | 'EMPTY' | 'OFFLINE' = 'READY';
   private catalogRevision: number = 0;
   private lastCatalogCheckTime: number = 0;
+  private lastCatalogSyncAt: string | null = null;
+  private rawFirestoreTemplatesCount: number | null = null;
 
   private get firestoreDb(): any {
     return this.firestoreOverride !== undefined ? this.firestoreOverride : adminFirestoreDb;
@@ -486,6 +642,26 @@ export class ProductionDatabase {
 
   public getCatalogRevision(): number {
     return this.catalogRevision;
+  }
+
+  public getLastCatalogSyncAt(): string | null {
+    return this.lastCatalogSyncAt;
+  }
+
+  public getRawFirestoreTemplatesCount(): number | null {
+    return this.rawFirestoreTemplatesCount;
+  }
+
+  public getDeletedTombstonesCount(): number {
+    return Array.isArray(this.db.deletedTemplateIds) ? this.db.deletedTemplateIds.length : 0;
+  }
+
+  public getQuarantinedTemplatesCount(): number {
+    return this.quarantinedTemplates.length;
+  }
+
+  public getDatabaseGuardState(): DatabaseGuardState {
+    return getDatabaseGuardState();
   }
 
   public async bumpCatalogRevision(): Promise<number> {
@@ -682,6 +858,7 @@ export class ProductionDatabase {
       if (tombstoneFetchSuccess) {
         const deletedIds = new Set(this.db.deletedTemplateIds || []);
         const tplSnap = await adminFirestoreDb.collection('templates').get();
+        this.rawFirestoreTemplatesCount = tplSnap.size;
         const firestoreTemplates: Template[] = [];
         if (!tplSnap.empty) {
           tplSnap.forEach((d: any) => {
@@ -781,6 +958,7 @@ export class ProductionDatabase {
       if (!isIsolatedTestEnv) {
         this.catalogueStatus = this.db.templates.length > 0 ? 'READY' : 'EMPTY';
       }
+      this.lastCatalogSyncAt = new Date().toISOString();
       console.log('[Database] Complete authoritative state synchronized from Firestore');
     } catch (err: any) {
       if (!isIsolatedTestEnv) {
@@ -820,6 +998,7 @@ export class ProductionDatabase {
     const deletedIds = new Set(this.db.deletedTemplateIds || []);
 
     const tplSnap = await adminFirestoreDb.collection('templates').get();
+    this.rawFirestoreTemplatesCount = tplSnap.size;
     const firestoreTemplates: Template[] = [];
     if (!tplSnap.empty) {
       tplSnap.forEach((d: any) => {
@@ -903,6 +1082,7 @@ export class ProductionDatabase {
       console.warn('[Database] Catalog config docs note during targeted refresh:', cfgErr.message);
     }
 
+    this.lastCatalogSyncAt = new Date().toISOString();
     this.save();
     console.log('[Database] Targeted catalog & scene sync completed from Firestore');
     return {

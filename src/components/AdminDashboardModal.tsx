@@ -37,6 +37,20 @@ interface AdminHealthCheckData {
   timestamp: string;
   environment?: string;
   appVersion?: string;
+  firebaseProjectName?: string;
+  firebaseProjectNumber?: string;
+  runtimeServiceAccountEmail?: string;
+  cloudRunRegion?: string;
+  gitBranch?: string;
+  firestoreConnectionSource?: string;
+  envOverride?: {
+    envVarName: string;
+    rawValue: string;
+    status: 'NONE' | 'MATCH_DEFAULT' | 'CRITICAL_BLOCKED';
+    effectiveDatabaseId: string;
+    blocked: boolean;
+    blockedReason: string | null;
+  };
   clientFirebase: {
     projectId: string | null;
     firestoreDatabaseId?: string | null;
@@ -48,6 +62,8 @@ interface AdminHealthCheckData {
     initialized: boolean;
     projectId: string | null;
     databaseId: string | null;
+    blocked?: boolean;
+    blockedReason?: string | null;
   };
   firestoreMode: string;
   databaseId: string | null;
@@ -60,7 +76,49 @@ interface AdminHealthCheckData {
     r2Configured: boolean;
     bucket: string | null;
     missingEnvVars?: string[];
+    requiredVarsPresent?: Record<string, boolean>;
+    objectCountAndUsage?: string;
   };
+  catalogBreakdown?: {
+    rawFirestoreTemplatesCount: number | string;
+    publicActiveTemplatesCount: number;
+    adminTotalTemplatesCount: number;
+    adminActiveTemplatesCount: number;
+    adminInactiveTemplatesCount: number;
+    deletedTombstonesCount: number;
+    quarantinedTemplatesCount: number;
+    catalogRevision: number;
+    lastSyncAt: string;
+    heroBannersTotalCount: number;
+    heroBannersActiveCount: number;
+    faceswapScenesTotalCount: number;
+    faceswapScenesActiveCount: number;
+  };
+  androidBuild?: {
+    packageId: string;
+    versionCode: number | string;
+    versionName: string;
+    compileSdk: number | string;
+    targetSdk: number | string;
+    firebaseProjectId: string;
+    firebaseProjectNumber: string;
+    playStoreIconAsset: string;
+  };
+  chromePwa?: {
+    manifestUrl: string;
+    startUrl: string;
+    iconUrls: string[];
+    serviceWorkerUrl: string;
+    cacheVersion: string;
+  };
+  syncParity?: {
+    primaryCommitSha: string;
+    secondaryCommitSha: string;
+    gitBranch: string;
+    sanitizedConfigFingerprint: string;
+    fingerprintScope: string[];
+  };
+  mismatchExplanations?: Record<string, string>;
 }
 
 interface RecentApiErrorItem {
@@ -101,13 +159,17 @@ interface SystemHealthData {
 
 interface VersionData {
   commitSha: string;
+  gitBranch?: string;
   buildTime: string;
   cloudRunRevision: string;
+  cloudRunRegion?: string;
   catalogueStatus: string;
   catalogRevision: number;
+  lastSyncAt?: string;
   templateCount: number;
   faceswapSceneCount: number;
   databaseMode: string;
+  databaseGuardBlocked?: boolean;
 }
 
 interface AdminLogItem {
@@ -483,7 +545,11 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
   if (databaseParityStatus === 'MISMATCH') {
     warningsAndMismatches.push(`Firestore Database ID Mismatch: Client=${clientDatabaseId} vs Backend=${backendDatabaseId}`);
   }
-  if (healthCheck && !healthCheck.adminSdk.initialized) {
+  if (healthCheck?.envOverride?.blocked || healthCheck?.adminSdk?.blocked) {
+    warningsAndMismatches.push(
+      `CRITICAL_BLOCKED: ${healthCheck.envOverride?.blockedReason || healthCheck.adminSdk?.blockedReason || 'Invalid Firestore database override detected'}`
+    );
+  } else if (healthCheck && !healthCheck.adminSdk.initialized) {
     warningsAndMismatches.push('Firebase Admin SDK is NOT initialized on backend.');
   }
   if (commitShaValue === 'UNVERIFIED/BLOCKED' || commitShaValue === 'UNAVAILABLE' || commitShaValue === 'UNKNOWN') {
@@ -519,24 +585,30 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
     const activeActor = user?.email || healthCheck?.actorEmail || 'NOT_VERIFIED';
 
     const sanitizedPayload = {
-      reportSchemaVersion: '1.0-lite',
+      reportSchemaVersion: '2.0-sanitized',
       generatedAt: now,
       applicationAndBuild: {
         environment: appEnvValue,
         appVersion: appVersionValue,
         gitCommitSha: commitShaValue,
-        gitBranch: 'UNAVAILABLE (no .git metadata in runtime)',
+        gitBranch: healthCheck?.gitBranch || versionInfo?.gitBranch || 'BLOCKED (no .git metadata in runtime)',
         cloudRunRevision: cloudRunRevValue,
+        cloudRunRegion: healthCheck?.cloudRunRegion || versionInfo?.cloudRunRegion || 'UNAVAILABLE',
         buildTimestamp: buildTimeValue,
         uptimeSeconds: systemHealth ? systemHealth.uptimeSeconds : 'UNAVAILABLE'
       },
       firebaseAndAuth: {
+        firebaseProjectName: healthCheck?.firebaseProjectName || 'AI Prime Studio',
+        firebaseProjectNumber: healthCheck?.firebaseProjectNumber || '855598524398',
         clientProjectId,
         clientDatabaseId,
         clientAuthDomain: healthCheck?.clientFirebase?.authDomain || (firebaseConfig as any).authDomain || 'UNAVAILABLE',
         adminSdkInitialized: healthCheck ? healthCheck.adminSdk.initialized : 'NOT_VERIFIED',
         adminSdkProjectId: backendProjectId,
         adminSdkDatabaseId: backendDatabaseId,
+        firestoreConnectionSource: healthCheck?.firestoreConnectionSource || 'UNAVAILABLE',
+        runtimeServiceAccountEmail: healthCheck?.runtimeServiceAccountEmail || 'UNAVAILABLE',
+        envOverride: healthCheck?.envOverride || 'UNAVAILABLE',
         projectParity: projectParityStatus,
         databaseParity: databaseParityStatus,
         firestoreMode: healthCheck?.firestoreMode || 'NOT_VERIFIED',
@@ -546,21 +618,26 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
       },
       catalogue: {
         catalogueStatus: versionInfo?.catalogueStatus || 'UNAVAILABLE',
-        catalogRevision: versionInfo?.catalogRevision ?? 'UNAVAILABLE',
+        catalogRevision: healthCheck?.catalogBreakdown?.catalogRevision ?? versionInfo?.catalogRevision ?? 'UNAVAILABLE',
+        lastSyncAt: healthCheck?.catalogBreakdown?.lastSyncAt || versionInfo?.lastSyncAt || 'UNAVAILABLE',
+        rawFirestoreTemplatesCount: healthCheck?.catalogBreakdown?.rawFirestoreTemplatesCount ?? 'UNAVAILABLE',
         publicActiveTemplatesCount: templates.length,
-        adminTotalTemplatesCount: adminTemplates !== null ? adminTemplates.length : 'UNAVAILABLE',
-        adminActiveTemplatesCount: adminActiveTemplatesCount ?? 'UNAVAILABLE',
-        adminInactiveTemplatesCount: adminInactiveTemplatesCount ?? 'UNAVAILABLE',
-        activeHeroBannersCount: activeBannersCount ?? 'UNAVAILABLE',
-        totalHeroBannersCount: totalBannersCount ?? 'UNAVAILABLE',
-        faceswapSceneCount: versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE'
+        adminTotalTemplatesCount: adminTemplates !== null ? adminTemplates.length : (healthCheck?.catalogBreakdown?.adminTotalTemplatesCount ?? 'UNAVAILABLE'),
+        adminActiveTemplatesCount: adminActiveTemplatesCount ?? healthCheck?.catalogBreakdown?.adminActiveTemplatesCount ?? 'UNAVAILABLE',
+        adminInactiveTemplatesCount: adminInactiveTemplatesCount ?? healthCheck?.catalogBreakdown?.adminInactiveTemplatesCount ?? 'UNAVAILABLE',
+        deletedTombstonesCount: healthCheck?.catalogBreakdown?.deletedTombstonesCount ?? 'UNAVAILABLE',
+        quarantinedTemplatesCount: healthCheck?.catalogBreakdown?.quarantinedTemplatesCount ?? 'UNAVAILABLE',
+        activeHeroBannersCount: activeBannersCount ?? healthCheck?.catalogBreakdown?.heroBannersActiveCount ?? 'UNAVAILABLE',
+        totalHeroBannersCount: totalBannersCount ?? healthCheck?.catalogBreakdown?.heroBannersTotalCount ?? 'UNAVAILABLE',
+        faceswapScenesTotalCount: healthCheck?.catalogBreakdown?.faceswapScenesTotalCount ?? versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE',
+        faceswapScenesActiveCount: healthCheck?.catalogBreakdown?.faceswapScenesActiveCount ?? 'UNAVAILABLE'
       },
-      diagnostics: latestDiagRun
+      savedDiagnosticHistorySnapshot: latestDiagRun
         ? {
-            status: 'AVAILABLE',
+            snapshotType: 'ARCHIVED_HISTORY_SNAPSHOT (not automatically re-executed on report copy)',
             source: diagHistorySource,
             runId: latestDiagRun.runId,
-            timestamp: latestDiagRun.timestamp,
+            recordedAt: latestDiagRun.timestamp,
             overallStatus: latestDiagRun.overallStatus,
             stats: latestDiagRun.stats,
             probes: latestDiagRun.results.map((r) => ({
@@ -575,15 +652,17 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
             }))
           }
         : {
+            snapshotType: 'NONE',
             status: diagHistoryError ? 'UNAVAILABLE' : 'NOT_TESTED',
             error: diagHistoryError || null,
-            note: 'No diagnostic run found in history.'
+            note: 'No diagnostic run found in history. Trigger Execute Full Audit in Diagnostics Modal for a fresh live run.'
           },
       storageAndMediaCache: {
         storageDriver: healthCheck?.storage?.driver || systemHealth?.storage?.driver || 'UNAVAILABLE',
         r2Configured: healthCheck ? healthCheck.storage.r2Configured : 'NOT_VERIFIED',
         r2Bucket: healthCheck?.storage?.bucket || systemHealth?.storage?.bucket || 'UNAVAILABLE',
-        r2StorageUsageAndObjectCount: 'UNAVAILABLE (Not instrumented in current dashboard)',
+        r2RequiredVarsPresent: healthCheck?.storage?.requiredVarsPresent || 'UNAVAILABLE',
+        r2StorageUsageAndObjectCount: healthCheck?.storage?.objectCountAndUsage || 'NOT_INSTRUMENTED',
         clientMediaCache: cacheStats
           ? {
               storedMb: Number((cacheStats.totalBytesStored / (1024 * 1024)).toFixed(2)),
@@ -597,6 +676,11 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
               isDataSaver: queueStats?.isDataSaver ?? 'UNAVAILABLE'
             }
           : 'UNAVAILABLE'
+      },
+      androidAndPwa: {
+        androidBuild: healthCheck?.androidBuild || 'UNAVAILABLE',
+        chromePwa: healthCheck?.chromePwa || 'UNAVAILABLE',
+        syncParity: healthCheck?.syncParity || 'UNAVAILABLE'
       },
       backendApiAndHealth: {
         serverStatus: systemHealth?.status || (systemHealthError ? 'ERROR' : 'NOT_VERIFIED'),
@@ -625,6 +709,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
           details: l.details
         }))
       },
+      mismatchExplanations: healthCheck?.mismatchExplanations || {},
       warningsAndMismatches: warningsAndMismatches.length > 0 ? warningsAndMismatches : ['None detected in current checks']
     };
 
@@ -632,57 +717,79 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
 Generated At: ${now}
 Actor Email: ${activeActor}
 
-## 1. APPLICATION & BUILD
+## 1. APPLICATION, RUNTIME & BUILD
 - Environment: ${appEnvValue}
 - App Version: ${appVersionValue}
 - Git Commit SHA: ${commitShaValue}
-- Git Branch: UNAVAILABLE (no .git metadata in runtime)
+- Git Branch: ${healthCheck?.gitBranch || versionInfo?.gitBranch || 'BLOCKED (no .git metadata in runtime)'}
 - Cloud Run Revision: ${cloudRunRevValue}
-- Build / Startup Time: ${buildTimeValue}
+- Cloud Run Region: ${healthCheck?.cloudRunRegion || versionInfo?.cloudRunRegion || 'UNAVAILABLE'}
+- Startup Timestamp: ${buildTimeValue}
 - Server Uptime: ${systemHealth ? `${Math.floor(systemHealth.uptimeSeconds / 60)} min (${systemHealth.uptimeSeconds}s)` : 'UNAVAILABLE'}
 
-## 2. FIREBASE & AUTHENTICATION
-- Client Project ID: ${clientProjectId}
+## 2. FIREBASE, DATABASE LOCK & SERVICE ACCOUNT
+- Firebase Project Name: ${healthCheck?.firebaseProjectName || 'AI Prime Studio'}
+- Firebase Project ID (Web / Backend): ${clientProjectId} / ${backendProjectId} (Parity: ${projectParityStatus})
+- Firebase Project Number: ${healthCheck?.firebaseProjectNumber || '855598524398'}
 - Client Database ID: ${clientDatabaseId}
-- Admin SDK Initialized: ${healthCheck ? String(healthCheck.adminSdk.initialized) : 'NOT_VERIFIED'}
-- Backend Admin SDK Project ID: ${backendProjectId}
-- Backend Admin SDK Database ID: ${backendDatabaseId}
-- Project Parity: ${projectParityStatus}
-- Database Parity: ${databaseParityStatus}
+- Backend Admin SDK Database ID: ${backendDatabaseId} (Parity: ${databaseParityStatus})
+- FIRESTORE_DATABASE_ID Override: ${healthCheck?.envOverride ? `${healthCheck.envOverride.status} (raw=${healthCheck.envOverride.rawValue}, effective=${healthCheck.envOverride.effectiveDatabaseId})` : 'UNAVAILABLE'}
+- Runtime Service Account Email: ${healthCheck?.runtimeServiceAccountEmail || 'UNAVAILABLE'}
+- Firestore Connection Source: ${healthCheck?.firestoreConnectionSource || 'UNAVAILABLE'}
 - Firestore Mode: ${healthCheck?.firestoreMode || 'NOT_VERIFIED'}
 - Session Persistence: ${healthCheck?.sessionPersistence || 'NOT_VERIFIED'}
 - Authorized Admin Allowlist: ${AUTHORIZED_ADMIN_EMAILS.join(', ')}
 
-## 3. TEMPLATES & HERO BANNERS
-- Catalogue Status: ${versionInfo?.catalogueStatus || 'UNAVAILABLE'} (Rev: ${versionInfo?.catalogRevision ?? 'UNAVAILABLE'})
+## 3. TEMPLATES, TOMBSTONES, HERO BANNERS & FACESWAP
+- Catalogue Status: ${versionInfo?.catalogueStatus || 'UNAVAILABLE'} (Rev: ${healthCheck?.catalogBreakdown?.catalogRevision ?? versionInfo?.catalogRevision ?? 'UNAVAILABLE'}, Last Sync: ${healthCheck?.catalogBreakdown?.lastSyncAt || versionInfo?.lastSyncAt || 'UNAVAILABLE'})
+- Raw Firestore Templates Docs: ${healthCheck?.catalogBreakdown?.rawFirestoreTemplatesCount ?? 'UNAVAILABLE'}
 - Public Active Templates: ${templates.length}
-- Admin Total Templates: ${adminTemplates !== null ? adminTemplates.length : 'UNAVAILABLE'} (Active: ${adminActiveTemplatesCount ?? 'UNAVAILABLE'}, Inactive: ${adminInactiveTemplatesCount ?? 'UNAVAILABLE'})
-- Active Hero Banners: ${activeBannersCount ?? 'UNAVAILABLE'} (Total: ${totalBannersCount ?? 'UNAVAILABLE'})
-- FaceSwap Scenes: ${versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE'}
+- Admin Total Templates: ${adminTemplates !== null ? adminTemplates.length : (healthCheck?.catalogBreakdown?.adminTotalTemplatesCount ?? 'UNAVAILABLE')} (Active: ${adminActiveTemplatesCount ?? healthCheck?.catalogBreakdown?.adminActiveTemplatesCount ?? 'UNAVAILABLE'}, Inactive: ${adminInactiveTemplatesCount ?? healthCheck?.catalogBreakdown?.adminInactiveTemplatesCount ?? 'UNAVAILABLE'})
+- Deleted Tombstones (suppressed): ${healthCheck?.catalogBreakdown?.deletedTombstonesCount ?? 'UNAVAILABLE'} | Quarantined: ${healthCheck?.catalogBreakdown?.quarantinedTemplatesCount ?? 'UNAVAILABLE'}
+- Hero Banners: ${activeBannersCount ?? healthCheck?.catalogBreakdown?.heroBannersActiveCount ?? 'UNAVAILABLE'} Active / ${totalBannersCount ?? healthCheck?.catalogBreakdown?.heroBannersTotalCount ?? 'UNAVAILABLE'} Total
+- FaceSwap Scenes: ${healthCheck?.catalogBreakdown?.faceswapScenesActiveCount ?? 'UNAVAILABLE'} Active / ${healthCheck?.catalogBreakdown?.faceswapScenesTotalCount ?? versionInfo?.faceswapSceneCount ?? 'UNAVAILABLE'} Total
 
-## 4. EXISTING DIAGNOSTICS SUMMARY
+## 4. SAVED DIAGNOSTIC RUN SNAPSHOT (HISTORY — NOT LIVE EXECUTION)
 ${
   latestDiagRun
-    ? `- Run ID: ${latestDiagRun.runId} (${latestDiagRun.timestamp})
+    ? `- Archived Run ID: ${latestDiagRun.runId} (Recorded: ${latestDiagRun.timestamp})
 - Source: ${diagHistorySource}
 - Overall Status: ${latestDiagRun.overallStatus}
 - Counts: ${latestDiagRun.stats.passed} PASS, ${latestDiagRun.stats.failed} FAIL, ${latestDiagRun.stats.blocked} BLOCKED, ${latestDiagRun.stats.warning} WARNING
 ${latestDiagRun.results.map((r) => `  - [${r.status.toUpperCase()}] ${r.name} (${r.testType || 'LIVE_PROBE'}, ${r.durationMs}ms)${r.failureReason ? ` — Reason: ${r.failureReason}` : ''}`).join('\n')}`
-    : `- Status: ${diagHistoryError ? `UNAVAILABLE (${diagHistoryError})` : 'NOT_TESTED (No diagnostic run recorded yet)'}`
+    : `- Status: ${diagHistoryError ? `UNAVAILABLE (${diagHistoryError})` : 'NOT_TESTED (No diagnostic run recorded yet; click Execute Full Audit for live run)'}`
 }
 
-## 5. STORAGE & CLIENT MEDIA CACHE
+## 5. STORAGE (CLOUDFLARE R2) & CLIENT MEDIA CACHE
 - Storage Driver: ${healthCheck?.storage?.driver || systemHealth?.storage?.driver || 'UNAVAILABLE'}
 - R2 Configured: ${healthCheck ? String(healthCheck.storage.r2Configured) : 'NOT_VERIFIED'}
 - R2 Bucket: ${healthCheck?.storage?.bucket || systemHealth?.storage?.bucket || 'UNAVAILABLE'}
-- R2 Usage / Object Count: UNAVAILABLE (Not instrumented)
+- R2 Env Flags Present: ${healthCheck?.storage?.requiredVarsPresent ? Object.entries(healthCheck.storage.requiredVarsPresent).map(([k, v]) => `${k}=${v}`).join(', ') : 'UNAVAILABLE'}
+- R2 Usage / Object Count: ${healthCheck?.storage?.objectCountAndUsage || 'NOT_INSTRUMENTED'}
 - Client IndexedDB Cache: ${
       cacheStats
         ? `${(cacheStats.totalBytesStored / (1024 * 1024)).toFixed(2)} MB (${cacheStats.itemCount} items, ${cacheStats.hitCount} hits / ${cacheStats.missCount} misses, ${cacheStats.evictionCount} evictions, pending=${queueStats?.pendingCount ?? 'UNAVAILABLE'}, active=${queueStats?.activeCount ?? 'UNAVAILABLE'}, dataSaver=${queueStats?.isDataSaver ? 'ON' : 'OFF'})`
         : 'UNAVAILABLE'
     }
 
-## 6. BACKEND HEALTH, LATENCY & API ERRORS
+## 6. ANDROID, CHROME PWA & CROSS-BUILDER SYNC PARITY
+- Android Package: ${healthCheck?.androidBuild?.packageId || 'UNAVAILABLE'} (versionCode=${healthCheck?.androidBuild?.versionCode ?? 'N/A'}, versionName=${healthCheck?.androidBuild?.versionName || 'N/A'}, compileSdk=${healthCheck?.androidBuild?.compileSdk ?? 'N/A'}, targetSdk=${healthCheck?.androidBuild?.targetSdk ?? 'N/A'})
+- Android Firebase Project: ${healthCheck?.androidBuild?.firebaseProjectId || 'UNAVAILABLE'} (#${healthCheck?.androidBuild?.firebaseProjectNumber || 'N/A'})
+- Play Store 512px PNG Asset: ${healthCheck?.androidBuild?.playStoreIconAsset || 'UNAVAILABLE'}
+- Chrome PWA Manifest: ${healthCheck?.chromePwa?.manifestUrl || '/manifest.webmanifest'} (SW Cache: ${healthCheck?.chromePwa?.cacheVersion || 'UNAVAILABLE'})
+- Chrome PWA Icons: ${healthCheck?.chromePwa?.iconUrls?.join(', ') || 'UNAVAILABLE'}
+- Primary Commit SHA: ${healthCheck?.syncParity?.primaryCommitSha || commitShaValue}
+- Secondary Commit SHA: ${healthCheck?.syncParity?.secondaryCommitSha || 'EXTERNAL_WORKSPACE'}
+- Sanitized Config Fingerprint (SHA-256 prefix): ${healthCheck?.syncParity?.sanitizedConfigFingerprint || 'UNAVAILABLE'}
+
+## 7. MISMATCH EXPLANATIONS & ROOT CAUSES
+${
+  healthCheck?.mismatchExplanations
+    ? Object.entries(healthCheck.mismatchExplanations).map(([k, v]) => `- **${k}**: ${v}`).join('\n')
+    : '- Unavailable (healthCheck payload missing)'
+}
+
+## 8. BACKEND HEALTH, LATENCY & API ERRORS
 - Server Status: ${systemHealth?.status || (systemHealthError ? `ERROR (${systemHealthError})` : 'NOT_VERIFIED')}
 - Firestore Health: ${systemHealth?.firestore?.status || 'NOT_VERIFIED'}
 - Firestore Latency: ${systemHealth && systemHealth.firestore.latencyMs >= 0 ? `${systemHealth.firestore.latencyMs} ms` : 'UNAVAILABLE'}
@@ -695,7 +802,7 @@ ${
 }
 - Active Monitoring Alerts: ${activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'}
 
-## 7. RECENT ADMIN ACTIVITY LOGS (${logs.length} of ${totalLogs ?? 'UNAVAILABLE'})
+## 9. RECENT ADMIN ACTIVITY LOGS (${logs.length} of ${totalLogs ?? 'UNAVAILABLE'})
 ${
   logs.length > 0
     ? logs.map((l) => `- [${l.timestamp.slice(0, 19).replace('T', ' ')}] ${l.action} by ${l.actorEmail} (${l.targetId}): ${l.details}`).join('\n')
@@ -704,10 +811,10 @@ ${
     : '- No admin activity logs recorded yet.'
 }
 
-## 8. KNOWN WARNINGS & UNRESOLVED MISMATCHES
+## 10. KNOWN WARNINGS & UNRESOLVED MISMATCHES
 ${warningsAndMismatches.length > 0 ? warningsAndMismatches.map((w) => `- ${w}`).join('\n') : '- None detected.'}
 
-## 9. STRUCTURED JSON DATA
+## 11. STRUCTURED JSON DATA
 \`\`\`json
 ${JSON.stringify(sanitizedPayload, null, 2)}
 \`\`\`
@@ -760,6 +867,9 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
       STANDBY_LOCAL: 'text-amber-300',
       LOCAL_FALLBACK_ONLY: 'text-amber-300',
       UNVERIFIED: 'text-amber-300',
+      CRITICAL_BLOCKED: 'text-rose-400',
+      NONE: 'text-emerald-400',
+      MATCH_DEFAULT: 'text-emerald-400',
       NOT_VERIFIED: 'text-stone-400',
       UNAVAILABLE: 'text-stone-400'
     };
@@ -1295,9 +1405,25 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Git Commit SHA</td>
+                      <td className="py-3 px-4 font-semibold text-white">Runtime Service Account</td>
+                      <td className="py-3 px-4 font-mono text-stone-300 break-all">{healthCheck?.runtimeServiceAccountEmail || 'NOT_VERIFIED'}</td>
+                      <td className="py-3 px-4 font-mono text-stone-400">Source: {healthCheck?.firestoreConnectionSource || 'UNAVAILABLE'}</td>
+                      <td className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(healthCheck?.runtimeServiceAccountEmail && !healthCheck.runtimeServiceAccountEmail.startsWith('UNAVAILABLE') ? 'VERIFIED' : 'UNAVAILABLE')}`}>
+                        {healthCheck?.runtimeServiceAccountEmail && !healthCheck.runtimeServiceAccountEmail.startsWith('UNAVAILABLE') ? 'DETECTED' : 'UNAVAILABLE'}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-3 px-4 font-semibold text-white">FIRESTORE_DATABASE_ID Override</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">{healthCheck?.envOverride?.rawValue || 'UNSET'}</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">Effective: {healthCheck?.envOverride?.effectiveDatabaseId || 'NOT_VERIFIED'}</td>
+                      <td className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(healthCheck?.envOverride?.status || 'NOT_VERIFIED')}`}>
+                        {healthCheck?.envOverride?.status || 'NOT_VERIFIED'}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-3 px-4 font-semibold text-white">Git Commit SHA & Branch</td>
                       <td className="py-3 px-4 font-mono text-stone-300">{commitShaValue}</td>
-                      <td className="py-3 px-4 font-mono text-stone-400">Runtime Env / Git</td>
+                      <td className="py-3 px-4 font-mono text-stone-400">{healthCheck?.gitBranch || 'UNAVAILABLE'}</td>
                       <td
                         className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
                           commitShaValue === 'UNVERIFIED/BLOCKED' || commitShaValue === 'UNAVAILABLE' ? 'UNVERIFIED' : 'VERIFIED'
@@ -1307,9 +1433,9 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                       </td>
                     </tr>
                     <tr>
-                      <td className="py-3 px-4 font-semibold text-white">Cloud Run Revision</td>
+                      <td className="py-3 px-4 font-semibold text-white">Cloud Run Revision & Region</td>
                       <td className="py-3 px-4 font-mono text-stone-300">{cloudRunRevValue}</td>
-                      <td className="py-3 px-4 font-mono text-stone-400">Env: {appEnvValue}</td>
+                      <td className="py-3 px-4 font-mono text-stone-400">{healthCheck?.cloudRunRegion || 'UNAVAILABLE'} · Env: {appEnvValue}</td>
                       <td
                         className={`py-3 px-4 font-mono font-bold text-[11px] ${renderStatusLabel(
                           cloudRunRevValue === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'VERIFIED'
@@ -1318,9 +1444,45 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                         {cloudRunRevValue === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'DETECTED'}
                       </td>
                     </tr>
+                    <tr>
+                      <td className="py-3 px-4 font-semibold text-white">Android & PWA Parity</td>
+                      <td className="py-3 px-4 font-mono text-stone-300">
+                        {healthCheck?.androidBuild?.packageId || 'N/A'} v{healthCheck?.androidBuild?.versionName || '?'} ({healthCheck?.androidBuild?.firebaseProjectId || 'N/A'})
+                      </td>
+                      <td className="py-3 px-4 font-mono text-stone-400">
+                        SW: {healthCheck?.chromePwa?.cacheVersion || 'N/A'} · FP: {healthCheck?.syncParity?.sanitizedConfigFingerprint || 'N/A'}
+                      </td>
+                      <td className="py-3 px-4 font-mono font-bold text-[11px] text-emerald-400">
+                        {healthCheck?.syncParity?.sanitizedConfigFingerprint ? 'TRACKED' : 'NOT_VERIFIED'}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
+
+              {healthCheck?.catalogBreakdown && (
+                <div className="p-4 rounded-2xl bg-black/30 border border-white/10 space-y-2 text-xs">
+                  <div className="font-bold text-stone-200 uppercase tracking-wider text-[11px]">
+                    Catalog Integrity & Historical Mismatch Notes
+                  </div>
+                  <div className="font-mono text-[11px] text-stone-300 flex flex-wrap gap-x-4 gap-y-1">
+                    <span>Project #: {healthCheck.firebaseProjectNumber}</span>
+                    <span>Raw Firestore Docs: {healthCheck.catalogBreakdown.rawFirestoreTemplatesCount}</span>
+                    <span>Public Active: {healthCheck.catalogBreakdown.publicActiveTemplatesCount}</span>
+                    <span>Admin Active/Inactive: {healthCheck.catalogBreakdown.adminActiveTemplatesCount}/{healthCheck.catalogBreakdown.adminInactiveTemplatesCount}</span>
+                    <span>Tombstones: {healthCheck.catalogBreakdown.deletedTombstonesCount}</span>
+                    <span>Rev: {healthCheck.catalogBreakdown.catalogRevision}</span>
+                    <span>Last Sync: {healthCheck.catalogBreakdown.lastSyncAt}</span>
+                  </div>
+                  {healthCheck.mismatchExplanations && (
+                    <ul className="list-disc pl-4 space-y-1 text-[11px] text-stone-400">
+                      {Object.values(healthCheck.mismatchExplanations).map((note, idx) => (
+                        <li key={idx}>{note}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

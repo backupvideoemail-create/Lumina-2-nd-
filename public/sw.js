@@ -12,7 +12,7 @@
  *    - Any non-GET request
  */
 
-const CACHE_NAME = 'lumina-static-v1.0.1';
+const CACHE_NAME = 'lumina-static-v1.0.2';
 
 // Explicitly allowlisted static assets
 const STATIC_ASSETS_ALLOWLIST = [

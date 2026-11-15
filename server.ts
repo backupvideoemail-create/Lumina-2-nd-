@@ -35,7 +35,12 @@ import {
   adminAuthInstance,
   isIsolatedTestEnv,
   ProductionDatabase,
-  InMemoryFirestoreMock
+  InMemoryFirestoreMock,
+  getDatabaseGuardState,
+  enforceRuntimeDatabaseLock,
+  refreshRuntimeGcpMetadata,
+  CANONICAL_PROJECT_NAME,
+  CANONICAL_PROJECT_NUMBER
 } from './src/services/db/database.ts';
 import { buildUnifiedGenerationPrompt } from './src/config/globalMasterPrompt.ts';
 import { googlePlayService } from './src/services/billing/googlePlayService.ts';
@@ -73,18 +78,204 @@ import { execSync } from 'child_process';
 import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from './src/config/adminConfig.ts';
 
 dotenv.config({ override: true });
+enforceRuntimeDatabaseLock();
 
-// Resolve immutable build-time Git commit SHA & immutable startup timestamp
-let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || '';
+// Resolve immutable build-time Git commit SHA, Git branch & immutable startup timestamp
+let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
 if (!resolvedCommitSha) {
   try {
-    resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500 }).trim();
+    resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     resolvedCommitSha = 'UNVERIFIED/BLOCKED';
   }
 }
+let resolvedGitBranch = process.env.GIT_BRANCH || process.env.GITHUB_REF_NAME || '';
+if (!resolvedGitBranch) {
+  try {
+    resolvedGitBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    resolvedGitBranch = 'BLOCKED (no .git metadata in runtime)';
+  }
+}
 const SERVER_STARTUP_IMMUTABLE_BUILD_TIME = process.env.BUILD_TIME || new Date().toISOString();
 const TELEMETRY_STARTED_AT = new Date().toISOString();
+
+function getSanitizedPlatformAndSyncReport() {
+  const guard = getDatabaseGuardState();
+  const storageStatus = mediaStorage.getStatus();
+  const allAdminTemplates = prodDb.getAllTemplatesAdmin();
+  const publicTemplates = prodDb.getTemplates();
+  const allBanners = prodDb.getBanners();
+  const allFaceSwapScenes = prodDb.getFaceSwapScenes(true);
+  const activeFaceSwapScenes = prodDb.getFaceSwapScenes(false);
+
+  // Android build metadata (non-secret fields only)
+  let androidPackage = 'UNAVAILABLE';
+  let androidVersionCode: number | string = 'UNAVAILABLE';
+  let androidVersionName = 'UNAVAILABLE';
+  let androidCompileSdk: number | string = 'UNAVAILABLE';
+  let androidTargetSdk: number | string = 'UNAVAILABLE';
+  try {
+    const gradlePath = path.resolve(process.cwd(), 'android/app/build.gradle.kts');
+    if (fs.existsSync(gradlePath)) {
+      const gradle = fs.readFileSync(gradlePath, 'utf-8');
+      androidPackage = gradle.match(/applicationId\s*=\s*"([^"]+)"/)?.[1] || 'UNAVAILABLE';
+      const vc = gradle.match(/versionCode\s*=\s*(\d+)/)?.[1];
+      androidVersionCode = vc ? Number(vc) : 'UNAVAILABLE';
+      androidVersionName = gradle.match(/versionName\s*=\s*"([^"]+)"/)?.[1] || 'UNAVAILABLE';
+      const cs = gradle.match(/compileSdk\s*=\s*(\d+)/)?.[1];
+      androidCompileSdk = cs ? Number(cs) : 'UNAVAILABLE';
+      const ts = gradle.match(/targetSdk\s*=\s*(\d+)/)?.[1];
+      androidTargetSdk = ts ? Number(ts) : 'UNAVAILABLE';
+    }
+  } catch {}
+
+  let androidFirebaseProjectId = 'UNAVAILABLE';
+  let androidFirebaseProjectNumber = 'UNAVAILABLE';
+  try {
+    const gsPath = path.resolve(process.cwd(), 'android/app/google-services.json');
+    if (fs.existsSync(gsPath)) {
+      const gs = JSON.parse(fs.readFileSync(gsPath, 'utf-8'));
+      androidFirebaseProjectId = gs?.project_info?.project_id || 'UNAVAILABLE';
+      androidFirebaseProjectNumber = gs?.project_info?.project_number || 'UNAVAILABLE';
+    }
+  } catch {}
+
+  // Chrome PWA metadata & Service Worker cache version
+  let pwaCacheVersion = 'UNAVAILABLE';
+  try {
+    const swPath = path.resolve(process.cwd(), 'public/sw.js');
+    if (fs.existsSync(swPath)) {
+      const swText = fs.readFileSync(swPath, 'utf-8');
+      pwaCacheVersion = swText.match(/CACHE_NAME\s*=\s*['"]([^'"]+)['"]/)?.[1] || 'UNAVAILABLE';
+    }
+  } catch {}
+
+  let manifestIcons: string[] = [];
+  let manifestStartUrl = '/';
+  try {
+    const manifestPath = path.resolve(process.cwd(), 'public/manifest.webmanifest');
+    if (fs.existsSync(manifestPath)) {
+      const m = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifestStartUrl = m?.start_url || '/';
+      manifestIcons = Array.isArray(m?.icons) ? m.icons.map((i: any) => String(i.src)) : [];
+    }
+  } catch {}
+
+  const playStoreIconPath = path.resolve(process.cwd(), 'public/icons/playstore-512.png');
+  const playStoreIconExists = fs.existsSync(playStoreIconPath);
+  const playStoreIconBytes = playStoreIconExists ? fs.statSync(playStoreIconPath).size : 0;
+
+  const nonSecretFingerprintPayload = {
+    projectId: (firebaseConfig as any).projectId || null,
+    projectNumber: CANONICAL_PROJECT_NUMBER,
+    firestoreDatabaseId: (firebaseConfig as any).firestoreDatabaseId || '(default)',
+    oAuthClientId: (firebaseConfig as any).oAuthClientId || null,
+    r2Bucket: storageStatus.bucket || null,
+    appVersion: resolvedAppVersion,
+    pwaCacheVersion,
+    androidPackage,
+    androidVersionCode,
+    androidVersionName,
+    androidFirebaseProjectId
+  };
+  const sanitizedConfigFingerprint = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(nonSecretFingerprintPayload))
+    .digest('hex')
+    .slice(0, 16);
+
+  const rawDocCount = prodDb.getRawFirestoreTemplatesCount();
+  const tombstoneCount = prodDb.getDeletedTombstonesCount();
+  const adminActiveCount = allAdminTemplates.filter((t) => t.isActive !== false).length;
+  const adminInactiveCount = allAdminTemplates.filter((t) => t.isActive === false).length;
+  const publicActiveCount = publicTemplates.length;
+  const catalogRevision = prodDb.getCatalogRevision();
+  const lastSyncAt = prodDb.getLastCatalogSyncAt();
+
+  return {
+    firebaseProjectName: CANONICAL_PROJECT_NAME,
+    firebaseProjectNumber: CANONICAL_PROJECT_NUMBER,
+    runtimeServiceAccountEmail: guard.runtimeServiceAccountEmail || 'UNAVAILABLE (non-GCE local or ADC unconfigured)',
+    cloudRunRegion: guard.cloudRunRegion || 'UNAVAILABLE',
+    gitBranch: resolvedGitBranch,
+    envOverride: {
+      envVarName: 'FIRESTORE_DATABASE_ID',
+      rawValue: guard.envDatabaseOverride || 'UNSET',
+      status: guard.envOverrideStatus,
+      effectiveDatabaseId: guard.effectiveDatabaseId,
+      blocked: guard.blocked,
+      blockedReason: guard.blockedReason
+    },
+    firestoreConnectionSource: guard.connectionSource,
+    catalogBreakdown: {
+      rawFirestoreTemplatesCount: rawDocCount ?? 'UNAVAILABLE',
+      publicActiveTemplatesCount: publicActiveCount,
+      adminTotalTemplatesCount: allAdminTemplates.length,
+      adminActiveTemplatesCount: adminActiveCount,
+      adminInactiveTemplatesCount: adminInactiveCount,
+      deletedTombstonesCount: tombstoneCount,
+      quarantinedTemplatesCount: prodDb.getQuarantinedTemplatesCount(),
+      catalogRevision,
+      lastSyncAt: lastSyncAt || 'NOT_SYNCED_YET',
+      heroBannersTotalCount: allBanners.length,
+      heroBannersActiveCount: allBanners.filter((b) => b?.isActive !== false).length,
+      faceswapScenesTotalCount: allFaceSwapScenes.length,
+      faceswapScenesActiveCount: activeFaceSwapScenes.length
+    },
+    r2Telemetry: {
+      driver: storageStatus.activeDriver,
+      bucket: storageStatus.bucket || null,
+      r2Configured: storageStatus.r2Configured,
+      requiredVarsPresent: {
+        R2_ACCOUNT_ID: Boolean(process.env.R2_ACCOUNT_ID?.trim()),
+        R2_ACCESS_KEY_ID: Boolean(process.env.R2_ACCESS_KEY_ID?.trim()),
+        R2_SECRET_ACCESS_KEY: Boolean(process.env.R2_SECRET_ACCESS_KEY?.trim()),
+        R2_BUCKET_NAME: Boolean(process.env.R2_BUCKET_NAME?.trim()),
+        R2_PUBLIC_BASE_URL: Boolean(process.env.R2_PUBLIC_BASE_URL?.trim())
+      },
+      objectCountAndUsage: 'NOT_INSTRUMENTED (R2 bucket object count / byte usage not queried in dashboard)'
+    },
+    androidBuild: {
+      packageId: androidPackage,
+      versionCode: androidVersionCode,
+      versionName: androidVersionName,
+      compileSdk: androidCompileSdk,
+      targetSdk: androidTargetSdk,
+      firebaseProjectId: androidFirebaseProjectId,
+      firebaseProjectNumber: androidFirebaseProjectNumber,
+      playStoreIconAsset: playStoreIconExists
+        ? `/icons/playstore-512.png (${playStoreIconBytes} bytes)`
+        : 'MISSING'
+    },
+    chromePwa: {
+      manifestUrl: '/manifest.webmanifest',
+      startUrl: manifestStartUrl,
+      iconUrls: manifestIcons,
+      serviceWorkerUrl: '/sw.js',
+      cacheVersion: pwaCacheVersion
+    },
+    syncParity: {
+      primaryCommitSha: resolvedCommitSha,
+      secondaryCommitSha: 'EXTERNAL_WORKSPACE (check Secondary Builder diagnostic report)',
+      gitBranch: resolvedGitBranch,
+      sanitizedConfigFingerprint,
+      fingerprintScope: Object.keys(nonSecretFingerprintPayload)
+    },
+    mismatchExplanations: {
+      catalogRevisionZeroVsNine:
+        `Current (default) DB reports catalogRevision=${catalogRevision} because config/catalog_metadata has not been bumped here yet, whereas legacy named DB held revision=9 from earlier writes.`,
+      publicActiveVsAdminTotal:
+        `Public active templates (${publicActiveCount}) < Admin total (${allAdminTemplates.length}) when inactive drafts (e.g. isActive=false, count=${adminInactiveCount}) exist in (default).`,
+      rawFirestoreDocsVsTombstones:
+        `Raw Firestore templates docs (${rawDocCount ?? 'N/A'}) include ${tombstoneCount} suppressed tombstones in config/deleted_template_ids so deleted legacy items stay hidden safely.`,
+      savedHistoryVsFreshRun:
+        `diagnostics_history stores archived point-in-time run snapshots (runId + timestamp). Always inspect timestamp or click Execute Full Audit for live (default) verification.`,
+      gitShaUnavailableInSandbox:
+        `Runtime container has no .git directory or build-injected COMMIT_SHA, so Git Commit SHA honestly shows '${resolvedCommitSha}'.`
+    }
+  };
+}
 
 function parsePort(): number {
   const portArgIdx = process.argv.indexOf('--port');
@@ -696,20 +887,29 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
    4. VERSION & TEMPLATES CATALOG (WITH WORKING LIKES & ZERO-CACHE)
 ========================================================================= */
 
-// Deployment Version & Environment Health Verification
+// Deployment Version & Environment Health Verification (Public, non-sensitive summary)
 app.get('/api/version', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+  const guard = getDatabaseGuardState();
   res.json({
     commitSha: resolvedCommitSha || 'UNVERIFIED/BLOCKED',
+    gitBranch: resolvedGitBranch,
     buildTime: SERVER_STARTUP_IMMUTABLE_BUILD_TIME,
     cloudRunRevision: process.env.K_REVISION || 'local-dev',
+    cloudRunRegion: guard.cloudRunRegion || 'UNAVAILABLE',
     catalogueStatus: prodDb.getCatalogueStatus(),
     catalogRevision: prodDb.getCatalogRevision(),
+    lastSyncAt: prodDb.getLastCatalogSyncAt() || 'NOT_SYNCED_YET',
     templateCount: prodDb.getTemplates().length,
     faceswapSceneCount: prodDb.getFaceSwapScenes(true).length,
-    databaseMode: adminFirestoreDb ? 'firestore_authoritative' : 'local_authoritative'
+    databaseMode: guard.blocked
+      ? 'CRITICAL_BLOCKED_INVALID_OVERRIDE'
+      : adminFirestoreDb
+      ? 'firestore_authoritative'
+      : 'local_authoritative',
+    databaseGuardBlocked: guard.blocked
   });
 });
 
@@ -813,13 +1013,17 @@ app.get('/api/admin/verify', requireAdmin, async (req, res) => {
 app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
   const user = ((req as any).user as UserProfile) || await getAuthenticatedUserAsync(req);
   const storageStatus = mediaStorage.getStatus();
-  const adminInitialized = Boolean(adminFirestoreDb);
-  const resolvedAdminProjectId = adminFirestoreDb
+  const guard = getDatabaseGuardState();
+  const adminInitialized = Boolean(adminFirestoreDb) && !guard.blocked;
+  const resolvedAdminProjectId = adminInitialized
     ? (adminFirestoreDb.projectId || (adminFirestoreDb as any)._settings?.projectId || null)
     : null;
-  const resolvedAdminDbId = adminFirestoreDb
+  const resolvedAdminDbId = guard.blocked
+    ? guard.effectiveDatabaseId
+    : adminInitialized
     ? (adminFirestoreDb.databaseId || (adminFirestoreDb as any)._databaseId?.database || '(default)')
     : null;
+  const platformReport = getSanitizedPlatformAndSyncReport();
 
   res.json({
     authorized: true,
@@ -827,6 +1031,13 @@ app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     appVersion: resolvedAppVersion,
+    firebaseProjectName: platformReport.firebaseProjectName,
+    firebaseProjectNumber: platformReport.firebaseProjectNumber,
+    runtimeServiceAccountEmail: platformReport.runtimeServiceAccountEmail,
+    cloudRunRegion: platformReport.cloudRunRegion,
+    gitBranch: platformReport.gitBranch,
+    envOverride: platformReport.envOverride,
+    firestoreConnectionSource: platformReport.firestoreConnectionSource,
     clientFirebase: {
       projectId: (firebaseConfig as any).projectId || null,
       firestoreDatabaseId: (firebaseConfig as any).firestoreDatabaseId || '(default)',
@@ -837,15 +1048,21 @@ app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
     adminSdk: {
       initialized: adminInitialized,
       projectId: resolvedAdminProjectId,
-      databaseId: resolvedAdminDbId
+      databaseId: resolvedAdminDbId,
+      blocked: guard.blocked,
+      blockedReason: guard.blockedReason
     },
-    firestoreMode: isIsolatedTestEnv
+    firestoreMode: guard.blocked
+      ? 'CRITICAL_BLOCKED'
+      : isIsolatedTestEnv
       ? 'IN_MEMORY_TEST'
       : adminInitialized
       ? 'LIVE_CLOUD_FIRESTORE'
       : 'DISCONNECTED',
     databaseId: resolvedAdminDbId,
-    sessionPersistence: adminInitialized
+    sessionPersistence: guard.blocked
+      ? 'BLOCKED_INVALID_DB_OVERRIDE'
+      : adminInitialized
       ? 'FIRESTORE_SESSION_DURABLE'
       : isIsolatedTestEnv
       ? 'IN_MEMORY_TEST'
@@ -857,8 +1074,15 @@ app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
       driver: storageStatus.activeDriver,
       r2Configured: storageStatus.r2Configured,
       bucket: storageStatus.bucket || null,
-      missingEnvVars: storageStatus.missingEnvVars || []
-    }
+      missingEnvVars: storageStatus.missingEnvVars || [],
+      requiredVarsPresent: platformReport.r2Telemetry.requiredVarsPresent,
+      objectCountAndUsage: platformReport.r2Telemetry.objectCountAndUsage
+    },
+    catalogBreakdown: platformReport.catalogBreakdown,
+    androidBuild: platformReport.androidBuild,
+    chromePwa: platformReport.chromePwa,
+    syncParity: platformReport.syncParity,
+    mismatchExplanations: platformReport.mismatchExplanations
   });
 });
 
@@ -5458,24 +5682,34 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       }
     },
 
-    // Module 11: Authoritative Firestore Project & Database Health
+    // Module 11: Authoritative Firestore Project, Database Lock & Override Verification
     {
       id: 'firestore_authoritative_sync',
-      name: 'Authoritative Firestore Database Health & State Synchronization',
+      name: 'Authoritative Firestore Database Health, Lock & Override Check',
       category: 'Authoritative Database',
       severity: 'CRITICAL',
       testType: 'LIVE_PROBE',
       endpointOrProvider: `Firestore · ${resolvedDiagProjectId}/${resolvedDiagDbId}`,
-      expectedResult: 'Authoritative Firestore project connected with active write/read-back/delete verification',
+      expectedResult: 'Authoritative ai-prime-studio/(default) connected with zero invalid FIRESTORE_DATABASE_ID override and verified write/read-back/delete cycle',
       execute: async () => {
+        const guard = getDatabaseGuardState();
+        if (guard.blocked) {
+          return {
+            status: 'blocked',
+            actualResult: `CRITICAL_BLOCKED: ${guard.blockedReason} (EffectiveDB=${guard.effectiveDatabaseId}, Override=${guard.envDatabaseOverride || 'NONE'})`,
+            failureReason: guard.blockedReason || 'Invalid Firestore database override blocked silent database connection',
+            rootCauseHypothesis: 'FIRESTORE_DATABASE_ID Secret Manager/env override or firebase-applet-config.json targets a non-(default) database',
+            recommendedAction: 'Remove invalid FIRESTORE_DATABASE_ID override or set it to (default), and confirm firebase-applet-config.json firestoreDatabaseId is (default)'
+          };
+        }
         const isConnected = Boolean(adminFirestoreDb);
         if (!isConnected) {
           return {
             status: 'warning',
-            actualResult: `Operating in local durable fallback; Configured Firebase project='${resolvedDiagProjectId}/${resolvedDiagDbId}' (Admin credentials pending in sandbox)`,
+            actualResult: `Operating in local durable fallback; Configured='${resolvedDiagProjectId}/${resolvedDiagDbId}', SA=${guard.runtimeServiceAccountEmail || 'UNAVAILABLE'}`,
             failureReason: 'Firestore Admin SDK not initialized in local sandbox environment',
-            rootCauseHypothesis: 'Environment variable GOOGLE_APPLICATION_CREDENTIALS not set in local container',
-            recommendedAction: 'Ensure Cloud Run runtime service account credentials are mounted in production'
+            rootCauseHypothesis: 'Runtime ADC or GOOGLE_APPLICATION_CREDENTIALS not mounted',
+            recommendedAction: 'Ensure Cloud Run runtime service account credentials are mounted'
           };
         }
         try {
@@ -5485,36 +5719,36 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
           await testRef.delete();
           return {
             status: 'passed',
-            actualResult: `Authoritative Firestore connected to '${resolvedDiagProjectId}/${resolvedDiagDbId}' with verified write-read-delete cycle (exists=${snap.exists})`
+            actualResult: `Connected to '${resolvedDiagProjectId}/${resolvedDiagDbId}' via ${guard.connectionSource} (SA=${guard.runtimeServiceAccountEmail || 'UNAVAILABLE'}, EnvOverride=${guard.envOverrideStatus}, EffectiveDB=${guard.effectiveDatabaseId}) · Write/Read/Delete verified (exists=${snap.exists})`
           };
         } catch (err: any) {
           return {
             status: 'failed',
             actualResult: `Firestore probe error on '${resolvedDiagProjectId}/${resolvedDiagDbId}': ${err.message}`,
             failureReason: err.message,
-            rootCauseHypothesis: 'Firestore permission error or database mismatch',
-            recommendedAction: 'Verify Cloud Run service account has roles/datastore.user permission and matching FIRESTORE_DATABASE_ID'
+            rootCauseHypothesis: 'Firestore permission error or IAM role missing on runtime service account',
+            recommendedAction: 'Verify Cloud Run runtime service account has roles/datastore.user on ai-prime-studio'
           };
         }
       }
     },
 
-    // Module 12: Cloudflare R2 5-Point Storage Audit (r2_cfg, r2_upl, r2_read, r2_sign, r2_del)
+    // Module 12: Cloudflare R2 5-Point Storage Audit (r2_cfg, r2_upl, r2_read, r2_sign, r2_del — disposable probe only)
     {
       id: 'r2_storage_5point_audit',
-      name: 'Cloudflare R2 5-Point Storage Audit (Config, Upload, Read, Sign, Delete)',
+      name: 'Cloudflare R2 5-Point Storage Audit (Disposable Probe Only)',
       category: 'Cloudflare R2 Durable Storage',
       severity: 'HIGH',
       testType: 'STORAGE_AUDIT',
-      endpointOrProvider: 'Cloudflare R2 S3 API (Real 5-Point Probe)',
-      expectedResult: 'r2_cfg, r2_upl, r2_read, r2_sign, and r2_del independently verified via live disposable probe object',
+      endpointOrProvider: 'Cloudflare R2 S3 API (Disposable Probe Cleanup Only)',
+      expectedResult: 'r2_cfg, r2_upl, r2_read, r2_sign, and r2_del verified strictly on a temporary unique probe object (never deleting existing/customer media)',
       execute: async () => {
         const status = mediaStorage.getStatus();
         if (!status.r2Configured) {
           const missingVars = status.missingEnvVars.join(', ');
           return {
             status: 'blocked',
-            actualResult: `r2_cfg: BLOCKED (Missing: ${missingVars}); r2_upl: BLOCKED; r2_read: BLOCKED; r2_sign: BLOCKED; r2_del: BLOCKED. Operating in local secure storage.`,
+            actualResult: `r2_cfg: BLOCKED (Missing: ${missingVars}); r2_upl: BLOCKED; r2_read: BLOCKED; r2_sign: BLOCKED; r2_del: BLOCKED (Object Count: NOT_INSTRUMENTED). Operating in local secure storage.`,
             failureReason: `Cloudflare R2 credentials missing: ${missingVars}`,
             rootCauseHypothesis: 'Production R2 storage credentials not yet provisioned in this environment',
             recommendedAction: 'Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME in Cloud Run secrets'
@@ -5522,7 +5756,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         }
         try {
           const probe5 = await mediaStorage.testR2Storage5Point();
-          const summaryStr = `r2_cfg: ${probe5.r2_cfg}; r2_upl: ${probe5.r2_upl}; r2_read: ${probe5.r2_read}; r2_sign: ${probe5.r2_sign}; r2_del: ${probe5.r2_del} (${probe5.bucket || status.bucket})`;
+          const summaryStr = `r2_cfg: ${probe5.r2_cfg}; r2_upl: ${probe5.r2_upl}; r2_read: ${probe5.r2_read}; r2_sign: ${probe5.r2_sign}; r2_del: ${probe5.r2_del} [disposable _diag_probes/ only] (${probe5.bucket || status.bucket})`;
           if (probe5.allPassed) {
             return { status: 'passed', actualResult: summaryStr };
           }
@@ -5838,6 +6072,7 @@ app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: 
 
 async function startServer() {
   try {
+    await refreshRuntimeGcpMetadata();
     await prodDb.readyPromise;
     console.log('[Server] Authoritative Firestore database state synchronized successfully.');
   } catch (err: any) {

@@ -2225,6 +2225,145 @@ async function runSystemVerification() {
   if (fs.existsSync(synthSrcPath)) fs.unlinkSync(synthSrcPath);
   if (fs.existsSync(trimmed36.trimmedFilePath)) fs.unlinkSync(trimmed36.trimmedFilePath);
 
+  // --- SUITE 37: PERMANENT (default) DB LOCK, OVERRIDE FAIL-CLOSED, R2 PROBE SAFETY & CANONICAL LOGO PARITY ---
+  console.log('\n--- SUITE 37: PERMANENT (default) DB LOCK, R2 PROBE SAFETY & CANONICAL LOGO PARITY ---');
+
+  // 37.1 Authoritative firebase-applet-config.json lock (never revert to named database)
+  const fbAppletCfg37 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+  assert(fbAppletCfg37.projectId === 'ai-prime-studio', `37.1 firebase-applet-config.json projectId locked to 'ai-prime-studio' (got '${fbAppletCfg37.projectId}')`);
+  assert(fbAppletCfg37.firestoreDatabaseId === '(default)', `37.1 firebase-applet-config.json firestoreDatabaseId locked to '(default)' (got '${fbAppletCfg37.firestoreDatabaseId}')`);
+  assert(
+    fbAppletCfg37.oAuthClientId === '855598524398-ljcakleqr4dgknkkhskp4kr9oph8o1a9.apps.googleusercontent.com',
+    '37.1 Web OAuth Client ID preserved untouched'
+  );
+
+  // 37.2 Client & Backend 1-arg default Firestore SDK initialization + fail-closed override check
+  const fbClientSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf8');
+  assert(fbClientSrc37.includes("CANONICAL_FIRESTORE_DATABASE_ID = '(default)'"), '37.2 firebaseClient defines canonical (default) DB constant');
+  assert(fbClientSrc37.includes('export const db = getFirestore(app);'), '37.2 firebaseClient uses 1-argument getFirestore(app)');
+  assert(fbClientSrc37.includes('CRITICAL_FIRESTORE_LOCK'), '37.2 firebaseClient throws CRITICAL_FIRESTORE_LOCK on non-(default) database');
+
+  const dbSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  assert(
+    dbSrc37.includes('adminFirestoreDb = getAdminFirestore(adminApp);') &&
+      dbSrc37.includes('adminFirestoreDb = getAdminFirestore(adcApp);'),
+    '37.2 database.ts uses canonical 1-argument getAdminFirestore(app)'
+  );
+  assert(
+    dbSrc37.includes('if (initialLockCheck.blocked)') && dbSrc37.includes('enforceRuntimeDatabaseLock'),
+    '37.2 database.ts halts Firestore init on invalid override instead of silent fallback'
+  );
+
+  const { evaluateDatabaseLock: evalDbLock37 } = await import('../src/services/db/database.ts');
+  const lockOkUnset = evalDbLock37({
+    configuredProjectId: 'ai-prime-studio',
+    configuredDatabaseId: '(default)',
+    envDatabaseOverride: undefined
+  });
+  assert(lockOkUnset.blocked === false && lockOkUnset.envOverrideStatus === 'NONE', '37.2 evaluateDatabaseLock allows unset FIRESTORE_DATABASE_ID with (default) config');
+
+  const lockOkDefault = evalDbLock37({
+    configuredProjectId: 'ai-prime-studio',
+    configuredDatabaseId: '(default)',
+    envDatabaseOverride: '(default)'
+  });
+  assert(lockOkDefault.blocked === false && lockOkDefault.envOverrideStatus === 'MATCH_DEFAULT', '37.2 evaluateDatabaseLock allows FIRESTORE_DATABASE_ID=(default)');
+
+  const lockBadOverride = evalDbLock37({
+    configuredProjectId: 'ai-prime-studio',
+    configuredDatabaseId: '(default)',
+    envDatabaseOverride: 'ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f'
+  });
+  assert(
+    lockBadOverride.blocked === true && lockBadOverride.envOverrideStatus === 'CRITICAL_BLOCKED',
+    '37.2 evaluateDatabaseLock fail-closed blocks named database FIRESTORE_DATABASE_ID override'
+  );
+
+  const lockBadConfig = evalDbLock37({
+    configuredProjectId: 'ai-prime-studio',
+    configuredDatabaseId: 'ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f',
+    envDatabaseOverride: undefined
+  });
+  assert(
+    lockBadConfig.blocked === true && lockBadConfig.configStatus === 'CRITICAL_BLOCKED',
+    '37.2 evaluateDatabaseLock fail-closed blocks non-(default) configured firestoreDatabaseId'
+  );
+
+  // 37.3 R2 5-point probe disposable cleanup safety guard
+  const storageSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/storage/mediaStorage.ts'), 'utf8');
+  assert(
+    storageSrc37.includes("const probeKey = `_diag_probes/r2_probe_") &&
+      storageSrc37.includes("if (!probeKey.startsWith('_diag_probes/r2_probe_') || probeKey.includes('..'))"),
+    '37.3 mediaStorage testR2Storage5Point restricts deletion strictly to disposable _diag_probes/r2_probe_ objects'
+  );
+
+  // 37.4 Canonical PWA & Google Play Store PNG binary checks (32-bit RGBA with alpha, <= 1024 KB)
+  const parsePngIhdr = (relPath: string) => {
+    const buf = fs.readFileSync(pathUtil.resolve(process.cwd(), relPath));
+    const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    const ihdrType = buf.subarray(12, 16).toString('ascii');
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    const bitDepth = buf[24];
+    const colorType = buf[25]; // 6 = RGBA (32-bit with alpha)
+    return { isPng, ihdrType, width, height, bitDepth, colorType, bytes: buf.length };
+  };
+
+  const playStorePng = parsePngIhdr('public/icons/playstore-512.png');
+  assert(
+    playStorePng.isPng &&
+      playStorePng.ihdrType === 'IHDR' &&
+      playStorePng.width === 512 &&
+      playStorePng.height === 512 &&
+      playStorePng.bitDepth === 8 &&
+      playStorePng.colorType === 6 &&
+      playStorePng.bytes <= 1024 * 1024,
+    `37.4 public/icons/playstore-512.png matches Play Store spec (512x512, 32-bit RGBA colorType=6, ${playStorePng.bytes} bytes <= 1048576)`
+  );
+
+  const expectedIconSpecs: Array<{ file: string; size: number }> = [
+    { file: 'public/icons/icon-192.png', size: 192 },
+    { file: 'public/icons/icon-512.png', size: 512 },
+    { file: 'public/icons/icon-maskable-512.png', size: 512 },
+    { file: 'public/icons/apple-touch-icon.png', size: 180 }
+  ];
+  for (const spec of expectedIconSpecs) {
+    const info = parsePngIhdr(spec.file);
+    assert(
+      info.isPng && info.width === spec.size && info.height === spec.size && info.bitDepth === 8 && info.colorType === 6,
+      `37.4 ${spec.file} verified ${spec.size}x${spec.size} 32-bit RGBA PNG (${info.bytes} bytes)`
+    );
+  }
+
+  const swSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'public/sw.js'), 'utf8');
+  assert(swSrc37.includes("CACHE_NAME = 'lumina-static-v1.0.2'"), '37.4 Service Worker cache version bumped to lumina-static-v1.0.2 for icon refresh');
+  const adaptiveFg37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/src/main/res/drawable/ic_launcher_foreground.xml'), 'utf8');
+  assert(adaptiveFg37.includes('16 dashed segments matching Logo.tsx r=11.5'), '37.4 Android adaptive foreground updated with dashed optical aperture lens ring');
+
+  // 37.5 Expanded sanitized Diagnostic & Copy Report telemetry without secret leakage
+  const serverSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(
+    serverSrc37.includes('getSanitizedPlatformAndSyncReport') &&
+      serverSrc37.includes('catalogBreakdown') &&
+      serverSrc37.includes('androidBuild') &&
+      serverSrc37.includes('chromePwa') &&
+      serverSrc37.includes('syncParity') &&
+      serverSrc37.includes('mismatchExplanations'),
+    '37.5 server.ts exposes expanded sanitized platform, catalog breakdown, Android/PWA & sync parity telemetry'
+  );
+  const adminDashSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AdminDashboardModal.tsx'), 'utf8');
+  assert(
+    adminDashSrc37.includes("reportSchemaVersion: '2.0-sanitized'") &&
+      adminDashSrc37.includes('ARCHIVED_HISTORY_SNAPSHOT') &&
+      adminDashSrc37.includes('NOT_INSTRUMENTED'),
+    '37.5 AdminDashboardModal Copy Report uses sanitized v2.0 schema and separates archived snapshots from live state'
+  );
+  const diagModalSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/DiagnosticsModal.tsx'), 'utf8');
+  assert(
+    diagModalSrc37.includes('isHistoricalSnapshot') && diagModalSrc37.includes('Archived History Snapshot'),
+    '37.5 DiagnosticsModal distinguishes loaded historical snapshots from fresh live audit runs'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

@@ -13,11 +13,22 @@ import {
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../../firebase-applet-config.json';
 
+export const CANONICAL_FIREBASE_PROJECT_ID = 'ai-prime-studio';
+export const CANONICAL_FIRESTORE_DATABASE_ID = '(default)';
+
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const rawDbId = firebaseConfig.firestoreDatabaseId;
-export const db = (rawDbId && rawDbId !== '(default)')
-  ? getFirestore(app, rawDbId)
-  : getFirestore(app);
+const configuredDbId = ((firebaseConfig as any).firestoreDatabaseId || '(default)').trim();
+if (firebaseConfig.projectId !== CANONICAL_FIREBASE_PROJECT_ID) {
+  throw new Error(
+    `CRITICAL_FIREBASE_LOCK: Expected project '${CANONICAL_FIREBASE_PROJECT_ID}' but got '${firebaseConfig.projectId}'.`
+  );
+}
+if (configuredDbId !== CANONICAL_FIRESTORE_DATABASE_ID) {
+  throw new Error(
+    `CRITICAL_FIRESTORE_LOCK: Expected default Firestore database '${CANONICAL_FIRESTORE_DATABASE_ID}' but got '${configuredDbId}'. Silent fallback to another database is blocked.`
+  );
+}
+export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
