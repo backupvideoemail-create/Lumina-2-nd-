@@ -1,0 +1,393 @@
+import type { FaceSwapScene, Template } from '../../types';
+import { MODEL_REGISTRY } from '../pricing/pricingService';
+
+export interface TemplateReadinessResult {
+  ready: boolean;
+  status: 'READY' | 'DRAFT_INCOMPLETE' | 'INVALID_CONFIG';
+  missingFields: string[];
+  errors: string[];
+  warnings: string[];
+  checkedChecks: {
+    idAndTitle: boolean;
+    typeAndCategory: boolean;
+    engineAndProvider: boolean;
+    model: boolean;
+    promptAndWorkflow: boolean;
+    requiredInputs: boolean;
+    coverAndPreviewMedia: boolean;
+    requiredGenerationAssets: boolean;
+  };
+}
+
+const KNOWN_PHOTO_MODELS = new Set<string>([
+  'gemini-3.1-flash-lite-image',
+  'gemini-3.1-flash-image',
+  'gemini-2.5-flash-image',
+  'gemini-2.5-flash-preview-image'
+]);
+
+const KNOWN_VIDEO_MODELS = new Set<string>([
+  'hf_mult_motion_control_flash',
+  'hf_mult_replace_object_flash',
+  'gemini-omni-1.1-flash'
+]);
+
+const KNOWN_SMART_MODELS = new Set<string>(['smart_canvas_ffmpeg']);
+
+const VIDEO_WORKFLOWS = new Set<string>([
+  'VIDEO_FACE_REPLACEMENT',
+  'OBJECT_SWAP',
+  'MOTION_TRANSFER',
+  'VIDEO_EDIT',
+  'IMAGE_TO_VIDEO'
+]);
+
+const PHOTO_WORKFLOWS = new Set<string>(['PHOTO_GENERATION', 'PHOTO_EDIT']);
+
+function isNonEmptyMediaRef(val: unknown): val is string {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (trimmed.length < 5) return false;
+  return (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('/api/media/') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('data:')
+  );
+}
+
+/**
+ * Deterministic, zero-cost validation of Template Recipe Readiness & Compatibility.
+ * Never calls paid AI provider APIs and never mutates input templates.
+ */
+export function validateTemplateReadiness(
+  tpl: Partial<Template> | null | undefined,
+  options: { strictPublish?: boolean } = {}
+): TemplateReadinessResult {
+  const strictPublish = options.strictPublish !== false;
+  const missingFields: string[] = [];
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!tpl || typeof tpl !== 'object') {
+    return {
+      ready: false,
+      status: 'INVALID_CONFIG',
+      missingFields: ['template'],
+      errors: ['Template payload is missing or invalid.'],
+      warnings: [],
+      checkedChecks: {
+        idAndTitle: false,
+        typeAndCategory: false,
+        engineAndProvider: false,
+        model: false,
+        promptAndWorkflow: false,
+        requiredInputs: false,
+        coverAndPreviewMedia: false,
+        requiredGenerationAssets: false
+      }
+    };
+  }
+
+  // 1. Template ID & Title
+  const hasId = typeof tpl.id === 'string' && tpl.id.trim().length >= 2;
+  const hasTitle = typeof tpl.title === 'string' && tpl.title.trim().length >= 2;
+  const idAndTitle = hasId && hasTitle;
+  if (!hasId) {
+    missingFields.push('id');
+    errors.push('Template ID is required.');
+  }
+  if (!hasTitle) {
+    missingFields.push('title');
+    errors.push('Template Title is required (minimum 2 characters).');
+  }
+
+  // 2. Type & Category
+  const hasValidType = tpl.type === 'photo' || tpl.type === 'video';
+  const hasCategory = typeof tpl.category === 'string' && tpl.category.trim().length >= 2;
+  const typeAndCategory = hasValidType && hasCategory;
+  if (!hasValidType) {
+    missingFields.push('type');
+    errors.push("Template Type must be 'photo' or 'video'.");
+  }
+  if (!hasCategory) {
+    missingFields.push('category');
+    errors.push('Template Category is required.');
+  }
+
+  // 3. Engine & Provider Compatibility
+  const engine = tpl.engine;
+  const hasValidEngine = engine === 'AI_GENERATION' || engine === 'SMART_TEMPLATE';
+  const resolvedProvider = (
+    tpl.recipe?.provider ||
+    (engine === 'SMART_TEMPLATE' ? 'smart_template' : tpl.type === 'video' ? 'google_veo' : 'gemini')
+  )
+    .toString()
+    .trim()
+    .toLowerCase();
+
+  let providerCompatible = true;
+  if (!hasValidEngine) {
+    missingFields.push('engine');
+    errors.push("Engine must be 'AI_GENERATION' or 'SMART_TEMPLATE'.");
+    providerCompatible = false;
+  } else if (!resolvedProvider) {
+    missingFields.push('provider');
+    errors.push('Recipe provider is required.');
+    providerCompatible = false;
+  } else if (engine === 'SMART_TEMPLATE') {
+    if (!['smart_template', 'smart_canvas', 'ffmpeg'].includes(resolvedProvider)) {
+      errors.push(`SMART_TEMPLATE engine is incompatible with provider '${resolvedProvider}'.`);
+      providerCompatible = false;
+    }
+  } else {
+    if (tpl.type === 'photo' && ['google_veo', 'higgsfield', 'smart_template', 'smart_canvas'].includes(resolvedProvider)) {
+      errors.push(`Photo template cannot use video/smart provider '${resolvedProvider}'.`);
+      providerCompatible = false;
+    }
+    if (tpl.type === 'video' && resolvedProvider === 'gemini_image') {
+      errors.push(`Video template cannot use image-only provider '${resolvedProvider}'.`);
+      providerCompatible = false;
+    }
+  }
+  const engineAndProvider = hasValidEngine && Boolean(resolvedProvider) && providerCompatible;
+
+  // 4. Model & Registry Compatibility
+  const resolvedModel = (tpl.recipe?.model || tpl.model || '').toString().trim();
+  let modelValid = Boolean(resolvedModel);
+  if (!resolvedModel) {
+    missingFields.push('model');
+    errors.push('Execution model is required.');
+  } else {
+    const registryEntry = MODEL_REGISTRY[resolvedModel];
+    if (engine === 'SMART_TEMPLATE') {
+      if (registryEntry && registryEntry.provider !== 'smart_template') {
+        errors.push(`SMART_TEMPLATE engine cannot use AI model '${resolvedModel}'.`);
+        modelValid = false;
+      } else if (!KNOWN_SMART_MODELS.has(resolvedModel)) {
+        warnings.push(`SMART_TEMPLATE uses legacy canvas model '${resolvedModel}'.`);
+      }
+    } else if (registryEntry) {
+      if (tpl.type === 'photo' && !PHOTO_WORKFLOWS.has(registryEntry.workflow)) {
+        errors.push(`Model '${resolvedModel}' (${registryEntry.workflow}) is incompatible with photo templates.`);
+        modelValid = false;
+      }
+      if (tpl.type === 'video' && PHOTO_WORKFLOWS.has(registryEntry.workflow)) {
+        errors.push(`Model '${resolvedModel}' (${registryEntry.workflow}) is photo-only and incompatible with video templates.`);
+        modelValid = false;
+      }
+      if (tpl.workflow === 'MOTION_TRANSFER' && registryEntry.workflow !== 'MOTION_TRANSFER') {
+        errors.push(`Model '${resolvedModel}' (${registryEntry.workflow}) is incompatible with workflow 'MOTION_TRANSFER'.`);
+        modelValid = false;
+      }
+      if (tpl.workflow === 'OBJECT_SWAP' && registryEntry.workflow !== 'OBJECT_SWAP') {
+        errors.push(`Model '${resolvedModel}' (${registryEntry.workflow}) is incompatible with workflow 'OBJECT_SWAP'.`);
+        modelValid = false;
+      }
+      if (registryEntry.isEvaluationOnly) {
+        warnings.push(`Model '${resolvedModel}' is marked evaluation-only in MODEL_REGISTRY.`);
+      }
+      if (registryEntry.endpointVerificationStatus === 'PENDING_QUOTE') {
+        warnings.push(`Model '${resolvedModel}' pricing quote status is PENDING_QUOTE.`);
+      }
+    } else if (tpl.type === 'photo' && KNOWN_PHOTO_MODELS.has(resolvedModel)) {
+      if (resolvedProvider !== 'gemini') {
+        errors.push(`Gemini photo model '${resolvedModel}' is incompatible with provider '${resolvedProvider}'.`);
+        modelValid = false;
+      }
+    } else if (tpl.type === 'video' && KNOWN_VIDEO_MODELS.has(resolvedModel)) {
+      if (resolvedModel.startsWith('hf_') && resolvedProvider !== 'higgsfield') {
+        errors.push(`Higgsfield model '${resolvedModel}' is incompatible with provider '${resolvedProvider}'.`);
+        modelValid = false;
+      }
+    } else {
+      missingFields.push('model');
+      errors.push(`Model '${resolvedModel}' is unrecognized or incompatible with template type '${tpl.type}'.`);
+      modelValid = false;
+    }
+  }
+
+  // 5. Recipe Prompt & Workflow
+  const resolvedWorkflow = (tpl.recipe?.workflow || tpl.workflow || '').toString().trim();
+  const resolvedPrompt = (tpl.recipe?.prompt || '').toString().trim();
+  const fallbackDescriptionPrompt = (tpl.description || '').toString().trim();
+  let promptAndWorkflow = true;
+  if (!resolvedWorkflow) {
+    missingFields.push('workflow');
+    errors.push('Execution workflow identifier is required.');
+    promptAndWorkflow = false;
+  } else if (tpl.type === 'photo' && VIDEO_WORKFLOWS.has(resolvedWorkflow)) {
+    errors.push(`Photo template cannot use video workflow '${resolvedWorkflow}'.`);
+    promptAndWorkflow = false;
+  }
+
+  if (engine !== 'SMART_TEMPLATE') {
+    if (resolvedPrompt.length < 10) {
+      if (strictPublish || fallbackDescriptionPrompt.length < 10 || !hasCategory) {
+        missingFields.push('recipe.prompt');
+        errors.push('Recipe Prompt is required (minimum 10 characters) for AI generation templates.');
+        promptAndWorkflow = false;
+      } else {
+        warnings.push('No explicit recipe.prompt stored; runtime uses category prompt + template description.');
+      }
+    }
+  }
+
+  // 6. Required Inputs
+  const reqInputs = Array.isArray(tpl.requiredInputs)
+    ? tpl.requiredInputs
+    : Array.isArray(tpl.recipe?.requiredInputs)
+    ? tpl.recipe!.requiredInputs!
+    : [];
+  let requiredInputsValid = reqInputs.length > 0 && reqInputs.every(
+    (slot) =>
+      slot &&
+      typeof slot.id === 'string' &&
+      slot.id.trim().length > 0 &&
+      typeof slot.label === 'string' &&
+      slot.label.trim().length > 0 &&
+      (slot.type === 'image' || slot.type === 'video')
+  );
+  if (!requiredInputsValid) {
+    missingFields.push('requiredInputs');
+    errors.push('At least one valid required input slot (id, label, image/video type) is required.');
+  } else if (tpl.category === 'Couple' || (tpl as any).isCouple === true) {
+    const personASlots = reqInputs.filter(
+      (s) => s.id === 'partner_1' || s.id === 'slot_1' || (s as any).role === 'person_a'
+    );
+    const personBSlots = reqInputs.filter(
+      (s) => s.id === 'partner_2' || s.id === 'slot_2' || (s as any).role === 'person_b'
+    );
+    if (personASlots.length !== 1 || personBSlots.length !== 1) {
+      missingFields.push('requiredInputs(couple_slots)');
+      errors.push('Couple templates require exactly one Person A slot and one Person B slot.');
+      requiredInputsValid = false;
+    }
+  }
+
+  // 7. Cover / Preview Media
+  const hasCover = isNonEmptyMediaRef(tpl.cover) || isNonEmptyMediaRef(tpl.coverImage) || isNonEmptyMediaRef(tpl.coverVideo);
+  const hasPreview =
+    tpl.type === 'video'
+      ? isNonEmptyMediaRef(tpl.preview) || isNonEmptyMediaRef(tpl.coverVideo) || isNonEmptyMediaRef(tpl.sampleResult) || isNonEmptyMediaRef(tpl.cover)
+      : isNonEmptyMediaRef(tpl.preview) || isNonEmptyMediaRef(tpl.cover) || isNonEmptyMediaRef(tpl.sampleResult) || isNonEmptyMediaRef(tpl.sampleAfter);
+  const coverAndPreviewMedia = hasCover && hasPreview;
+  if (!hasCover) {
+    missingFields.push('cover');
+    errors.push('Cover media URL is required.');
+  }
+  if (!hasPreview) {
+    missingFields.push('preview');
+    errors.push('Preview media URL is required.');
+  }
+
+  // 8. Required Generation Assets
+  let requiredGenerationAssets = true;
+  if (tpl.type === 'photo' && engine !== 'SMART_TEMPLATE') {
+    const resolvedPhotoRef =
+      tpl.sampleResult ||
+      tpl.sampleAfter ||
+      tpl.referenceImageUrl ||
+      tpl.recipe?.sampleResult ||
+      tpl.recipe?.sampleAfter ||
+      tpl.recipe?.referenceImageUrl ||
+      tpl.recipe?.referenceAssets?.[0] ||
+      tpl.cover;
+    if (!isNonEmptyMediaRef(resolvedPhotoRef)) {
+      missingFields.push('sampleResult/referenceImageUrl');
+      errors.push('Photo template requires an AFTER sample result or reference image asset for generation.');
+      requiredGenerationAssets = false;
+    }
+  } else if (tpl.type === 'video') {
+    const needsDrivingVideo =
+      resolvedWorkflow === 'MOTION_TRANSFER' ||
+      resolvedWorkflow === 'OBJECT_SWAP' ||
+      Boolean(tpl.isFaceSwap) ||
+      resolvedProvider === 'higgsfield';
+    if (needsDrivingVideo) {
+      const hasDriving = isNonEmptyMediaRef(tpl.drivingVideoUrl) || isNonEmptyMediaRef(tpl.recipe?.drivingVideoUrl) || Boolean(tpl.faceSwapSceneId);
+      if (!hasDriving) {
+        missingFields.push('drivingVideoUrl');
+        errors.push(`Video workflow '${resolvedWorkflow}' requires a driving/reference video asset.`);
+        requiredGenerationAssets = false;
+      }
+    }
+  }
+
+  const ready =
+    idAndTitle &&
+    typeAndCategory &&
+    engineAndProvider &&
+    modelValid &&
+    promptAndWorkflow &&
+    requiredInputsValid &&
+    coverAndPreviewMedia &&
+    requiredGenerationAssets &&
+    errors.length === 0;
+
+  const status: TemplateReadinessResult['status'] = ready
+    ? 'READY'
+    : missingFields.length > 0
+    ? 'DRAFT_INCOMPLETE'
+    : 'INVALID_CONFIG';
+
+  return {
+    ready,
+    status,
+    missingFields: Array.from(new Set(missingFields)),
+    errors,
+    warnings,
+    checkedChecks: {
+      idAndTitle,
+      typeAndCategory,
+      engineAndProvider,
+      model: modelValid,
+      promptAndWorkflow,
+      requiredInputs: requiredInputsValid,
+      coverAndPreviewMedia,
+      requiredGenerationAssets
+    }
+  };
+}
+
+/**
+ * Validates preset FaceSwap Scene readiness before trimming/credit reservation.
+ */
+export function validateFaceSwapSceneReadiness(scene: Partial<FaceSwapScene> | null | undefined): {
+  ready: boolean;
+  missingFields: string[];
+  errors: string[];
+} {
+  const missingFields: string[] = [];
+  const errors: string[] = [];
+
+  if (!scene || typeof scene !== 'object') {
+    return {
+      ready: false,
+      missingFields: ['scene'],
+      errors: ['Face Swap scene record is missing.']
+    };
+  }
+  if (!scene.id || !scene.title) {
+    missingFields.push('id/title');
+    errors.push('Face Swap scene is missing ID or title.');
+  }
+  if (scene.isActive === false || scene.status === 'draft') {
+    errors.push('Selected Face Swap scene is currently in Draft/Inactive state.');
+  }
+  if (!isNonEmptyMediaRef(scene.sourceVideoPreview)) {
+    missingFields.push('sourceVideoPreview');
+    errors.push('Face Swap scene is missing its authoritative driving video asset.');
+  }
+  if (!scene.creditCost || Number(scene.creditCost) <= 0) {
+    missingFields.push('creditCost');
+    errors.push('Face Swap scene credit cost must be greater than zero.');
+  }
+
+  return {
+    ready: errors.length === 0,
+    missingFields,
+    errors
+  };
+}

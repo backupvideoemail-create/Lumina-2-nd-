@@ -28,6 +28,11 @@ import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { calculateAuthoritativeTemplateCost, calculateEstimatedProviderCostUsd, MODEL_REGISTRY } from '../services/pricing/pricingService';
 import { queueHdDownload, protectMediaUrl, unprotectMediaUrl, isCachedBlobUrl } from '../services/media/hdDownloadQueue';
+import {
+  getNetworkPlaybackProfile,
+  mediaPlaybackCoordinator,
+  reportMediaPlaybackIssue
+} from '../services/media/mediaPlaybackManager';
 
 export const TemplateDetailModal: React.FC = () => {
   const {
@@ -277,10 +282,40 @@ export const TemplateDetailModal: React.FC = () => {
 
   const effectiveAfterSrc = (activeVideoTab === 'after' && hdVideoSrc) ? hdVideoSrc : videoAfterSrc;
   const currentVideoSrc = activeVideoTab === 'before' && videoBeforeSrc ? videoBeforeSrc : effectiveAfterSrc;
+  const isCurrentSrcPlayableVideo = Boolean(
+    currentVideoSrc && (isVideoMedia(currentVideoSrc) || isCachedBlobUrl(currentVideoSrc))
+  );
+
+  const networkProfile = getNetworkPlaybackProfile();
+  const detailPoster =
+    (selectedTemplate?.coverImage && !isVideoMedia(selectedTemplate.coverImage) ? selectedTemplate.coverImage : '') ||
+    (selectedTemplate?.cover && !isVideoMedia(selectedTemplate.cover) ? selectedTemplate.cover : '') ||
+    (selectedTemplate?.sampleFaceThumbnail && !isVideoMedia(selectedTemplate.sampleFaceThumbnail) ? selectedTemplate.sampleFaceThumbnail : '') ||
+    undefined;
+
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    mediaPlaybackCoordinator.setModalLock('template_detail', true);
+    const unregister = mediaPlaybackCoordinator.register(
+      'modal:template_detail',
+      () => {
+        if (videoPlayerRef.current && !videoPlayerRef.current.paused) {
+          videoPlayerRef.current.pause();
+          setIsPlayingVideo(false);
+        }
+      },
+      { priority: 100, isModal: true }
+    );
+    return () => {
+      unregister();
+      mediaPlaybackCoordinator.setModalLock('template_detail', false);
+    };
+  }, [selectedTemplate?.id]);
 
   // Autoplay with sound detection & graceful recovery (Hook called unconditionally)
   useEffect(() => {
-    if (selectedTemplate && isVideo && videoPlayerRef.current) {
+    if (selectedTemplate && isVideo && isCurrentSrcPlayableVideo && videoPlayerRef.current) {
+      mediaPlaybackCoordinator.requestPlay('modal:template_detail');
       videoPlayerRef.current.muted = isVideoMuted;
       videoPlayerRef.current.play().catch(() => {
         if (videoPlayerRef.current && !isVideoMuted) {
@@ -289,8 +324,10 @@ export const TemplateDetailModal: React.FC = () => {
           setNeedsUserSoundInteraction(true);
         }
       });
+    } else if (selectedTemplate && isVideo && !isCurrentSrcPlayableVideo) {
+      setIsVideoLoading(false);
     }
-  }, [currentVideoSrc, isVideo, selectedTemplate]);
+  }, [currentVideoSrc, isVideo, isCurrentSrcPlayableVideo, selectedTemplate]);
 
   // Wardrobe source, resolution, and duration state (unconditional hooks)
   const [wardrobeSource, setWardrobeSource] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
@@ -833,24 +870,51 @@ export const TemplateDetailModal: React.FC = () => {
                     ID: {tpl.id}
                   </span>
                 </div>
-              ) : (
-                <video
-                  ref={videoPlayerRef}
-                  key={`tpl_video_${tpl.id}_${activeVideoTab}`}
+              ) : !isCurrentSrcPlayableVideo ? (
+                <img
+                  key={`tpl_still_${tpl.id}_${activeVideoTab}`}
                   src={currentVideoSrc}
-                  autoPlay
-                  loop
-                  muted={isVideoMuted}
-                  playsInline
-                  preload="auto"
+                  alt={tpl.title}
                   draggable={false}
-                  onLoadedData={() => {
+                  onLoad={() => {
                     setIsVideoLoading(false);
                     setVideoError(false);
                   }}
                   onError={() => {
                     setIsVideoLoading(false);
                     setVideoError(true);
+                  }}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="w-full h-full object-contain bg-black"
+                />
+              ) : (
+                <video
+                  ref={videoPlayerRef}
+                  key={`tpl_video_${tpl.id}_${activeVideoTab}`}
+                  src={currentVideoSrc}
+                  poster={detailPoster}
+                  autoPlay
+                  loop
+                  muted={isVideoMuted}
+                  playsInline
+                  preload={networkProfile.saveData ? 'metadata' : 'auto'}
+                  draggable={false}
+                  onLoadedData={() => {
+                    setIsVideoLoading(false);
+                    setVideoError(false);
+                  }}
+                  onPlay={() => mediaPlaybackCoordinator.requestPlay('modal:template_detail')}
+                  onPause={() => mediaPlaybackCoordinator.releasePlay('modal:template_detail')}
+                  onError={() => {
+                    setIsVideoLoading(false);
+                    setVideoError(true);
+                    reportMediaPlaybackIssue({
+                      vector: 'MEDIA_PLAYBACK_FAILURE',
+                      message: `Template detail modal video failed (${tpl.id})`,
+                      templateId: tpl.id,
+                      errorStage: 'template_detail_modal_video',
+                      endpoint: currentVideoSrc
+                    });
                   }}
                   onContextMenu={(e) => e.preventDefault()}
                   className="w-full h-full object-contain bg-black"

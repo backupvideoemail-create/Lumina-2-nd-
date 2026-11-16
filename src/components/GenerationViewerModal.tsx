@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Generation, Template } from '../types';
+import { isVideoMedia } from '../utils/mediaUtils';
+import { reportMediaPlaybackIssue } from '../services/media/mediaPlaybackManager';
 
 interface GenerationViewerContentProps {
   gen: Generation;
@@ -263,11 +265,38 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
                     : 'aspect-square max-h-[460px]'
                 }`}
               >
-                <img
-                  src={gen.resultMediaUrl || gen.inputMediaUrl}
-                  alt={gen.templateTitle}
-                  className="w-full h-full object-cover"
-                />
+                {(() => {
+                  const mediaUrl = gen.resultMediaUrl || gen.inputMediaUrl;
+                  const isVid = gen.templateType === 'video' || isVideoMedia(mediaUrl);
+                  if (isVid && mediaUrl) {
+                    return (
+                      <video
+                        src={mediaUrl}
+                        controls
+                        playsInline
+                        loop
+                        preload="metadata"
+                        onError={() => {
+                          reportMediaPlaybackIssue({
+                            vector: 'MEDIA_PLAYBACK_FAILURE',
+                            message: `Generated video viewer failed (${gen.templateId})`,
+                            templateId: gen.templateId,
+                            errorStage: 'generation_viewer_video',
+                            endpoint: mediaUrl
+                          });
+                        }}
+                        className="w-full h-full object-contain bg-black"
+                      />
+                    );
+                  }
+                  return (
+                    <img
+                      src={mediaUrl}
+                      alt={gen.templateTitle}
+                      className="w-full h-full object-cover"
+                    />
+                  );
+                })()}
 
                 {/* AI Generated Official Badge */}
                 <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md border border-white/15 text-[11px] font-medium text-stone-200">

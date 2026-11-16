@@ -395,18 +395,27 @@ export const FaceSwapModal: React.FC = () => {
                     }`}
                   >
                     {isVideo ? (
-                      <video
-                        src={candidateMedia}
-                        autoPlay
-                        loop
-                        muted
-                        playsInline
-                        className="w-full h-full object-cover pointer-events-none"
-                      />
+                      scene.sampleFace && !isVideoMedia(scene.sampleFace) ? (
+                        <img
+                          src={scene.sampleFace}
+                          alt={scene.title}
+                          loading="lazy"
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                      ) : (
+                        <video
+                          src={candidateMedia}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                      )
                     ) : (
                       <img
                         src={candidateMedia}
                         alt={scene.title}
+                        loading="lazy"
                         className="w-full h-full object-cover pointer-events-none"
                       />
                     )}

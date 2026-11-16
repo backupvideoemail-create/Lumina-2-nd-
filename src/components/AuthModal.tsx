@@ -13,7 +13,7 @@ import {
   Check
 } from 'lucide-react';
 import { Logo } from './Logo';
-import { useApp } from '../context/AppContext';
+import { useApp, safeParseJsonResponse } from '../context/AppContext';
 import {
   auth,
   googleProvider,
@@ -22,6 +22,64 @@ import {
   RecaptchaVerifier,
   ConfirmationResult
 } from '../services/firebase/firebaseClient';
+
+function reportAuthFailure(
+  vector: 'AUTH_LOGIN_FAILURE' | 'SESSION_PERSISTENCE_FAILURE',
+  message: string,
+  errorStage: string
+) {
+  try {
+    fetch('/api/errors/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        vector,
+        severity: vector === 'SESSION_PERSISTENCE_FAILURE' ? 'CRITICAL' : 'ERROR',
+        message: message.slice(0, 220),
+        errorStage,
+        endpoint: '/api/auth/firebase-session'
+      })
+    }).catch(() => {});
+  } catch {}
+}
+
+async function exchangeFirebaseSessionWithRetry(
+  payload: Record<string, any>,
+  maxRetries: number = 2
+): Promise<{
+  ok: boolean;
+  status: number;
+  data: any;
+  error?: string;
+}> {
+  let attempt = 0;
+  while (attempt <= maxRetries) {
+    const res = await fetch('/api/auth/firebase-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const parsed = await safeParseJsonResponse<any>(res);
+    if (res.ok && parsed.data?.success) {
+      return { ok: true, status: res.status, data: parsed.data };
+    }
+    const isRetryable503 =
+      res.status === 503 &&
+      Boolean(parsed.data?.retryable || parsed.data?.code === 'SESSION_PERSISTENCE_FAILED');
+    if (isRetryable503 && attempt < maxRetries) {
+      attempt += 1;
+      await new Promise((r) => setTimeout(r, 750 * attempt));
+      continue;
+    }
+    return {
+      ok: false,
+      status: res.status,
+      data: parsed.data,
+      error: parsed.data?.error || parsed.error || 'Authentication session mapping failed.'
+    };
+  }
+  return { ok: false, status: 503, data: null, error: 'Session synchronization timed out.' };
+}
 
 export const AuthModal: React.FC = () => {
   const { authModalOpen, setAuthModalOpen, onAuthSuccess, pendingAction } = useApp();
@@ -39,6 +97,15 @@ export const AuthModal: React.FC = () => {
 
   const recaptchaVerifierRef = useRef<RecaptchaVerifier | null>(null);
 
+  const resetRecaptcha = () => {
+    try {
+      if (recaptchaVerifierRef.current) {
+        recaptchaVerifierRef.current.clear();
+      }
+    } catch {}
+    recaptchaVerifierRef.current = null;
+  };
+
   useEffect(() => {
     if (!authModalOpen) {
       setStep('phone_input');
@@ -48,6 +115,7 @@ export const AuthModal: React.FC = () => {
       setUnauthorizedDomain(null);
       setCopiedDomain(false);
       setConfirmationResult(null);
+      resetRecaptcha();
     }
   }, [authModalOpen]);
 
@@ -62,29 +130,30 @@ export const AuthModal: React.FC = () => {
       const result = await signInWithPopup(auth, googleProvider);
       const idToken = await result.user.getIdToken();
 
-      // Establish server session
-      const res = await fetch('/api/auth/firebase-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken,
-          firebaseUid: result.user.uid,
-          email: result.user.email,
-          name: result.user.displayName,
-          avatar: result.user.photoURL
-        })
+      // Establish server session with automatic retry on transient 503 sync delays
+      const sessionRes = await exchangeFirebaseSessionWithRetry({
+        idToken,
+        firebaseUid: result.user.uid,
+        email: result.user.email,
+        name: result.user.displayName,
+        avatar: result.user.photoURL
       });
 
-      const data = await res.json();
       setLoading(false);
 
-      if (res.ok && data.success) {
+      if (sessionRes.ok && sessionRes.data?.success) {
         setStep('authenticated');
         setTimeout(() => {
-          onAuthSuccess(data.user, data.token);
+          onAuthSuccess(sessionRes.data.user, sessionRes.data.token);
         }, 1200);
       } else {
-        setErrorMessage(data.error || 'Google authentication mapping failed.');
+        const errMsg = sessionRes.error || 'Google authentication mapping failed.';
+        setErrorMessage(errMsg);
+        reportAuthFailure(
+          sessionRes.status >= 500 ? 'SESSION_PERSISTENCE_FAILURE' : 'AUTH_LOGIN_FAILURE',
+          errMsg,
+          'google_signin_session_exchange'
+        );
       }
     } catch (err: any) {
       setLoading(false);
@@ -95,9 +164,12 @@ export const AuthModal: React.FC = () => {
         console.warn('[Google Auth Note]: Domain not yet authorized in Firebase Console:', domain);
         setUnauthorizedDomain(domain);
         setErrorMessage(`Hosting domain (${domain}) is not authorized in Firebase Authentication.`);
+        reportAuthFailure('AUTH_LOGIN_FAILURE', `Unauthorized domain for Google Sign-In (${domain})`, 'google_unauthorized_domain');
       } else {
         console.error('[Google Auth Error]:', err);
-        setErrorMessage(err.message || 'Google Sign-In failed.');
+        const msg = err.message || 'Google Sign-In failed.';
+        setErrorMessage(msg);
+        reportAuthFailure('AUTH_LOGIN_FAILURE', `Google Sign-In error (${err?.code || 'unknown'}): ${msg}`, 'google_signin_popup');
       }
     }
   };
@@ -121,12 +193,11 @@ export const AuthModal: React.FC = () => {
     setLoading(true);
 
     try {
-      // Initialize Firebase RecaptchaVerifier
-      if (!recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-anchor', {
-          size: 'invisible'
-        });
-      }
+      // Always re-create clean RecaptchaVerifier to prevent 'reCAPTCHA already rendered' on retries
+      resetRecaptcha();
+      recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-anchor', {
+        size: 'invisible'
+      });
 
       const confirmation = await signInWithPhoneNumber(auth, cleanPhone, recaptchaVerifierRef.current);
       setConfirmationResult(confirmation);
@@ -134,18 +205,23 @@ export const AuthModal: React.FC = () => {
       setLoading(false);
     } catch (err: any) {
       setLoading(false);
+      resetRecaptcha();
       if (err.code === 'auth/invalid-phone-number') {
         setErrorMessage('The mobile number format is invalid. Please include country code (+91).');
       } else if (err.code === 'auth/too-many-requests') {
         setErrorMessage('Too many SMS requests sent. Please wait a few minutes.');
+        reportAuthFailure('AUTH_LOGIN_FAILURE', 'Phone OTP rate limit exceeded (auth/too-many-requests)', 'phone_otp_send');
       } else if (err.code === 'auth/unauthorized-domain') {
         const domain = window.location.hostname;
         console.warn('[Firebase Phone Send Note]: Domain not yet authorized in Firebase Console:', domain);
         setUnauthorizedDomain(domain);
         setErrorMessage(`Hosting domain (${domain}) is not authorized in Firebase Authentication.`);
+        reportAuthFailure('AUTH_LOGIN_FAILURE', `Unauthorized domain for Phone OTP (${domain})`, 'phone_unauthorized_domain');
       } else {
         console.error('[Firebase Phone Send Error]:', err);
-        setErrorMessage(err.message || 'Failed to dispatch SMS verification code.');
+        const msg = err.message || 'Failed to dispatch SMS verification code.';
+        setErrorMessage(msg);
+        reportAuthFailure('AUTH_LOGIN_FAILURE', `Phone OTP dispatch error (${err?.code || 'unknown'}): ${msg}`, 'phone_otp_send');
       }
     }
   };
@@ -158,6 +234,7 @@ export const AuthModal: React.FC = () => {
     if (!confirmationResult) {
       setErrorMessage('Session expired. Please request a new verification code.');
       setStep('phone_input');
+      resetRecaptcha();
       return;
     }
 
@@ -172,27 +249,28 @@ export const AuthModal: React.FC = () => {
       const result = await confirmationResult.confirm(otpCode.trim());
       const idToken = await result.user.getIdToken();
 
-      const res = await fetch('/api/auth/firebase-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken,
-          firebaseUid: result.user.uid,
-          phone: result.user.phoneNumber,
-          name: `Creator ${result.user.phoneNumber?.slice(-4) || ''}`
-        })
+      const sessionRes = await exchangeFirebaseSessionWithRetry({
+        idToken,
+        firebaseUid: result.user.uid,
+        phone: result.user.phoneNumber,
+        name: `Creator ${result.user.phoneNumber?.slice(-4) || ''}`
       });
 
-      const data = await res.json();
       setLoading(false);
 
-      if (res.ok && data.success) {
+      if (sessionRes.ok && sessionRes.data?.success) {
         setStep('authenticated');
         setTimeout(() => {
-          onAuthSuccess(data.user, data.token);
+          onAuthSuccess(sessionRes.data.user, sessionRes.data.token);
         }, 1200);
       } else {
-        setErrorMessage(data.error || 'Phone authentication mapping failed.');
+        const errMsg = sessionRes.error || 'Phone authentication mapping failed.';
+        setErrorMessage(errMsg);
+        reportAuthFailure(
+          sessionRes.status >= 500 ? 'SESSION_PERSISTENCE_FAILURE' : 'AUTH_LOGIN_FAILURE',
+          errMsg,
+          'phone_otp_session_exchange'
+        );
       }
     } catch (err: any) {
       setLoading(false);
@@ -202,8 +280,11 @@ export const AuthModal: React.FC = () => {
       } else if (err.code === 'auth/code-expired') {
         setErrorMessage('The SMS code has expired. Please request a new code.');
         setStep('phone_input');
+        resetRecaptcha();
       } else {
-        setErrorMessage(err.message || 'Verification failed. Please retry.');
+        const msg = err.message || 'Verification failed. Please retry.';
+        setErrorMessage(msg);
+        reportAuthFailure('AUTH_LOGIN_FAILURE', `Phone OTP verify error (${err?.code || 'unknown'}): ${msg}`, 'phone_otp_verify');
       }
     }
   };
@@ -447,6 +528,8 @@ export const AuthModal: React.FC = () => {
                         onClick={() => {
                           setStep('phone_input');
                           setOtpCode('');
+                          setConfirmationResult(null);
+                          resetRecaptcha();
                         }}
                         className="text-[11px] text-[#ff9f00] hover:underline cursor-pointer"
                       >

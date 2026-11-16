@@ -6,6 +6,11 @@ import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { queueHdDownload } from '../services/media/hdDownloadQueue';
 import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
+import {
+  getNetworkPlaybackProfile,
+  mediaPlaybackCoordinator,
+  reportMediaPlaybackIssue
+} from '../services/media/mediaPlaybackManager';
 
 interface TemplateCardProps {
   template: Template;
@@ -42,6 +47,20 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const hdTargetMedia = ((template as any).hdDisplayUrl || (template as any).hdVideoUrl || (template as any).hdMedia || (matchingScene as any)?.hdVideoUrl) || null;
 
   const candidateMedia = previewMedia;
+  const rawVideoCandidate = matchingScene
+    ? ([
+        matchingScene.resultVideoPreview,
+        matchingScene.sourceVideoPreview,
+        matchingScene.demoVideoUrl,
+        template.coverVideo,
+        template.preview,
+        template.cover
+      ].find((u) => isVideoMedia(u)) || '')
+    : ([
+        template.preview,
+        template.coverVideo,
+        template.cover
+      ].find((u) => isVideoMedia(u)) || '');
 
   const sampleFace = matchingScene?.sampleFace || template.sampleFaceThumbnail;
 
@@ -49,7 +68,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     template.type === 'video' ||
     template.mediaType === 'video' ||
     template.isFaceSwap ||
-    isVideoMedia(candidateMedia)
+    isVideoMedia(candidateMedia) ||
+    Boolean(rawVideoCandidate)
   );
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
@@ -76,11 +96,16 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   const resolvedPoster = posterCandidates[posterIndex] || '';
   const [cachedPosterSrc, setCachedPosterSrc] = React.useState<string>('');
   const [cachedPreviewVideoSrc, setCachedPreviewVideoSrc] = React.useState<string>('');
+  const resolvedVideoSrc = hdVideoSrc || cachedPreviewVideoSrc || rawVideoCandidate;
+  const hasPlayableVideo = Boolean(
+    resolvedVideoSrc && (Boolean(hdVideoSrc) || Boolean(cachedPreviewVideoSrc) || isVideoMedia(resolvedVideoSrc))
+  );
 
   // Resolve already-cached poster/preview from IndexedDB (0 network calls on mount)
   useEffect(() => {
     let cancelled = false;
     setCachedPosterSrc('');
+    setCachedPreviewVideoSrc('');
 
     if (resolvedPoster) {
       mediaCacheStorage
@@ -95,9 +120,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
         .catch(() => {});
     }
 
-    if (isVideo && candidateMedia) {
+    if (rawVideoCandidate) {
       mediaCacheStorage
-        .get(candidateMedia)
+        .get(rawVideoCandidate)
         .then((cached) => {
           if (!cancelled && cached?.objectUrl) {
             setCachedPreviewVideoSrc(cached.objectUrl);
@@ -109,14 +134,28 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     return () => {
       cancelled = true;
     };
-  }, [resolvedPoster, isVideo, candidateMedia]);
+  }, [resolvedPoster, rawVideoCandidate]);
 
   // 200ms Viewport Debounce & Single Active Gallery Preview Coordinator
   const debounceTimerRef = useRef<any>(null);
 
+  const networkProfile = getNetworkPlaybackProfile();
+
   useEffect(() => {
     const cardEl = cardRef.current;
-    if (!cardEl || !isVideo) return;
+    if (!cardEl || !hasPlayableVideo) return;
+
+    const coordinatorId = `template_card_${template.id}`;
+    const unregisterCoord = mediaPlaybackCoordinator.register(
+      coordinatorId,
+      () => {
+        const videoEl = videoRef.current;
+        if (videoEl && !videoEl.paused) {
+          videoEl.pause();
+        }
+      },
+      { priority: 2 }
+    );
 
     const handleOtherPreviewPlaying = (e: Event) => {
       const customEvent = e as CustomEvent<{ cardId: string }>;
@@ -139,7 +178,12 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             debounceTimerRef.current = setTimeout(() => {
               setIsNearViewport(true);
               const videoEl = videoRef.current;
-              if (videoEl && entry.intersectionRatio >= 0.35) {
+              if (
+                videoEl &&
+                entry.intersectionRatio >= 0.35 &&
+                networkProfile.allowAutoPlay &&
+                mediaPlaybackCoordinator.requestPlay(coordinatorId)
+              ) {
                 // Coordinate single active preview
                 window.dispatchEvent(
                   new CustomEvent('lumina:gallery-preview-play', { detail: { cardId: template.id } })
@@ -155,6 +199,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             }
             const videoEl = videoRef.current;
             if (videoEl) videoEl.pause();
+            mediaPlaybackCoordinator.releasePlay(coordinatorId);
           }
         });
       },
@@ -168,8 +213,9 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       }
       observer.disconnect();
       window.removeEventListener('lumina:gallery-preview-play', handleOtherPreviewPlaying);
+      unregisterCoord();
     };
-  }, [isVideo, template.id]);
+  }, [hasPlayableVideo, template.id, networkProfile.allowAutoPlay]);
 
   // Captures prevTime and wasPaused before in-place video operations (Suite 26.10 compliance)
   const prevTime = videoRef.current?.currentTime || 0;
@@ -183,14 +229,17 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
 
   const handleCardClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    // TemplateDetailModal is the sole authoritative owner of HD downloads upon detail modal opening.
-    // TemplateCard only manages template selection, eliminating duplicate triggers.
+    // TemplateDetailModal is the sole authoritative owner of HD downloads upon photo/video template opening.
+    // FaceSwap cards launch the dedicated FaceSwapModal workflow directly with the matching scene.
     if (template.isFaceSwap) {
       const scene =
-        faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || 'fsv_trending_dance_stage')) ||
+        faceSwapScenes.find((s) => s.id === (template.faceSwapSceneId || template.id)) ||
+        faceSwapScenes.find((s) => s.id === 'fsv_trending_dance_stage') ||
         faceSwapScenes[0];
       if (scene) {
         setSelectedFaceSwapScene(scene);
+        setFaceSwapModalOpen(true);
+        return;
       }
     }
     setSelectedTemplate(template);
@@ -217,8 +266,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           </div>
         )}
 
-        {/* Media Loading Error Fallback - Only if all poster candidates failed AND (video failed or non-video) */}
-        {allPostersFailed && (hasVideoError || !isVideo) && (
+        {/* Media Loading Error Fallback - Only if all poster candidates failed AND (video failed or no playable video) */}
+        {allPostersFailed && (hasVideoError || !hasPlayableVideo) && (
           <div className="absolute inset-0 z-[5] bg-stone-950 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
             <Sparkles className="w-7 h-7 text-stone-600 mb-1.5" />
             <span className="text-[11px] text-stone-400 font-medium">Preview unavailable</span>
@@ -267,11 +316,11 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           />
         )}
 
-        {/* Viewport-Aware Video Layer: Attached only when near viewport with preload="none" */}
-        {isVideo && isNearViewport && (
+        {/* Viewport-Aware Video Layer: Attached ONLY when genuine playable video exists and card is near viewport */}
+        {hasPlayableVideo && isNearViewport && (
           <video
             ref={videoRef}
-            src={hdVideoSrc || cachedPreviewVideoSrc || candidateMedia}
+            src={resolvedVideoSrc}
             poster={cachedPosterSrc || resolvedPoster}
             loop
             muted
@@ -281,6 +330,13 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             onLoadedData={() => setIsMediaLoaded(true)}
             onError={() => {
               setHasVideoError(true);
+              reportMediaPlaybackIssue({
+                vector: 'MEDIA_PLAYBACK_FAILURE',
+                message: `Template card preview failed (${template.id})`,
+                templateId: template.id,
+                errorStage: 'template_card_preview',
+                endpoint: resolvedVideoSrc
+              });
             }}
             onContextMenu={(e) => e.preventDefault()}
             className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
@@ -305,7 +361,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             {template.isFaceSwap ? (
               <>
                 <UserCheck className="w-3 h-3 text-amber-400" />
-                <span className="text-amber-200 font-bold">Face Swap</span>
+                <span className="text-amber-200 font-bold">Face Swap · Video</span>
               </>
             ) : isVideo ? (
               <>

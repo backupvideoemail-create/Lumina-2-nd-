@@ -403,8 +403,8 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                       : 'bg-amber-950/20 border-amber-500/30'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span
                         className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${
                           alert.severity === 'CRITICAL'
@@ -414,7 +414,12 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                       >
                         {alert.severity || 'HIGH'}
                       </span>
-                      <span className="font-bold text-white text-xs">{alert.title || alert.service || 'System Alert'}</span>
+                      {alert.source && (
+                        <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                          {alert.source}
+                        </span>
+                      )}
+                      <span className="font-bold text-white text-xs">{alert.title || alert.vector || alert.service || 'System Alert'}</span>
                       {alert.endpoint && (
                         <span className="text-[10px] font-mono text-stone-400 bg-black/40 px-1.5 py-0.5 rounded">
                           {alert.endpoint}
@@ -429,6 +434,12 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                   <p className="text-xs text-stone-300 font-mono break-words bg-black/30 p-2 rounded-xl border border-white/5">
                     {alert.message || alert.details || JSON.stringify(alert)}
                   </p>
+
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-stone-400">
+                    <span>Template ID: <strong className="text-stone-200">{alert.templateId || 'N/A'}</strong></span>
+                    <span>Stage: <strong className="text-stone-200">{alert.errorStage || 'runtime'}</strong></span>
+                    <span>Correlation ID: <strong className="text-stone-200">{alert.correlationId || alert.safeTraceId || alert.id || 'N/A'}</strong></span>
+                  </div>
 
                   <div className="flex items-center justify-between text-[11px] pt-1">
                     <span className="font-mono text-stone-400 text-[10px]">

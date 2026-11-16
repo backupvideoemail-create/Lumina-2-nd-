@@ -8,18 +8,15 @@ import { AspectRatio, Template } from '../types';
 import { queueHdDownload, isDataSaverActive } from '../services/media/hdDownloadQueue';
 import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
 import { isVideoMedia } from '../utils/mediaUtils';
+import {
+  buildDiscoverableCatalog,
+  isVideoTemplateItem,
+  matchesTemplateSearchQuery
+} from '../utils/templateCatalogFilter';
 
 const PREFERRED_RATIO_ORDER: AspectRatio[] = ['9:16', '4:5', '1:1', '16:9'];
 
-const isVideoTemplate = (tpl: Template): boolean =>
-  Boolean(
-    tpl.type === 'video' ||
-    tpl.mediaType === 'video' ||
-    tpl.isFaceSwap ||
-    tpl.coverVideo ||
-    isVideoMedia(tpl.cover) ||
-    isVideoMedia(tpl.preview)
-  );
+const isVideoTemplate = isVideoTemplateItem;
 
 export const TemplatesView: React.FC = () => {
   const {
@@ -44,12 +41,20 @@ export const TemplatesView: React.FC = () => {
   } = useApp();
 
   const [aspectFilter, setAspectFilter] = useState<'all' | AspectRatio>('all');
+  const [videoSubFilter, setVideoSubFilter] = useState<'all_videos' | 'faceswap'>('all_videos');
   const [sortBy, setSortBy] = useState<'trending' | 'cost_asc' | 'cost_desc'>('trending');
 
-  // 1. Active templates & actual format availability counts
+  // Reset FaceSwap video subcategory filter whenever leaving Video filter
+  React.useEffect(() => {
+    if (filterType !== 'video' && videoSubFilter !== 'all_videos') {
+      setVideoSubFilter('all_videos');
+    }
+  }, [filterType, videoSubFilter]);
+
+  // 1. Combined discoverable templates (Templates + projected active FaceSwap scenes, zero duplicates)
   const activeTemplates = React.useMemo(
-    () => templates.filter((t) => t.isActive !== false),
-    [templates]
+    () => buildDiscoverableCatalog(templates, faceSwapScenes),
+    [templates, faceSwapScenes]
   );
 
   const photoCount = React.useMemo(
@@ -58,6 +63,10 @@ export const TemplatesView: React.FC = () => {
   );
   const videoCount = React.useMemo(
     () => activeTemplates.filter((t) => isVideoTemplate(t)).length,
+    [activeTemplates]
+  );
+  const faceSwapCount = React.useMemo(
+    () => activeTemplates.filter((t) => isVideoTemplate(t) && Boolean(t.isFaceSwap)).length,
     [activeTemplates]
   );
   const hasMultipleFormats = photoCount > 0 && videoCount > 0;
@@ -74,11 +83,15 @@ export const TemplatesView: React.FC = () => {
 
   const templatesByType = React.useMemo(() => {
     return activeTemplates.filter((tpl) => {
-      if (filterType === 'video') return isVideoTemplate(tpl);
+      if (filterType === 'video') {
+        if (!isVideoTemplate(tpl)) return false;
+        if (videoSubFilter === 'faceswap') return Boolean(tpl.isFaceSwap);
+        return true;
+      }
       if (filterType === 'photo') return !isVideoTemplate(tpl);
       return true;
     });
-  }, [activeTemplates, filterType]);
+  }, [activeTemplates, filterType, videoSubFilter]);
 
   // 2. Discover only usable Categories that actually exist for the chosen type
   const activeCategories = React.useMemo(() => {
@@ -121,22 +134,14 @@ export const TemplatesView: React.FC = () => {
     return selectedCategories.filter((cat) => activeCategories.includes(cat));
   }, [selectedCategories, activeCategories]);
 
-  // 3. Apply category & search before aspect ratio so availableRatios only shows usable ratios
+  // 3. Apply category & search (title, partial title, ID, category, description, tags) before aspect ratio
   const templatesBeforeAspect = React.useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
     return templatesByType.filter((tpl) => {
       const tplCategory = tpl.category || 'Trending';
       if (effectiveSelectedCategories.length > 0 && !effectiveSelectedCategories.includes(tplCategory)) {
         return false;
       }
-      if (q) {
-        const matchTitle = (tpl.title || '').toLowerCase().includes(q);
-        const matchCat = tplCategory.toLowerCase().includes(q);
-        const matchDesc = (tpl.description || '').toLowerCase().includes(q);
-        const matchTag = Array.isArray(tpl.tags) && tpl.tags.some((t) => t.toLowerCase().includes(q));
-        if (!matchTitle && !matchCat && !matchDesc && !matchTag) return false;
-      }
-      return true;
+      return matchesTemplateSearchQuery(tpl, searchQuery);
     });
   }, [templatesByType, effectiveSelectedCategories, searchQuery]);
 
@@ -198,6 +203,7 @@ export const TemplatesView: React.FC = () => {
 
   const hasActiveFilters = Boolean(
     filterType !== 'all' ||
+    videoSubFilter !== 'all_videos' ||
     effectiveSelectedCategories.length > 0 ||
     aspectFilter !== 'all' ||
     searchQuery.trim() !== ''
@@ -208,6 +214,7 @@ export const TemplatesView: React.FC = () => {
     setSelectedCategory('All');
     setSelectedCategories([]);
     setFilterType('all');
+    setVideoSubFilter('all_videos');
     setAspectFilter('all');
     setSortBy('trending');
   };
@@ -328,7 +335,7 @@ export const TemplatesView: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by aesthetic, tag, or title..."
+              placeholder="Search by title, template ID, category, or tag..."
               className="w-full bg-transparent px-2.5 py-1.5 text-xs text-white placeholder-stone-500 focus:outline-none"
             />
             {searchQuery && (
@@ -341,6 +348,38 @@ export const TemplatesView: React.FC = () => {
             )}
           </div>
         </div>
+
+        {/* Video Subcategory Pills (FaceSwap shown inside Video filter) */}
+        {filterType === 'video' && faceSwapCount > 0 && (
+          <div className="max-w-4xl mx-auto flex items-center gap-2 pt-2.5">
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-stone-400">
+              Video Mode:
+            </span>
+            <button
+              type="button"
+              onClick={() => setVideoSubFilter('all_videos')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                videoSubFilter === 'all_videos'
+                  ? 'bg-amber-400/20 text-amber-200 border border-amber-400/50'
+                  : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+              }`}
+            >
+              All Videos ({videoCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setVideoSubFilter('faceswap')}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                videoSubFilter === 'faceswap'
+                  ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 font-bold shadow'
+                  : 'bg-white/5 text-amber-200 hover:bg-white/10 border border-amber-500/25'
+              }`}
+            >
+              <Sparkles className="w-3 h-3" />
+              <span>FaceSwap ({faceSwapCount})</span>
+            </button>
+          </div>
+        )}
 
         {/* Horizontally scrollable Category Chips (Only shown when 2+ usable categories exist) */}
         {activeCategories.length > 1 && (

@@ -37,6 +37,12 @@ import { Template } from '../types';
 import { queueHdDownload, protectMediaUrl, unprotectMediaUrl } from '../services/media/hdDownloadQueue';
 import { mediaCacheStorage } from '../services/media/mediaCacheStorage';
 import { isVideoMedia } from '../utils/mediaUtils';
+import {
+  getNetworkPlaybackProfile,
+  mediaPlaybackCoordinator,
+  reportMediaPlaybackIssue,
+  selectMediaRendition
+} from '../services/media/mediaPlaybackManager';
 
 const HERO_POSTERS_CACHE_KEY = 'lumina_hero_posters_v1';
 
@@ -167,17 +173,56 @@ export const HomeView: React.FC = () => {
   // Gesture Deduplication and Lock
   const lastGestureTimestampRef = useRef<number>(0);
 
-  // Pause carousel when browser tab loses visibility
+  // Pause carousel & hero video when browser tab loses visibility or overlays open
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden) {
         setIsPaused(true);
+        if (heroVideoRef.current && !heroVideoRef.current.paused) {
+          heroVideoRef.current.pause();
+        }
+        if (fullVideoRef.current && !fullVideoRef.current.paused) {
+          fullVideoRef.current.pause();
+        }
       } else if (!fullVideoBanner) {
         setIsPaused(false);
+        const profile = getNetworkPlaybackProfile();
+        if (profile.allowAutoPlay && heroVideoRef.current && mediaPlaybackCoordinator.requestPlay('home_hero_banner')) {
+          heroVideoRef.current.play().catch(() => {});
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fullVideoBanner]);
+
+  useEffect(() => {
+    const unregisterHero = mediaPlaybackCoordinator.register(
+      'home_hero_banner',
+      () => {
+        if (heroVideoRef.current && !heroVideoRef.current.paused) {
+          heroVideoRef.current.pause();
+        }
+      },
+      { priority: 10, screen: 'home' }
+    );
+    return unregisterHero;
+  }, []);
+
+  useEffect(() => {
+    mediaPlaybackCoordinator.setModalLock('hero_fullscreen', Boolean(fullVideoBanner));
+    if (!fullVideoBanner) return;
+    const unregisterFull = mediaPlaybackCoordinator.register(
+      'modal:hero_fullscreen',
+      () => {
+        if (fullVideoRef.current && !fullVideoRef.current.paused) {
+          fullVideoRef.current.pause();
+          setIsPlayingFullVideo(false);
+        }
+      },
+      { priority: 100, isModal: true }
+    );
+    return unregisterFull;
   }, [fullVideoBanner]);
 
   // Touch Swipe Handlers (40px threshold, circular boundary wrapping, control element guard)
@@ -642,8 +687,15 @@ export const HomeView: React.FC = () => {
                   transformOrigin: 'center center'
                 } : {};
 
+                const networkProfile = getNetworkPlaybackProfile();
                 const instantPoster = heroPosters[activeBanner.id] || rawPoster || '';
-                const heroVideoSrc = bannerHdUrls[activeBanner.id] || primaryMediaUrl;
+                const rendition = selectMediaRendition({
+                  previewUrl: primaryMediaUrl,
+                  hdUrl: bannerHdUrls[activeBanner.id] || null,
+                  network: networkProfile,
+                  preferHd: Boolean(bannerHdUrls[activeBanner.id])
+                });
+                const heroVideoSrc = rendition.selectedUrl || primaryMediaUrl;
                 const heroImageSrc = bannerHdUrls[activeBanner.id] || effectiveImage;
                 const isReady = Boolean(readyHeroIds[activeBanner.id]);
 
@@ -668,7 +720,7 @@ export const HomeView: React.FC = () => {
                       key={`hero_fg_${activeBanner.id}`}
                       src={heroVideoSrc}
                       poster={instantPoster || undefined}
-                      autoPlay
+                      autoPlay={networkProfile.allowAutoPlay}
                       muted
                       loop
                       playsInline
@@ -677,6 +729,20 @@ export const HomeView: React.FC = () => {
                       onLoadedData={(e) => {
                         setReadyHeroIds((prev) => ({ ...prev, [activeBanner.id]: true }));
                         captureHeroFramePoster(activeBanner.id, e.currentTarget);
+                        if (networkProfile.allowAutoPlay && mediaPlaybackCoordinator.requestPlay('home_hero_banner')) {
+                          e.currentTarget.play().catch(() => {});
+                        }
+                      }}
+                      onPlay={() => mediaPlaybackCoordinator.requestPlay('home_hero_banner')}
+                      onPause={() => mediaPlaybackCoordinator.releasePlay('home_hero_banner')}
+                      onError={() => {
+                        reportMediaPlaybackIssue({
+                          vector: 'MEDIA_PLAYBACK_FAILURE',
+                          message: `Hero banner video failed to load (${activeBanner.id})`,
+                          templateId: activeBanner.targetTemplateId || activeBanner.id,
+                          errorStage: 'hero_banner_video',
+                          endpoint: heroVideoSrc
+                        });
                       }}
                       style={cropStyle}
                       className="relative z-10 w-full h-full object-cover object-center"
@@ -1022,7 +1088,19 @@ export const HomeView: React.FC = () => {
                     autoPlay
                     playsInline
                     loop
+                    preload="metadata"
                     muted={isFullVideoMuted}
+                    onPlay={() => mediaPlaybackCoordinator.requestPlay('modal:hero_fullscreen')}
+                    onPause={() => mediaPlaybackCoordinator.releasePlay('modal:hero_fullscreen')}
+                    onError={() => {
+                      reportMediaPlaybackIssue({
+                        vector: 'MEDIA_PLAYBACK_FAILURE',
+                        message: `Fullscreen hero banner playback failed (${fullVideoBanner.id})`,
+                        templateId: fullVideoBanner.targetTemplateId || fullVideoBanner.id,
+                        errorStage: 'hero_fullscreen_video',
+                        endpoint: bannerHdUrls[fullVideoBanner.id] || fullVideoBanner.videoUrl || fullVideoBanner.image
+                      });
+                    }}
                     onTimeUpdate={() => {
                       if (fullVideoRef.current) {
                         setVideoCurrentTime(fullVideoRef.current.currentTime);

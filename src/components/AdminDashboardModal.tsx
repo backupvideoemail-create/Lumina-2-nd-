@@ -18,7 +18,9 @@ import {
   Clock,
   Grid,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Users,
+  Bell
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -220,9 +222,66 @@ interface MonitoringAlertItem {
   resolved?: boolean;
   timestamp: string;
   safeTraceId?: string;
+  source?: string;
+  templateId?: string;
+  errorStage?: string;
+  correlationId?: string;
+  endpoint?: string;
+  resolvedBy?: string;
 }
 
-type DashboardTab = 'gallery' | 'diagnostics' | 'health_check' | 'system_health' | 'logs';
+interface UserActivityData {
+  timezone: 'Asia/Kolkata';
+  todayDateKey: string;
+  todayMetrics: {
+    visitorSessions: number;
+    guestSessions: number;
+    newSignups: number;
+    activeUsers: number;
+    generationsSuccess: number;
+    generationsFailed: number;
+    verifiedPaymentsCount: number;
+    verifiedGrossRevenueInr: number;
+    refundedInr: number;
+    netVerifiedRevenueInr: number;
+  };
+  allTimeSummary: {
+    totalRegisteredUsers: number;
+    generationsSuccess: number;
+    generationsFailed: number;
+    verifiedPaymentsCount: number;
+    verifiedGrossRevenueInr: number;
+    refundedInr: number;
+    netVerifiedRevenueInr: number;
+  };
+  recentDailySessions: Array<{
+    dateKey: string;
+    visitorSessions: number;
+    guestSessions: number;
+    retentionDays?: number;
+    updatedAt?: string;
+  }>;
+  registeredUsers: Array<{
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    createdAt: string;
+    lastLoginAt?: string;
+    generationCount: number;
+  }>;
+  dataSource: string;
+  privacyAndRetention: {
+    countSemantics: string;
+    guestPiiStored: boolean;
+    retentionDays: number;
+    ttlField: string;
+    ttlCollection: string;
+    ttlPolicyVerification: string;
+  };
+}
+
+type DashboardTab = 'gallery' | 'diagnostics' | 'health_check' | 'system_health' | 'logs' | 'user_activity';
 
 export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen, onClose }) => {
   const {
@@ -267,6 +326,10 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
   const [logPage, setLogPage] = useState(0);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
+
+  const [userActivity, setUserActivity] = useState<UserActivityData | null>(null);
+  const [userActivityLoading, setUserActivityLoading] = useState(false);
+  const [userActivityError, setUserActivityError] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
@@ -458,6 +521,43 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
     }
   }, []);
 
+  const fetchUserActivity = useCallback(async () => {
+    setUserActivityLoading(true);
+    try {
+      const res = await fetch('/api/admin/activity', { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setUserActivity(data);
+        setUserActivityError(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setUserActivity(null);
+        setUserActivityError(errData?.error || `HTTP ${res.status}`);
+      }
+    } catch (err: any) {
+      setUserActivity(null);
+      setUserActivityError(err?.message || 'Network error');
+    } finally {
+      setUserActivityLoading(false);
+    }
+  }, [getHeaders]);
+
+  const handleResolveMonitoringAlert = useCallback(async (alertId: string) => {
+    try {
+      await fetch('/api/admin/monitoring/resolve', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getHeaders()
+        },
+        body: JSON.stringify({ alertId })
+      });
+      await fetchDiagnosticsSummary();
+    } catch (e) {
+      console.error('[AdminDashboard Resolve Alert Error]:', e);
+    }
+  }, [getHeaders, fetchDiagnosticsSummary]);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     await Promise.all([
@@ -466,6 +566,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
       fetchCatalogAndVersion(),
       fetchDiagnosticsSummary(),
       fetchLogs(logPageRef.current),
+      fetchUserActivity(),
       loadClientMediaStats()
     ]);
     setLoading(false);
@@ -475,6 +576,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
     fetchCatalogAndVersion,
     fetchDiagnosticsSummary,
     fetchLogs,
+    fetchUserActivity,
     loadClientMediaStats
   ]);
 
@@ -1042,6 +1144,24 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
             <ScrollText className={`w-4 h-4 ${activeTab === 'logs' ? 'text-purple-400' : 'text-purple-400/75'}`} />
             <span>Admin Activity Logs</span>
           </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'user_activity'}
+            onClick={() => {
+              setActiveTab('user_activity');
+              fetchUserActivity();
+            }}
+            className={`min-h-[44px] px-3.5 py-2 rounded-t-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0 border-x border-t-2 ${
+              activeTab === 'user_activity'
+                ? 'bg-[#181118] text-pink-400 border-t-pink-400 border-x-pink-500/30 shadow-inner'
+                : 'text-stone-300 bg-white/[0.03] hover:bg-white/[0.07] hover:text-white border-transparent'
+            }`}
+          >
+            <Users className={`w-4 h-4 ${activeTab === 'user_activity' ? 'text-pink-400' : 'text-pink-400/75'}`} />
+            <span>User Activity</span>
+          </button>
         </div>
 
         {/* Tab Body Content */}
@@ -1291,6 +1411,97 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                     ? `${activeAlertsList.length} Active`
                     : 'Loading...'}
                 </span>
+              </div>
+
+              {/* Actionable Error Alerts & Incident Stream */}
+              <div className="p-4 rounded-2xl bg-black/40 border border-white/10 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-rose-400" />
+                    <h5 className="text-xs font-bold uppercase tracking-wider text-white">
+                      Production Error Alerts (5xx · Client Errors · User Reports)
+                    </h5>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={fetchDiagnosticsSummary}
+                    className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-stone-300 text-[11px] font-semibold flex items-center gap-1 cursor-pointer border border-white/10"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Refresh Alerts</span>
+                  </button>
+                </div>
+
+                {alertsError && (
+                  <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs">
+                    Error loading alerts: {alertsError}
+                  </div>
+                )}
+
+                {!alerts || alerts.length === 0 ? (
+                  <div className="text-xs text-stone-400 py-4 text-center">
+                    No active or recent incidents detected.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-72 overflow-y-auto">
+                    {alerts.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className={`p-3 rounded-xl border space-y-1.5 text-xs ${
+                          alert.resolved
+                            ? 'bg-white/[0.02] border-white/5 opacity-60'
+                            : alert.severity === 'CRITICAL'
+                            ? 'bg-rose-950/25 border-rose-500/40'
+                            : 'bg-amber-950/20 border-amber-500/30'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${
+                                alert.severity === 'CRITICAL'
+                                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                              }`}
+                            >
+                              {alert.severity || 'ERROR'}
+                            </span>
+                            {alert.source && (
+                              <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                {alert.source}
+                              </span>
+                            )}
+                            <span className="font-bold text-white">{alert.title || alert.vector || 'Incident'}</span>
+                          </div>
+                          <span className="text-[10px] font-mono text-stone-400">
+                            {new Date(alert.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-mono text-stone-300 break-words">
+                          {alert.message}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[10px] font-mono text-stone-400">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>Template ID: <strong className="text-stone-200">{alert.templateId || 'N/A'}</strong></span>
+                            <span>Stage: <strong className="text-stone-200">{alert.errorStage || 'runtime'}</strong></span>
+                            <span>Correlation ID: <strong className="text-stone-200">{alert.correlationId || alert.safeTraceId || alert.id}</strong></span>
+                          </div>
+                          {!alert.resolved ? (
+                            <button
+                              type="button"
+                              onClick={() => handleResolveMonitoringAlert(alert.id)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 font-sans text-[10px] font-semibold border border-emerald-500/30 cursor-pointer"
+                            >
+                              Resolve
+                            </button>
+                          ) : (
+                            <span className="text-emerald-400 font-semibold">Resolved</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1773,6 +1984,200 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 6: User Activity (Asia/Kolkata IST · Privacy-Safe Session Counts & Verified Revenue) */}
+          {activeTab === 'user_activity' && (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Users className="w-4 h-4 text-pink-400" />
+                    <span>User Activity & Business Metrics (IST · Asia/Kolkata)</span>
+                  </h4>
+                  <p className="text-[11px] text-stone-400">
+                    Date Key: <code className="text-pink-300">{userActivity?.todayDateKey || 'Asia/Kolkata'}</code> · Source:{' '}
+                    <code className="text-amber-300">{userActivity?.dataSource || 'Loading...'}</code>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchUserActivity}
+                  disabled={userActivityLoading}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-stone-200 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${userActivityLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh Activity</span>
+                </button>
+              </div>
+
+              {userActivityError && (
+                <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Failed to load User Activity: {userActivityError}</span>
+                </div>
+              )}
+
+              {/* Privacy & Retention Disclosure */}
+              <div className="p-3.5 rounded-2xl bg-pink-950/20 border border-pink-500/25 text-xs text-pink-100/90 space-y-1">
+                <div className="font-bold text-pink-300">
+                  Privacy-Safe Session Counters (Session Counts Only · Not Unique Visitors)
+                </div>
+                <p className="text-[11px] text-stone-300 leading-relaxed">
+                  Visitor Sessions & Guest Sessions reflect privacy-safe session counts without storing guest Gmail, IP address, or device fingerprints. Daily counters carry a 90-day <code className="text-pink-200">expiresAt</code> retention field.
+                </p>
+              </div>
+
+              {/* Today's Metrics (Asia/Kolkata IST) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Today&apos;s Visitor Sessions (IST)</span>
+                  <span className="text-2xl font-bold font-mono tabular-nums text-white mt-1 block">
+                    {userActivity ? userActivity.todayMetrics.visitorSessions : '...'}
+                  </span>
+                  <span className="text-[10px] text-stone-400 mt-1 block">Session Count (All Visits)</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Today&apos;s Guest Sessions (IST)</span>
+                  <span className="text-2xl font-bold font-mono tabular-nums text-amber-300 mt-1 block">
+                    {userActivity ? userActivity.todayMetrics.guestSessions : '...'}
+                  </span>
+                  <span className="text-[10px] text-stone-400 mt-1 block">Session Count (No Guest PII)</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Today&apos;s New Signups / Active Users</span>
+                  <span className="text-2xl font-bold font-mono tabular-nums text-emerald-400 mt-1 block">
+                    {userActivity ? `${userActivity.todayMetrics.newSignups} / ${userActivity.todayMetrics.activeUsers}` : '...'}
+                  </span>
+                  <span className="text-[10px] text-stone-400 mt-1 block">
+                    Total Registered: {userActivity?.allTimeSummary.totalRegisteredUsers ?? '—'}
+                  </span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-white/[0.04] border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Net Verified Revenue (IST Today)</span>
+                  <span className="text-2xl font-bold font-mono tabular-nums text-sky-400 mt-1 block">
+                    {userActivity ? `₹${userActivity.todayMetrics.netVerifiedRevenueInr}` : '...'}
+                  </span>
+                  <span className="text-[10px] text-stone-400 mt-1 block">
+                    Gross ₹{userActivity?.todayMetrics.verifiedGrossRevenueInr ?? 0} − Refunds ₹{userActivity?.todayMetrics.refundedInr ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Generations & All-Time Verified Payments Summary */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Today Generations (IST)</span>
+                  <div className="mt-1.5 flex items-center gap-3 font-mono text-sm">
+                    <span className="text-emerald-400 font-bold">
+                      {userActivity ? userActivity.todayMetrics.generationsSuccess : 0} Success
+                    </span>
+                    <span className="text-stone-600">·</span>
+                    <span className="text-rose-400 font-bold">
+                      {userActivity ? userActivity.todayMetrics.generationsFailed : 0} Failed
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-stone-500 font-mono block mt-1">
+                    All-Time: {userActivity?.allTimeSummary.generationsSuccess ?? 0} Success / {userActivity?.allTimeSummary.generationsFailed ?? 0} Failed
+                  </span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">Server-Verified Payments</span>
+                  <div className="mt-1.5 text-lg font-bold font-mono text-white">
+                    {userActivity ? userActivity.todayMetrics.verifiedPaymentsCount : 0} Today{' '}
+                    <span className="text-xs font-normal text-stone-400">
+                      ({userActivity?.allTimeSummary.verifiedPaymentsCount ?? 0} Total)
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-stone-500 block mt-1">
+                    Excludes pending, failed & unverified attempts
+                  </span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+                  <span className="text-[11px] text-stone-400 block">All-Time Net Verified Revenue</span>
+                  <div className="mt-1.5 text-lg font-bold font-mono text-emerald-400">
+                    ₹{userActivity?.allTimeSummary.netVerifiedRevenueInr ?? 0}
+                  </div>
+                  <span className="text-[10px] text-stone-500 font-mono block mt-1">
+                    Gross ₹{userActivity?.allTimeSummary.verifiedGrossRevenueInr ?? 0} − Refunds ₹{userActivity?.allTimeSummary.refundedInr ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Recent Daily Session Counts (IST) */}
+              {userActivity?.recentDailySessions && userActivity.recentDailySessions.length > 0 && (
+                <div className="rounded-2xl border border-white/10 overflow-x-auto bg-black/30">
+                  <div className="px-3.5 py-2.5 border-b border-white/10 text-[11px] font-bold uppercase tracking-wider text-stone-300">
+                    Daily Session Counts (Asia/Kolkata · 90-Day Retention)
+                  </div>
+                  <table className="w-full text-left text-xs min-w-[420px]">
+                    <thead className="bg-white/5 border-b border-white/10 text-stone-400 text-[10px] uppercase">
+                      <tr>
+                        <th className="py-2 px-3">IST Date</th>
+                        <th className="py-2 px-3">Visitor Sessions</th>
+                        <th className="py-2 px-3">Guest Sessions</th>
+                        <th className="py-2 px-3">Retention</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 font-mono text-[11px] text-stone-300">
+                      {userActivity.recentDailySessions.map((d) => (
+                        <tr key={d.dateKey}>
+                          <td className="py-2 px-3 text-pink-300 font-bold">{d.dateKey}</td>
+                          <td className="py-2 px-3">{d.visitorSessions}</td>
+                          <td className="py-2 px-3 text-amber-300">{d.guestSessions}</td>
+                          <td className="py-2 px-3 text-stone-400">{d.retentionDays || 90}d TTL</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Registered Users Table (Strictly Authorized Admin View Only) */}
+              <div className="rounded-2xl border border-white/10 overflow-x-auto bg-black/30">
+                <div className="px-3.5 py-2.5 border-b border-white/10 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-stone-300">
+                  <span>Registered Accounts (Authorized Admin View Only)</span>
+                  <span className="font-mono text-stone-400">{userActivity?.registeredUsers.length ?? 0} Accounts</span>
+                </div>
+                <table className="w-full text-left text-xs min-w-[580px]">
+                  <thead className="bg-white/5 border-b border-white/10 text-stone-400 text-[10px] uppercase">
+                    <tr>
+                      <th className="py-2 px-3">Name</th>
+                      <th className="py-2 px-3">Email</th>
+                      <th className="py-2 px-3">Role</th>
+                      <th className="py-2 px-3">Created</th>
+                      <th className="py-2 px-3">Generations</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-stone-300">
+                    {userActivity?.registeredUsers && userActivity.registeredUsers.length > 0 ? (
+                      userActivity.registeredUsers.map((u) => (
+                        <tr key={u.id} className="hover:bg-white/5">
+                          <td className="py-2 px-3 font-medium text-white">{u.name}</td>
+                          <td className="py-2 px-3 font-mono text-[11px] text-amber-200">{u.email}</td>
+                          <td className="py-2 px-3 font-mono text-[11px] uppercase">{u.role}</td>
+                          <td className="py-2 px-3 font-mono text-[11px] text-stone-400">
+                            {u.createdAt ? u.createdAt.slice(0, 10) : 'N/A'}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-[11px]">{u.generationCount}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="py-6 text-center text-stone-500 text-xs">
+                          {userActivityLoading ? 'Loading registered users...' : 'No registered users found in current view.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>

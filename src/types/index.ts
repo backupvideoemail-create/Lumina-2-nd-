@@ -133,6 +133,10 @@ export interface Template {
   allowWardrobeChoice?: boolean;
   defaultWardrobeSource?: 'auto' | 'my_photo' | 'template';
   crop?: { aspectRatio: '1:1'; positionX: number; positionY: number; zoom: number };
+  readinessStatus?: 'READY' | 'DRAFT_INCOMPLETE' | 'INVALID_CONFIG';
+  missingFields?: string[];
+  readinessErrors?: string[];
+  draftOfTemplateId?: string;
 }
 
 export interface UserProfile {

@@ -29,7 +29,7 @@ import type {
   FaceSwapScene
 } from '../../types/index.ts';
 import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import { getFirestore as getAdminFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { SEED_TEMPLATES } from '../../data/templatesData.ts';
@@ -531,7 +531,17 @@ export interface AdminTestRun {
 export interface AdminActivityLog {
   id: string;
   actorEmail: string;
-  action: 'TEMPLATE_CREATED' | 'TEMPLATE_UPDATED' | 'TEMPLATE_DELETED' | 'BANNER_CREATED' | 'BANNER_UPDATED' | 'BANNER_DELETED' | 'ADMIN_AUTH_VERIFIED' | 'SYSTEM_CONFIG_UPDATED';
+  action:
+    | 'TEMPLATE_CREATED'
+    | 'TEMPLATE_UPDATED'
+    | 'TEMPLATE_DELETED'
+    | 'TEMPLATE_SAVED_AS_DRAFT'
+    | 'TEMPLATE_SEPARATE_DRAFT_SAVED'
+    | 'BANNER_CREATED'
+    | 'BANNER_UPDATED'
+    | 'BANNER_DELETED'
+    | 'ADMIN_AUTH_VERIFIED'
+    | 'SYSTEM_CONFIG_UPDATED';
   targetId: string;
   details: string;
   timestamp: string;
@@ -559,6 +569,26 @@ export interface ProductionDatabaseSchema {
   pricingBanner?: PricingBannerConfig | null;
   deletedTemplateIds?: string[];
   adminLogs?: AdminActivityLog[];
+  dailyActivity?: Record<string, DailyActivityMetric>;
+}
+
+export interface DailyActivityMetric {
+  dateKey: string; // YYYY-MM-DD in Asia/Kolkata
+  timezone: 'Asia/Kolkata';
+  visitorSessions: number;
+  guestSessions: number;
+  retentionDays: number;
+  updatedAt: string;
+  expiresAtIso?: string;
+}
+
+export function getKolkataDateKey(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
 }
 
 export interface PricingBannerItem {
@@ -619,6 +649,16 @@ export function validateTemplate(tpl: any): TemplateValidationResult {
   return { isValid: true };
 }
 
+export function isPersistableDraftTemplate(tpl: any): boolean {
+  if (!tpl || typeof tpl !== 'object') return false;
+  if (tpl.isActive !== false) return false;
+  if (tpl.readinessStatus !== 'DRAFT_INCOMPLETE' && !tpl.draftOfTemplateId) return false;
+  if (!tpl.id || typeof tpl.id !== 'string' || tpl.id.trim().length < 2) return false;
+  if (!tpl.title || typeof tpl.title !== 'string' || tpl.title.trim().length < 2) return false;
+  if (tpl.type !== 'photo' && tpl.type !== 'video') return false;
+  return true;
+}
+
 export class ProductionDatabase {
   private db: ProductionDatabaseSchema;
   private dbFilePath: string;
@@ -631,6 +671,7 @@ export class ProductionDatabase {
   private lastCatalogCheckTime: number = 0;
   private lastCatalogSyncAt: string | null = null;
   private rawFirestoreTemplatesCount: number | null = null;
+  private inFlightAuthLocks = new Map<string, Promise<any>>();
 
   private get firestoreDb(): any {
     return this.firestoreOverride !== undefined ? this.firestoreOverride : adminFirestoreDb;
@@ -873,12 +914,12 @@ export class ProductionDatabase {
           });
         }
         (this.db.templates || []).forEach(t => {
-          if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
+          if (!deletedIds.has(t.id) && (validateTemplate(t).isValid || isPersistableDraftTemplate(t))) templateMap.set(t.id, t);
         });
         firestoreTemplates.forEach(t => {
           if (!deletedIds.has(t.id)) {
             const v = validateTemplate(t);
-            if (v.isValid) {
+            if (v.isValid || isPersistableDraftTemplate(t)) {
               templateMap.set(t.id, t);
             } else {
               if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
@@ -1012,12 +1053,12 @@ export class ProductionDatabase {
       });
     }
     (this.db.templates || []).forEach(t => {
-      if (!deletedIds.has(t.id) && validateTemplate(t).isValid) templateMap.set(t.id, t);
+      if (!deletedIds.has(t.id) && (validateTemplate(t).isValid || isPersistableDraftTemplate(t))) templateMap.set(t.id, t);
     });
     firestoreTemplates.forEach(t => {
       if (!deletedIds.has(t.id)) {
         const v = validateTemplate(t);
-        if (v.isValid) {
+        if (v.isValid || isPersistableDraftTemplate(t)) {
           templateMap.set(t.id, t);
         } else {
           if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
@@ -1123,7 +1164,7 @@ export class ProductionDatabase {
         (parsed.templates || []).forEach((t: Template) => {
           if (!deletedIds.has(t.id)) {
             const v = validateTemplate(t);
-            if (v.isValid) {
+            if (v.isValid || isPersistableDraftTemplate(t)) {
               tplMap.set(t.id, t);
             } else {
               if (!this.quarantinedTemplates.some(q => q.template?.id === t.id)) {
@@ -1221,13 +1262,14 @@ export class ProductionDatabase {
     const sanitized = JSON.parse(JSON.stringify(data));
     const isCritical = ['auth_identities', 'users', 'wallets', 'templates'].includes(collectionName);
     const maxAttempts = isCritical ? 3 : 1;
+    const effectiveMaxAttempts = collectionName === 'media_metadata' ? 2 : maxAttempts;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= effectiveMaxAttempts; attempt++) {
       try {
         await fsDb.collection(collectionName).doc(docId).set(sanitized, { merge: true });
         return { success: true, cloudPersisted: true };
       } catch (err: any) {
-        if (attempt === maxAttempts) {
+        if (attempt === effectiveMaxAttempts) {
           console.error(`[Firestore Sync Critical] ${collectionName}/${docId} failed after ${attempt} attempts:`, err.message);
           return { success: false, cloudPersisted: false, error: err.message };
         }
@@ -1266,36 +1308,49 @@ export class ProductionDatabase {
   }
 
   public async getUserByFirebaseUidAsync(firebaseUid: string): Promise<UserProfile | null> {
+    await this.readyPromise;
     const memUser = this.getUserByFirebaseUid(firebaseUid);
     if (memUser) return memUser;
 
-    if (!adminFirestoreDb) return null;
-    try {
-      const snap = await adminFirestoreDb
-        .collection('auth_identities')
-        .where('firebaseUid', '==', firebaseUid)
-        .limit(1)
-        .get();
-      if (!snap.empty) {
-        const docSnap = snap.docs[0];
-        const identity = docSnap.data() as AuthIdentity;
-        const userId = docSnap.id;
-        this.db.authIdentities[userId] = identity;
+    const fsDb = this.firestoreDb;
+    if (!fsDb) return null;
 
-        if (!this.db.users[userId]) {
-          const userDoc = await adminFirestoreDb.collection('users').doc(userId).get();
-          if (userDoc.exists) {
-            const u = userDoc.data() as UserProfile;
-            if (u && isAuthorizedAdminEmail(u.email)) {
-              u.role = 'admin';
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const snap = await fsDb
+          .collection('auth_identities')
+          .where('firebaseUid', '==', firebaseUid)
+          .limit(1)
+          .get();
+        if (!snap.empty) {
+          const docSnap = snap.docs[0];
+          const identity = docSnap.data() as AuthIdentity;
+          const userId = docSnap.id;
+          this.db.authIdentities[userId] = {
+            ...identity,
+            sessionTokens: Array.isArray(identity?.sessionTokens) ? [...identity.sessionTokens] : []
+          };
+
+          if (!this.db.users[userId]) {
+            const userDoc = await fsDb.collection('users').doc(userId).get();
+            if (userDoc.exists) {
+              const u = userDoc.data() as UserProfile;
+              if (u && isAuthorizedAdminEmail(u.email || identity?.email)) {
+                u.role = 'admin';
+              }
+              this.db.users[userId] = u;
             }
-            this.db.users[userId] = u;
           }
+          return this.db.users[userId] || null;
         }
-        return this.db.users[userId] || null;
+        return null;
+      } catch (err: any) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        console.warn('[Database] Async getUserByFirebaseUid notice:', err.message);
       }
-    } catch (err: any) {
-      console.warn('[Database] Async getUserByFirebaseUid notice:', err.message);
     }
     return null;
   }
@@ -1321,9 +1376,9 @@ export class ProductionDatabase {
         return ensureAdminRole(this.db.users[userId], identity);
       }
     }
-    if (fs.existsSync(DB_FILE)) {
+    if (this.persistToDisk && fs.existsSync(this.dbFilePath)) {
       try {
-        const diskDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+        const diskDb = JSON.parse(fs.readFileSync(this.dbFilePath, 'utf-8'));
         for (const [userId, identity] of Object.entries((diskDb.authIdentities || {}) as Record<string, AuthIdentity>)) {
           if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
             this.db.users[userId] = diskDb.users[userId];
@@ -1336,12 +1391,18 @@ export class ProductionDatabase {
     return null;
   }
 
-  public async getUserByTokenAsync(token: string): Promise<UserProfile | null> {
-    if (!token) return null;
+  public async getUserByTokenAsyncWithStatus(token: string): Promise<{
+    user: UserProfile | null;
+    transientError: boolean;
+    error?: string;
+  }> {
+    if (!token) return { user: null, transientError: false };
+    await this.readyPromise;
     const memUser = this.getUserByToken(token);
-    if (memUser) return memUser;
+    if (memUser) return { user: memUser, transientError: false };
 
-    if (!adminFirestoreDb) return null;
+    const fsDb = this.firestoreDb;
+    if (!fsDb) return { user: null, transientError: false };
 
     const ensureAdminRole = (u: UserProfile | undefined, identity?: AuthIdentity): UserProfile | null => {
       if (!u) return null;
@@ -1357,30 +1418,43 @@ export class ProductionDatabase {
       return u;
     };
 
-    try {
-      const snap = await adminFirestoreDb
-        .collection('auth_identities')
-        .where('sessionTokens', 'array-contains', token)
-        .limit(1)
-        .get();
-      if (!snap.empty) {
-        const docSnap = snap.docs[0];
-        const identity = docSnap.data() as AuthIdentity;
-        const userId = docSnap.id;
-        this.db.authIdentities[userId] = identity;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const snap = await fsDb
+          .collection('auth_identities')
+          .where('sessionTokens', 'array-contains', token)
+          .limit(1)
+          .get();
+        if (!snap.empty) {
+          const docSnap = snap.docs[0];
+          const identity = docSnap.data() as AuthIdentity;
+          const userId = docSnap.id;
+          this.db.authIdentities[userId] = identity;
 
-        if (!this.db.users[userId]) {
-          const userDoc = await adminFirestoreDb.collection('users').doc(userId).get();
-          if (userDoc.exists) {
-            this.db.users[userId] = userDoc.data() as UserProfile;
+          if (!this.db.users[userId]) {
+            const userDoc = await fsDb.collection('users').doc(userId).get();
+            if (userDoc.exists) {
+              this.db.users[userId] = userDoc.data() as UserProfile;
+            }
           }
+          return { user: ensureAdminRole(this.db.users[userId], identity), transientError: false };
         }
-        return ensureAdminRole(this.db.users[userId], identity);
+        return { user: null, transientError: false };
+      } catch (err: any) {
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        console.warn('[Database] Async getUserByToken notice:', err.message);
+        return { user: null, transientError: true, error: err?.message || 'Firestore token lookup timed out or unavailable' };
       }
-    } catch (err: any) {
-      console.warn('[Database] Async getUserByToken notice:', err.message);
     }
-    return null;
+    return { user: null, transientError: false };
+  }
+
+  public async getUserByTokenAsync(token: string): Promise<UserProfile | null> {
+    const res = await this.getUserByTokenAsyncWithStatus(token);
+    return res.user;
   }
 
   public async getOrCreateUserAsync(params: {
@@ -1390,32 +1464,59 @@ export class ProductionDatabase {
     name?: string;
     avatar?: string;
   }): Promise<{ user: UserProfile; token: string; isNewUser: boolean; cloudPersisted: boolean; persistError?: string }> {
-    if (!this.getUserByFirebaseUid(params.firebaseUid)) {
-      await this.getUserByFirebaseUidAsync(params.firebaseUid);
-    }
-    const result = this.getOrCreateUser(params);
-    let authOk = isIsolatedTestEnv;
-    let userOk = isIsolatedTestEnv;
-    let persistError: string | undefined = undefined;
+    const lockKey = String(params.firebaseUid || '').trim() || 'anonymous_uid';
+    const priorLock = this.inFlightAuthLocks.get(lockKey) || Promise.resolve();
 
-    if (adminFirestoreDb) {
-      const identity = this.db.authIdentities[result.user.id];
-      if (identity) {
-        const syncRes = await this.syncToFirestore('auth_identities', result.user.id, identity);
-        authOk = Boolean(syncRes.cloudPersisted);
-        if (!authOk) persistError = syncRes.error || 'Failed to persist auth identity to Firestore';
+    const currentOperation = priorLock
+      .catch(() => {})
+      .then(async () => {
+        await this.readyPromise;
+        if (!this.getUserByFirebaseUid(params.firebaseUid)) {
+          await this.getUserByFirebaseUidAsync(params.firebaseUid);
+        }
+
+        const result = this.getOrCreateUser({ ...params, skipBackgroundSync: true });
+        const fsDb = this.firestoreDb;
+        let authOk = isIsolatedTestEnv && !fsDb;
+        let userOk = isIsolatedTestEnv && !fsDb;
+        let walletOk = true;
+        let persistError: string | undefined = undefined;
+
+        if (fsDb) {
+          const identity = this.db.authIdentities[result.user.id];
+          if (identity) {
+            const syncRes = await this.syncToFirestore('auth_identities', result.user.id, identity);
+            authOk = Boolean(syncRes.cloudPersisted);
+            if (!authOk) persistError = syncRes.error || 'Failed to persist auth identity to Firestore';
+          } else {
+            persistError = 'Missing auth identity record for user session';
+          }
+
+          const userRes = await this.syncToFirestore('users', result.user.id, result.user);
+          userOk = Boolean(userRes.cloudPersisted);
+          if (!userOk && !persistError) persistError = userRes.error || 'Failed to persist user profile to Firestore';
+
+          if (result.isNewUser && this.db.wallets[result.user.id]) {
+            const walletRes = await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
+            walletOk = Boolean(walletRes.cloudPersisted);
+            if (!walletOk && !persistError) persistError = walletRes.error || 'Failed to initialize user wallet in Firestore';
+          }
+        } else if (!isIsolatedTestEnv) {
+          persistError = 'Authoritative Firestore database is not connected';
+        }
+
+        const allPersisted = Boolean(authOk && userOk && walletOk);
+        return { ...result, cloudPersisted: allPersisted, persistError };
+      });
+
+    this.inFlightAuthLocks.set(lockKey, currentOperation);
+    try {
+      return await currentOperation;
+    } finally {
+      if (this.inFlightAuthLocks.get(lockKey) === currentOperation) {
+        this.inFlightAuthLocks.delete(lockKey);
       }
-      const userRes = await this.syncToFirestore('users', result.user.id, result.user);
-      userOk = Boolean(userRes.cloudPersisted);
-      if (!userOk && !persistError) persistError = userRes.error || 'Failed to persist user profile to Firestore';
-
-      if (result.isNewUser && this.db.wallets[result.user.id]) {
-        await this.syncToFirestore('wallets', result.user.id, this.db.wallets[result.user.id]);
-      }
     }
-
-    const allPersisted = Boolean(authOk && userOk);
-    return { ...result, cloudPersisted: allPersisted, persistError };
   }
 
   /**
@@ -1427,6 +1528,7 @@ export class ProductionDatabase {
     phone?: string;
     name?: string;
     avatar?: string;
+    skipBackgroundSync?: boolean;
   }): { user: UserProfile; token: string; isNewUser: boolean } {
     let existingUser = this.getUserByFirebaseUid(params.firebaseUid);
     const sessionToken = `session_${crypto.randomBytes(24).toString('hex')}`;
@@ -1437,19 +1539,39 @@ export class ProductionDatabase {
       if (params.email && (!existingUser.email || existingUser.email !== params.email)) {
         existingUser.email = params.email;
       }
+      if (params.name && (!existingUser.name || existingUser.name === 'AI Creator')) {
+        existingUser.name = params.name.trim();
+      }
       if (isAdminEmail && existingUser.role !== 'admin') {
         existingUser.role = 'admin';
       }
-      this.syncToFirestore('users', existingUser.id, existingUser);
-      const identity = this.db.authIdentities[existingUser.id];
-      if (identity) {
-        identity.sessionTokens.push(sessionToken);
-        if (identity.sessionTokens.length > 15) {
-          identity.sessionTokens = identity.sessionTokens.slice(-15);
-        }
-        identity.lastLoginAt = new Date().toISOString();
-        if (params.email && !identity.email) identity.email = params.email;
-        if (params.phone && !identity.phone) identity.phone = params.phone;
+      if (!params.skipBackgroundSync) {
+        this.syncToFirestore('users', existingUser.id, existingUser);
+      }
+      let identity = this.db.authIdentities[existingUser.id];
+      if (!identity) {
+        identity = {
+          userId: existingUser.id,
+          firebaseUid: params.firebaseUid,
+          email: params.email || existingUser.email,
+          phone: params.phone,
+          sessionTokens: [],
+          createdAt: existingUser.createdAt || new Date().toISOString(),
+          lastLoginAt: new Date().toISOString()
+        };
+        this.db.authIdentities[existingUser.id] = identity;
+      }
+      if (!Array.isArray(identity.sessionTokens)) {
+        identity.sessionTokens = [];
+      }
+      identity.sessionTokens.push(sessionToken);
+      if (identity.sessionTokens.length > 15) {
+        identity.sessionTokens = identity.sessionTokens.slice(-15);
+      }
+      identity.lastLoginAt = new Date().toISOString();
+      if (params.email && !identity.email) identity.email = params.email;
+      if (params.phone && !identity.phone) identity.phone = params.phone;
+      if (!params.skipBackgroundSync) {
         this.syncToFirestore('auth_identities', existingUser.id, identity);
       }
       this.save();
@@ -1492,9 +1614,11 @@ export class ProductionDatabase {
     };
 
     this.save();
-    this.syncToFirestore('users', newUserId, newUser);
-    this.syncToFirestore('auth_identities', newUserId, newIdentity);
-    this.syncToFirestore('wallets', newUserId, this.db.wallets[newUserId]);
+    if (!params.skipBackgroundSync) {
+      this.syncToFirestore('users', newUserId, newUser);
+      this.syncToFirestore('auth_identities', newUserId, newIdentity);
+      this.syncToFirestore('wallets', newUserId, this.db.wallets[newUserId]);
+    }
 
     return { user: newUser, token: sessionToken, isNewUser: true };
   }
@@ -2326,7 +2450,7 @@ export class ProductionDatabase {
 
   public async addTemplate(tpl: Template): Promise<Template> {
     const v = validateTemplate(tpl);
-    if (!v.isValid) {
+    if (!v.isValid && !isPersistableDraftTemplate(tpl)) {
       throw new Error(`Cannot add invalid template: ${v.reason}`);
     }
 
@@ -3665,6 +3789,354 @@ export class ProductionDatabase {
       total: local.total,
       source: 'process_local_cache'
     };
+  }
+
+  /* =========================================================================
+     USER ACTIVITY METRICS (Privacy-Safe Session Counters in Asia/Kolkata + 90-Day TTL)
+  ========================================================================= */
+  public async recordVisitorSession(params: {
+    isGuest: boolean;
+    dateKey?: string;
+  }): Promise<DailyActivityMetric> {
+    const dateKey = params.dateKey || getKolkataDateKey(new Date());
+    const nowIso = new Date().toISOString();
+    const expiryMs = Date.now() + 90 * 24 * 60 * 60 * 1000;
+    const expiresAtIso = new Date(expiryMs).toISOString();
+
+    if (!this.db.dailyActivity) {
+      this.db.dailyActivity = {};
+    }
+    const current = this.db.dailyActivity[dateKey] || {
+      dateKey,
+      timezone: 'Asia/Kolkata' as const,
+      visitorSessions: 0,
+      guestSessions: 0,
+      retentionDays: 90,
+      updatedAt: nowIso,
+      expiresAtIso
+    };
+    current.visitorSessions += 1;
+    if (params.isGuest) {
+      current.guestSessions += 1;
+    }
+    current.updatedAt = nowIso;
+    current.expiresAtIso = expiresAtIso;
+    this.db.dailyActivity[dateKey] = current;
+    this.save();
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const docRef = fsDb.collection('daily_activity_metrics').doc(dateKey);
+        const isRealFirestore = Boolean(this.firestoreOverride === undefined && adminFirestoreDb);
+        if (isRealFirestore) {
+          await docRef.set(
+            {
+              dateKey,
+              timezone: 'Asia/Kolkata',
+              visitorSessions: FieldValue.increment(1),
+              guestSessions: FieldValue.increment(params.isGuest ? 1 : 0),
+              retentionDays: 90,
+              updatedAt: nowIso,
+              expiresAt: Timestamp.fromMillis(expiryMs),
+              expiresAtIso
+            },
+            { merge: true }
+          );
+        } else {
+          // Mock Firestore atomic read-modify-write via transaction or doc set
+          const existingSnap = await docRef.get();
+          const prevData = existingSnap?.exists ? existingSnap.data() : {};
+          await docRef.set(
+            {
+              dateKey,
+              timezone: 'Asia/Kolkata',
+              visitorSessions: Number(prevData?.visitorSessions || 0) + 1,
+              guestSessions: Number(prevData?.guestSessions || 0) + (params.isGuest ? 1 : 0),
+              retentionDays: 90,
+              updatedAt: nowIso,
+              expiresAt: expiresAtIso,
+              expiresAtIso
+            },
+            { merge: true }
+          );
+        }
+      } catch (err: any) {
+        console.warn('[UserActivity] Non-blocking daily_activity_metrics write note:', err?.message || err);
+      }
+    }
+
+    return { ...current };
+  }
+
+  public async getUserActivitySummary(targetDateKey?: string): Promise<{
+    timezone: 'Asia/Kolkata';
+    todayDateKey: string;
+    todayMetrics: {
+      visitorSessions: number;
+      guestSessions: number;
+      newSignups: number;
+      activeUsers: number;
+      generationsSuccess: number;
+      generationsFailed: number;
+      verifiedPaymentsCount: number;
+      verifiedGrossRevenueInr: number;
+      refundedInr: number;
+      netVerifiedRevenueInr: number;
+    };
+    allTimeSummary: {
+      totalRegisteredUsers: number;
+      generationsSuccess: number;
+      generationsFailed: number;
+      verifiedPaymentsCount: number;
+      verifiedGrossRevenueInr: number;
+      refundedInr: number;
+      netVerifiedRevenueInr: number;
+    };
+    recentDailySessions: DailyActivityMetric[];
+    registeredUsers: Array<{
+      id: string;
+      name: string;
+      email: string;
+      role: string;
+      createdAt: string;
+      lastLoginAt?: string;
+      generationCount: number;
+    }>;
+    dataSource: 'firestore_authoritative' | 'process_local_cache';
+    privacyAndRetention: {
+      countSemantics: 'SESSION_COUNTS_ONLY_NOT_UNIQUE_VISITORS';
+      guestPiiStored: false;
+      retentionDays: number;
+      ttlField: string;
+      ttlCollection: string;
+      ttlPolicyVerification: string;
+    };
+  }> {
+    const todayDateKey = targetDateKey || getKolkataDateKey(new Date());
+    const toIstDate = (iso?: string): string => {
+      if (!iso) return '';
+      const parsed = new Date(iso);
+      if (Number.isNaN(parsed.getTime())) return '';
+      return getKolkataDateKey(parsed);
+    };
+
+    const fsDb = this.firestoreDb;
+    let dailyDocsMap: Record<string, DailyActivityMetric> = { ...(this.db.dailyActivity || {}) };
+    let dataSource: 'firestore_authoritative' | 'process_local_cache' = 'process_local_cache';
+
+    let usersList: UserProfile[] = Object.values(this.db.users || {});
+    let authList: AuthIdentity[] = Object.values(this.db.authIdentities || {});
+    let gensList: Generation[] = [...(this.db.generations || [])];
+    let paysList: PaymentRecord[] = Object.values(this.db.payments || {});
+
+    if (fsDb && (!isIsolatedTestEnv || this.firestoreOverride)) {
+      try {
+        const dailySnap = await fsDb.collection('daily_activity_metrics').get();
+        if (dailySnap && !dailySnap.empty) {
+          dailySnap.forEach((doc: any) => {
+            const d = doc.data();
+            if (d?.dateKey) {
+              dailyDocsMap[d.dateKey] = {
+                dateKey: String(d.dateKey),
+                timezone: 'Asia/Kolkata',
+                visitorSessions: Number(d.visitorSessions || 0),
+                guestSessions: Number(d.guestSessions || 0),
+                retentionDays: Number(d.retentionDays || 90),
+                updatedAt: String(d.updatedAt || ''),
+                expiresAtIso: d.expiresAtIso ? String(d.expiresAtIso) : undefined
+              };
+            }
+          });
+        }
+        if (!isIsolatedTestEnv) {
+          const [uSnap, aSnap, gSnap, pSnap] = await Promise.all([
+            fsDb.collection('users').get(),
+            fsDb.collection('auth_identities').get(),
+            fsDb.collection('generations').get(),
+            fsDb.collection('payments').get()
+          ]);
+          usersList = [];
+          uSnap.forEach((d: any) => usersList.push(d.data() as UserProfile));
+          authList = [];
+          aSnap.forEach((d: any) => authList.push(d.data() as AuthIdentity));
+          gensList = [];
+          gSnap.forEach((d: any) => gensList.push(d.data() as Generation));
+          paysList = [];
+          pSnap.forEach((d: any) => paysList.push(d.data() as PaymentRecord));
+        }
+        dataSource = 'firestore_authoritative';
+      } catch (err: any) {
+        console.warn('[UserActivity] Firestore aggregation fallback note:', err?.message || err);
+      }
+    }
+
+    const todayDaily = dailyDocsMap[todayDateKey];
+    const visitorSessions = Number(todayDaily?.visitorSessions || 0);
+    const guestSessions = Number(todayDaily?.guestSessions || 0);
+
+    const newSignups = usersList.filter((u) => toIstDate(u.createdAt) === todayDateKey).length;
+
+    const activeUserIdsToday = new Set<string>();
+    authList.forEach((a) => {
+      if (a.userId && toIstDate(a.lastLoginAt) === todayDateKey) activeUserIdsToday.add(a.userId);
+    });
+    gensList.forEach((g) => {
+      if (g.userId && toIstDate(g.createdAt) === todayDateKey) activeUserIdsToday.add(g.userId);
+    });
+    paysList.forEach((p) => {
+      if (p.userId && toIstDate(p.createdAt) === todayDateKey) activeUserIdsToday.add(p.userId);
+    });
+
+    const todayGens = gensList.filter((g) => toIstDate(g.createdAt) === todayDateKey);
+    const generationsSuccessToday = todayGens.filter((g) => g.status === 'completed').length;
+    const generationsFailedToday = todayGens.filter((g) => g.status === 'failed').length;
+
+    const isVerifiedCaptured = (p: PaymentRecord) =>
+      p.verificationStatus === 'verified' && p.status === 'captured';
+    const isVerifiedRefunded = (p: PaymentRecord) =>
+      p.status === 'refunded' &&
+      (p.verificationStatus === 'verified' ||
+        p.verificationStatus === 'voided' ||
+        p.verificationStatus === 'revoked_rtdn');
+
+    const todayPayments = paysList.filter((p) => toIstDate(p.createdAt) === todayDateKey);
+    const verifiedCapturedToday = todayPayments.filter(isVerifiedCaptured);
+    const verifiedRefundedToday = todayPayments.filter(isVerifiedRefunded);
+    const verifiedGrossToday = verifiedCapturedToday.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+    const refundedToday = verifiedRefundedToday.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+
+    const allVerifiedCaptured = paysList.filter(isVerifiedCaptured);
+    const allVerifiedRefunded = paysList.filter(isVerifiedRefunded);
+    const allGrossRevenue = allVerifiedCaptured.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+    const allRefunded = allVerifiedRefunded.reduce((acc, p) => acc + Number(p.amount || 0), 0);
+
+    const authByUserId = new Map<string, AuthIdentity>();
+    authList.forEach((a) => {
+      if (a.userId) authByUserId.set(a.userId, a);
+    });
+
+    const registeredUsers = usersList
+      .map((u) => ({
+        id: u.id,
+        name: u.name || 'Creator',
+        email: u.email || '',
+        role: u.role || 'user',
+        createdAt: u.createdAt || '',
+        lastLoginAt: authByUserId.get(u.id)?.lastLoginAt,
+        generationCount: gensList.filter((g) => g.userId === u.id).length || Number(u.generationCount || 0)
+      }))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, 100);
+
+    const recentDailySessions = Object.values(dailyDocsMap)
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey))
+      .slice(0, 14);
+
+    return {
+      timezone: 'Asia/Kolkata',
+      todayDateKey,
+      todayMetrics: {
+        visitorSessions,
+        guestSessions,
+        newSignups,
+        activeUsers: activeUserIdsToday.size,
+        generationsSuccess: generationsSuccessToday,
+        generationsFailed: generationsFailedToday,
+        verifiedPaymentsCount: verifiedCapturedToday.length,
+        verifiedGrossRevenueInr: Number(verifiedGrossToday.toFixed(2)),
+        refundedInr: Number(refundedToday.toFixed(2)),
+        netVerifiedRevenueInr: Number((verifiedGrossToday - refundedToday).toFixed(2))
+      },
+      allTimeSummary: {
+        totalRegisteredUsers: usersList.length,
+        generationsSuccess: gensList.filter((g) => g.status === 'completed').length,
+        generationsFailed: gensList.filter((g) => g.status === 'failed').length,
+        verifiedPaymentsCount: allVerifiedCaptured.length,
+        verifiedGrossRevenueInr: Number(allGrossRevenue.toFixed(2)),
+        refundedInr: Number(allRefunded.toFixed(2)),
+        netVerifiedRevenueInr: Number((allGrossRevenue - allRefunded).toFixed(2))
+      },
+      recentDailySessions,
+      registeredUsers,
+      dataSource,
+      privacyAndRetention: {
+        countSemantics: 'SESSION_COUNTS_ONLY_NOT_UNIQUE_VISITORS',
+        guestPiiStored: false,
+        retentionDays: 90,
+        ttlField: 'expiresAt',
+        ttlCollection: 'daily_activity_metrics',
+        ttlPolicyVerification:
+          'expiresAt Timestamp (+90d) written per document; verify Firestore collection TTL policy in Cloud Console/gcloud for automated deletion.'
+      }
+    };
+  }
+
+  /* =========================================================================
+     PERSISTENT INCIDENTS STORE (Non-blocking write-through for Error Alerts)
+  ========================================================================= */
+  public async persistIncidentRecord(alert: Record<string, any>): Promise<void> {
+    const fsDb = this.firestoreDb;
+    if (!fsDb || !alert?.id) return;
+    try {
+      const expiryMs = Date.now() + 90 * 24 * 60 * 60 * 1000;
+      const isRealFirestore = Boolean(this.firestoreOverride === undefined && adminFirestoreDb);
+      const payload = JSON.parse(
+        JSON.stringify({
+          ...alert,
+          expiresAtIso: new Date(expiryMs).toISOString()
+        })
+      );
+      if (isRealFirestore) {
+        payload.expiresAt = Timestamp.fromMillis(expiryMs);
+      } else {
+        payload.expiresAt = payload.expiresAtIso;
+      }
+      await fsDb.collection('incidents').doc(String(alert.id)).set(payload, { merge: true });
+    } catch (err: any) {
+      console.warn('[Incidents] Non-blocking persistIncidentRecord note:', err?.message || err);
+    }
+  }
+
+  public async resolveIncidentRecord(alertId: string, resolvedBy?: string): Promise<boolean> {
+    const fsDb = this.firestoreDb;
+    if (!fsDb || !alertId) return false;
+    try {
+      await fsDb.collection('incidents').doc(alertId).set(
+        {
+          id: alertId,
+          resolved: true,
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: resolvedBy || 'authorized_admin'
+        },
+        { merge: true }
+      );
+      return true;
+    } catch (err: any) {
+      console.warn('[Incidents] Non-blocking resolveIncidentRecord note:', err?.message || err);
+      return false;
+    }
+  }
+
+  public async getIncidentsAuthoritative(limit = 30): Promise<{
+    incidents: any[];
+    isPersistent: boolean;
+  }> {
+    const fsDb = this.firestoreDb;
+    if (!fsDb) {
+      return { incidents: [], isPersistent: false };
+    }
+    try {
+      const snap = await fsDb.collection('incidents').orderBy('timestamp', 'desc').limit(limit).get();
+      const incidents: any[] = [];
+      if (snap && !snap.empty) {
+        snap.forEach((doc: any) => incidents.push(doc.data()));
+      }
+      return { incidents, isPersistent: true };
+    } catch (err: any) {
+      console.warn('[Incidents] Non-blocking getIncidentsAuthoritative note:', err?.message || err);
+      return { incidents: [], isPersistent: false };
+    }
   }
 }
 

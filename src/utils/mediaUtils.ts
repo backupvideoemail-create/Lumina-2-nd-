@@ -8,6 +8,9 @@ export const isVideoMedia = (url?: string): boolean => {
   const clean = url.trim().toLowerCase();
   if (clean.startsWith('data:video/')) return true;
   if (clean.startsWith('data:image/')) return false;
+  if (/\.(jpg|jpeg|png|webp|gif|svg|avif)(\?.*)?$/i.test(clean) || clean.includes('images.unsplash.com')) {
+    return false;
+  }
   if (/\.(mp4|webm|mov|m4v|ogg|ogv)(\?.*)?$/i.test(clean)) return true;
   if (
     clean.includes('/video/') ||

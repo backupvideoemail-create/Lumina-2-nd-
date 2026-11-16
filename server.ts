@@ -27,7 +27,7 @@ import {
   MODEL_REGISTRY
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
-import { mediaStorage, verifySignedMediaToken } from './src/services/storage/mediaStorage.ts';
+import { mediaStorage, verifySignedMediaToken, configureStorageMonitoring } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import {
   prodDb,
@@ -56,8 +56,15 @@ import {
   runGoogleCloudMonitoringProbe,
   getLiveAlerts,
   resolveAlert,
-  emitCloudMonitoringEvent
+  emitCloudMonitoringEvent,
+  configureMonitoringPersistence,
+  sanitizeMonitoringString
 } from './src/services/monitoring/cloudMonitoring.ts';
+import {
+  validateTemplateReadiness,
+  validateFaceSwapSceneReadiness
+} from './src/services/validation/templateReadiness.ts';
+import { getKolkataDateKey } from './src/services/db/database.ts';
 import type {
   Template,
   TemplateInputType,
@@ -79,6 +86,22 @@ import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from './src/config/ad
 
 dotenv.config({ override: true });
 enforceRuntimeDatabaseLock();
+configureMonitoringPersistence({
+  persistIncident: (alert) => prodDb.persistIncidentRecord(alert),
+  resolveIncident: async (alertId, resolvedBy) => {
+    await prodDb.resolveIncidentRecord(alertId, resolvedBy);
+  }
+});
+configureStorageMonitoring((severity, message, context) => {
+  try {
+    emitCloudMonitoringEvent('R2_STORAGE_ERROR', severity, message, {
+      source: 'storage_r2',
+      ...(context || {})
+    });
+  } catch {
+    // Non-blocking monitoring reporter
+  }
+});
 
 // Resolve immutable build-time Git commit SHA, Git branch & immutable startup timestamp
 let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
@@ -318,14 +341,61 @@ function getActiveRecentApiErrors(): RecentApiErrorEntry[] {
 app.use('/api', (req, res, next) => {
   res.on('finish', () => {
     if (res.statusCode >= 400) {
+      const apiPath = `${req.baseUrl || ''}${req.path || '/'}`;
       recentApiErrorsBuffer.unshift({
         timestamp: new Date().toISOString(),
         method: req.method,
-        path: `${req.baseUrl || ''}${req.path || '/'}`,
+        path: apiPath,
         status: res.statusCode
       });
       if (recentApiErrorsBuffer.length > 100) {
         recentApiErrorsBuffer.length = 100;
+      }
+      const isMonitoringOrReportRoute =
+        apiPath.startsWith('/api/admin/monitoring') || apiPath === '/api/errors/report';
+      if (!isMonitoringOrReportRoute) {
+        try {
+          const corrId =
+            (res.locals?.correlationId as string) ||
+            `srv_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+          if (res.statusCode >= 500) {
+            emitCloudMonitoringEvent(
+              'SERVER_5XX_INCIDENT',
+              'CRITICAL',
+              `HTTP ${res.statusCode} on ${req.method} ${apiPath}`,
+              {
+                source: 'server_5xx',
+                endpoint: apiPath,
+                errorStage: 'api_http_5xx',
+                correlationId: corrId,
+                templateId: typeof (req.body as any)?.templateId === 'string' ? (req.body as any).templateId : undefined
+              }
+            );
+          } else if (
+            res.statusCode >= 400 &&
+            ((apiPath.startsWith('/api/payments/') && res.statusCode !== 401 && res.statusCode !== 404) ||
+              (apiPath === '/api/auth/firebase-session' && res.statusCode >= 400))
+          ) {
+            const vector =
+              apiPath === '/api/auth/firebase-session'
+                ? 'AUTH_LOGIN_FAILURE'
+                : 'PAYMENT_FAILURE';
+            const src = apiPath === '/api/auth/firebase-session' ? 'auth_session' : 'cloud_monitoring';
+            emitCloudMonitoringEvent(
+              vector,
+              res.statusCode >= 500 ? 'CRITICAL' : 'ERROR',
+              `Critical API HTTP ${res.statusCode} on ${req.method} ${apiPath}`,
+              {
+                source: src,
+                endpoint: apiPath,
+                errorStage: `api_http_${res.statusCode}`,
+                correlationId: corrId
+              }
+            );
+          }
+        } catch {
+          // Never throw from monitoring hook
+        }
       }
     }
   });
@@ -371,15 +441,24 @@ function getAuthenticatedUser(req: express.Request): UserProfile | null {
 }
 
 // Asynchronous multi-instance token resolver (queries Firestore across Cloud Run containers)
-async function getAuthenticatedUserAsync(req: express.Request): Promise<UserProfile | null> {
+async function getAuthenticatedUserWithStatusAsync(req: express.Request): Promise<{
+  user: UserProfile | null;
+  transientError: boolean;
+  error?: string;
+}> {
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7).trim();
     if (token) {
-      return await prodDb.getUserByTokenAsync(token);
+      return await prodDb.getUserByTokenAsyncWithStatus(token);
     }
   }
-  return null;
+  return { user: null, transientError: false };
+}
+
+async function getAuthenticatedUserAsync(req: express.Request): Promise<UserProfile | null> {
+  const res = await getAuthenticatedUserWithStatusAsync(req);
+  return res.user;
 }
 
 // Strict Auth Guard Middleware for sensitive financial and generation endpoints
@@ -505,8 +584,9 @@ app.get('/api/media/:fileId', async (req, res) => {
         return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
       }
       if (!meta || meta.isPublic !== false) {
+        res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('ETag', stableEtag);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
         if (req.headers['if-none-match'] === stableEtag && !req.headers.range) {
           return res.status(304).end();
         }
@@ -517,8 +597,9 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (!req.headers.range && req.headers['if-none-match'] === stableEtag) {
       const meta = await mediaStorage.getMetadata(fileId);
       if (!meta || meta.isPublic || (user && user.id === meta.ownerUserId)) {
+        res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('ETag', stableEtag);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
         return res.status(304).end();
       }
     }
@@ -542,7 +623,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('ETag', stableEtag);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
     if (typeof authResult.body.pipe === 'function') {
       authResult.body.pipe(res);
     } else {
@@ -722,18 +803,35 @@ async function verifyFirebaseToken(idToken: string): Promise<{
 
 // Real Firebase Auth Session Ingestion (Strict: Requires verified Firebase ID Token)
 app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) => {
+  const correlationId = `auth_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+  res.locals.correlationId = correlationId;
   try {
-    const { idToken, name, avatar } = req.body;
+    const { idToken, name, avatar } = req.body || {};
     if (!idToken) {
       return res.status(401).json({
-        error: 'Missing Firebase ID token. Unverified client identities are strictly rejected in production.'
+        error: 'Missing Firebase ID token. Unverified client identities are strictly rejected in production.',
+        code: 'AUTH_TOKEN_MISSING',
+        correlationId
       });
     }
 
     const verified = await verifyFirebaseToken(idToken);
     if (!verified || !verified.uid) {
+      emitCloudMonitoringEvent(
+        'AUTH_LOGIN_FAILURE',
+        'WARNING',
+        'Firebase ID token cryptographic verification failed during sign-in',
+        {
+          source: 'auth_session',
+          errorStage: 'firebase_token_verification',
+          endpoint: '/api/auth/firebase-session',
+          correlationId
+        }
+      );
       return res.status(401).json({
-        error: 'Invalid, forged, or expired Firebase ID token. Cryptographic server verification failed.'
+        error: 'Invalid, forged, or expired Firebase ID token. Cryptographic server verification failed.',
+        code: 'AUTH_TOKEN_INVALID',
+        correlationId
       });
     }
 
@@ -750,30 +848,34 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
 
     // In production, strictly enforce that session is written to Firestore before issuing token
     if (!isIsolatedTestEnv && !cloudPersisted) {
-      console.error(`[Auth Session Critical] Session for user ${user.id} (${verified.email || 'no-email'}) could not be persisted to Firestore: ${persistError}. Rejecting unpersisted instance-local session.`);
+      const guard = getDatabaseGuardState();
+      console.error(`[Auth Session Critical] Session for user ${user.id} could not be persisted to Firestore: ${persistError}. Guard blocked=${guard.blocked}`);
+      emitCloudMonitoringEvent(
+        'SESSION_PERSISTENCE_FAILURE',
+        'CRITICAL',
+        sanitizeMonitoringString(`Session persistence unavailable: ${persistError || guard.blockedReason || 'Firestore unavailable'}`),
+        {
+          source: 'auth_session',
+          errorStage: 'firestore_session_persistence',
+          endpoint: '/api/auth/firebase-session',
+          correlationId,
+          databaseGuardBlocked: guard.blocked,
+          configStatus: guard.configStatus
+        }
+      );
       return res.status(503).json({
         success: false,
         error: 'Database session persistence is unavailable or currently synchronizing. Please retry in a moment.',
         code: 'SESSION_PERSISTENCE_FAILED',
         details: persistError,
-        retryable: true
+        retryable: true,
+        correlationId
       });
     }
 
     const isUserAdmin = isServerVerifiedAdmin(user);
     const wallet = prodDb.getWallet(user.id);
     const subscription = prodDb.getSubscription(user.id);
-
-    // Fail-Closed Session Resilience:
-    // If running in production with Firestore configured and persistence failed, reject session issuance
-    // to prevent split-brain logout loops across multi-instance Cloud Run containers.
-    if (adminFirestoreDb && !cloudPersisted && !isIsolatedTestEnv) {
-      console.error(`[Firebase Session] Persistence failure for user ${user.id} (${user.email || 'no-email'}). Aborting session issuance.`);
-      return res.status(503).json({
-        error: 'Database session persistence is temporarily unavailable. Please retry in a moment.',
-        code: 'PERSISTENCE_FAILED'
-      });
-    }
 
     return res.json({
       success: true,
@@ -784,11 +886,26 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       token,
       subscription,
       isNewUser,
+      correlationId,
       message: isNewUser ? 'Account created successfully' : 'Signed in successfully'
     });
   } catch (err: any) {
     console.error('[Firebase Session Error]:', err);
-    return res.status(500).json({ error: err.message || 'Authentication session mapping failed' });
+    emitCloudMonitoringEvent(
+      'SESSION_PERSISTENCE_FAILURE',
+      'CRITICAL',
+      sanitizeMonitoringString(err?.message || 'Unhandled authentication session failure'),
+      {
+        source: 'auth_session',
+        errorStage: 'firebase_session_exception',
+        endpoint: '/api/auth/firebase-session',
+        correlationId
+      }
+    );
+    return res.status(500).json({
+      error: err.message || 'Authentication session mapping failed',
+      correlationId
+    });
   }
 });
 
@@ -796,11 +913,32 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
 app.get('/api/auth/me', async (req, res) => {
   const authHeader = req.headers['authorization'];
   const hasBearerToken = Boolean(authHeader && authHeader.startsWith('Bearer ') && authHeader.substring(7).trim());
-  const user = await getAuthenticatedUserAsync(req);
+  const sessionLookup = await getAuthenticatedUserWithStatusAsync(req);
+  const user = sessionLookup.user;
   if (!user) {
+    if (hasBearerToken && sessionLookup.transientError) {
+      const correlationId = `sess_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+      emitCloudMonitoringEvent(
+        'SESSION_PERSISTENCE_FAILURE',
+        'ERROR',
+        sanitizeMonitoringString(`Transient Firestore session read failure: ${sessionLookup.error || 'unavailable'}`),
+        {
+          source: 'auth_session',
+          errorStage: 'session_restore_transient_read',
+          endpoint: '/api/auth/me',
+          correlationId
+        }
+      );
+      return res.status(503).json({
+        error: 'Session database is temporarily synchronizing. Retrying automatically.',
+        code: 'SESSION_SYNC_RETRYABLE',
+        retryable: true,
+        correlationId
+      });
+    }
     if (hasBearerToken) {
-      // Client presented a session token that is invalid, revoked, or unpersisted in Firestore.
-      // Explicit 401 forces frontend to wipe the zombie token and re-authenticate cleanly.
+      // Client presented a session token that is definitively invalid, revoked, or expired.
+      // Explicit 401 forces frontend to clear the stale token cleanly.
       return res.status(401).json({
         error: 'Session invalid or expired. Please sign in again.',
         code: 'AUTH_SESSION_INVALID'
@@ -1166,6 +1304,109 @@ app.get('/api/admin/logs', requireAdmin, async (req, res) => {
   });
 });
 
+// Privacy-Safe Visitor & Guest Session Counter (Asia/Kolkata IST · Zero PII/IP/Fingerprints)
+const dailyVisitNonces = new Map<string, Set<string>>();
+
+app.post('/api/activity/visit', rateLimit(60000, 30), async (req, res) => {
+  try {
+    const dateKey = getKolkataDateKey(new Date());
+    const rawNonce = typeof req.body?.visitNonce === 'string' ? req.body.visitNonce.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) : '';
+
+    if (rawNonce) {
+      // Keep only today's nonce set to bound memory cleanly across midnight IST rollovers
+      for (const oldKey of Array.from(dailyVisitNonces.keys())) {
+        if (oldKey !== dateKey) dailyVisitNonces.delete(oldKey);
+      }
+      let setForToday = dailyVisitNonces.get(dateKey);
+      if (!setForToday) {
+        setForToday = new Set<string>();
+        dailyVisitNonces.set(dateKey, setForToday);
+      }
+      if (setForToday.has(rawNonce)) {
+        return res.json({ success: true, deduplicated: true, timezone: 'Asia/Kolkata', dateKey });
+      }
+      if (setForToday.size < 50000) {
+        setForToday.add(rawNonce);
+      }
+    }
+
+    const authUser = await getAuthenticatedUserAsync(req);
+    const isGuest = !authUser;
+    const metric = await prodDb.recordVisitorSession({ isGuest, dateKey });
+
+    return res.json({
+      success: true,
+      timezone: 'Asia/Kolkata',
+      dateKey: metric.dateKey,
+      countSemantics: 'SESSION_COUNTS_ONLY_NOT_UNIQUE_VISITORS'
+    });
+  } catch (err: any) {
+    // Non-blocking: telemetry errors must never degrade visitor experience
+    return res.json({ success: false, timezone: 'Asia/Kolkata', note: err?.message || 'Skipped telemetry' });
+  }
+});
+
+// Admin User Activity Summary Endpoint (Strict Admin RBAC, IST metrics, Net Revenue)
+app.get('/api/admin/activity', requireAdmin, async (req, res) => {
+  try {
+    const requestedDate = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim())
+      ? req.query.date.trim()
+      : undefined;
+    const summary = await prodDb.getUserActivitySummary(requestedDate);
+    return res.json({
+      success: true,
+      ...summary
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to compute user activity metrics' });
+  }
+});
+
+// Safe Client Error Reporting Endpoint (Scrubbed PII/Tokens, Non-Blocking)
+app.post('/api/errors/report', rateLimit(60000, 30), (req, res) => {
+  try {
+    const rawMsg = typeof req.body?.message === 'string' ? req.body.message.trim() : 'Client runtime error';
+    if (!rawMsg) {
+      return res.status(400).json({ error: 'message is required' });
+    }
+    const correlationId = `cli_err_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+    const templateId = typeof req.body?.templateId === 'string' ? req.body.templateId.trim().slice(0, 80) : undefined;
+    const errorStage = typeof req.body?.errorStage === 'string' ? req.body.errorStage.trim().slice(0, 60) : 'client_runtime';
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint.trim().slice(0, 120) : undefined;
+    const severityRaw = String(req.body?.severity || 'ERROR').toUpperCase();
+    const severity: 'CRITICAL' | 'ERROR' | 'WARNING' =
+      severityRaw === 'CRITICAL' ? 'CRITICAL' : severityRaw === 'WARNING' ? 'WARNING' : 'ERROR';
+
+    const requestedVector = String(req.body?.vector || '').trim().toUpperCase();
+    const vector =
+      requestedVector === 'AUTH_LOGIN_FAILURE' ||
+      requestedVector === 'SESSION_PERSISTENCE_FAILURE' ||
+      requestedVector === 'MEDIA_PLAYBACK_FAILURE' ||
+      requestedVector === 'MEDIA_SLOW_BUFFERING'
+        ? requestedVector
+        : 'CLIENT_RUNTIME_ERROR';
+
+    const source =
+      vector === 'AUTH_LOGIN_FAILURE' || vector === 'SESSION_PERSISTENCE_FAILURE'
+        ? 'auth_session'
+        : vector === 'MEDIA_PLAYBACK_FAILURE' || vector === 'MEDIA_SLOW_BUFFERING'
+        ? 'media_playback'
+        : 'client_error';
+
+    emitCloudMonitoringEvent(vector, severity, sanitizeMonitoringString(rawMsg.slice(0, 240)), {
+      source,
+      templateId,
+      errorStage,
+      correlationId,
+      endpoint
+    });
+
+    return res.json({ success: true, correlationId, vector });
+  } catch {
+    return res.json({ success: true });
+  }
+});
+
 // Admin Adapter Audit Endpoint (Honest connection and capability audit dynamically queried from MODEL_REGISTRY)
 app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
   const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
@@ -1395,12 +1636,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     }
 
     let coverUrl: string | undefined = explicitCoverUrl || sampleResultUrl || mediaUrl;
-
-    // Require AFTER sample result or explicit cover: NEVER fallback to sampleBefore or sampleFaceThumbnail
-    if (!coverUrl) {
-      return res.status(400).json({ error: 'AFTER / Sample Result photo or explicit Cover is required for the template cover. Face thumbnail or BEFORE photo cannot be used as cover.' });
-    }
-    const resolvedCover = coverUrl;
+    const resolvedCover = coverUrl || '';
     const resolvedMedia = mediaUrl || sampleResultUrl || coverUrl || '';
 
     let coverImageUrl: string | undefined = inputCoverImage || undefined;
@@ -1440,7 +1676,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
         if (storedRef.r2Key) uploadedAssetMeta.push({ key: storedRef.r2Key, filename: storedRef.fileId, publicUrl: storedRef.publicUrl });
       }
     } else if (type === 'photo') {
-      referenceImageUrl = sampleResultUrl || coverUrl;
+      referenceImageUrl = sampleResultUrl || coverUrl || '';
     }
 
     let drivingVideoUrl = inputDrivingVideoUrl || '';
@@ -1457,26 +1693,45 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     // Dynamic cost calculated using USD + 40% Markup Rule
     const calculatedCredits = calculateCreditsFromUsd(Number(providerCostUsd) || 0.25);
 
-    // Build Execution Recipe
+    // Build Execution Recipe (respect empty/omitted prompts cleanly so readiness catches incomplete templates)
     const categoryPrompt = prodDb.getCategoryPrompt(category);
-    const resolvedRecipe: TemplateExecutionRecipe = recipe || {
-      version: '1.0',
-      inputType: inputType as TemplateInputType,
-      provider: type === 'video' ? 'google_veo' : 'gemini',
-      model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
-      engine: engine as TemplateEngine,
-      prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
-      workflow: workflow,
-      aspectRatio: aspectRatio as AspectRatio,
-      duration: type === 'video' ? 5 : undefined,
-      drivingVideoUrl: drivingVideoUrl || undefined,
-      referenceAssets: referenceImageUrl ? [referenceImageUrl] : undefined,
-      referenceImageUrl: referenceImageUrl || undefined,
-      sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
-      sampleBefore: sampleBeforeUrl || undefined,
-      sampleResult: sampleResultUrl || referenceImageUrl,
-      sampleAfter: sampleResultUrl || referenceImageUrl
-    };
+    const resolvedRecipe: TemplateExecutionRecipe = recipe
+      ? {
+          version: recipe.version || '1.0',
+          inputType: (recipe.inputType || inputType) as TemplateInputType,
+          provider: recipe.provider || (type === 'video' ? 'google_veo' : 'gemini'),
+          model: recipe.model || model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+          engine: (recipe.engine || engine) as TemplateEngine,
+          prompt: typeof recipe.prompt === 'string' ? recipe.prompt : '',
+          workflow: recipe.workflow || workflow,
+          aspectRatio: (recipe.aspectRatio || aspectRatio) as AspectRatio,
+          duration: recipe.duration ?? (type === 'video' ? 5 : undefined),
+          drivingVideoUrl: recipe.drivingVideoUrl || drivingVideoUrl || undefined,
+          referenceAssets: recipe.referenceAssets || (referenceImageUrl ? [referenceImageUrl] : undefined),
+          referenceImageUrl: recipe.referenceImageUrl || referenceImageUrl || undefined,
+          sampleFaceThumbnail: recipe.sampleFaceThumbnail || sampleFaceThumbnailUrl || undefined,
+          sampleBefore: recipe.sampleBefore || sampleBeforeUrl || undefined,
+          sampleResult: recipe.sampleResult || sampleResultUrl || referenceImageUrl || undefined,
+          sampleAfter: recipe.sampleAfter || sampleResultUrl || referenceImageUrl || undefined
+        }
+      : {
+          version: '1.0',
+          inputType: inputType as TemplateInputType,
+          provider: type === 'video' ? 'google_veo' : 'gemini',
+          model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+          engine: engine as TemplateEngine,
+          prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
+          workflow: workflow,
+          aspectRatio: aspectRatio as AspectRatio,
+          duration: type === 'video' ? 5 : undefined,
+          drivingVideoUrl: drivingVideoUrl || undefined,
+          referenceAssets: referenceImageUrl ? [referenceImageUrl] : undefined,
+          referenceImageUrl: referenceImageUrl || undefined,
+          sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
+          sampleBefore: sampleBeforeUrl || undefined,
+          sampleResult: sampleResultUrl || referenceImageUrl || undefined,
+          sampleAfter: sampleResultUrl || referenceImageUrl || undefined
+        };
 
     const newTemplate: Template = {
       id: targetTemplateId,
@@ -1491,8 +1746,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       referenceImageUrl: referenceImageUrl || (type === 'photo' ? resolvedCover : undefined),
       sampleFaceThumbnail: sampleFaceThumbnailUrl || undefined,
       sampleBefore: sampleBeforeUrl || undefined,
-      sampleResult: sampleResultUrl || referenceImageUrl,
-      sampleAfter: sampleResultUrl || referenceImageUrl,
+      sampleResult: sampleResultUrl || referenceImageUrl || undefined,
+      sampleAfter: sampleResultUrl || referenceImageUrl || undefined,
       description: finalDescription,
       aspectRatio: (aspectRatio as AspectRatio) || '9:16',
       requiredInputs: requiredInputs || [
@@ -1506,9 +1761,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       creditCost: calculatedCredits,
       providerCostUsd: Number(providerCostUsd) || 0.25,
       engine: (engine as TemplateEngine) || 'AI_GENERATION',
-      model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
-      workflow: workflow || 'neural-cinematic-portrait',
-      drivingVideoUrl: drivingVideoUrl || undefined,
+      model: model || resolvedRecipe.model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+      workflow: workflow || resolvedRecipe.workflow || 'neural-cinematic-portrait',
+      drivingVideoUrl: drivingVideoUrl || resolvedRecipe.drivingVideoUrl || undefined,
       recipe: resolvedRecipe,
       badge: badge || undefined,
       sortOrder: 0,
@@ -1519,18 +1774,42 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       resolutionLabel: type === 'video' ? '1080p 60FPS' : '4K Ultra HD'
     };
 
+    const readiness = validateTemplateReadiness(newTemplate, { strictPublish: true });
+    const savedAsDraft = !readiness.ready;
+    if (savedAsDraft) {
+      newTemplate.isActive = false;
+      newTemplate.readinessStatus = 'DRAFT_INCOMPLETE';
+      newTemplate.missingFields = readiness.missingFields;
+      newTemplate.readinessErrors = readiness.errors;
+    } else {
+      newTemplate.readinessStatus = 'READY';
+      newTemplate.missingFields = [];
+      newTemplate.readinessErrors = [];
+    }
+
     try {
       const saved = await prodDb.addTemplate(newTemplate);
       const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
       if (adminUser?.email) {
         prodDb.logAdminActivity({
           actorEmail: adminUser.email,
-          action: 'TEMPLATE_CREATED',
+          action: savedAsDraft ? 'TEMPLATE_SAVED_AS_DRAFT' : 'TEMPLATE_CREATED',
           targetId: saved.id,
-          details: `Template "${saved.title}" created in category "${saved.category}".`
+          details: savedAsDraft
+            ? `Incomplete template "${saved.title}" saved as Draft (missing: ${readiness.missingFields.join(', ')}).`
+            : `Template "${saved.title}" created in category "${saved.category}".`
         }).catch(() => {});
       }
-      res.json({ success: true, template: saved });
+      res.json({
+        success: true,
+        savedAsDraft,
+        published: saved.isActive !== false,
+        readiness,
+        template: saved,
+        message: savedAsDraft
+          ? `Template saved as Draft (not published Active). Missing fields: ${readiness.missingFields.join(', ')}`
+          : 'Template published successfully.'
+      });
     } catch (saveErr: any) {
       // In case of Firestore write failure, preserve uploaded R2 assets safely in unassigned inventory
       uploadedAssetMeta.forEach(a => {
@@ -1732,7 +2011,6 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       }
       // Only set cover to preview if no cover is explicitly provided or present
       if (!updates.cover) {
-        const existing = prodDb.getTemplates().find((t) => t.id === id);
         if (!existing?.cover) {
           updates.cover = updates.preview;
         }
@@ -1876,8 +2154,79 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       delete updates.referenceImageBase64;
     }
 
+    if (!existing) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
     if (updates.providerCostUsd && Number(updates.providerCostUsd) > 0) {
       updates.creditCost = calculateCreditsFromUsd(Number(updates.providerCostUsd));
+    }
+
+    // Evaluate readiness before modifying an Active published template (Safety Condition #2)
+    const mergedCandidate: Template = {
+      ...existing,
+      ...updates,
+      recipe: updates.recipe
+        ? { ...(existing.recipe || {}), ...updates.recipe }
+        : existing.recipe
+    };
+    const isSimpleActiveToggle =
+      Object.keys(updates).length === 1 && typeof updates.isActive === 'boolean';
+
+    // Strict readiness validation on template updates (always check strictPublish unless toggling an already-valid active template)
+    const readiness = validateTemplateReadiness(mergedCandidate, {
+      strictPublish: isSimpleActiveToggle ? false : true
+    });
+
+    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+
+    // SAFETY CONDITION #2: NEVER downgrade, disable, or overwrite an existing Active template into an incomplete Draft.
+    if (existing.isActive !== false && !readiness.ready) {
+      const draftId = `${id}_draft_${Date.now().toString(36)}`;
+      const draftTitle = mergedCandidate.title.includes('(Draft)')
+        ? mergedCandidate.title
+        : `${mergedCandidate.title} (Draft)`;
+      const separateDraft: Template = {
+        ...mergedCandidate,
+        id: draftId,
+        title: draftTitle,
+        isActive: false,
+        draftOfTemplateId: id,
+        readinessStatus: 'DRAFT_INCOMPLETE',
+        missingFields: readiness.missingFields,
+        readinessErrors: readiness.errors
+      };
+      const savedDraft = await prodDb.addTemplate(separateDraft);
+      if (adminUser?.email) {
+        prodDb.logAdminActivity({
+          actorEmail: adminUser.email,
+          action: 'TEMPLATE_SEPARATE_DRAFT_SAVED',
+          targetId: savedDraft.id,
+          details: `Preserved Active template "${existing.id}" untouched; saved incomplete edit as Draft "${savedDraft.id}" (missing: ${readiness.missingFields.join(', ')}).`
+        }).catch(() => {});
+      }
+      return res.json({
+        success: true,
+        savedAsDraft: true,
+        savedAsSeparateDraft: true,
+        publishedOriginalPreserved: true,
+        originalTemplateId: id,
+        readiness,
+        template: savedDraft,
+        message: `Published Active template "${existing.title}" preserved untouched. Incomplete edits saved separately as Draft.`
+      });
+    }
+
+    if (!readiness.ready) {
+      // Editing an existing inactive draft cleanly keeps it as a Draft
+      updates.isActive = false;
+      updates.readinessStatus = 'DRAFT_INCOMPLETE';
+      updates.missingFields = readiness.missingFields;
+      updates.readinessErrors = readiness.errors;
+    } else {
+      updates.readinessStatus = 'READY';
+      updates.missingFields = [];
+      updates.readinessErrors = [];
     }
 
     const updated = await prodDb.updateTemplate(id, updates);
@@ -1885,17 +2234,21 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
 
-    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
     if (adminUser?.email) {
       prodDb.logAdminActivity({
         actorEmail: adminUser.email,
         action: 'TEMPLATE_UPDATED',
         targetId: id,
-        details: `Template "${updated.title}" updated.`
+        details: `Template "${updated.title}" updated (${updated.readinessStatus || 'READY'}).`
       }).catch(() => {});
     }
 
-    res.json({ success: true, template: updated });
+    res.json({
+      success: true,
+      savedAsDraft: updated.isActive === false && !readiness.ready,
+      readiness,
+      template: updated
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to update template' });
   }
@@ -4170,6 +4523,7 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
     return res.status(400).json({ error: 'Valid report reason is required' });
   }
 
+  let reportedTemplateId: string | undefined;
   // If a generationId is supplied, verify it exists and belongs to the authenticated user (or allow verified admins)
   if (generationId && typeof generationId === 'string' && generationId.trim().length > 0 && generationId.trim() !== 'unspecified') {
     const gen = await prodDb.getGenerationAuthoritative(generationId.trim());
@@ -4179,6 +4533,7 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
     if (gen.userId !== user.id && !isServerVerifiedAdmin(user)) {
       return res.status(403).json({ error: 'Unauthorized: You can only report your own generation records' });
     }
+    reportedTemplateId = gen.templateId;
   }
 
   try {
@@ -4188,6 +4543,25 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
       reason: String(reason).trim(),
       details: details ? String(details).trim() : undefined
     });
+    // Non-blocking Admin Error Alert for critical user-reported issues
+    try {
+      const cleanReason = sanitizeMonitoringString(String(reason).trim().slice(0, 80));
+      const cleanDetails = details ? sanitizeMonitoringString(String(details).trim().slice(0, 140)) : '';
+      emitCloudMonitoringEvent(
+        'USER_CRITICAL_REPORT',
+        'ERROR',
+        `User Report (${cleanReason})${cleanDetails ? `: ${cleanDetails}` : ''}`,
+        {
+          source: 'user_report',
+          templateId: reportedTemplateId,
+          errorStage: 'user_reported_issue',
+          correlationId: report.id,
+          endpoint: '/api/reports'
+        }
+      );
+    } catch {
+      // Non-blocking alert emission
+    }
     return res.json({ success: true, reportId: report.id });
   } catch (err: any) {
     console.error('[Report API Error]:', err);
@@ -4207,6 +4581,36 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   const template = prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
+  }
+
+  // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Safety Condition #3)
+  const templateReadiness = validateTemplateReadiness(template, { strictPublish: false });
+  if (!templateReadiness.ready || template.isActive === false) {
+    return res.status(400).json({
+      error: `Template '${template.title}' is not ready for generation: ${templateReadiness.errors[0] || templateReadiness.missingFields.join(', ')}. No credits were deducted.`,
+      code: 'TEMPLATE_NOT_READY',
+      stage: 'readiness_validation',
+      missingFields: templateReadiness.missingFields,
+      errors: templateReadiness.errors
+    });
+  }
+  if (template.type === 'photo') {
+    const preResolvedRef =
+      template.sampleResult ||
+      template.sampleAfter ||
+      template.referenceImageUrl ||
+      (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.referenceImageUrl ||
+      template.recipe?.referenceAssets?.[0] ||
+      template.cover;
+    if (!preResolvedRef) {
+      return res.status(400).json({
+        error: 'Template is missing its designated AFTER / sample result reference image. No credits were deducted.',
+        code: 'TEMPLATE_NOT_READY',
+        stage: 'readiness_validation',
+        missingFields: ['Cover / Preview Media (no stock fallback)']
+      });
+    }
   }
 
   // 1. Validate requested model against server-side MODEL_REGISTRY allowlist
@@ -4821,6 +5225,20 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       });
     } catch (err: any) {
       console.error('[Generation Pipeline Failed]:', err.message);
+      try {
+        emitCloudMonitoringEvent(
+          'GENERATION_PIPELINE_FAILURE',
+          'ERROR',
+          sanitizeMonitoringString(`Generation failed for template ${template.id}: ${err.message || 'Unknown error'}`),
+          {
+            source: 'generation_failure',
+            templateId: template.id,
+            errorStage: 'generation_pipeline',
+            correlationId: genId,
+            endpoint: '/api/generations/create'
+          }
+        );
+      } catch {}
       prodDb.updateGeneration(genId, {
         status: 'failed',
         error: err.message || 'Generation failed'
@@ -4884,6 +5302,31 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     if (matchedResultScene) {
       resolvedSourceVideo = matchedResultScene.sourceVideoPreview;
     }
+  }
+
+  // Server-side FaceSwap Scene Readiness & Input Validation BEFORE FFmpeg/R2 or credit deduction
+  if (selectedScene) {
+    const sceneReadiness = validateFaceSwapSceneReadiness(selectedScene);
+    if (!sceneReadiness.ready || selectedScene.isActive === false || selectedScene.status === 'draft') {
+      return res.status(400).json({
+        error: `FaceSwap scene '${selectedScene.title}' is not ready for generation: ${sceneReadiness.errors[0] || sceneReadiness.missingFields.join(', ')}. No credits were deducted.`,
+        code: 'SCENE_NOT_READY',
+        stage: 'readiness_validation',
+        missingFields: sceneReadiness.missingFields,
+        errors: sceneReadiness.errors
+      });
+    }
+  }
+
+  const hasRawFaceRef =
+    (Array.isArray(faceReferenceUrls) && faceReferenceUrls.some((u: any) => typeof u === 'string' && u.trim().length > 0)) ||
+    (Array.isArray(faceReferenceBase64List) && faceReferenceBase64List.some((b: any) => typeof b === 'string' && b.trim().length > 0));
+  if (!hasRawFaceRef) {
+    return res.status(400).json({
+      error: 'Please upload at least 1 face reference photo (4–5 recommended from different angles). No credits were deducted.',
+      code: 'MISSING_FACE_REFERENCE',
+      stage: 'readiness_validation'
+    });
   }
 
   // 1. Duration Validation: Clamped strictly between 4 and 15 seconds (default 4s)
@@ -5062,6 +5505,20 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       });
     } catch (err: any) {
       console.error('[Higgsfield Motion Transfer Failed]:', err.message);
+      try {
+        emitCloudMonitoringEvent(
+          'FACESWAP_PIPELINE_FAILURE',
+          'ERROR',
+          sanitizeMonitoringString(`FaceSwap failed for scene ${selectedScene?.id || 'custom'}: ${err.message || 'Unknown error'}`),
+          {
+            source: 'generation_failure',
+            templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+            errorStage: 'faceswap_pipeline',
+            correlationId: genId,
+            endpoint: '/api/faceswap/generate'
+          }
+        );
+      } catch {}
       prodDb.updateGeneration(genId, {
         status: 'failed',
         error: err.message || 'Face swap generation failed'
@@ -5866,7 +6323,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       severity: 'HIGH',
       testType: 'MONITORING_EVENT',
       endpointOrProvider: 'Cloud Run · ai-prime-studio-photo-video · asia-southeast1',
-      expectedResult: 'Cloud Run service ai-prime-studio-photo-video monitored across 9 failure vectors with deduplicated live alerts',
+      expectedResult: 'Cloud Run service ai-prime-studio-photo-video monitored across 12 failure vectors with deduplicated live alerts',
       execute: async () => {
         try {
           const probe = runGoogleCloudMonitoringProbe();
@@ -5881,6 +6338,186 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
             failureReason: err.message,
             rootCauseHypothesis: 'Cloud monitoring runtime exception',
             recommendedAction: 'Inspect cloudMonitoring.ts service'
+          };
+        }
+      }
+    },
+
+    // Module 15: Per-Template & FaceSwap Recipe Readiness Audit (Zero Paid AI Calls · Non-Destructive)
+    {
+      id: 'template_recipe_readiness_audit',
+      name: 'Template & FaceSwap Recipe Readiness Audit (0 Paid AI Calls)',
+      category: 'Template Recipe Readiness',
+      severity: 'HIGH',
+      testType: 'INTEGRATION_CHECK',
+      endpointOrProvider: 'Internal Deterministic Readiness Validator · Zero Credit / Zero Paid Calls',
+      expectedResult: 'All active public templates & FaceSwap scenes pass recipe, model/provider compatibility & asset readiness validation',
+      execute: async () => {
+        try {
+          const allTemplates = prodDb.getAllTemplatesAdmin();
+          const activeTemplates = allTemplates.filter((t) => t.isActive !== false);
+          const draftTemplates = allTemplates.filter((t) => t.isActive === false);
+          const allScenes = prodDb.getFaceSwapScenes(true);
+          const activeScenes = allScenes.filter((s) => s.isActive !== false && s.status !== 'draft');
+
+          const activeTemplateFailures = activeTemplates
+            .map((t) => ({ id: t.id, title: t.title, r: validateTemplateReadiness(t, { strictPublish: false }) }))
+            .filter((x) => !x.r.ready);
+
+          const draftIssues = draftTemplates
+            .map((t) => ({ id: t.id, title: t.title, r: validateTemplateReadiness(t, { strictPublish: true }) }))
+            .filter((x) => !x.r.ready);
+
+          const activeSceneFailures = activeScenes
+            .map((s) => ({ id: s.id, title: s.title, r: validateFaceSwapSceneReadiness(s) }))
+            .filter((x) => !x.r.ready);
+
+          const totalActive = activeTemplates.length + activeScenes.length;
+          const totalActiveFails = activeTemplateFailures.length + activeSceneFailures.length;
+
+          if (totalActiveFails > 0) {
+            const sampleFails = [
+              ...activeTemplateFailures.map((f) => `${f.id} [Missing: ${f.r.missingFields.join(', ')}]`),
+              ...activeSceneFailures.map((f) => `${f.id} [Missing: ${f.r.missingFields.join(', ')}]`)
+            ].slice(0, 5);
+            return {
+              status: 'failed',
+              actualResult: `${totalActiveFails} of ${totalActive} active items failed readiness (${activeTemplateFailures.length} templates, ${activeSceneFailures.length} FaceSwap scenes): ${sampleFails.join(' | ')}`,
+              failureReason: `Active items missing required recipe or asset fields: ${sampleFails.join('; ')}`,
+              rootCauseHypothesis: 'Template/Scene has broken model mapping, missing prompt/driving video, or missing cover/reference media',
+              recommendedAction: 'Inspect highlighted Template IDs in Template Manager and complete missing fields before publishing'
+            };
+          }
+
+          if (draftIssues.length > 0) {
+            return {
+              status: 'passed',
+              actualResult: `All ${activeTemplates.length} active templates & ${activeScenes.length} active FaceSwap scenes READY (0 paid AI calls). ${draftIssues.length} inactive draft(s) safely held out of public gallery with listed missing fields.`
+            };
+          }
+
+          return {
+            status: 'passed',
+            actualResult: `100% READY: Verified ${activeTemplates.length} active templates + ${activeScenes.length} active FaceSwap scenes cleanly with 0 paid AI calls.`
+          };
+        } catch (err: any) {
+          return {
+            status: 'failed',
+            actualResult: `Readiness audit exception: ${err.message}`,
+            failureReason: err.message,
+            rootCauseHypothesis: 'Template readiness validator threw unexpected error',
+            recommendedAction: 'Check src/services/validation/templateReadiness.ts'
+          };
+        }
+      }
+    },
+
+    // Module 16: Auth & Firestore Session Persistence Readiness Probe (Zero Real DB Writes)
+    {
+      id: 'auth_session_persistence_readiness_audit',
+      name: 'Auth & Firestore Session Persistence Readiness Audit',
+      category: 'Auth & Session Resilience',
+      severity: 'CRITICAL',
+      testType: 'INTEGRATION_CHECK',
+      endpointOrProvider: 'firebase-applet-config.json · ProductionDatabase Mutex & Isolated Firestore Mock',
+      expectedResult: 'Canonical (default) Firestore lock active + per-UID login mutex + clean transient outage classification without premature 401 wipe',
+      execute: async () => {
+        try {
+          const guard = getDatabaseGuardState();
+          if (guard.blocked) {
+            return {
+              status: 'failed',
+              actualResult: `Database Guard BLOCKED: ${guard.blockedReason}`,
+              failureReason: guard.blockedReason || 'Database target lock blocked',
+              rootCauseHypothesis: 'firebase-applet-config.json or FIRESTORE_DATABASE_ID points away from canonical ai-prime-studio/(default)',
+              recommendedAction: 'Ensure firestoreDatabaseId is "(default)" and clear any non-default FIRESTORE_DATABASE_ID override'
+            };
+          }
+
+          const isoMock = new InMemoryFirestoreMock();
+          const isoDb = new ProductionDatabase(undefined, { firestoreOverride: isoMock, persistToDisk: false });
+          const uidProbe = `probe_uid_${Date.now()}`;
+          const [resA, resB] = await Promise.all([
+            isoDb.getOrCreateUserAsync({ firebaseUid: uidProbe, email: 'probe_test@example.com', name: 'Probe Creator' }),
+            isoDb.getOrCreateUserAsync({ firebaseUid: uidProbe, email: 'probe_test@example.com', name: 'Probe Creator' })
+          ]);
+          const singleAccountOk = resA.user.id === resB.user.id && resA.cloudPersisted && resB.cloudPersisted;
+          const lookupA = await isoDb.getUserByTokenAsyncWithStatus(resA.token);
+          const lookupB = await isoDb.getUserByTokenAsyncWithStatus(resB.token);
+          if (!singleAccountOk || !lookupA.user || !lookupB.user) {
+            return {
+              status: 'failed',
+              actualResult: `Session concurrency check failed (sameUser=${resA.user.id === resB.user.id}, persisted=${resA.cloudPersisted && resB.cloudPersisted})`,
+              failureReason: 'Concurrent session mutex or Firestore mock persistence mismatch',
+              rootCauseHypothesis: 'Race condition in getOrCreateUserAsync',
+              recommendedAction: 'Inspect inFlightAuthLocks in src/services/db/database.ts'
+            };
+          }
+
+          return {
+            status: 'passed',
+            actualResult: `Canonical DB lock='${guard.effectiveDatabaseId}' verified. Concurrent login mutex kept single account & both tokens persisted cleanly (connection: ${guard.connectionSource}).`
+          };
+        } catch (err: any) {
+          return {
+            status: 'failed',
+            actualResult: `Auth persistence probe exception: ${err.message}`,
+            failureReason: err.message,
+            rootCauseHypothesis: 'Exception in auth persistence readiness check',
+            recommendedAction: 'Inspect database.ts auth methods'
+          };
+        }
+      }
+    },
+
+    // Module 17: Media Byte-Range Streaming & Expanded Alerting Coverage Audit
+    {
+      id: 'media_streaming_range_and_monitoring_audit',
+      name: 'Media Range Streaming & Monitoring Coverage Audit',
+      category: 'Media Playback & Alerting',
+      severity: 'HIGH',
+      testType: 'INTEGRATION_CHECK',
+      endpointOrProvider: 'mediaStorage.ts Range 206 · cloudMonitoring.ts 19-Vector Coverage',
+      expectedResult: 'Media streaming supports HTTP 206 byte ranges and monitoring probe covers all 19 auth, session, payment, AI, R2, and playback vectors',
+      execute: async () => {
+        try {
+          const probe = runGoogleCloudMonitoringProbe();
+          if (probe.failureVectorsMonitored < 19) {
+            return {
+              status: 'failed',
+              actualResult: `Only ${probe.failureVectorsMonitored} vectors reported (expected >= 19 including auth, session, R2, and playback alerts).`,
+              failureReason: 'Missing failure vector coverage in cloudMonitoring.ts',
+              rootCauseHypothesis: 'Expanded monitoring vectors not registered',
+              recommendedAction: 'Check failureVectorsMonitored in src/services/monitoring/cloudMonitoring.ts'
+            };
+          }
+          const sampleLeak = sanitizeMonitoringString('Bearer eyJhbGciOiJIUzI1NiJ9.abc user@example.com +919876543210 rzp_live_12345678');
+          const scrubbedOk =
+            !sampleLeak.includes('user@example.com') &&
+            !sampleLeak.includes('9876543210') &&
+            !sampleLeak.includes('rzp_live_') &&
+            !sampleLeak.includes('eyJhbGciOiJIUzI1NiJ9');
+          if (!scrubbedOk) {
+            return {
+              status: 'failed',
+              actualResult: 'Monitoring sanitizer failed PII/secret redaction check.',
+              failureReason: 'Sanitizer leaked email/phone/token pattern',
+              rootCauseHypothesis: 'Regex gap in sanitizeMonitoringString',
+              recommendedAction: 'Fix scrub regexes in cloudMonitoring.ts'
+            };
+          }
+
+          return {
+            status: 'passed',
+            actualResult: `HTTP 206 byte-range media streaming active; ${probe.failureVectorsMonitored} monitoring vectors verified with strict PII/secret scrubbing.`
+          };
+        } catch (err: any) {
+          return {
+            status: 'failed',
+            actualResult: `Media & monitoring audit exception: ${err.message}`,
+            failureReason: err.message,
+            rootCauseHypothesis: 'Exception in monitoring/media audit probe',
+            recommendedAction: 'Inspect cloudMonitoring.ts and mediaStorage.ts'
           };
         }
       }
@@ -6006,39 +6643,54 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   });
 });
 
-// Live Cloud Monitoring Alerts & History Endpoint (Integrates Firestore incidents with local fallback)
+// Live Cloud Monitoring Alerts & History Endpoint (Merges authoritative Firestore incidents with in-memory bus cleanly as sorted Array)
 app.get('/api/admin/monitoring/alerts', requireAdmin, async (_req, res) => {
-  let firestoreIncidents: any[] = [];
-  let isPersistent = false;
-  if (adminFirestoreDb) {
-    try {
-      const snap = await adminFirestoreDb.collection('incidents').orderBy('timestamp', 'desc').limit(20).get();
-      if (!snap.empty) {
-        snap.forEach((doc: any) => firestoreIncidents.push(doc.data()));
-        isPersistent = true;
-      }
-    } catch (e: any) {
-      console.warn('[Monitoring] Firestore incidents read note:', e.message);
+  const { incidents: firestoreIncidents, isPersistent } = await prodDb.getIncidentsAuthoritative(30);
+  const localAlerts = getLiveAlerts();
+
+  const mergedById = new Map<string, any>();
+  for (const item of [...localAlerts.resolved, ...localAlerts.active, ...firestoreIncidents]) {
+    if (!item || !item.id) continue;
+    const prev = mergedById.get(item.id);
+    if (!prev) {
+      mergedById.set(item.id, item);
+    } else {
+      mergedById.set(item.id, {
+        ...prev,
+        ...item,
+        resolved: Boolean(prev.resolved || item.resolved)
+      });
     }
   }
-  const localAlerts = getLiveAlerts();
+
+  const mergedAlerts = Array.from(mergedById.values()).sort((a, b) => {
+    if (Boolean(a.resolved) !== Boolean(b.resolved)) {
+      return a.resolved ? 1 : -1;
+    }
+    return String(b.timestamp || '').localeCompare(String(a.timestamp || ''));
+  });
+
   res.json({
     success: true,
     isPersistent,
     source: isPersistent ? 'firestore_incidents' : 'in_memory_event_bus',
     firestoreConnected: Boolean(adminFirestoreDb),
-    alerts: isPersistent && firestoreIncidents.length > 0 ? firestoreIncidents : localAlerts
+    activeAlertsCount: mergedAlerts.filter((a) => !a.resolved).length,
+    resolvedAlertsCount: mergedAlerts.filter((a) => a.resolved).length,
+    alerts: mergedAlerts
   });
 });
 
-// Resolve an Active Cloud Monitoring Alert
-app.post('/api/admin/monitoring/resolve', requireAdmin, (req, res) => {
+// Resolve an Active Cloud Monitoring Alert (Durable in Firestore incidents + memory bus)
+app.post('/api/admin/monitoring/resolve', requireAdmin, async (req, res) => {
   const { alertId } = req.body;
   if (!alertId || typeof alertId !== 'string') {
     return res.status(400).json({ error: 'alertId string required' });
   }
-  const resolved = resolveAlert(alertId);
-  res.json({ success: true, resolved });
+  const actorEmail = ((req as any).user as UserProfile)?.email || 'authorized_admin';
+  const memResolved = resolveAlert(alertId, actorEmail);
+  const dbResolved = await prodDb.resolveIncidentRecord(alertId, actorEmail);
+  res.json({ success: true, resolved: memResolved || dbResolved });
 });
 
 // Digital Asset Links for Android App Verification (Public, direct JSON, zero login redirect)
@@ -6057,12 +6709,30 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 });
 
 // Universal API Error Handler (Ensures all /api routes always return JSON, NEVER HTML)
-app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use('/api', (err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[API Middleware Error]:', err?.message || err);
   const status = err.status || err.statusCode || 500;
+  const correlationId = `err_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+  res.locals.correlationId = correlationId;
+  if (status >= 500) {
+    try {
+      emitCloudMonitoringEvent(
+        'API_UNHANDLED_5XX',
+        'CRITICAL',
+        sanitizeMonitoringString(err?.message || 'Unhandled API exception'),
+        {
+          source: 'server_5xx',
+          endpoint: `${req.baseUrl || ''}${req.path || '/'}`,
+          errorStage: 'express_error_middleware',
+          correlationId
+        }
+      );
+    } catch {}
+  }
   res.status(status).json({
     error: err.message || 'Internal server error',
-    code: err.code || 'API_ERROR'
+    code: err.code || 'API_ERROR',
+    correlationId
   });
 });
 

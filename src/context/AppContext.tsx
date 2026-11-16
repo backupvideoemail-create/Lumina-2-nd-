@@ -15,6 +15,7 @@ import {
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
 import { isAuthorizedAdminEmail } from '../config/adminConfig';
+import { mediaPlaybackCoordinator } from '../services/media/mediaPlaybackManager';
 
 export type PendingAction =
   | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
@@ -278,6 +279,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [adminDashboardOpen, setAdminDashboardOpen] = useState(false);
   const [isIntroEligible, setIsIntroEligible] = useState<boolean>(true);
 
+  useEffect(() => {
+    mediaPlaybackCoordinator.setActiveScreen(activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    const anyBlockingOverlayOpen = Boolean(
+      selectedTemplate ||
+      faceSwapModalOpen ||
+      authModalOpen ||
+      activeGeneration ||
+      adminDashboardOpen ||
+      diagnosticsModalOpen ||
+      templateManagerOpen
+    );
+    mediaPlaybackCoordinator.setModalLock('app_overlay', anyBlockingOverlayOpen);
+  }, [
+    selectedTemplate,
+    faceSwapModalOpen,
+    authModalOpen,
+    activeGeneration,
+    adminDashboardOpen,
+    diagnosticsModalOpen,
+    templateManagerOpen
+  ]);
+
   // Active Plan Check: strictly require active or trial subscription (cancelled or expired do NOT count)
   const isCancelledOrExpired = Boolean(
     activeSubscription &&
@@ -380,6 +406,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     fetchFaceSwapScenes();
   }, [fetchFaceSwapScenes]);
+
+  // Privacy-Safe Per-Session Activity Counter (Asia/Kolkata IST · Zero PII/IP/Fingerprints)
+  useEffect(() => {
+    try {
+      const sentKey = 'lumina_visit_pinged_session';
+      if (sessionStorage.getItem(sentKey)) return;
+      let visitNonce = sessionStorage.getItem('lumina_visit_nonce');
+      if (!visitNonce) {
+        visitNonce =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID().replace(/-/g, '')
+            : `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        sessionStorage.setItem('lumina_visit_nonce', visitNonce);
+      }
+      sessionStorage.setItem(sentKey, '1');
+      const token = localStorage.getItem('lumina_session_token');
+      fetch('/api/activity/visit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ visitNonce })
+      }).catch(() => {});
+    } catch {
+      // Never block UI if sessionStorage/fetch unavailable
+    }
+  }, []);
+
+  // Safe Client Runtime Error Reporter (Scrubbed, Rate-Limited, Ignores HMR/ResizeObserver Noise)
+  useEffect(() => {
+    let reportedCount = 0;
+    const sendSafeReport = (rawMessage: string, errorStage: string) => {
+      if (reportedCount >= 3) return;
+      const msg = String(rawMessage || '').trim();
+      if (!msg || /ResizeObserver loop|WebSocket|vite-hmr|Loading chunk/i.test(msg)) return;
+      reportedCount += 1;
+      fetch('/api/errors/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg.slice(0, 220),
+          errorStage,
+          endpoint: typeof window !== 'undefined' ? window.location.pathname : '/'
+        })
+      }).catch(() => {});
+    };
+
+    const onWindowError = (event: ErrorEvent) => {
+      sendSafeReport(event?.message || 'Uncaught runtime error', 'window_onerror');
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reasonMsg =
+        event?.reason instanceof Error
+          ? event.reason.message
+          : typeof event?.reason === 'string'
+          ? event.reason
+          : 'Unhandled promise rejection';
+      sendSafeReport(reasonMsg, 'unhandled_rejection');
+    };
+
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
 
   // Fetch User & Wallet (Only if session token exists)
   const refreshUserData = useCallback(async () => {

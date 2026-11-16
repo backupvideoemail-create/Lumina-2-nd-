@@ -1,11 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Sparkles, Video, Wand2, Eye, Play, Flame } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
+import {
+  getNetworkPlaybackProfile,
+  mediaPlaybackCoordinator,
+  reportMediaPlaybackIssue
+} from '../services/media/mediaPlaybackManager';
 
 export const FaceSwapSceneGallery: React.FC = () => {
+  const [activeScenePreviewId, setActiveScenePreviewId] = useState<string | null>(null);
+  const networkProfile = getNetworkPlaybackProfile();
   const {
     faceSwapScenes,
     templates,
@@ -129,20 +136,69 @@ export const FaceSwapSceneGallery: React.FC = () => {
                   : 'border-white/10 hover:border-white/20'
               }`}
             >
-              {/* Media Card Preview */}
+              {/* Media Card Preview (Zero simultaneous autoPlay storm; single active preview only on demand/hover) */}
               <div
                 onClick={() => handlePreviewScene(scene)}
+                onMouseEnter={() => {
+                  if (isVideo && networkProfile.allowAutoPlay && mediaPlaybackCoordinator.requestPlay(`faceswap_gallery_${scene.id}`)) {
+                    setActiveScenePreviewId(scene.id);
+                  }
+                }}
+                onMouseLeave={() => {
+                  if (activeScenePreviewId === scene.id) {
+                    setActiveScenePreviewId(null);
+                    mediaPlaybackCoordinator.releasePlay(`faceswap_gallery_${scene.id}`);
+                  }
+                }}
                 className="relative aspect-[9/13] w-full bg-stone-950 overflow-hidden cursor-pointer group"
               >
                 {isVideo ? (
-                  <video
-                    src={previewMedia}
-                    muted
-                    loop
-                    playsInline
-                    autoPlay
-                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
-                  />
+                  activeScenePreviewId === scene.id ? (
+                    <video
+                      src={previewMedia}
+                      poster={scene.sampleFace && !isVideoMedia(scene.sampleFace) ? scene.sampleFace : undefined}
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                      preload="metadata"
+                      onError={() => {
+                        setActiveScenePreviewId(null);
+                        reportMediaPlaybackIssue({
+                          vector: 'MEDIA_PLAYBACK_FAILURE',
+                          message: `FaceSwap scene preview failed (${scene.id})`,
+                          templateId: scene.id,
+                          errorStage: 'faceswap_gallery_preview',
+                          endpoint: previewMedia
+                        });
+                      }}
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
+                    />
+                  ) : (
+                    <>
+                      {scene.sampleFace && !isVideoMedia(scene.sampleFace) ? (
+                        <img
+                          src={scene.sampleFace}
+                          alt={scene.title}
+                          loading="lazy"
+                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
+                        />
+                      ) : (
+                        <video
+                          src={previewMedia}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                      )}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-md border border-white/25 flex items-center justify-center text-white shadow-lg">
+                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                        </div>
+                      </div>
+                    </>
+                  )
                 ) : (
                   <img
                     src={previewMedia}

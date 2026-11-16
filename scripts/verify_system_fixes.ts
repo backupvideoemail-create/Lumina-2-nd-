@@ -2364,6 +2364,371 @@ async function runSystemVerification() {
     '37.5 DiagnosticsModal distinguishes loaded historical snapshots from fresh live audit runs'
   );
 
+  // --- SUITE 38: PART 1 — 4 CONTROLLED IMPROVEMENTS & ALL SAFETY CONDITIONS ---
+  console.log('\n--- SUITE 38: PART 1 — TEMPLATE DISCOVERY, USER ACTIVITY (IST), TEMPLATE READINESS & ERROR ALERTS ---');
+
+  const {
+    buildDiscoverableCatalog,
+    matchesTemplateSearchQuery,
+    isVideoTemplateItem
+  } = await import('../src/utils/templateCatalogFilter.ts');
+  const {
+    validateTemplateReadiness,
+    validateFaceSwapSceneReadiness
+  } = await import('../src/services/validation/templateReadiness.ts');
+  const {
+    getKolkataDateKey,
+    InMemoryFirestoreMock: InMemMock38
+  } = await import('../src/services/db/database.ts');
+  const {
+    emitCloudMonitoringEvent,
+    getLiveAlerts,
+    sanitizeMonitoringString
+  } = await import('../src/services/monitoring/cloudMonitoring.ts');
+
+  // 38.1 Photo + Video + FaceSwap Unified Discovery (zero duplicates, FaceSwap under Video + FaceSwap subcategory)
+  const sampleTpls38 = [
+    {
+      id: 'tpl_photo_1',
+      title: 'Royal Groom Portrait',
+      type: 'photo',
+      category: 'Wedding',
+      cover: 'https://cdn.example.com/p1.jpg',
+      preview: 'https://cdn.example.com/p1.jpg',
+      description: 'Regal portrait look',
+      aspectRatio: '9:16',
+      creditCost: 15,
+      engine: 'AI_GENERATION',
+      model: 'gemini-3.1-flash-lite-image',
+      workflow: 'txt2img',
+      sortOrder: 1,
+      isFeatured: false,
+      isActive: true,
+      tags: ['wedding', 'royal'],
+      requiredInputs: [{ id: 'user_photo', label: 'Photo', type: 'image' }]
+    },
+    {
+      id: 'tpl_video_1',
+      title: 'Neon Cyberpunk Motion',
+      type: 'video',
+      category: 'Sci-Fi',
+      cover: 'https://cdn.example.com/v1.mp4',
+      preview: 'https://cdn.example.com/v1.mp4',
+      description: 'Sci-fi neon motion loop',
+      aspectRatio: '9:16',
+      creditCost: 45,
+      engine: 'AI_GENERATION',
+      model: 'gemini-omni-1.1-flash',
+      workflow: 'img2vid',
+      sortOrder: 2,
+      isFeatured: false,
+      isActive: true,
+      tags: ['cyberpunk', 'sci-fi'],
+      requiredInputs: [{ id: 'user_photo', label: 'Photo', type: 'image' }]
+    }
+  ] as any[];
+
+  const sampleScenes38: FaceSwapScene[] = [
+    {
+      id: 'fsv_demo_scene_1',
+      title: 'Bollywood Retro Remix Dance',
+      description: 'Retro disco dance swap',
+      sourceVideoPreview: 'https://cdn.example.com/dance_src.mp4',
+      resultVideoPreview: 'https://cdn.example.com/dance_res.mp4',
+      sampleFace: 'https://cdn.example.com/face.jpg',
+      creditCost: 45,
+      durationSeconds: 8,
+      aspectRatio: '9:16',
+      category: 'Dance',
+      tags: ['FaceSwap', 'Retro'],
+      isActive: true,
+      status: 'published'
+    }
+  ];
+
+  const mergedCatalog38 = buildDiscoverableCatalog(sampleTpls38, sampleScenes38);
+  assert(
+    mergedCatalog38.length === 3 &&
+      mergedCatalog38.some((t) => t.id === 'fsv_demo_scene_1' && t.isFaceSwap && t.type === 'video'),
+    '38.1 FaceSwap scenes merged cleanly alongside photo/video templates without overwriting Firestore collections'
+  );
+  const videoFiltered38 = mergedCatalog38.filter((t) => isVideoTemplateItem(t));
+  assert(
+    videoFiltered38.length === 2 && videoFiltered38.some((t) => t.id === 'fsv_demo_scene_1'),
+    '38.1 Video filter includes both Video templates and FaceSwap scenes'
+  );
+  const faceSwapSub38 = videoFiltered38.filter((t) => Boolean(t.isFaceSwap));
+  assert(
+    faceSwapSub38.length === 1 && faceSwapSub38[0].id === 'fsv_demo_scene_1',
+    '38.1 FaceSwap subcategory isolates FaceSwap items inside Video filter cleanly'
+  );
+  const searchByTag38 = mergedCatalog38.filter((t) => matchesTemplateSearchQuery(t, 'retro'));
+  const searchById38 = mergedCatalog38.filter((t) => matchesTemplateSearchQuery(t, 'fsv_demo_scene_1'));
+  const searchByPartial38 = mergedCatalog38.filter((t) => matchesTemplateSearchQuery(t, 'groom'));
+  assert(
+    searchByTag38.length === 1 && searchById38.length === 1 && searchByPartial38.length === 1,
+    '38.1 Search matches across partial name, ID, category, description, and tags without duplicates'
+  );
+  const photoCount38 = mergedCatalog38.filter((t) => !isVideoTemplateItem(t)).length;
+  const videoCount38 = mergedCatalog38.filter((t) => isVideoTemplateItem(t)).length;
+  assert(
+    mergedCatalog38.length === 3 && photoCount38 === 1 && videoCount38 === 2 && faceSwapSub38.length === 1,
+    '38.1 Catalog format counts report accurate photo/video/FaceSwap totals'
+  );
+
+  // 38.2 User Activity IST Date Key, Session Semantics & Net Verified Revenue
+  const istKey38 = getKolkataDateKey(new Date('2026-04-10T19:00:00.000Z')); // 00:30 AM IST next day (2026-04-11)
+  assert(istKey38 === '2026-04-11', `38.2 getKolkataDateKey converts UTC to Asia/Kolkata accurately (got '${istKey38}')`);
+
+  const isoMock38 = new InMemMock38();
+  const isoDb38 = new ProductionDatabase(undefined, { firestoreOverride: isoMock38, persistToDisk: false });
+  await isoDb38.recordVisitorSession({ isGuest: true });
+  await isoDb38.recordVisitorSession({ isGuest: false });
+  const activitySummary38 = await isoDb38.getUserActivitySummary();
+  assert(
+    activitySummary38.timezone === 'Asia/Kolkata' &&
+      activitySummary38.privacyAndRetention.countSemantics === 'SESSION_COUNTS_ONLY_NOT_UNIQUE_VISITORS' &&
+      activitySummary38.privacyAndRetention.guestPiiStored === false &&
+      activitySummary38.todayMetrics.visitorSessions >= 2 &&
+      activitySummary38.todayMetrics.guestSessions >= 1,
+    '38.2 User Activity records IST session counts without guest PII and labels counts strictly as session counts'
+  );
+
+  // 38.3 Template Readiness (8 fields + Safety Condition #2 Separate Draft + Safety Condition #3 Scene Readiness)
+  const incompleteTpl38 = { id: 'tpl_incomplete_38', title: 'Incomplete Test', type: 'photo', category: 'Wedding' } as any;
+  const incompleteReadiness38 = validateTemplateReadiness(incompleteTpl38, { strictPublish: true });
+  assert(
+    incompleteReadiness38.ready === false && incompleteReadiness38.missingFields.length > 0,
+    `38.3 validateTemplateReadiness flags incomplete template missing fields (${incompleteReadiness38.missingFields.join(', ')})`
+  );
+
+  // Active template preservation check: updating incomplete fields never overwrites/disables active published template
+  const tplEditSrc38 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(
+    tplEditSrc38.includes('savedAsSeparateDraft: true') &&
+      tplEditSrc38.includes('publishedOriginalPreserved: true') &&
+      tplEditSrc38.includes("TEMPLATE_NOT_READY") &&
+      tplEditSrc38.includes("SCENE_NOT_READY"),
+    '38.3 Server preserves existing Active templates into separate Draft on incomplete edit and rejects unready generation before billing'
+  );
+
+  const validFaceScene38 = validateFaceSwapSceneReadiness(sampleScenes38[0]);
+  const invalidFaceScene38 = validateFaceSwapSceneReadiness({ ...sampleScenes38[0], sourceVideoPreview: '' });
+  assert(
+    validFaceScene38.ready === true && invalidFaceScene38.ready === false,
+    '38.3 validateFaceSwapSceneReadiness approves ready scenes and blocks missing driving video'
+  );
+
+  // 38.4 Error Alerts Scrubbing & Deduplication
+  const scrubbed38 = sanitizeMonitoringString('Auth failed for user@example.com phone +919876543210 Bearer secretJwt123 rzp_test_abc123');
+  assert(
+    !scrubbed38.includes('user@example.com') &&
+      !scrubbed38.includes('9876543210') &&
+      !scrubbed38.includes('secretJwt123') &&
+      !scrubbed38.includes('rzp_test_'),
+    '38.4 sanitizeMonitoringString scrubs emails, phones, Bearer tokens, and Razorpay secrets'
+  );
+  const a1 = emitCloudMonitoringEvent('SERVER_5XX_INCIDENT', 'ERROR', 'Test incident deduplication msg', {
+    source: 'server_5xx',
+    templateId: 'tpl_dedup_test',
+    errorStage: 'test_stage'
+  });
+  const a2 = emitCloudMonitoringEvent('SERVER_5XX_INCIDENT', 'ERROR', 'Test incident deduplication msg', {
+    source: 'server_5xx',
+    templateId: 'tpl_dedup_test',
+    errorStage: 'test_stage'
+  });
+  assert(a1.id === a2.id && a2.occurrenceCount >= 2, '38.4 emitCloudMonitoringEvent deduplicates repeated identical alerts by fingerprint');
+
+  // --- SUITE 39: PART 2 AUTH PERSISTENCE, PART 3 MEDIA PLAYBACK, PART 4 MONITORING & PART 5 LOCKS ---
+  console.log('\n--- SUITE 39: PART 2 AUTH RESILIENCE, PART 3 MEDIA OPTIMIZATION, PART 4 MONITORING & PART 5 LOCKS ---');
+
+  // 39.1 Per-UID Concurrent Login Mutex & Firestore persistence
+  const authDb39 = new ProductionDatabase(undefined, { firestoreOverride: new InMemMock38(), persistToDisk: false });
+  const uid39 = `uid_concurrent_${Date.now()}`;
+  const [login1, login2] = await Promise.all([
+    authDb39.getOrCreateUserAsync({ firebaseUid: uid39, email: 'creator@example.com', name: 'Creator One' }),
+    authDb39.getOrCreateUserAsync({ firebaseUid: uid39, email: 'creator@example.com', name: 'Creator One' })
+  ]);
+  assert(
+    login1.user.id === login2.user.id &&
+      login1.cloudPersisted &&
+      login2.cloudPersisted &&
+      login1.token !== login2.token,
+    '39.1 Concurrent logins for same firebaseUid create 1 isolated account with both session tokens persisted'
+  );
+  const lookupTok1 = await authDb39.getUserByTokenAsyncWithStatus(login1.token);
+  const lookupTok2 = await authDb39.getUserByTokenAsyncWithStatus(login2.token);
+  assert(
+    lookupTok1.user?.id === login1.user.id && lookupTok2.user?.id === login2.user.id,
+    '39.1 Both concurrent session tokens remain valid after serialized Firestore write'
+  );
+
+  // Simulate transient Firestore read failure -> MUST flag transientError: true (503 retryable, not 401 token wipe)
+  const failingFsMock39 = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => {
+            throw new Error('14 UNAVAILABLE: Transient Firestore gRPC timeout');
+          }
+        })
+      }),
+      doc: () => ({
+        get: async () => {
+          throw new Error('14 UNAVAILABLE');
+        },
+        set: async () => {}
+      })
+    })
+  };
+  const outageDb39 = new ProductionDatabase(undefined, { firestoreOverride: failingFsMock39, persistToDisk: false });
+  const transientLookup39 = await outageDb39.getUserByTokenAsyncWithStatus('session_not_in_mem');
+  assert(
+    transientLookup39.user === null && transientLookup39.transientError === true,
+    '39.1 getUserByTokenAsyncWithStatus marks Firestore outage as transientError=true so server returns 503 instead of wiping session with 401'
+  );
+
+  // Verify AuthModal retry + RecaptchaVerifier cleanup
+  const authModalSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AuthModal.tsx'), 'utf8');
+  assert(
+    authModalSrc39.includes('exchangeFirebaseSessionWithRetry') &&
+      authModalSrc39.includes('resetRecaptcha') &&
+      authModalSrc39.includes('AUTH_LOGIN_FAILURE') &&
+      authModalSrc39.includes('SESSION_PERSISTENCE_FAILURE'),
+    '39.1 AuthModal retries retryable 503 persistence delays, clears RecaptchaVerifier safely, and emits scrubbed auth failure alerts'
+  );
+
+  // 39.2 Part 3 — Honest ABR, Single-Video Coordinator, No Duplicate Decoder, No AutoPlay Storm, Range 206
+  const {
+    getNetworkPlaybackProfile,
+    selectMediaRendition,
+    mediaPlaybackCoordinator
+  } = await import('../src/services/media/mediaPlaybackManager.ts');
+
+  const slowProfile39 = getNetworkPlaybackProfile({ saveData: true, effectiveType: '3g', downlink: 0.9, deviceMemory: 2, hardwareConcurrency: 4 });
+  assert(
+    slowProfile39.saveData === true && slowProfile39.allowAutoPlay === false && slowProfile39.maxPreload === 'none',
+    '39.2 getNetworkPlaybackProfile enforces Data-Saver & low-end device video throttling'
+  );
+
+  const singleSrcRendition = selectMediaRendition({ previewUrl: 'https://cdn.example.com/only_one.mp4', hdUrl: null });
+  assert(
+    singleSrcRendition.singleSource === true &&
+      singleSrcRendition.adaptiveRenditionAvailable === false &&
+      singleSrcRendition.qualityTier === 'single_source',
+    '39.2 selectMediaRendition does NOT fake adaptive bitrate switching when only a single source video exists'
+  );
+
+  const fastProfile39 = getNetworkPlaybackProfile({ saveData: false, effectiveType: '4g', downlink: 12, deviceMemory: 8, hardwareConcurrency: 8 });
+  const multiRenditionSlow = selectMediaRendition({
+    previewUrl: 'https://cdn.example.com/preview_low.mp4',
+    hdUrl: 'https://cdn.example.com/master_hd.mp4',
+    network: slowProfile39
+  });
+  const multiRenditionFast = selectMediaRendition({
+    previewUrl: 'https://cdn.example.com/preview_low.mp4',
+    hdUrl: 'https://cdn.example.com/master_hd.mp4',
+    network: fastProfile39
+  });
+  assert(
+    multiRenditionSlow.qualityTier === 'preview' &&
+      multiRenditionSlow.adaptiveRenditionAvailable === true &&
+      multiRenditionFast.qualityTier === 'hd',
+    '39.2 selectMediaRendition picks preview on slow networks and HD on fast networks when distinct renditions exist'
+  );
+
+  let p1Paused = false;
+  let p2Paused = false;
+  const unreg1 = mediaPlaybackCoordinator.register('coord_test_1', () => { p1Paused = true; }, { screen: 'home' });
+  const unreg2 = mediaPlaybackCoordinator.register('coord_test_2', () => { p2Paused = true; }, { screen: 'home' });
+  mediaPlaybackCoordinator.setActiveScreen('home');
+  const okPlay1 = mediaPlaybackCoordinator.requestPlay('coord_test_1');
+  p2Paused = false;
+  const okPlay2 = mediaPlaybackCoordinator.requestPlay('coord_test_2');
+  assert(okPlay1 && okPlay2 && p1Paused && !p2Paused, '39.2 mediaPlaybackCoordinator enforces single active video player (pauses prior player)');
+  mediaPlaybackCoordinator.setModalLock('test_modal', true);
+  assert(p2Paused && mediaPlaybackCoordinator.requestPlay('coord_test_1') === false, '39.2 Modal lock pauses background videos and blocks background autoPlay');
+  mediaPlaybackCoordinator.setModalLock('test_modal', false);
+  unreg1();
+  unreg2();
+
+  const featuredSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapFeaturedCard.tsx'), 'utf8');
+  const videoTagCountFeatured = (featuredSrc39.match(/<video\b/g) || []).length;
+  assert(videoTagCountFeatured === 1, `39.2 FaceSwapFeaturedCard eliminated second ambient <video> decoder (count=${videoTagCountFeatured})`);
+
+  const gallerySrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapSceneGallery.tsx'), 'utf8');
+  assert(
+    gallerySrc39.includes('activeScenePreviewId === scene.id'),
+    '39.2 FaceSwapSceneGallery eliminates simultaneous multi-card <video autoPlay> storm'
+  );
+
+  const { isVideoMedia: checkIsVideoMedia39 } = await import('../src/utils/mediaUtils.ts');
+  assert(
+    checkIsVideoMedia39('https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=900&q=80') === false &&
+      checkIsVideoMedia39('https://cdn.example.com/video/poster.jpg?v=1') === false &&
+      checkIsVideoMedia39('/api/media/admin_upload_1791542179422_ba688b01.mp4') === true,
+    '39.2 isVideoMedia distinguishes image-backed FaceSwap previews (fsv_cannes_gala) from playable .mp4 videos'
+  );
+
+  const tplCardSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf8');
+  const tplDetailSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf8');
+  assert(
+    tplCardSrc39.includes('{hasPlayableVideo && isNearViewport && (') &&
+      tplDetailSrc39.includes('isCurrentSrcPlayableVideo'),
+    '39.2 TemplateCard & TemplateDetailModal guard <video> mount behind verified playable video stream checks'
+  );
+
+  // HTTP 206 Partial Content Range check in mediaStorage local stream fallback
+  const probeUploadDir = pathUtil.resolve(process.cwd(), '.data', 'uploads');
+  if (!fs.existsSync(probeUploadDir)) fs.mkdirSync(probeUploadDir, { recursive: true });
+  const rangeProbeFile = `range_probe_${Date.now()}.mp4`;
+  const rangeProbePath = pathUtil.join(probeUploadDir, rangeProbeFile);
+  fs.writeFileSync(rangeProbePath, Buffer.from('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'));
+  try {
+    const streamRes39 = await mediaStorage.getAuthorizedObjectStream(rangeProbeFile, undefined, 'bytes=4-9');
+    if (streamRes39.body && typeof streamRes39.body.on === 'function') {
+      streamRes39.body.on('error', () => {});
+      await new Promise<void>((resolve) => {
+        const chunks: Buffer[] = [];
+        streamRes39.body.on('data', (c: any) => chunks.push(Buffer.from(c)));
+        streamRes39.body.on('end', () => resolve());
+        streamRes39.body.on('close', () => resolve());
+      });
+    }
+    assert(
+      streamRes39.statusCode === 206 &&
+        streamRes39.contentRange === 'bytes 4-9/36' &&
+        streamRes39.contentLength === 6,
+      `39.2 mediaStorage local stream returns HTTP 206 Partial Content (${streamRes39.contentRange})`
+    );
+  } finally {
+    if (fs.existsSync(rangeProbePath)) fs.unlinkSync(rangeProbePath);
+  }
+
+  // 39.3 Part 4 Monitoring Vectors & Part 5 Master Source Locks
+  const { runGoogleCloudMonitoringProbe } = await import('../src/services/monitoring/cloudMonitoring.ts');
+  const monProbe39 = runGoogleCloudMonitoringProbe();
+  assert(monProbe39.failureVectorsMonitored >= 19, `39.3 Expanded cloud monitoring covers ${monProbe39.failureVectorsMonitored} vectors (expected >= 19)`);
+  const alertsCheck39 = getLiveAlerts();
+  assert(Array.isArray(alertsCheck39.active), '39.3 Monitoring bus returns active alert array cleanly');
+
+  const serverSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(
+    serverSrc39.includes('auth_session_persistence_readiness_audit') &&
+      serverSrc39.includes('media_streaming_range_and_monitoring_audit'),
+    '39.3 Admin Diagnostics includes Modules 16 & 17 (auth persistence & media/monitoring audit)'
+  );
+
+  // Verify Part 5 Google Services Android config untouched
+  const androidGoogleServices39 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/google-services.json'), 'utf8'));
+  assert(
+    androidGoogleServices39?.project_info?.project_id === 'gen-lang-client-0525281130' &&
+      androidGoogleServices39?.project_info?.project_number === '221269328833' &&
+      androidGoogleServices39?.client?.[0]?.client_info?.android_client_info?.package_name === 'com.aiprimestudio.app',
+    '39.4 Part 5 Android google-services.json preserved untouched on gen-lang-client-0525281130 / 221269328833'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

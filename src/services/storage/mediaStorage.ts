@@ -25,6 +25,18 @@ import { adminFirestoreDb } from '../db/database.ts';
 
 const UPLOADS_DIR = path.resolve(process.cwd(), '.data', 'uploads');
 
+type StorageMonitoringReporter = (
+  severity: 'CRITICAL' | 'ERROR' | 'WARNING',
+  message: string,
+  context?: Record<string, any>
+) => void;
+
+let storageMonitoringReporter: StorageMonitoringReporter | null = null;
+
+export function configureStorageMonitoring(reporter: StorageMonitoringReporter | null): void {
+  storageMonitoringReporter = reporter;
+}
+
 export interface StoredMediaMetadata {
   fileId: string;
   originalName: string;
@@ -569,6 +581,13 @@ export class MediaStorageService {
         console.error('[MediaStorage] R2 PutObject warning:', err.message);
         r2UploadError = err.message;
         provider = 'local';
+        storageMonitoringReporter?.('ERROR', `Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}'`, {
+          source: 'storage_r2',
+          errorStage: 'r2_put_object',
+          bucket: this.r2Config.bucketName,
+          fileId: filename,
+          errorMessage: err.message
+        });
         // Requirement: Do not silently disguise failed R2 upload as success
         throw new Error(`Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}': ${err.message}`);
       }
@@ -631,6 +650,12 @@ export class MediaStorageService {
         return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
       } catch (err: any) {
         console.error('[MediaStorage] getSignedUrl error:', err.message);
+        storageMonitoringReporter?.('ERROR', `R2 signed GET URL generation failed for '${safeName}'`, {
+          source: 'storage_r2',
+          errorStage: 'r2_signed_url',
+          fileId: safeName,
+          errorMessage: err.message
+        });
       }
     }
 
@@ -687,7 +712,13 @@ export class MediaStorageService {
         if (r2PresignedUrl) {
           return r2PresignedUrl;
         }
-      } catch {
+      } catch (err: any) {
+        storageMonitoringReporter?.('ERROR', `Provider R2 signed URL generation failed for '${safeName}'`, {
+          source: 'storage_r2',
+          errorStage: 'r2_provider_signed_url',
+          fileId: safeName,
+          errorMessage: err?.message || 'signed_url_error'
+        });
         // Fall back to signed local proxy
       }
     }
@@ -766,6 +797,15 @@ export class MediaStorageService {
           if (err.name === 'InvalidRange' || err.$metadata?.httpStatusCode === 416) {
             return { body: null, mimeType: '', statusCode: 416, error: 'Requested Range Not Satisfiable' };
           }
+          const isNotFound = err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404;
+          if (!isNotFound) {
+            storageMonitoringReporter?.('ERROR', `R2 GetObject read failed for '${candidateKey}'`, {
+              source: 'storage_r2',
+              errorStage: 'r2_get_object',
+              fileId: safeName,
+              errorMessage: err?.message || 'r2_read_error'
+            });
+          }
           // try next key candidate
         }
       }
@@ -783,7 +823,42 @@ export class MediaStorageService {
         ext === '.webp' ? 'image/webp' :
         'application/octet-stream';
       const resolvedMime = (meta?.mimeType && meta.mimeType !== 'application/octet-stream') ? meta.mimeType : extMime;
-      return { body: fs.createReadStream(fullPath), mimeType: resolvedMime };
+      const stat = fs.statSync(fullPath);
+      const totalSize = stat.size;
+
+      if (range && totalSize > 0) {
+        const match = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+        if (!match || (match[1] === '' && match[2] === '')) {
+          return { body: null, mimeType: resolvedMime, statusCode: 416, error: 'Requested Range Not Satisfiable' };
+        }
+        let start = match[1] ? Number(match[1]) : 0;
+        let end = match[2] ? Number(match[2]) : totalSize - 1;
+        if (!match[1] && match[2]) {
+          // Suffix byte range: last N bytes
+          const suffixLength = Number(match[2]);
+          start = Math.max(0, totalSize - suffixLength);
+          end = totalSize - 1;
+        }
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= totalSize) {
+          return { body: null, mimeType: resolvedMime, statusCode: 416, error: 'Requested Range Not Satisfiable' };
+        }
+        end = Math.min(end, totalSize - 1);
+        const chunkSize = end - start + 1;
+        return {
+          body: fs.createReadStream(fullPath, { start, end }),
+          mimeType: resolvedMime,
+          contentRange: `bytes ${start}-${end}/${totalSize}`,
+          contentLength: chunkSize,
+          statusCode: 206
+        };
+      }
+
+      return {
+        body: fs.createReadStream(fullPath),
+        mimeType: resolvedMime,
+        contentLength: totalSize,
+        statusCode: 200
+      };
     }
 
     return { body: null, mimeType: '', error: 'Media file not found' };

@@ -411,6 +411,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   // GLOBAL FEEDBACK
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [draftReadinessNotice, setDraftReadinessNotice] = useState<{
+    title: string;
+    message: string;
+    missingFields: string[];
+    preservedOriginal?: boolean;
+  } | null>(null);
 
   const tplFileRef = useRef<HTMLInputElement>(null);
   const coverFileRef = useRef<HTMLInputElement>(null);
@@ -1097,27 +1103,42 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           body: JSON.stringify(updateBody)
         });
 
+        const resData = await res.json().catch(() => null);
         if (res.ok) {
-          showNotification('Template updated successfully!');
+          if (resData?.savedAsSeparateDraft) {
+            setDraftReadinessNotice({
+              title: 'Original Active Template Preserved · Separate Draft Saved',
+              message:
+                resData.message ||
+                'Published template stays Active untouched. Incomplete edits were saved as a separate Draft.',
+              missingFields: resData?.readiness?.missingFields || [],
+              preservedOriginal: true
+            });
+            showNotification('Published original preserved! Incomplete changes saved separately as Draft.');
+          } else if (resData?.savedAsDraft) {
+            setDraftReadinessNotice({
+              title: 'Saved as Incomplete Draft (Not Published Active)',
+              message: resData.message || 'Complete missing fields below before publishing live.',
+              missingFields: resData?.readiness?.missingFields || []
+            });
+            showNotification('Template updated as Draft (missing readiness fields).');
+          } else {
+            setDraftReadinessNotice(null);
+            showNotification('Template updated successfully!');
+          }
           await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
           setSubTab('list');
           setEditingTemplate(null);
         } else {
-          const errData = await res.json().catch(() => null);
-          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to update template (HTTP ${res.status})`);
+          const errMsg = resData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to update template (HTTP ${res.status})`);
           showNotification(errMsg, 'error');
           if (res.status === 403) {
             setIsAdminVerified(false);
           }
         }
       } else {
-        // CREATE new
+        // CREATE new (incomplete submissions are safely stored server-side as DRAFT_INCOMPLETE instead of publishing broken live cards)
         const effectiveCover = tplCoverPreview || tplSampleResultPreview || tplMediaPreview;
-        if (!effectiveCover && !tplSampleResultPreview) {
-          showNotification('Please upload an AFTER sample result or cover photo', 'error');
-          setIsSubmitting(false);
-          return;
-        }
 
         const res = await fetch('/api/admin/templates', {
           method: 'POST',
@@ -1133,7 +1154,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             tags,
             type: tplDetectedType,
             inputType: tplInputType,
-            mediaBase64: tplMediaPreview || effectiveCover,
+            mediaBase64: tplMediaPreview || effectiveCover || undefined,
             coverBase64: effectiveCover.startsWith('data:') ? effectiveCover : undefined,
             cover: !effectiveCover.startsWith('data:') && effectiveCover ? effectiveCover : undefined,
             coverImageBase64: tplCoverPreview.startsWith('data:') ? tplCoverPreview : undefined,
@@ -1157,8 +1178,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           })
         });
 
+        const resData = await res.json().catch(() => null);
         if (res.ok) {
-          showNotification('Template published live to catalog!');
+          if (resData?.savedAsDraft) {
+            setDraftReadinessNotice({
+              title: 'Saved as Draft (Not Published Active)',
+              message:
+                resData.message ||
+                'Required readiness fields are incomplete, so this template was saved safely as an inactive Draft.',
+              missingFields: resData?.readiness?.missingFields || []
+            });
+            showNotification('Saved as Draft (incomplete fields listed in notice).');
+          } else {
+            setDraftReadinessNotice(null);
+            showNotification('Template published live to catalog!');
+          }
           await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
           setSubTab('list');
           setTplTitle('');
@@ -1171,8 +1205,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           setRecipeDrivingVideoUrl('');
           setImportNotice(null);
         } else {
-          const errData = await res.json().catch(() => null);
-          const errMsg = errData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to create template (HTTP ${res.status})`);
+          const errMsg = resData?.error || (res.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Failed to create template (HTTP ${res.status})`);
           showNotification(errMsg, 'error');
           if (res.status === 403) {
             setIsAdminVerified(false);
@@ -2647,6 +2680,31 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           </div>
         )}
 
+        {/* Template Readiness Draft & Preservation Banner */}
+        {draftReadinessNotice && (
+          <div className="mx-4 mt-2.5 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs space-y-1.5">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{draftReadinessNotice.title}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDraftReadinessNotice(null)}
+                className="text-amber-300/70 hover:text-amber-100 text-[11px] font-semibold cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+            <p className="text-[11px] text-amber-100/90">{draftReadinessNotice.message}</p>
+            {draftReadinessNotice.missingFields.length > 0 && (
+              <div className="text-[11px] font-mono text-amber-300">
+                Missing Fields: {draftReadinessNotice.missingFields.join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Studio Top Navigation Tabs (Mobile-Friendly Responsive Layout) */}
         <div className="border-b border-white/10 bg-stone-900/60 p-2 px-3 sm:px-4">
           <div className="grid grid-cols-2 sm:flex sm:flex-row gap-1.5">
@@ -2905,8 +2963,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                                 </span>
                               )}
                               {tpl.isActive === false && (
-                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-stone-700/60 text-stone-300 border border-stone-600">
-                                  INACTIVE
+                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  {tpl.readinessStatus === 'DRAFT_INCOMPLETE' ? 'DRAFT (INCOMPLETE)' : 'INACTIVE'}
+                                </span>
+                              )}
+                              {tpl.draftOfTemplateId && (
+                                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                  Draft Copy
                                 </span>
                               )}
                             </div>
@@ -2916,7 +2979,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                               <span>{tpl.type.toUpperCase()}</span>
                               <span>•</span>
                               <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
+                              <span className="hidden sm:inline text-stone-500 font-mono text-[10px]">• {tpl.id}</span>
                             </div>
+                            {Array.isArray(tpl.missingFields) && tpl.missingFields.length > 0 && (
+                              <div className="text-[10px] font-mono text-amber-300/90 mt-0.5 truncate">
+                                Missing: {tpl.missingFields.join(', ')}
+                              </div>
+                            )}
                           </div>
                         </div>
 

@@ -16,6 +16,11 @@ import {
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
+import {
+  getNetworkPlaybackProfile,
+  mediaPlaybackCoordinator,
+  reportMediaPlaybackIssue
+} from '../services/media/mediaPlaybackManager';
 
 export const FaceSwapFeaturedCard: React.FC = () => {
   const {
@@ -77,24 +82,46 @@ export const FaceSwapFeaturedCard: React.FC = () => {
       ? activeScene.resultVideoPreview
       : activeScene.sourceVideoPreview;
 
-  const isCurrentVideo = previewMode === 'demo' || isVideoMedia(currentMediaUrl);
+  const isCurrentVideo = isVideoMedia(currentMediaUrl);
+  const networkProfile = getNetworkPlaybackProfile();
+  const posterImage =
+    activeScene.sampleFace && !isVideoMedia(activeScene.sampleFace)
+      ? activeScene.sampleFace
+      : (!isVideoMedia(activeScene.resultVideoPreview) ? activeScene.resultVideoPreview : undefined);
+
+  // Register featured player with global coordinator
+  useEffect(() => {
+    const unregister = mediaPlaybackCoordinator.register(
+      'faceswap_featured_card',
+      () => {
+        if (videoRef.current && !videoRef.current.paused) {
+          videoRef.current.pause();
+          setIsPlaying(false);
+        }
+      },
+      { priority: 5, screen: 'home' }
+    );
+    return unregister;
+  }, []);
 
   // Maintain seamless video playback and muted status across mode/scene transitions
   useEffect(() => {
-    if (isCurrentVideo && videoRef.current) {
+    if (isCurrentVideo && videoRef.current && networkProfile.allowAutoPlay) {
       videoRef.current.muted = isMuted;
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-      }).catch(() => {
-        // Autoplay may wait for user gesture if unmuted; fallback to muted
-        if (!isMuted && videoRef.current) {
-          videoRef.current.muted = true;
-          setIsMuted(true);
-          videoRef.current.play().catch(() => {});
-        }
-      });
+      if (mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
+        videoRef.current.play().then(() => {
+          setIsPlaying(true);
+        }).catch(() => {
+          // Autoplay may wait for user gesture if unmuted; fallback to muted
+          if (!isMuted && videoRef.current) {
+            videoRef.current.muted = true;
+            setIsMuted(true);
+            videoRef.current.play().catch(() => {});
+          }
+        });
+      }
     }
-  }, [previewMode, currentMediaUrl, isCurrentVideo]);
+  }, [previewMode, currentMediaUrl, isCurrentVideo, networkProfile.allowAutoPlay]);
 
   // Real, functioning audio toggle (respects browser autoplay restrictions)
   const handleToggleMute = (e: React.MouseEvent) => {
@@ -104,7 +131,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     videoRef.current.muted = nextMuted;
     setIsMuted(nextMuted);
     setSoundInteracted(true);
-    if (!nextMuted) {
+    if (!nextMuted && mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
       videoRef.current.play().catch(() => {});
       setIsPlaying(true);
     }
@@ -115,12 +142,15 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     if (e) e.stopPropagation();
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-      }).catch(() => {});
+      if (mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
+        videoRef.current.play().then(() => {
+          setIsPlaying(true);
+        }).catch(() => {});
+      }
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
+      mediaPlaybackCoordinator.releasePlay('faceswap_featured_card');
     }
   };
 
@@ -133,20 +163,23 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting && entry.intersectionRatio >= 0.3) {
-            video.play().then(() => setIsPlaying(true)).catch(() => {});
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.35 && networkProfile.allowAutoPlay) {
+            if (mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
+              video.play().then(() => setIsPlaying(true)).catch(() => {});
+            }
           } else {
             video.pause();
             setIsPlaying(false);
+            mediaPlaybackCoordinator.releasePlay('faceswap_featured_card');
           }
         });
       },
-      { threshold: [0.1, 0.3, 0.6] }
+      { threshold: [0.1, 0.35, 0.6] }
     );
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isCurrentVideo, currentMediaUrl]);
+  }, [isCurrentVideo, currentMediaUrl, networkProfile.allowAutoPlay]);
 
   const handleOpenFaceSwap = () => {
     setSelectedFaceSwapScene(activeScene);
@@ -208,27 +241,49 @@ export const FaceSwapFeaturedCard: React.FC = () => {
           >
             {isCurrentVideo ? (
               <div className="relative w-full h-full flex items-center justify-center bg-black overflow-hidden">
-                {/* Ambient dynamic background blur for full frame theater experience */}
-                <video
-                  src={currentMediaUrl}
-                  autoPlay
-                  playsInline
-                  loop
-                  muted
-                  aria-hidden="true"
-                  className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-30 scale-110 pointer-events-none select-none"
-                />
+                {/* Lightweight CSS / poster backdrop replaces second simultaneous ambient video decoder */}
+                {posterImage ? (
+                  <img
+                    src={posterImage}
+                    alt=""
+                    aria-hidden="true"
+                    loading="lazy"
+                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-30 scale-110 pointer-events-none select-none"
+                  />
+                ) : (
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(212,175,55,0.22),rgba(12,10,18,0.95))] pointer-events-none"
+                  />
+                )}
                 <video
                   ref={videoRef}
                   key={`${previewMode}_${currentMediaUrl}`}
                   src={currentMediaUrl}
-                  autoPlay
+                  poster={posterImage}
+                  autoPlay={networkProfile.allowAutoPlay}
+                  preload={networkProfile.maxPreload}
                   playsInline
                   loop
                   muted={isMuted}
                   onContextMenu={(e) => e.preventDefault()}
-                  onPlay={() => setIsPlaying(true)}
-                  onPause={() => setIsPlaying(false)}
+                  onPlay={() => {
+                    mediaPlaybackCoordinator.requestPlay('faceswap_featured_card');
+                    setIsPlaying(true);
+                  }}
+                  onPause={() => {
+                    mediaPlaybackCoordinator.releasePlay('faceswap_featured_card');
+                    setIsPlaying(false);
+                  }}
+                  onError={() => {
+                    reportMediaPlaybackIssue({
+                      vector: 'MEDIA_PLAYBACK_FAILURE',
+                      message: `Featured FaceSwap video load failed (${activeScene.id})`,
+                      templateId: activeScene.id,
+                      errorStage: 'faceswap_featured_video',
+                      endpoint: currentMediaUrl
+                    });
+                  }}
                   className="relative z-10 max-h-full max-w-full w-full h-full object-contain select-none"
                 />
               </div>
