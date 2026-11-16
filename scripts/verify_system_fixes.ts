@@ -2729,6 +2729,118 @@ async function runSystemVerification() {
     '39.4 Part 5 Android google-services.json preserved untouched on gen-lang-client-0525281130 / 221269328833'
   );
 
+  // --- SUITE 40: PART A VIDEO PREVIEW/AUTOPLAY & PART B HERO SWIPE/DURATION ---
+  console.log('\n--- SUITE 40: VIDEO PREVIEW SOURCE, SINGLE-ACTIVE AUTOPLAY & HERO SWIPE/DURATION ---');
+
+  // 40.1 Discoverable catalog MUST NOT project sampleFace into FaceSwap template coverImage/cover/preview
+  const fsProjected40 = mergedCatalog38.find((t) => t.id === 'fsv_demo_scene_1');
+  assert(
+    Boolean(fsProjected40) &&
+      fsProjected40!.sampleFaceThumbnail === 'https://cdn.example.com/face.jpg' &&
+      fsProjected40!.coverImage !== 'https://cdn.example.com/face.jpg' &&
+      fsProjected40!.cover === 'https://cdn.example.com/dance_res.mp4' &&
+      fsProjected40!.sampleResult === 'https://cdn.example.com/dance_res.mp4',
+    '40.1 buildDiscoverableCatalog uses real video preview/sampleResult and never substitutes sampleFace as coverImage'
+  );
+
+  // 40.2 TemplateCard, FaceSwapSceneGallery, SmartVideoPlayer, FaceSwapFeaturedCard avoid Face Photo fallback & capture first frame
+  const fsGallerySrc40 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapSceneGallery.tsx'), 'utf8');
+  const smartVideoSrc40 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/SmartVideoPlayer.tsx'), 'utf8');
+  assert(
+    !tplCardSrc39.includes('template.sampleFaceThumbnail,\n    template.coverImage') &&
+      tplCardSrc39.includes('captureFirstFramePoster') &&
+      tplCardSrc39.includes('mediaPlaybackCoordinator.updateVisibility(') &&
+      tplCardSrc39.includes('shouldPlayActive') &&
+      fsGallerySrc40.includes('captureFirstFramePoster') &&
+      fsGallerySrc40.includes('mediaPlaybackCoordinator.updateVisibility(') &&
+      smartVideoSrc40.includes('mediaPlaybackCoordinator.updateVisibility('),
+    '40.2 Video cards prioritize real video/poster + first-frame capture + IntersectionObserver visibility-driven autoplay'
+  );
+
+  // 40.3 Single most-visible playback arbitration + hysteresis + scroll-out pause + scroll-back resume
+  let playedIds40: string[] = [];
+  let pausedIds40: string[] = [];
+  const u40a = mediaPlaybackCoordinator.register('vis_card_a', () => pausedIds40.push('a'), {
+    screen: 'home',
+    play: () => playedIds40.push('a')
+  });
+  const u40b = mediaPlaybackCoordinator.register('vis_card_b', () => pausedIds40.push('b'), {
+    screen: 'home',
+    play: () => playedIds40.push('b')
+  });
+  mediaPlaybackCoordinator.setActiveScreen('home');
+  mediaPlaybackCoordinator.updateVisibility('vis_card_a', 0.45);
+  mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0.90);
+  await new Promise((r) => setTimeout(r, 110));
+  assert(
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_b') && !mediaPlaybackCoordinator.isPlayerActive('vis_card_a'),
+    '40.3 mediaPlaybackCoordinator activates only the single most-visible video card (vis_card_b at 0.90 > vis_card_a at 0.45)'
+  );
+  // Small fluctuation within +0.08 hysteresis should NOT ping-pong
+  mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0.85);
+  mediaPlaybackCoordinator.updateVisibility('vis_card_a', 0.89);
+  await new Promise((r) => setTimeout(r, 110));
+  assert(
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_b'),
+    '40.3 Hysteresis (+0.08) prevents jitter ping-pong between similarly visible cards'
+  );
+  // Scrolling card B off-screen resumes card A automatically
+  mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0);
+  mediaPlaybackCoordinator.releasePlay('vis_card_b');
+  await new Promise((r) => setTimeout(r, 110));
+  assert(
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_a'),
+    '40.3 When primary card scrolls off-screen, remaining visible card automatically resumes playback'
+  );
+  u40a();
+  u40b();
+
+  // 40.4 TemplateDetailModal starts muted & lets user tap unmute without sampleFaceThumbnail as video poster
+  assert(
+    tplDetailSrc39.includes('setIsVideoMuted(true);') &&
+      tplDetailSrc39.includes('setNeedsUserSoundInteraction(true);') &&
+      tplDetailSrc39.includes('handleEnableSound') &&
+      !tplDetailSrc39.includes("selectedTemplate?.sampleFaceThumbnail && !isVideoMedia(selectedTemplate.sampleFaceThumbnail)"),
+    '40.4 TemplateDetailModal starts muted (mobile autoplay policy compliant), supports tap unmute, and excludes sampleFaceThumbnail from video posters'
+  );
+
+  // 40.5 Part B — Hero Banner Touch Swipe Over Video & Per-Banner Duration (3-15s, 5s default)
+  const {
+    DEFAULT_BANNER_DURATION_SECONDS,
+    MIN_BANNER_DURATION_SECONDS,
+    MAX_BANNER_DURATION_SECONDS,
+    normalizeBannerDurationSeconds
+  } = await import('../src/config/homeBannersConfig.ts');
+  assert(
+    DEFAULT_BANNER_DURATION_SECONDS === 5 &&
+      MIN_BANNER_DURATION_SECONDS === 3 &&
+      MAX_BANNER_DURATION_SECONDS === 15 &&
+      normalizeBannerDurationSeconds(undefined) === 5 &&
+      normalizeBannerDurationSeconds(null) === 5 &&
+      normalizeBannerDurationSeconds(NaN) === 5 &&
+      normalizeBannerDurationSeconds(1) === 3 &&
+      normalizeBannerDurationSeconds(25) === 15 &&
+      normalizeBannerDurationSeconds(9.6) === 10,
+    '40.5 normalizeBannerDurationSeconds defaults legacy/missing values cleanly to 5s and clamps valid range to 3-15s'
+  );
+
+  const homeViewSrc40 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/HomeView.tsx'), 'utf8');
+  assert(
+    !homeViewSrc40.includes("target.closest('button, a, video") &&
+      homeViewSrc40.includes("target.closest('button, a, [role=\"button\"], input, select, textarea')") &&
+      homeViewSrc40.includes('normalizeBannerDurationSeconds(currentBanner?.displayDurationSeconds)') &&
+      homeViewSrc40.includes('Math.abs(diffX) >= 36 && Math.abs(diffX) > Math.abs(diffY) * 1.1'),
+    '40.5 HomeView enables mobile touch swipe over live hero <video> banners with vertical-scroll guard and per-banner timer'
+  );
+
+  const tplMgrSrc40 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateManagerModal.tsx'), 'utf8');
+  assert(
+    tplMgrSrc40.includes('bannerDurationSeconds') &&
+      tplMgrSrc40.includes('if (!uploadRes.ok || !uploadData?.url)') &&
+      serverSrc39.includes('displayDurationSeconds'),
+    '40.5 Admin TemplateManagerModal & server PUT /api/admin/banners support 3-15s Display Duration and guard upload responses safely'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

@@ -1,17 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Sparkles, Video, Wand2, Eye, Play, Flame } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import {
+  captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
-  reportMediaPlaybackIssue
+  reportMediaPlaybackIssue,
+  selectMediaRendition
 } from '../services/media/mediaPlaybackManager';
 
 export const FaceSwapSceneGallery: React.FC = () => {
   const [activeScenePreviewId, setActiveScenePreviewId] = useState<string | null>(null);
+  const [scenePosters, setScenePosters] = useState<Record<string, string>>({});
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const networkProfile = getNetworkPlaybackProfile();
   const {
     faceSwapScenes,
@@ -27,6 +31,61 @@ export const FaceSwapSceneGallery: React.FC = () => {
   const publishedScenes = faceSwapScenes.filter(
     (s) => s.isActive !== false && s.status !== 'draft'
   );
+
+  // Viewport-aware autoplay for the single most-visible video scene card (mobile touch friendly; pauses off-screen)
+  useEffect(() => {
+    if (publishedScenes.length === 0 || typeof IntersectionObserver === 'undefined') return;
+
+    const cleanups: Array<() => void> = [];
+    const observers: IntersectionObserver[] = [];
+
+    publishedScenes.forEach((scene) => {
+      const previewMedia =
+        scene.coverSource === 'original'
+          ? scene.sourceVideoPreview
+          : (scene.resultVideoPreview || scene.sourceVideoPreview);
+      if (!isVideoMedia(previewMedia)) return;
+
+      const el = cardRefs.current[scene.id];
+      if (!el) return;
+
+      const coordId = `faceswap_gallery_${scene.id}`;
+      const unreg = mediaPlaybackCoordinator.register(
+        coordId,
+        () => {
+          setActiveScenePreviewId((curr) => (curr === scene.id ? null : curr));
+        },
+        {
+          priority: 4,
+          screen: 'home',
+          play: () => setActiveScenePreviewId(scene.id)
+        }
+      );
+      cleanups.push(unreg);
+
+      const obs = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting && entry.intersectionRatio >= 0.3 && networkProfile.allowAutoPlay) {
+              mediaPlaybackCoordinator.updateVisibility(coordId, entry.intersectionRatio, () => {
+                setActiveScenePreviewId(scene.id);
+              });
+            } else if (!entry.isIntersecting || entry.intersectionRatio < 0.2) {
+              mediaPlaybackCoordinator.updateVisibility(coordId, 0);
+            }
+          });
+        },
+        { threshold: [0, 0.2, 0.35, 0.65, 0.9] }
+      );
+      obs.observe(el);
+      observers.push(obs);
+    });
+
+    return () => {
+      observers.forEach((o) => o.disconnect());
+      cleanups.forEach((fn) => fn());
+    };
+  }, [publishedScenes.map((s) => s.id).join('|'), networkProfile.allowAutoPlay]);
 
   if (publishedScenes.length === 0) return null;
 
@@ -119,15 +178,29 @@ export const FaceSwapSceneGallery: React.FC = () => {
             selectedTemplate?.faceSwapSceneId === scene.id ||
             selectedTemplate?.id === scene.id ||
             selectedFaceSwapScene?.id === scene.id;
-          const previewMedia =
+          const rawPreviewMedia =
             scene.coverSource === 'original'
               ? scene.sourceVideoPreview
               : (scene.resultVideoPreview || scene.sourceVideoPreview);
+          const rendition = selectMediaRendition({
+            previewUrl: rawPreviewMedia,
+            hdUrl: (scene as any).hdVideoUrl || null,
+            network: networkProfile
+          });
+          const previewMedia = rendition.selectedUrl || rawPreviewMedia;
           const isVideo = isVideoMedia(previewMedia);
+          const explicitPoster =
+            !isVideoMedia(scene.resultVideoPreview) && scene.resultVideoPreview
+              ? scene.resultVideoPreview
+              : (!isVideoMedia(scene.sourceVideoPreview) && scene.sourceVideoPreview ? scene.sourceVideoPreview : undefined);
+          const videoPoster = explicitPoster || scenePosters[scene.id];
 
           return (
             <motion.div
               key={scene.id}
+              ref={(node) => {
+                cardRefs.current[scene.id] = node;
+              }}
               whileHover={{ y: -3 }}
               transition={{ type: 'spring', stiffness: 400, damping: 25 }}
               className={`flex-shrink-0 w-[210px] sm:w-auto rounded-2xl overflow-hidden bg-gradient-to-b from-[#16141a] to-[#0c0b10] border transition-all shadow-lg flex flex-col justify-between ${
@@ -136,7 +209,7 @@ export const FaceSwapSceneGallery: React.FC = () => {
                   : 'border-white/10 hover:border-white/20'
               }`}
             >
-              {/* Media Card Preview (Zero simultaneous autoPlay storm; single active preview only on demand/hover) */}
+              {/* Media Card Preview (Viewport-driven most-visible autoplay on mobile + hover on desktop; never uses sampleFace as main video thumbnail) */}
               <div
                 onClick={() => handlePreviewScene(scene)}
                 onMouseEnter={() => {
@@ -156,12 +229,18 @@ export const FaceSwapSceneGallery: React.FC = () => {
                   activeScenePreviewId === scene.id ? (
                     <video
                       src={previewMedia}
-                      poster={scene.sampleFace && !isVideoMedia(scene.sampleFace) ? scene.sampleFace : undefined}
+                      poster={videoPoster}
                       muted
                       loop
                       playsInline
                       autoPlay
                       preload="metadata"
+                      onLoadedData={(e) => {
+                        if (!videoPoster) {
+                          const frame = captureFirstFramePoster(e.currentTarget);
+                          if (frame) setScenePosters((prev) => ({ ...prev, [scene.id]: frame }));
+                        }
+                      }}
                       onError={() => {
                         setActiveScenePreviewId(null);
                         reportMediaPlaybackIssue({
@@ -176,9 +255,9 @@ export const FaceSwapSceneGallery: React.FC = () => {
                     />
                   ) : (
                     <>
-                      {scene.sampleFace && !isVideoMedia(scene.sampleFace) ? (
+                      {videoPoster ? (
                         <img
-                          src={scene.sampleFace}
+                          src={videoPoster}
                           alt={scene.title}
                           loading="lazy"
                           className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
@@ -189,14 +268,20 @@ export const FaceSwapSceneGallery: React.FC = () => {
                           muted
                           playsInline
                           preload="metadata"
+                          onLoadedData={(e) => {
+                            const frame = captureFirstFramePoster(e.currentTarget);
+                            if (frame) setScenePosters((prev) => ({ ...prev, [scene.id]: frame }));
+                          }}
                           className="w-full h-full object-cover pointer-events-none"
                         />
                       )}
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-md border border-white/25 flex items-center justify-center text-white shadow-lg">
-                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                      {!networkProfile.allowAutoPlay && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-md border border-white/25 flex items-center justify-center text-white shadow-lg">
+                            <Play className="w-4 h-4 fill-white ml-0.5" />
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </>
                   )
                 ) : (

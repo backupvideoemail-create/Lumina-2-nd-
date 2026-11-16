@@ -5,6 +5,7 @@ import {
   Sparkles,
   Search,
   SlidersHorizontal,
+  ChevronLeft,
   ChevronRight,
   Flame,
   Camera,
@@ -31,7 +32,8 @@ import {
   HOME_HERO_BANNERS,
   QUICK_CATEGORY_ICONS,
   QUICK_PILL_TAGS,
-  HomeBannerItem
+  HomeBannerItem,
+  normalizeBannerDurationSeconds
 } from '../config/homeBannersConfig';
 import { Template } from '../types';
 import { queueHdDownload, protectMediaUrl, unprotectMediaUrl } from '../services/media/hdDownloadQueue';
@@ -131,8 +133,10 @@ export const HomeView: React.FC = () => {
     }
   });
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
+  const [swipeDirection, setSwipeDirection] = useState<1 | -1>(1);
   const [isPaused, setIsPaused] = useState(false);
   const [timerResetKey, setTimerResetKey] = useState(0);
+  const heroContainerRef = useRef<HTMLDivElement>(null);
 
   // Swipe Gesture Coordinates
   const touchStartXRef = useRef<number | null>(null);
@@ -160,12 +164,14 @@ export const HomeView: React.FC = () => {
 
   const nextBanner = () => {
     if (banners.length <= 1) return;
+    setSwipeDirection(1);
     setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
     resetTimer();
   };
 
   const prevBanner = () => {
     if (banners.length <= 1) return;
+    setSwipeDirection(-1);
     setCurrentBannerIndex((prev) => (prev - 1 + banners.length) % banners.length);
     resetTimer();
   };
@@ -204,10 +210,50 @@ export const HomeView: React.FC = () => {
           heroVideoRef.current.pause();
         }
       },
-      { priority: 10, screen: 'home' }
+      {
+        priority: 10,
+        screen: 'home',
+        play: () => {
+          const profile = getNetworkPlaybackProfile();
+          if (profile.allowAutoPlay && heroVideoRef.current) {
+            heroVideoRef.current.muted = true;
+            heroVideoRef.current.play().catch(() => {});
+          }
+        }
+      }
     );
     return unregisterHero;
   }, []);
+
+  // Scroll-aware visibility for hero banner video so off-screen hero pauses and resumes on return
+  useEffect(() => {
+    const el = heroContainerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.3) {
+            mediaPlaybackCoordinator.updateVisibility('home_hero_banner', entry.intersectionRatio, () => {
+              const profile = getNetworkPlaybackProfile();
+              if (profile.allowAutoPlay && heroVideoRef.current) {
+                heroVideoRef.current.muted = true;
+                heroVideoRef.current.play().catch(() => {});
+              }
+            });
+          } else {
+            if (heroVideoRef.current && !heroVideoRef.current.paused) {
+              heroVideoRef.current.pause();
+            }
+            mediaPlaybackCoordinator.updateVisibility('home_hero_banner', 0);
+            mediaPlaybackCoordinator.releasePlay('home_hero_banner');
+          }
+        });
+      },
+      { threshold: [0, 0.25, 0.5, 0.85] }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [banners.length]);
 
   useEffect(() => {
     mediaPlaybackCoordinator.setModalLock('hero_fullscreen', Boolean(fullVideoBanner));
@@ -225,10 +271,10 @@ export const HomeView: React.FC = () => {
     return unregisterFull;
   }, [fullVideoBanner]);
 
-  // Touch Swipe Handlers (40px threshold, circular boundary wrapping, control element guard)
+  // Touch Swipe Handlers (36px threshold, circular boundary wrapping, allows swiping over hero <video> directly on mobile)
   const handleTouchStart = (e: React.TouchEvent) => {
     const target = e.target as HTMLElement | null;
-    if (target && target.closest('button, a, video, [role="button"], input, select, textarea')) {
+    if (target && target.closest('button, a, [role="button"], input, select, textarea')) {
       touchStartXRef.current = null;
       touchStartYRef.current = null;
       return;
@@ -243,7 +289,7 @@ export const HomeView: React.FC = () => {
   const handleTouchEnd = (e: React.TouchEvent) => {
     if (touchStartXRef.current === null) return;
     const now = Date.now();
-    if (now - lastGestureTimestampRef.current < 450) {
+    if (now - lastGestureTimestampRef.current < 320) {
       touchStartXRef.current = null;
       touchStartYRef.current = null;
       return;
@@ -254,8 +300,8 @@ export const HomeView: React.FC = () => {
     const diffX = touchEndX - touchStartXRef.current;
     const diffY = touchStartYRef.current !== null ? touchEndY - touchStartYRef.current : 0;
 
-    // Vertical safeguard: If vertical movement is greater or equal to horizontal movement, ignore as page scroll
-    if (Math.abs(diffX) >= 40 && Math.abs(diffX) > Math.abs(diffY)) {
+    // Vertical safeguard: horizontal swipe must dominate vertical page scroll
+    if (Math.abs(diffX) >= 36 && Math.abs(diffX) > Math.abs(diffY) * 1.1) {
       lastGestureTimestampRef.current = now;
       isSwipingRef.current = true;
       if (diffX < 0) {
@@ -278,7 +324,7 @@ export const HomeView: React.FC = () => {
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'touch') return; // Handled by touch events natively
     const target = e.target as HTMLElement | null;
-    if (target && target.closest('button, a, video, [role="button"], input, select, textarea')) {
+    if (target && target.closest('button, a, [role="button"], input, select, textarea')) {
       pointerStartXRef.current = null;
       return;
     }
@@ -341,14 +387,17 @@ export const HomeView: React.FC = () => {
     };
   }, []);
 
-  // 8.0-second auto-cycle rotation timer
+  // Individual per-banner auto-cycle rotation timer (defaults cleanly to 5s for legacy banners without duration)
   useEffect(() => {
     if (isPaused || fullVideoBanner !== null || banners.length <= 1) return;
-    const interval = setInterval(() => {
+    const currentBanner = banners[currentBannerIndex] || banners[0];
+    const durationMs = normalizeBannerDurationSeconds(currentBanner?.displayDurationSeconds) * 1000;
+    const timeout = setTimeout(() => {
+      setSwipeDirection(1);
       setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [isPaused, fullVideoBanner, banners.length, timerResetKey]);
+    }, durationMs);
+    return () => clearTimeout(timeout);
+  }, [isPaused, fullVideoBanner, banners, currentBannerIndex, timerResetKey]);
 
   const [bannerHdUrls, setBannerHdUrls] = useState<Record<string, string>>({});
   const [heroPosters, setHeroPosters] = useState<Record<string, string>>(() => {
@@ -649,6 +698,7 @@ export const HomeView: React.FC = () => {
           </div>
         ) : activeBanner ? (
           <div
+            ref={heroContainerRef}
             className="relative rounded-3xl overflow-hidden shadow-[0_15px_45px_rgba(0,0,0,0.85)] border border-white/10 aspect-square w-full max-w-[460px] bg-[#16141d] group select-none touch-pan-y"
             onTouchStart={handleTouchStart}
             onTouchEnd={handleTouchEnd}
@@ -660,10 +710,10 @@ export const HomeView: React.FC = () => {
           <AnimatePresence mode="wait">
             <motion.div
               key={activeBanner.id}
-              initial={{ opacity: 0.9, scale: 1.02 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0.9, scale: 0.99 }}
-              transition={{ duration: 0.35, ease: 'easeOut' }}
+              initial={{ opacity: 0.75, x: swipeDirection * 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0.75, x: swipeDirection * -24 }}
+              transition={{ duration: 0.28, ease: 'easeOut' }}
               onClick={() => {
                 if (isSwipingRef.current) {
                   isSwipingRef.current = false;
@@ -792,6 +842,34 @@ export const HomeView: React.FC = () => {
             </motion.div>
           </AnimatePresence>
 
+          {/* Previous / Next Subtle Manual Controls (when 2+ banners exist) */}
+          {banners.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  prevBanner();
+                }}
+                aria-label="Previous banner"
+                className="hidden sm:flex absolute left-2.5 top-1/2 -translate-y-1/2 z-30 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 backdrop-blur-md border border-white/15 items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  nextBanner();
+                }}
+                aria-label="Next banner"
+                className="hidden sm:flex absolute right-2.5 top-1/2 -translate-y-1/2 z-30 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 backdrop-blur-md border border-white/15 items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </>
+          )}
+
           {/* Carousel Pagination Dots (Center Bottom) */}
           <div className="absolute bottom-2.5 inset-x-0 z-30 flex items-center justify-center gap-1.5">
             {banners.map((banner, idx) => (
@@ -799,6 +877,7 @@ export const HomeView: React.FC = () => {
                 key={banner.id || idx}
                 onClick={(e) => {
                   e.stopPropagation();
+                  setSwipeDirection(idx >= currentBannerIndex ? 1 : -1);
                   setCurrentBannerIndex(idx);
                   resetTimer();
                 }}

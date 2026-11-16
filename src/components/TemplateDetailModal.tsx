@@ -56,8 +56,8 @@ export const TemplateDetailModal: React.FC = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlayingVideo, setIsPlayingVideo] = useState(true);
-  const [isVideoMuted, setIsVideoMuted] = useState(false);
-  const [needsUserSoundInteraction, setNeedsUserSoundInteraction] = useState(false);
+  const [isVideoMuted, setIsVideoMuted] = useState(true);
+  const [needsUserSoundInteraction, setNeedsUserSoundInteraction] = useState(true);
   const [isVideoLoading, setIsVideoLoading] = useState(true);
   const [videoError, setVideoError] = useState(false);
   const [activeVideoTab, setActiveVideoTab] = useState<'before' | 'after'>('after');
@@ -89,8 +89,8 @@ export const TemplateDetailModal: React.FC = () => {
     setIsPickerOpen(false);
     setActivePickingSlot(null);
     setIsPlayingVideo(true);
-    setIsVideoMuted(false);
-    setNeedsUserSoundInteraction(false);
+    setIsVideoMuted(true);
+    setNeedsUserSoundInteraction(true);
     setIsVideoLoading(true);
     setVideoError(false);
     setActiveVideoTab('after');
@@ -288,9 +288,10 @@ export const TemplateDetailModal: React.FC = () => {
 
   const networkProfile = getNetworkPlaybackProfile();
   const detailPoster =
+    (selectedTemplate?.sampleResult && !isVideoMedia(selectedTemplate.sampleResult) ? selectedTemplate.sampleResult : '') ||
+    (selectedTemplate?.sampleAfter && !isVideoMedia(selectedTemplate.sampleAfter) ? selectedTemplate.sampleAfter : '') ||
     (selectedTemplate?.coverImage && !isVideoMedia(selectedTemplate.coverImage) ? selectedTemplate.coverImage : '') ||
     (selectedTemplate?.cover && !isVideoMedia(selectedTemplate.cover) ? selectedTemplate.cover : '') ||
-    (selectedTemplate?.sampleFaceThumbnail && !isVideoMedia(selectedTemplate.sampleFaceThumbnail) ? selectedTemplate.sampleFaceThumbnail : '') ||
     undefined;
 
   useEffect(() => {
@@ -312,7 +313,7 @@ export const TemplateDetailModal: React.FC = () => {
     };
   }, [selectedTemplate?.id]);
 
-  // Autoplay with sound detection & graceful recovery (Hook called unconditionally)
+  // Autoplay muted initially (100% browser-policy compliant) with tap-to-unmute sound prompt
   useEffect(() => {
     if (selectedTemplate && isVideo && isCurrentSrcPlayableVideo && videoPlayerRef.current) {
       mediaPlaybackCoordinator.requestPlay('modal:template_detail');
@@ -320,12 +321,14 @@ export const TemplateDetailModal: React.FC = () => {
       videoPlayerRef.current.play().catch(() => {
         if (videoPlayerRef.current && !isVideoMuted) {
           videoPlayerRef.current.muted = true;
+          setIsVideoMuted(true);
           videoPlayerRef.current.play().catch(() => {});
           setNeedsUserSoundInteraction(true);
         }
       });
     } else if (selectedTemplate && isVideo && !isCurrentSrcPlayableVideo) {
       setIsVideoLoading(false);
+      setNeedsUserSoundInteraction(false);
     }
   }, [currentVideoSrc, isVideo, isCurrentSrcPlayableVideo, selectedTemplate]);
 

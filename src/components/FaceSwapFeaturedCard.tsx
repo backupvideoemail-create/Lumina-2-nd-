@@ -85,9 +85,8 @@ export const FaceSwapFeaturedCard: React.FC = () => {
   const isCurrentVideo = isVideoMedia(currentMediaUrl);
   const networkProfile = getNetworkPlaybackProfile();
   const posterImage =
-    activeScene.sampleFace && !isVideoMedia(activeScene.sampleFace)
-      ? activeScene.sampleFace
-      : (!isVideoMedia(activeScene.resultVideoPreview) ? activeScene.resultVideoPreview : undefined);
+    (!isVideoMedia(activeScene.resultVideoPreview) && activeScene.resultVideoPreview ? activeScene.resultVideoPreview : undefined) ||
+    (!isVideoMedia(activeScene.sourceVideoPreview) && activeScene.sourceVideoPreview ? activeScene.sourceVideoPreview : undefined);
 
   // Register featured player with global coordinator
   useEffect(() => {
@@ -99,7 +98,16 @@ export const FaceSwapFeaturedCard: React.FC = () => {
           setIsPlaying(false);
         }
       },
-      { priority: 5, screen: 'home' }
+      {
+        priority: 5,
+        screen: 'home',
+        play: () => {
+          if (videoRef.current) {
+            videoRef.current.muted = isMuted;
+            videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+          }
+        }
+      }
     );
     return unregister;
   }, []);
@@ -154,7 +162,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     }
   };
 
-  // Viewport-aware video playback: pause when scrolled off-screen
+  // Viewport-aware video playback: pause when scrolled off-screen & arbitrate most-visible card
   useEffect(() => {
     const el = containerRef.current;
     const video = videoRef.current;
@@ -163,23 +171,27 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting && entry.intersectionRatio >= 0.35 && networkProfile.allowAutoPlay) {
-            if (mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
-              video.play().then(() => setIsPlaying(true)).catch(() => {});
-            }
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.3 && networkProfile.allowAutoPlay) {
+            mediaPlaybackCoordinator.updateVisibility('faceswap_featured_card', entry.intersectionRatio, () => {
+              if (videoRef.current) {
+                videoRef.current.muted = isMuted;
+                videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+              }
+            });
           } else {
             video.pause();
             setIsPlaying(false);
+            mediaPlaybackCoordinator.updateVisibility('faceswap_featured_card', 0);
             mediaPlaybackCoordinator.releasePlay('faceswap_featured_card');
           }
         });
       },
-      { threshold: [0.1, 0.35, 0.6] }
+      { threshold: [0, 0.15, 0.35, 0.65, 0.9] }
     );
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isCurrentVideo, currentMediaUrl, networkProfile.allowAutoPlay]);
+  }, [isCurrentVideo, currentMediaUrl, isMuted, networkProfile.allowAutoPlay]);
 
   const handleOpenFaceSwap = () => {
     setSelectedFaceSwapScene(activeScene);

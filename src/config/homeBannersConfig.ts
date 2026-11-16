@@ -28,6 +28,19 @@ export interface HomeBannerItem {
   videoUrl?: string;
   coverMedia?: string;
   isActive?: boolean;
+  displayDurationSeconds?: number;
+}
+
+export const DEFAULT_BANNER_DURATION_SECONDS = 5;
+export const MIN_BANNER_DURATION_SECONDS = 3;
+export const MAX_BANNER_DURATION_SECONDS = 15;
+
+export function normalizeBannerDurationSeconds(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return DEFAULT_BANNER_DURATION_SECONDS;
+  }
+  return Math.min(MAX_BANNER_DURATION_SECONDS, Math.max(MIN_BANNER_DURATION_SECONDS, Math.round(num)));
 }
 
 /**

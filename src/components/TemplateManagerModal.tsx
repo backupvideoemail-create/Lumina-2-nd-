@@ -39,7 +39,13 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
-import { HomeBannerItem } from '../config/homeBannersConfig';
+import {
+  HomeBannerItem,
+  DEFAULT_BANNER_DURATION_SECONDS,
+  MIN_BANNER_DURATION_SECONDS,
+  MAX_BANNER_DURATION_SECONDS,
+  normalizeBannerDurationSeconds
+} from '../config/homeBannersConfig';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
 import { CATEGORIES } from '../data/templatesData';
@@ -375,6 +381,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [bannerCropX, setBannerCropX] = useState<number>(0);
   const [bannerCropY, setBannerCropY] = useState<number>(0);
   const [bannerCropZoom, setBannerCropZoom] = useState<number>(1);
+  const [bannerDurationSeconds, setBannerDurationSeconds] = useState<number>(DEFAULT_BANNER_DURATION_SECONDS);
   const [tplAllowWardrobeChoice, setTplAllowWardrobeChoice] = useState<boolean>(false);
   const [tplDefaultWardrobeSource, setTplDefaultWardrobeSource] = useState<'AUTO' | 'CUSTOMER_PHOTO' | 'TEMPLATE_VIDEO'>('AUTO');
   const [adapterAuditList, setAdapterAuditList] = useState<any[]>([]);
@@ -1745,14 +1752,17 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           body: JSON.stringify({ mediaBase64: bannerMediaPreview, filename: 'banner' })
         });
         const uploadData = await uploadRes.json().catch(() => null);
+        if (!uploadRes.ok || !uploadData?.url) {
           const errMsg = uploadData?.error || (uploadRes.status === 403 ? 'Admin authorization failed. Account is not an authorized administrator.' : `Media upload failed (HTTP ${uploadRes.status})`);
           if (uploadRes.status === 403) {
             setIsAdminVerified(false);
           }
           throw new Error(errMsg);
+        }
         mediaUrl = uploadData.url;
       }
 
+      const normalizedDuration = normalizeBannerDurationSeconds(bannerDurationSeconds);
       let updatedList = [...banners];
       if (editingBannerId) {
         updatedList = updatedList.map((b) =>
@@ -1769,6 +1779,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 image: mediaUrl || b.image,
                 coverMedia: mediaUrl || b.coverMedia,
                 isActive: bannerIsActive,
+                displayDurationSeconds: normalizedDuration,
                 crop: {
                   aspectRatio: '1:1',
                   positionX: bannerCropX,
@@ -1795,6 +1806,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           commentsCount: '120',
           sharesCount: '300',
           isActive: bannerIsActive,
+          displayDurationSeconds: normalizedDuration,
           crop: {
             aspectRatio: '1:1',
             positionX: bannerCropX,
@@ -1817,6 +1829,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         setSubTab('list');
         setBannerTitle('');
         setBannerMediaPreview('');
+        setBannerDurationSeconds(DEFAULT_BANNER_DURATION_SECONDS);
         setEditingBannerId(null);
       } else {
         const errData = await res.json().catch(() => null);
@@ -1871,6 +1884,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setBannerCropX(b.crop?.positionX || 0);
     setBannerCropY(b.crop?.positionY || 0);
     setBannerCropZoom(b.crop?.zoom || 1);
+    setBannerDurationSeconds(normalizeBannerDurationSeconds(b.displayDurationSeconds));
     setSubTab('add');
   };
 
@@ -4287,6 +4301,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       setBannerTitle('');
                       setBannerSubtitle('');
                       setBannerMediaPreview('');
+                      setBannerDurationSeconds(DEFAULT_BANNER_DURATION_SECONDS);
                       setSubTab('add');
                     }}
                     className="px-3.5 py-1.5 rounded-xl bg-pink-500 text-white text-xs font-black flex items-center gap-1.5 shadow-md hover:brightness-110 active:scale-95 transition-all"
@@ -4331,6 +4346,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             <div className="flex items-center gap-2">
                               <span className="text-[9px] font-bold text-pink-400">{b.badge || 'HOT'}</span>
                               <span className="text-[9px] text-stone-500">· {b.category || 'Trending'}</span>
+                              <span className="text-[9px] font-mono text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.2 rounded">
+                                {normalizeBannerDurationSeconds(b.displayDurationSeconds)}s
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -4678,6 +4696,63 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     placeholder="e.g. tpl_full_swag_1"
                     className="w-full mt-1.5 px-3.5 py-2.5 rounded-xl bg-stone-900 border border-white/10 text-white text-xs focus:border-pink-500 focus:outline-none"
                   />
+                </div>
+
+                {/* Display Duration Seconds (3–15s, Default 5s) */}
+                <div className="p-3 rounded-2xl bg-stone-900/90 border border-white/10 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-stone-200">
+                      Display Duration (Seconds)
+                    </label>
+                    <span className="px-2 py-0.5 rounded-lg bg-pink-500/20 border border-pink-500/40 text-pink-300 text-[11px] font-black font-mono">
+                      {bannerDurationSeconds}s
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={MIN_BANNER_DURATION_SECONDS}
+                      max={MAX_BANNER_DURATION_SECONDS}
+                      step={1}
+                      value={bannerDurationSeconds}
+                      onChange={(e) => setBannerDurationSeconds(normalizeBannerDurationSeconds(e.target.value))}
+                      className="flex-1 accent-pink-500 h-1.5 bg-white/20 rounded cursor-pointer"
+                    />
+                    <input
+                      type="number"
+                      min={MIN_BANNER_DURATION_SECONDS}
+                      max={MAX_BANNER_DURATION_SECONDS}
+                      value={bannerDurationSeconds}
+                      onChange={(e) => {
+                        const raw = parseInt(e.target.value, 10);
+                        setBannerDurationSeconds(
+                          Number.isFinite(raw) ? normalizeBannerDurationSeconds(raw) : DEFAULT_BANNER_DURATION_SECONDS
+                        );
+                      }}
+                      className="w-14 px-2 py-1 rounded-lg bg-black border border-white/15 text-center text-xs font-bold text-white focus:border-pink-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                    <span className="text-[10px] text-stone-400">
+                      Default {DEFAULT_BANNER_DURATION_SECONDS}s · Allowed range {MIN_BANNER_DURATION_SECONDS}–{MAX_BANNER_DURATION_SECONDS}s
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {[3, 5, 8, 10, 15].map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => setBannerDurationSeconds(sec)}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-colors cursor-pointer ${
+                            bannerDurationSeconds === sec
+                              ? 'bg-pink-500 text-white'
+                              : 'bg-white/5 text-stone-400 hover:text-white border border-white/10'
+                          }`}
+                        >
+                          {sec}s
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Active Switch */}

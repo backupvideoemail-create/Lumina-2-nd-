@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
   reportMediaPlaybackIssue,
@@ -58,6 +59,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   const [isVisible, setIsVisible] = useState(isModal);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [fallbackPoster, setFallbackPoster] = useState<string>('');
 
   const networkProfile = getNetworkPlaybackProfile();
   const rendition = selectMediaRendition({
@@ -97,16 +99,18 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         entries.forEach((entry) => {
           if (entry.isIntersecting && entry.intersectionRatio >= 0.25) {
             setIsVisible(true);
-            if (autoPlay && networkProfile.allowAutoPlay && videoRef.current) {
-              if (mediaPlaybackCoordinator.requestPlay(playerId)) {
+            mediaPlaybackCoordinator.updateVisibility(playerId, entry.intersectionRatio, () => {
+              if (autoPlay && networkProfile.allowAutoPlay && videoRef.current) {
+                videoRef.current.muted = muted;
                 videoRef.current.play().catch(() => {});
               }
-            }
+            });
           } else {
             if (videoRef.current && !videoRef.current.paused) {
               videoRef.current.pause();
               onPlayStateChange?.(false);
             }
+            mediaPlaybackCoordinator.updateVisibility(playerId, 0);
             mediaPlaybackCoordinator.releasePlay(playerId);
           }
         });
@@ -116,7 +120,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isModal, autoPlay, playerId, networkProfile.allowAutoPlay, onPlayStateChange]);
+  }, [isModal, autoPlay, muted, playerId, networkProfile.allowAutoPlay, onPlayStateChange]);
 
   useEffect(() => {
     return () => {
@@ -128,12 +132,13 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   }, [playerId]);
 
   const effectiveSrc = rendition.selectedUrl;
+  const resolvedPoster = poster || fallbackPoster || undefined;
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden">
-      {poster && (
+      {resolvedPoster && (
         <img
-          src={poster}
+          src={resolvedPoster}
           alt={alt}
           loading="lazy"
           style={style}
@@ -147,7 +152,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         <video
           ref={videoRef}
           src={effectiveSrc}
-          poster={poster || undefined}
+          poster={resolvedPoster}
           muted={muted}
           loop={loop}
           playsInline
@@ -157,6 +162,10 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
           onLoadedData={(e) => {
             setHasLoaded(true);
             setHasError(false);
+            if (!poster && !fallbackPoster) {
+              const frame = captureFirstFramePoster(e.currentTarget);
+              if (frame) setFallbackPoster(frame);
+            }
             if (waitingTimerRef.current) clearTimeout(waitingTimerRef.current);
             onLoadedData?.(e.currentTarget);
             if (autoPlay && (isModal || networkProfile.allowAutoPlay)) {

@@ -140,7 +140,9 @@ interface RegisteredPlayer {
   screen?: string;
   isModal?: boolean;
   priority: number;
+  visibilityRatio: number;
   pause: () => void;
+  play?: () => void;
 }
 
 class MediaPlaybackCoordinator {
@@ -164,21 +166,100 @@ class MediaPlaybackCoordinator {
   public register(
     id: string,
     pauseFn: () => void,
-    options?: { priority?: number; screen?: string; isModal?: boolean }
+    options?: { priority?: number; screen?: string; isModal?: boolean; play?: () => void }
   ): () => void {
     this.players.set(id, {
       id,
       priority: options?.priority ?? 1,
       screen: options?.screen,
       isModal: options?.isModal,
-      pause: pauseFn
+      visibilityRatio: 0,
+      pause: pauseFn,
+      play: options?.play
     });
     return () => {
       this.players.delete(id);
       if (this.activePlayerId === id) {
         this.activePlayerId = null;
+        this.scheduleMostVisiblePlayback();
       }
     };
+  }
+
+  public updateVisibility(id: string, visibilityRatio: number, playFn?: () => void): void {
+    const player = this.players.get(id);
+    if (!player) return;
+    player.visibilityRatio = Math.max(0, Math.min(1, visibilityRatio));
+    if (playFn) {
+      player.play = playFn;
+    }
+
+    if (player.visibilityRatio < 0.25) {
+      try {
+        player.pause();
+      } catch {}
+      if (this.activePlayerId === id) {
+        this.activePlayerId = null;
+        this.scheduleMostVisiblePlayback();
+      }
+      return;
+    }
+
+    this.scheduleMostVisiblePlayback();
+  }
+
+  private scheduleMostVisiblePlayback(): void {
+    if (this.documentHidden || this.modalLocks.size > 0) return;
+
+    let best: RegisteredPlayer | null = null;
+    let bestScore = -1;
+
+    for (const player of this.players.values()) {
+      if (player.isModal || player.id.startsWith('modal:')) continue;
+      if (player.screen && player.screen !== this.activeScreen) continue;
+      if (player.visibilityRatio < 0.25) continue;
+
+      // Combine viewport visibility ratio with subtle priority tie-breaker
+      const score = player.visibilityRatio + Math.min(player.priority, 20) * 0.005;
+      if (score > bestScore) {
+        bestScore = score;
+        best = player;
+      }
+    }
+
+    if (!best) return;
+
+    const currentActive = this.activePlayerId ? this.players.get(this.activePlayerId) : null;
+    if (
+      currentActive &&
+      currentActive.id !== best.id &&
+      currentActive.visibilityRatio >= 0.25 &&
+      best.visibilityRatio < currentActive.visibilityRatio + 0.08
+    ) {
+      // Avoid jittery ping-pong switching between two similarly visible cards
+      return;
+    }
+
+    if (this.activePlayerId !== best.id) {
+      for (const [otherId, player] of this.players.entries()) {
+        if (otherId !== best.id) {
+          try {
+            player.pause();
+          } catch {}
+        }
+      }
+      this.activePlayerId = best.id;
+    }
+
+    if (best.play) {
+      try {
+        best.play();
+      } catch {}
+    }
+  }
+
+  public isPlayerActive(id: string): boolean {
+    return this.activePlayerId === id;
   }
 
   public requestPlay(id: string): boolean {
@@ -228,6 +309,9 @@ class MediaPlaybackCoordinator {
       }
     } else {
       this.modalLocks.delete(modalId);
+      if (this.modalLocks.size === 0) {
+        this.scheduleMostVisiblePlayback();
+      }
     }
   }
 
@@ -243,6 +327,7 @@ class MediaPlaybackCoordinator {
         }
       }
     }
+    this.scheduleMostVisiblePlayback();
   }
 
   public pauseAll(): void {
@@ -298,4 +383,29 @@ export function reportMediaPlaybackIssue(params: {
       endpoint: params.endpoint
     })
   }).catch(() => {});
+}
+
+/**
+ * Safely captures a lightweight first-frame poster JPEG from a decoded video element
+ * when no explicit poster image exists. Returns null cleanly on CORS-tainted canvases.
+ */
+export function captureFirstFramePoster(videoEl: HTMLVideoElement | null, maxWidth = 360): string | null {
+  if (!videoEl || typeof document === 'undefined') return null;
+  try {
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+    if (!vw || !vh || videoEl.readyState < 2) return null;
+    const targetWidth = Math.min(maxWidth, vw);
+    const targetHeight = Math.max(1, Math.round((vh / vw) * targetWidth));
+    const canvas = document.createElement('canvas');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, targetWidth, targetHeight);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+    return dataUrl && dataUrl.startsWith('data:image/') ? dataUrl : null;
+  } catch {
+    return null;
+  }
 }

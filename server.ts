@@ -2527,14 +2527,26 @@ app.put('/api/admin/banners', requireAdmin, async (req, res) => {
   if (!Array.isArray(banners)) {
     return res.status(400).json({ error: 'Expected banners array' });
   }
-  await prodDb.setBanners(banners);
+  const normalizedBanners = banners.map((b: any) => {
+    if (!b || typeof b !== 'object') return b;
+    if (b.displayDurationSeconds === undefined || b.displayDurationSeconds === null) {
+      return b;
+    }
+    const sec = Number(b.displayDurationSeconds);
+    const safeSec = Number.isFinite(sec) && sec > 0 ? Math.min(15, Math.max(3, Math.round(sec))) : 5;
+    return {
+      ...b,
+      displayDurationSeconds: safeSec
+    };
+  });
+  await prodDb.setBanners(normalizedBanners);
   const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
   if (adminUser?.email) {
     prodDb.logAdminActivity({
       actorEmail: adminUser.email,
       action: 'BANNER_UPDATED',
       targetId: 'home_banners',
-      details: `Home banners updated (${banners.length} banners saved).`
+      details: `Home banners updated (${normalizedBanners.length} banners saved).`
     }).catch(() => {});
   }
   res.json({ success: true, banners: prodDb.getBanners() });

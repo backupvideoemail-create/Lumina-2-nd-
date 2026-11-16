@@ -50,6 +50,15 @@ export function buildDiscoverableCatalog(
         ? scene.sourceVideoPreview
         : scene.resultVideoPreview || scene.sourceVideoPreview;
     const previewMedia = scene.resultVideoPreview || scene.sourceVideoPreview;
+    const videoCoverUrl = [
+      scene.resultVideoPreview,
+      scene.sourceVideoPreview,
+      scene.demoVideoUrl
+    ].find((u) => isVideoMedia(u));
+    const resultPosterUrl =
+      (scene.resultVideoPreview && !isVideoMedia(scene.resultVideoPreview) ? scene.resultVideoPreview : '') ||
+      (scene.sourceVideoPreview && !isVideoMedia(scene.sourceVideoPreview) ? scene.sourceVideoPreview : '') ||
+      undefined;
     const mergedTags = Array.from(
       new Set([...(Array.isArray(scene.tags) ? scene.tags : []), 'FaceSwap', 'Face Swap', 'Video'])
     );
@@ -60,10 +69,10 @@ export function buildDiscoverableCatalog(
       type: 'video',
       mediaType: 'video',
       category: (scene.category || 'Dance') as any,
-      cover: coverMedia || scene.sampleFace || '',
-      coverImage: scene.sampleFace || undefined,
-      coverVideo: isVideoMedia(coverMedia) ? coverMedia : undefined,
-      preview: previewMedia || scene.sampleFace || '',
+      cover: coverMedia || resultPosterUrl || '',
+      coverImage: resultPosterUrl,
+      coverVideo: videoCoverUrl || (isVideoMedia(coverMedia) ? coverMedia : undefined),
+      preview: previewMedia || resultPosterUrl || '',
       sampleFaceThumbnail: scene.sampleFace || undefined,
       sampleResult: scene.resultVideoPreview || undefined,
       sampleBefore: scene.sourceVideoPreview || undefined,
