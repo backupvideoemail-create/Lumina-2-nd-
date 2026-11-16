@@ -11,7 +11,8 @@ import {
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
   reportMediaPlaybackIssue,
-  selectMediaRendition
+  selectMediaRendition,
+  subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
 
 interface TemplateCardProps {
@@ -75,13 +76,16 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
   );
 
   const [isMediaLoaded, setIsMediaLoaded] = React.useState(false);
+  const [isVideoFrameReady, setIsVideoFrameReady] = React.useState(false);
   const [hasVideoError, setHasVideoError] = React.useState(false);
   const [isNearViewport, setIsNearViewport] = React.useState(false);
   const [hdVideoSrc, setHdVideoSrc] = React.useState<string | null>(null);
   const [capturedFramePoster, setCapturedFramePoster] = React.useState<string>('');
   const [shouldPlayActive, setShouldPlayActive] = React.useState(false);
 
-  const networkProfile = getNetworkPlaybackProfile();
+  const [networkProfile, setNetworkProfile] = React.useState(() => getNetworkPlaybackProfile());
+  useEffect(() => subscribeNetworkProfileChange(setNetworkProfile), []);
+
   const rendition = selectMediaRendition({
     previewUrl: rawVideoCandidate,
     hdUrl: hdVideoSrc || hdTargetMedia,
@@ -157,8 +161,13 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
     };
   }, [resolvedPoster, rawVideoCandidate]);
 
-  // 200ms Viewport Debounce & Most-Visible Single Active Gallery Preview Coordinator
-  const debounceTimerRef = useRef<any>(null);
+  // Reset frame-ready flag cleanly if adaptive rendition source changes
+  useEffect(() => {
+    setIsVideoFrameReady(false);
+    setHasVideoError(false);
+  }, [resolvedVideoSrc]);
+
+  // All-visible automatic video preview on scroll (no max-1 / click-to-play restrictions)
   const waitingTimerRef = useRef<any>(null);
 
   useEffect(() => {
@@ -171,9 +180,6 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       const videoEl = videoRef.current;
       if (videoEl) {
         videoEl.muted = true;
-        window.dispatchEvent(
-          new CustomEvent('lumina:gallery-preview-play', { detail: { cardId: template.id } })
-        );
         if (videoEl.readyState === 0) {
           try {
             videoEl.load();
@@ -195,83 +201,60 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
       { priority: 3, play: startCardPlayback }
     );
 
-    const handleOtherPreviewPlaying = (e: Event) => {
-      const customEvent = e as CustomEvent<{ cardId: string }>;
-      if (customEvent.detail && customEvent.detail.cardId !== template.id) {
-        setShouldPlayActive(false);
-        const videoEl = videoRef.current;
-        if (videoEl && !videoEl.paused) {
-          videoEl.pause();
-        }
-      }
-    };
-
-    window.addEventListener('lumina:gallery-preview-play', handleOtherPreviewPlaying);
+    if (typeof IntersectionObserver === 'undefined') {
+      setIsNearViewport(true);
+      setShouldPlayActive(true);
+      mediaPlaybackCoordinator.updateVisibility(coordinatorId, 1, startCardPlayback);
+      return unregisterCoord;
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            const ratio = entry.intersectionRatio;
-            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-            debounceTimerRef.current = setTimeout(() => {
-              setIsNearViewport(true);
-              if (ratio >= 0.25 && networkProfile.allowAutoPlay) {
-                mediaPlaybackCoordinator.updateVisibility(coordinatorId, ratio, startCardPlayback);
-              } else {
-                mediaPlaybackCoordinator.updateVisibility(coordinatorId, 0);
-              }
-            }, 200);
+            setIsNearViewport(true);
+            setShouldPlayActive(true);
+            mediaPlaybackCoordinator.updateVisibility(
+              coordinatorId,
+              Math.max(0.25, entry.intersectionRatio),
+              startCardPlayback
+            );
           } else {
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
-              debounceTimerRef.current = null;
-            }
             setShouldPlayActive(false);
             const videoEl = videoRef.current;
-            if (videoEl) videoEl.pause();
+            if (videoEl && !videoEl.paused) {
+              videoEl.pause();
+            }
             mediaPlaybackCoordinator.updateVisibility(coordinatorId, 0);
             mediaPlaybackCoordinator.releasePlay(coordinatorId);
           }
         });
       },
-      { threshold: [0, 0.15, 0.25, 0.45, 0.65, 0.85], rootMargin: '120px' }
+      { threshold: [0, 0.05, 0.25], rootMargin: '240px' }
     );
 
     observer.observe(cardEl);
     return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
       if (waitingTimerRef.current) {
         clearTimeout(waitingTimerRef.current);
       }
       observer.disconnect();
-      window.removeEventListener('lumina:gallery-preview-play', handleOtherPreviewPlaying);
       unregisterCoord();
     };
-  }, [hasPlayableVideo, template.id, networkProfile.allowAutoPlay]);
+  }, [hasPlayableVideo, template.id]);
 
-  // Trigger play once <video> mounts after isNearViewport turns true
+  // Trigger play immediately whenever visible video mounts or rendition adapts
   useEffect(() => {
-    if (!hasPlayableVideo || !isNearViewport || !shouldPlayActive || !networkProfile.allowAutoPlay) return;
+    if (!hasPlayableVideo || !isNearViewport || !shouldPlayActive) return;
     const videoEl = videoRef.current;
     if (!videoEl) return;
     const coordinatorId = `template_card_${template.id}`;
-    if (!mediaPlaybackCoordinator.isPlayerActive(coordinatorId) && !mediaPlaybackCoordinator.requestPlay(coordinatorId)) {
+    if (!mediaPlaybackCoordinator.requestPlay(coordinatorId)) {
       return;
     }
     videoEl.muted = true;
-    window.dispatchEvent(
-      new CustomEvent('lumina:gallery-preview-play', { detail: { cardId: template.id } })
-    );
-    if (videoEl.readyState === 0) {
-      try {
-        videoEl.load();
-      } catch {}
-    }
     videoEl.play().catch(() => {});
-  }, [hasPlayableVideo, isNearViewport, shouldPlayActive, resolvedVideoSrc, template.id, networkProfile.allowAutoPlay]);
+  }, [hasPlayableVideo, isNearViewport, shouldPlayActive, resolvedVideoSrc, template.id]);
 
   // Captures prevTime and wasPaused before in-place video operations (Suite 26.10 compliance)
   const prevTime = videoRef.current?.currentTime || 0;
@@ -322,11 +305,11 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           </div>
         )}
 
-        {/* Media Loading Error Fallback - Only if all poster candidates failed AND (video failed or no playable video) */}
-        {allPostersFailed && (hasVideoError || !hasPlayableVideo) && (
-          <div className="absolute inset-0 z-[5] bg-stone-950 flex flex-col items-center justify-center p-4 text-center pointer-events-none">
-            <Sparkles className="w-7 h-7 text-stone-600 mb-1.5" />
-            <span className="text-[11px] text-stone-400 font-medium">Preview unavailable</span>
+        {/* Media Fallback - Shown when no poster exists and video failed or is unavailable (prevents black screen) */}
+        {(allPostersFailed || (!resolvedPoster && !cachedPosterSrc && !capturedFramePoster)) && (hasVideoError || !hasPlayableVideo) && (
+          <div className="absolute inset-0 z-[5] bg-gradient-to-br from-[#231e31] via-[#181523] to-[#12101a] flex flex-col items-center justify-center p-4 text-center pointer-events-none">
+            <Sparkles className="w-7 h-7 text-amber-400/50 mb-1.5" />
+            <span className="text-[11px] text-stone-300 font-medium line-clamp-1">{template.title}</span>
           </div>
         )}
 
@@ -372,19 +355,21 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
           />
         )}
 
-        {/* Viewport-Aware Video Layer: Attached ONLY when genuine playable video exists and card is near viewport */}
+        {/* Viewport-Aware Video Layer: Autoplays muted/inline/loop for every visible card; stays opacity-0 until first frame is ready so never flashes black */}
         {hasPlayableVideo && isNearViewport && (
           <video
             ref={videoRef}
             src={resolvedVideoSrc}
             poster={cachedPosterSrc || resolvedPoster || undefined}
+            autoPlay
             loop
             muted
             playsInline
-            preload="none"
+            preload={networkProfile.maxPreload}
             draggable={false}
             onLoadedData={(e) => {
               setIsMediaLoaded(true);
+              setIsVideoFrameReady(true);
               if (waitingTimerRef.current) {
                 clearTimeout(waitingTimerRef.current);
                 waitingTimerRef.current = null;
@@ -393,7 +378,19 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
                 const frame = captureFirstFramePoster(e.currentTarget);
                 if (frame) setCapturedFramePoster(frame);
               }
-              if (shouldPlayActive && networkProfile.allowAutoPlay) {
+              if (shouldPlayActive && mediaPlaybackCoordinator.requestPlay(`template_card_${template.id}`)) {
+                e.currentTarget.muted = true;
+                e.currentTarget.play().catch(() => {});
+              }
+            }}
+            onCanPlay={(e) => {
+              setIsMediaLoaded(true);
+              setIsVideoFrameReady(true);
+              if (!resolvedPoster && !capturedFramePoster) {
+                const frame = captureFirstFramePoster(e.currentTarget);
+                if (frame) setCapturedFramePoster(frame);
+              }
+              if (shouldPlayActive && e.currentTarget.paused && mediaPlaybackCoordinator.requestPlay(`template_card_${template.id}`)) {
                 e.currentTarget.muted = true;
                 e.currentTarget.play().catch(() => {});
               }
@@ -412,6 +409,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             }}
             onPlaying={() => {
               setIsMediaLoaded(true);
+              setIsVideoFrameReady(true);
               if (waitingTimerRef.current) {
                 clearTimeout(waitingTimerRef.current);
                 waitingTimerRef.current = null;
@@ -419,6 +417,7 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
             }}
             onError={() => {
               setHasVideoError(true);
+              setIsVideoFrameReady(false);
               setIsMediaLoaded(true);
               reportMediaPlaybackIssue({
                 vector: 'MEDIA_PLAYBACK_FAILURE',
@@ -429,8 +428,8 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
               });
             }}
             onContextMenu={(e) => e.preventDefault()}
-            className={`absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
-              !hasVideoError ? 'opacity-100' : 'opacity-0'
+            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ease-out group-hover:scale-[1.04] pointer-events-none select-none z-[2] ${
+              isVideoFrameReady && !hasVideoError ? 'opacity-100' : 'opacity-0'
             }`}
           />
         )}

@@ -4,7 +4,8 @@ import {
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
   reportMediaPlaybackIssue,
-  selectMediaRendition
+  selectMediaRendition,
+  subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
 
 interface SmartVideoPlayerProps {
@@ -61,7 +62,8 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   const [hasError, setHasError] = useState(false);
   const [fallbackPoster, setFallbackPoster] = useState<string>('');
 
-  const networkProfile = getNetworkPlaybackProfile();
+  const [networkProfile, setNetworkProfile] = useState(() => getNetworkPlaybackProfile());
+  useEffect(() => subscribeNetworkProfileChange(setNetworkProfile), []);
   const rendition = selectMediaRendition({
     previewUrl: src,
     hdUrl: hdSrc,
@@ -135,7 +137,11 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   const resolvedPoster = poster || fallbackPoster || undefined;
 
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden">
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-[#16141d]">
+      {!resolvedPoster && (!hasLoaded || hasError) && (
+        <div className="absolute inset-0 bg-gradient-to-br from-[#231e31] via-[#181523] to-[#12101a] animate-pulse pointer-events-none" />
+      )}
+
       {resolvedPoster && (
         <img
           src={resolvedPoster}
@@ -153,11 +159,12 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
           ref={videoRef}
           src={effectiveSrc}
           poster={resolvedPoster}
+          autoPlay={autoPlay}
           muted={muted}
           loop={loop}
           playsInline
           controls={controls}
-          preload={isModal ? 'metadata' : networkProfile.maxPreload}
+          preload={isModal ? 'auto' : networkProfile.maxPreload}
           onClick={onClick}
           onLoadedData={(e) => {
             setHasLoaded(true);
@@ -168,10 +175,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             }
             if (waitingTimerRef.current) clearTimeout(waitingTimerRef.current);
             onLoadedData?.(e.currentTarget);
-            if (autoPlay && (isModal || networkProfile.allowAutoPlay)) {
+            if (autoPlay) {
               if (mediaPlaybackCoordinator.requestPlay(playerId)) {
                 e.currentTarget.play().catch(() => {});
               }
+            }
+          }}
+          onCanPlay={(e) => {
+            setHasLoaded(true);
+            if (!poster && !fallbackPoster) {
+              const frame = captureFirstFramePoster(e.currentTarget);
+              if (frame) setFallbackPoster(frame);
+            }
+            if (autoPlay && e.currentTarget.paused && mediaPlaybackCoordinator.requestPlay(playerId)) {
+              e.currentTarget.play().catch(() => {});
             }
           }}
           onPlay={() => {
@@ -212,7 +229,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
           }}
           onContextMenu={(e) => e.preventDefault()}
           style={style}
-          className={className}
+          className={`${className} transition-opacity duration-300 ${hasLoaded && !hasError ? 'opacity-100' : 'opacity-0'}`}
         />
       )}
     </div>

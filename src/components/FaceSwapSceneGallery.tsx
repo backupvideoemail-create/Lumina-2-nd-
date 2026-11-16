@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Sparkles, Video, Wand2, Eye, Play, Flame } from 'lucide-react';
+import { Sparkles, Video, Wand2, Eye } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
@@ -9,14 +9,21 @@ import {
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
   reportMediaPlaybackIssue,
-  selectMediaRendition
+  selectMediaRendition,
+  subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
 
 export const FaceSwapSceneGallery: React.FC = () => {
-  const [activeScenePreviewId, setActiveScenePreviewId] = useState<string | null>(null);
+  const [visibleScenes, setVisibleScenes] = useState<Record<string, boolean>>({});
+  const [readyVideos, setReadyVideos] = useState<Record<string, boolean>>({});
+  const [failedVideos, setFailedVideos] = useState<Record<string, boolean>>({});
   const [scenePosters, setScenePosters] = useState<Record<string, string>>({});
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const networkProfile = getNetworkPlaybackProfile();
+  const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
+  const [networkProfile, setNetworkProfile] = useState(() => getNetworkPlaybackProfile());
+
+  useEffect(() => subscribeNetworkProfileChange(setNetworkProfile), []);
+
   const {
     faceSwapScenes,
     templates,
@@ -32,9 +39,9 @@ export const FaceSwapSceneGallery: React.FC = () => {
     (s) => s.isActive !== false && s.status !== 'draft'
   );
 
-  // Viewport-aware autoplay for the single most-visible video scene card (mobile touch friendly; pauses off-screen)
+  // Automatic concurrent autoplay for ALL visible FaceSwap video scenes as user scrolls (no max-1 / click-to-play gate)
   useEffect(() => {
-    if (publishedScenes.length === 0 || typeof IntersectionObserver === 'undefined') return;
+    if (publishedScenes.length === 0) return;
 
     const cleanups: Array<() => void> = [];
     const observers: IntersectionObserver[] = [];
@@ -47,35 +54,60 @@ export const FaceSwapSceneGallery: React.FC = () => {
       if (!isVideoMedia(previewMedia)) return;
 
       const el = cardRefs.current[scene.id];
-      if (!el) return;
-
       const coordId = `faceswap_gallery_${scene.id}`;
+
+      const startPlayback = () => {
+        setVisibleScenes((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
+        const vid = videoRefs.current[scene.id];
+        if (vid) {
+          vid.muted = true;
+          vid.play().catch(() => {});
+        }
+      };
+
       const unreg = mediaPlaybackCoordinator.register(
         coordId,
         () => {
-          setActiveScenePreviewId((curr) => (curr === scene.id ? null : curr));
+          const vid = videoRefs.current[scene.id];
+          if (vid && !vid.paused) {
+            vid.pause();
+          }
         },
         {
           priority: 4,
           screen: 'home',
-          play: () => setActiveScenePreviewId(scene.id)
+          play: startPlayback
         }
       );
       cleanups.push(unreg);
 
+      if (!el || typeof IntersectionObserver === 'undefined') {
+        setVisibleScenes((prev) => ({ ...prev, [scene.id]: true }));
+        mediaPlaybackCoordinator.updateVisibility(coordId, 1, startPlayback);
+        return;
+      }
+
       const obs = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
-            if (entry.isIntersecting && entry.intersectionRatio >= 0.3 && networkProfile.allowAutoPlay) {
-              mediaPlaybackCoordinator.updateVisibility(coordId, entry.intersectionRatio, () => {
-                setActiveScenePreviewId(scene.id);
-              });
-            } else if (!entry.isIntersecting || entry.intersectionRatio < 0.2) {
+            if (entry.isIntersecting) {
+              setVisibleScenes((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
+              mediaPlaybackCoordinator.updateVisibility(
+                coordId,
+                Math.max(0.25, entry.intersectionRatio),
+                startPlayback
+              );
+            } else {
+              const vid = videoRefs.current[scene.id];
+              if (vid && !vid.paused) {
+                vid.pause();
+              }
               mediaPlaybackCoordinator.updateVisibility(coordId, 0);
+              mediaPlaybackCoordinator.releasePlay(coordId);
             }
           });
         },
-        { threshold: [0, 0.2, 0.35, 0.65, 0.9] }
+        { threshold: [0, 0.05, 0.25], rootMargin: '220px' }
       );
       obs.observe(el);
       observers.push(obs);
@@ -85,13 +117,11 @@ export const FaceSwapSceneGallery: React.FC = () => {
       observers.forEach((o) => o.disconnect());
       cleanups.forEach((fn) => fn());
     };
-  }, [publishedScenes.map((s) => s.id).join('|'), networkProfile.allowAutoPlay]);
+  }, [publishedScenes.map((s) => s.id).join('|')]);
 
   if (publishedScenes.length === 0) return null;
 
   const handlePreviewScene = (scene: FaceSwapScene) => {
-    // Independent Full-Screen Preview: Opens TemplateDetailModal for this specific scene/template
-    // Does NOT alter or scroll to the top featured banner!
     const existingTemplate = templates.find((t) => t.faceSwapSceneId === scene.id || t.id === scene.id);
     if (existingTemplate) {
       setSelectedTemplate(existingTemplate);
@@ -194,6 +224,9 @@ export const FaceSwapSceneGallery: React.FC = () => {
               ? scene.resultVideoPreview
               : (!isVideoMedia(scene.sourceVideoPreview) && scene.sourceVideoPreview ? scene.sourceVideoPreview : undefined);
           const videoPoster = explicitPoster || scenePosters[scene.id];
+          const isCardVisible = Boolean(visibleScenes[scene.id]);
+          const isVideoReady = Boolean(readyVideos[scene.id]);
+          const hasFailed = Boolean(failedVideos[scene.id]);
 
           return (
             <motion.div
@@ -209,81 +242,86 @@ export const FaceSwapSceneGallery: React.FC = () => {
                   : 'border-white/10 hover:border-white/20'
               }`}
             >
-              {/* Media Card Preview (Viewport-driven most-visible autoplay on mobile + hover on desktop; never uses sampleFace as main video thumbnail) */}
+              {/* Media Card Preview: Automatic muted inline loop for all visible FaceSwap scenes + guaranteed poster/frame fallback */}
               <div
                 onClick={() => handlePreviewScene(scene)}
-                onMouseEnter={() => {
-                  if (isVideo && networkProfile.allowAutoPlay && mediaPlaybackCoordinator.requestPlay(`faceswap_gallery_${scene.id}`)) {
-                    setActiveScenePreviewId(scene.id);
-                  }
-                }}
-                onMouseLeave={() => {
-                  if (activeScenePreviewId === scene.id) {
-                    setActiveScenePreviewId(null);
-                    mediaPlaybackCoordinator.releasePlay(`faceswap_gallery_${scene.id}`);
-                  }
-                }}
-                className="relative aspect-[9/13] w-full bg-stone-950 overflow-hidden cursor-pointer group"
+                className="relative aspect-[9/13] w-full bg-[#16141d] overflow-hidden cursor-pointer group"
               >
                 {isVideo ? (
-                  activeScenePreviewId === scene.id ? (
-                    <video
-                      src={previewMedia}
-                      poster={videoPoster}
-                      muted
-                      loop
-                      playsInline
-                      autoPlay
-                      preload="metadata"
-                      onLoadedData={(e) => {
-                        if (!videoPoster) {
-                          const frame = captureFirstFramePoster(e.currentTarget);
-                          if (frame) setScenePosters((prev) => ({ ...prev, [scene.id]: frame }));
-                        }
-                      }}
-                      onError={() => {
-                        setActiveScenePreviewId(null);
-                        reportMediaPlaybackIssue({
-                          vector: 'MEDIA_PLAYBACK_FAILURE',
-                          message: `FaceSwap scene preview failed (${scene.id})`,
-                          templateId: scene.id,
-                          errorStage: 'faceswap_gallery_preview',
-                          endpoint: previewMedia
-                        });
-                      }}
-                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
-                    />
-                  ) : (
-                    <>
-                      {videoPoster ? (
-                        <img
-                          src={videoPoster}
-                          alt={scene.title}
-                          loading="lazy"
-                          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
-                        />
-                      ) : (
-                        <video
-                          src={previewMedia}
-                          muted
-                          playsInline
-                          preload="metadata"
-                          onLoadedData={(e) => {
+                  <>
+                    {/* Non-black loading shimmer while fetching poster/first frame */}
+                    {!isVideoReady && !videoPoster && (
+                      <div className="absolute inset-0 z-[1] bg-gradient-to-br from-[#231e31] via-[#181523] to-[#12101a] animate-pulse flex flex-col items-center justify-center gap-2 pointer-events-none">
+                        <div className="w-6 h-6 border-2 border-amber-400/25 border-t-amber-400 rounded-full animate-spin" />
+                        <span className="text-[10px] text-amber-200/80 font-medium">Loading preview…</span>
+                      </div>
+                    )}
+
+                    {/* Underlying Real Poster or Captured First Frame (always prevents black screen on weak network) */}
+                    {videoPoster && (
+                      <img
+                        src={videoPoster}
+                        alt={scene.title}
+                        loading="lazy"
+                        className="absolute inset-0 z-[1] w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 pointer-events-none"
+                      />
+                    )}
+
+                    {/* Autoplaying Muted Inline Video Layer (fades in only once first frame is decoded) */}
+                    {isCardVisible && !hasFailed && (
+                      <video
+                        ref={(el) => {
+                          videoRefs.current[scene.id] = el;
+                        }}
+                        src={previewMedia}
+                        poster={videoPoster}
+                        muted
+                        loop
+                        playsInline
+                        autoPlay
+                        preload={networkProfile.maxPreload}
+                        onLoadedData={(e) => {
+                          setReadyVideos((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
+                          if (!videoPoster) {
                             const frame = captureFirstFramePoster(e.currentTarget);
                             if (frame) setScenePosters((prev) => ({ ...prev, [scene.id]: frame }));
-                          }}
-                          className="w-full h-full object-cover pointer-events-none"
-                        />
-                      )}
-                      {!networkProfile.allowAutoPlay && (
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                          <div className="w-9 h-9 rounded-full bg-black/60 backdrop-blur-md border border-white/25 flex items-center justify-center text-white shadow-lg">
-                            <Play className="w-4 h-4 fill-white ml-0.5" />
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )
+                          }
+                          if (mediaPlaybackCoordinator.requestPlay(`faceswap_gallery_${scene.id}`)) {
+                            e.currentTarget.muted = true;
+                            e.currentTarget.play().catch(() => {});
+                          }
+                        }}
+                        onCanPlay={(e) => {
+                          setReadyVideos((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
+                          if (!videoPoster) {
+                            const frame = captureFirstFramePoster(e.currentTarget);
+                            if (frame) setScenePosters((prev) => ({ ...prev, [scene.id]: frame }));
+                          }
+                          if (e.currentTarget.paused && mediaPlaybackCoordinator.requestPlay(`faceswap_gallery_${scene.id}`)) {
+                            e.currentTarget.muted = true;
+                            e.currentTarget.play().catch(() => {});
+                          }
+                        }}
+                        onPlaying={() => {
+                          setReadyVideos((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
+                        }}
+                        onError={() => {
+                          setFailedVideos((prev) => ({ ...prev, [scene.id]: true }));
+                          setReadyVideos((prev) => ({ ...prev, [scene.id]: false }));
+                          reportMediaPlaybackIssue({
+                            vector: 'MEDIA_PLAYBACK_FAILURE',
+                            message: `FaceSwap scene preview failed (${scene.id})`,
+                            templateId: scene.id,
+                            errorStage: 'faceswap_gallery_preview',
+                            endpoint: previewMedia
+                          });
+                        }}
+                        className={`relative z-[2] w-full h-full object-cover transition-opacity duration-300 group-hover:scale-105 pointer-events-none ${
+                          isVideoReady ? 'opacity-100' : 'opacity-0'
+                        }`}
+                      />
+                    )}
+                  </>
                 ) : (
                   <img
                     src={previewMedia}
@@ -294,24 +332,24 @@ export const FaceSwapSceneGallery: React.FC = () => {
                 )}
 
                 {/* Scrim Overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/25 to-transparent pointer-events-none" />
+                <div className="absolute inset-0 z-[3] bg-gradient-to-t from-black via-black/25 to-transparent pointer-events-none" />
 
                 {/* Top Badges */}
-                <div className="absolute top-2 inset-x-2 flex items-center justify-between pointer-events-none">
+                <div className="absolute top-2 inset-x-2 z-[4] flex items-center justify-between pointer-events-none">
                   <span className="px-2 py-0.5 rounded-full bg-black/75 backdrop-blur-md border border-white/15 text-[9.5px] font-bold text-stone-300">
                     {scene.category || 'Reel Scene'}
                   </span>
                 </div>
 
                 {/* Video Duration Indicator */}
-                <div className="absolute bottom-2 left-2 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur-md text-[9px] font-semibold text-stone-300 border border-white/10 pointer-events-none">
+                <div className="absolute bottom-2 left-2 z-[4] flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur-md text-[9px] font-semibold text-stone-300 border border-white/10 pointer-events-none">
                   <Video className="w-2.5 h-2.5 text-amber-400" />
                   <span>{scene.durationSeconds || 8}s</span>
                 </div>
 
                 {/* Inset Sample Face Portrait */}
                 {scene.sampleFace && (
-                  <div className="absolute bottom-2 right-2 flex items-center gap-1 p-0.5 rounded-lg bg-black/80 backdrop-blur-md border border-white/20 pointer-events-none">
+                  <div className="absolute bottom-2 right-2 z-[4] flex items-center gap-1 p-0.5 rounded-lg bg-black/80 backdrop-blur-md border border-white/20 pointer-events-none">
                     <img
                       src={scene.sampleFace}
                       alt="Sample Face"

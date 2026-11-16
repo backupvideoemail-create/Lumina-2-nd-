@@ -1408,14 +1408,13 @@ async function runSystemVerification() {
   assert(faceSwapAdapterContent.includes("'480p' | '720p' | '1080p'"), '25.4 FaceSwap supports 480p, 720p, 1080p resolutions');
   assert(faceSwapAdapterContent.includes('4000') && faceSwapAdapterContent.includes('VALIDATION_ERROR'), '25.4 FaceSwap enforces 4000-char prompt limit');
 
-  // 25.5 Black Thumbnail Problem Fix & 200ms Debounce in TemplateCard
+  // 25.5 Black Thumbnail Problem Fix & Unrestricted Viewport Autoplay in TemplateCard
   const templateCardContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateCard.tsx'), 'utf-8');
   assert(templateCardContent.includes('posterCandidates'), '25.5 TemplateCard implements ordered poster candidates fallback');
   assert(templateCardContent.includes('hasVideoError') && templateCardContent.includes('allPostersFailed'), '25.5 TemplateCard separates video error from poster failure');
-  assert(templateCardContent.includes('preload="none"'), '25.5 TemplateCard prevents premature video buffer stall with preload="none"');
+  assert(templateCardContent.includes('preload={networkProfile.maxPreload}') && templateCardContent.includes('isVideoFrameReady'), '25.5 TemplateCard adapts preload to network speed and prevents black screen before frame-ready');
   assert(templateCardContent.includes('IntersectionObserver'), '25.5 TemplateCard lazy attaches video near viewport');
-  assert(templateCardContent.includes('debounceTimerRef'), '25.5 TemplateCard implements 200ms viewport debounce before preview playback');
-  assert(templateCardContent.includes('lumina:gallery-preview-play'), '25.5 TemplateCard coordinates single active gallery preview');
+  assert(!templateCardContent.includes('lumina:gallery-preview-play'), '25.5 TemplateCard removed single-video pause event so all visible templates autoplay');
 
   // 25.6 Multi-Category Selection in Context & TemplatesView
   const appContextContent = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf-8');
@@ -1793,9 +1792,8 @@ async function runSystemVerification() {
   assert(!cardSource.includes("queueHdDownload(hdTargetMedia, 'medium')"), '30.1 TemplateCard eliminates scroll-triggered queueHdDownload call (0 HD requests on scroll)');
   assert(!cardSource.includes("queueHdDownload(hdTargetMedia, 'high')"), '30.1 TemplateCard eliminates click-triggered duplicate queueHdDownload call');
 
-  // 30.2 200ms Preview Debounce & Single Active Gallery Preview
-  assert(cardSource.includes('debounceTimerRef'), '30.2 TemplateCard has 200ms debounceTimerRef');
-  assert(cardSource.includes('lumina:gallery-preview-play'), '30.2 TemplateCard coordinates lumina:gallery-preview-play event for single active preview');
+  // 30.2 Unrestricted Multi-Card Preview Autoplay & Dynamic Quality Subscription
+  assert(cardSource.includes('subscribeNetworkProfileChange') && !cardSource.includes('lumina:gallery-preview-play'), '30.2 TemplateCard adapts dynamically to network speed and allows concurrent gallery autoplay');
 
   // 30.3 Single Authoritative HD Owner in TemplateDetailModal
   const modalSource = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf8');
@@ -2608,8 +2606,8 @@ async function runSystemVerification() {
 
   const slowProfile39 = getNetworkPlaybackProfile({ saveData: true, effectiveType: '3g', downlink: 0.9, deviceMemory: 2, hardwareConcurrency: 4 });
   assert(
-    slowProfile39.saveData === true && slowProfile39.allowAutoPlay === false && slowProfile39.maxPreload === 'none',
-    '39.2 getNetworkPlaybackProfile enforces Data-Saver & low-end device video throttling'
+    slowProfile39.saveData === true && slowProfile39.tier === 'conserve' && slowProfile39.allowAutoPlay === true && slowProfile39.maxPreload === 'metadata',
+    '39.2 getNetworkPlaybackProfile conserves bandwidth (tier=conserve, maxPreload=metadata) while preserving automatic preview & first-frame loading'
   );
 
   const singleSrcRendition = selectMediaRendition({ previewUrl: 'https://cdn.example.com/only_one.mp4', hdUrl: null });
@@ -2635,7 +2633,7 @@ async function runSystemVerification() {
     multiRenditionSlow.qualityTier === 'preview' &&
       multiRenditionSlow.adaptiveRenditionAvailable === true &&
       multiRenditionFast.qualityTier === 'hd',
-    '39.2 selectMediaRendition picks preview on slow networks and HD on fast networks when distinct renditions exist'
+    '39.2 selectMediaRendition picks preview on slow networks/low-end phones and HD on fast networks when distinct renditions exist'
   );
 
   let p1Paused = false;
@@ -2646,21 +2644,22 @@ async function runSystemVerification() {
   const okPlay1 = mediaPlaybackCoordinator.requestPlay('coord_test_1');
   p2Paused = false;
   const okPlay2 = mediaPlaybackCoordinator.requestPlay('coord_test_2');
-  assert(okPlay1 && okPlay2 && p1Paused && !p2Paused, '39.2 mediaPlaybackCoordinator enforces single active video player (pauses prior player)');
+  assert(okPlay1 && okPlay2 && !p1Paused && !p2Paused, '39.2 mediaPlaybackCoordinator allows concurrent gallery previews without pausing prior visible cards');
   mediaPlaybackCoordinator.setModalLock('test_modal', true);
-  assert(p2Paused && mediaPlaybackCoordinator.requestPlay('coord_test_1') === false, '39.2 Modal lock pauses background videos and blocks background autoPlay');
+  assert(p1Paused && p2Paused && mediaPlaybackCoordinator.requestPlay('coord_test_1') === false, '39.2 Modal lock still pauses background videos and blocks background play');
   mediaPlaybackCoordinator.setModalLock('test_modal', false);
   unreg1();
   unreg2();
 
   const featuredSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapFeaturedCard.tsx'), 'utf8');
   const videoTagCountFeatured = (featuredSrc39.match(/<video\b/g) || []).length;
-  assert(videoTagCountFeatured === 1, `39.2 FaceSwapFeaturedCard eliminated second ambient <video> decoder (count=${videoTagCountFeatured})`);
+  assert(videoTagCountFeatured === 1, `39.2 FaceSwapFeaturedCard maintains single clean <video> decoder with poster fallback (count=${videoTagCountFeatured})`);
 
   const gallerySrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapSceneGallery.tsx'), 'utf8');
   assert(
-    gallerySrc39.includes('activeScenePreviewId === scene.id'),
-    '39.2 FaceSwapSceneGallery eliminates simultaneous multi-card <video autoPlay> storm'
+    !gallerySrc39.includes('activeScenePreviewId === scene.id') &&
+      gallerySrc39.includes('visibleScenes[scene.id]'),
+    '39.2 FaceSwapSceneGallery removes single-card activeScenePreviewId lock so all visible FaceSwap cards autoplay concurrently'
   );
 
   const { isVideoMedia: checkIsVideoMedia39 } = await import('../src/utils/mediaUtils.ts');
@@ -2757,7 +2756,7 @@ async function runSystemVerification() {
     '40.2 Video cards prioritize real video/poster + first-frame capture + IntersectionObserver visibility-driven autoplay'
   );
 
-  // 40.3 Single most-visible playback arbitration + hysteresis + scroll-out pause + scroll-back resume
+  // 40.3 Unrestricted concurrent playback for ALL visible video cards + off-screen pause + modal resume
   let playedIds40: string[] = [];
   let pausedIds40: string[] = [];
   const u40a = mediaPlaybackCoordinator.register('vis_card_a', () => pausedIds40.push('a'), {
@@ -2771,26 +2770,21 @@ async function runSystemVerification() {
   mediaPlaybackCoordinator.setActiveScreen('home');
   mediaPlaybackCoordinator.updateVisibility('vis_card_a', 0.45);
   mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0.90);
-  await new Promise((r) => setTimeout(r, 110));
   assert(
-    mediaPlaybackCoordinator.isPlayerActive('vis_card_b') && !mediaPlaybackCoordinator.isPlayerActive('vis_card_a'),
-    '40.3 mediaPlaybackCoordinator activates only the single most-visible video card (vis_card_b at 0.90 > vis_card_a at 0.45)'
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_a') && mediaPlaybackCoordinator.isPlayerActive('vis_card_b'),
+    '40.3 mediaPlaybackCoordinator keeps ALL visible video cards active concurrently without max-1 exclusion'
   );
-  // Small fluctuation within +0.08 hysteresis should NOT ping-pong
-  mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0.85);
-  mediaPlaybackCoordinator.updateVisibility('vis_card_a', 0.89);
-  await new Promise((r) => setTimeout(r, 110));
-  assert(
-    mediaPlaybackCoordinator.isPlayerActive('vis_card_b'),
-    '40.3 Hysteresis (+0.08) prevents jitter ping-pong between similarly visible cards'
-  );
-  // Scrolling card B off-screen resumes card A automatically
+  // Scrolling card B off-screen pauses only card B while card A stays active
   mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0);
-  mediaPlaybackCoordinator.releasePlay('vis_card_b');
-  await new Promise((r) => setTimeout(r, 110));
   assert(
-    mediaPlaybackCoordinator.isPlayerActive('vis_card_a'),
-    '40.3 When primary card scrolls off-screen, remaining visible card automatically resumes playback'
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_a') && !mediaPlaybackCoordinator.isPlayerActive('vis_card_b') && pausedIds40.includes('b'),
+    '40.3 Scrolling a card off-screen pauses only that card while visible cards stay playing'
+  );
+  // Scrolling card B back into view resumes it cleanly
+  mediaPlaybackCoordinator.updateVisibility('vis_card_b', 0.65);
+  assert(
+    mediaPlaybackCoordinator.isPlayerActive('vis_card_b') && playedIds40.includes('b'),
+    '40.3 Scrolling a card back into view resumes its automatic preview playback'
   );
   u40a();
   u40b();
@@ -2839,6 +2833,14 @@ async function runSystemVerification() {
       tplMgrSrc40.includes('if (!uploadRes.ok || !uploadData?.url)') &&
       serverSrc39.includes('displayDurationSeconds'),
     '40.5 Admin TemplateManagerModal & server PUT /api/admin/banners support 3-15s Display Duration and guard upload responses safely'
+  );
+
+  // 40.6 FaceSwapFeaturedCard avoids dead Mixkit HTTP 403 URL on initial mount & falls back cleanly to real scene video
+  assert(
+    !featuredSrc39.includes("demoVideoUrl: 'https://assets.mixkit.co/") &&
+      featuredSrc39.includes('isDeadExternalVideo') &&
+      featuredSrc39.includes('demoCandidates'),
+    '40.6 FaceSwapFeaturedCard eliminates dead Mixkit 403 fallback and auto-recovers via live config or scene video previews'
   );
 
   console.log('\n====================================================');

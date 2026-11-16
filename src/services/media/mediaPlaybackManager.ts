@@ -1,12 +1,15 @@
 /**
- * Centralized Media Playback Coordinator, Honest Network-Aware Rendition Selector & Playback Telemetry.
+ * Centralized Media Playback Manager, Adaptive Network-Aware Rendition Selector & Playback Telemetry.
  *
- * Ensures:
- * - Zero concurrent background autoPlay video storms on mobile/low-end devices
- * - Only one active gallery/featured/hero video decodes at a time (pausing others + pausing on tab switch/modals)
- * - Honest rendition selection: switches between preview and HD ONLY when distinct URLs actually exist
- * - Data-Saver (navigator.connection.saveData) and slow-network respect
- * - Scrubbed, rate-limited slow-buffering / decode-error reporting to Admin Error Alerts
+ * Designed for seamless, unrestricted automatic gallery video previews:
+ * - All visible Template & FaceSwap video cards autoplay simultaneously (muted, inline, looped)
+ *   as the user browses and scrolls — NO max-1 or max-2 video cap and NO click-to-play gate.
+ * - Quality automatically adapts to mobile hardware capability (RAM/CPU) and network speed
+ *   (preview/lighter rendition on weak networks or low-end devices; HD upgrade on fast 4G/Wi-Fi).
+ * - Fetches metadata/first-frame safely even on weak connections so real poster/preview frames show
+ *   with zero black screens.
+ * - Still pauses background gallery videos cleanly during modals (TemplateDetailModal, fullscreen),
+ *   tab switches, or screen navigation, and resumes them automatically when returning.
  */
 
 export type NetworkTier = 'conserve' | 'standard' | 'high';
@@ -18,7 +21,7 @@ export interface NetworkPlaybackProfile {
   isSlowNetwork: boolean;
   isLowEndDevice: boolean;
   tier: NetworkTier;
-  maxPreload: 'none' | 'metadata';
+  maxPreload: 'none' | 'metadata' | 'auto';
   allowAutoPlay: boolean;
 }
 
@@ -70,7 +73,7 @@ export function getNetworkPlaybackProfile(envOverride?: {
     (hardwareConcurrency !== undefined && hardwareConcurrency <= 4);
 
   let tier: NetworkTier = 'standard';
-  if (saveData || isSlowNetwork) {
+  if (saveData || isSlowNetwork || isLowEndDevice) {
     tier = 'conserve';
   } else if (effectiveType === '4g' && (downlinkMbps === null || downlinkMbps >= 5) && !isLowEndDevice) {
     tier = 'high';
@@ -83,13 +86,38 @@ export function getNetworkPlaybackProfile(envOverride?: {
     isSlowNetwork,
     isLowEndDevice,
     tier,
-    maxPreload: isSlowNetwork || isLowEndDevice ? 'none' : 'metadata',
-    allowAutoPlay: !saveData && effectiveType !== 'slow-2g' && effectiveType !== '2g'
+    // Always fetch at least metadata/first-frame on slow networks (never blank/black); full auto on high tier
+    maxPreload: tier === 'high' ? 'auto' : 'metadata',
+    // All template & FaceSwap previews should attempt muted inline autoplay automatically
+    allowAutoPlay: true
   };
 }
 
 /**
- * Selects the honest best rendition URL.
+ * Subscribes to live browser Network Information API changes so video quality adjusts dynamically
+ * if mobile connectivity improves or weakens mid-session.
+ */
+export function subscribeNetworkProfileChange(
+  onChange: (profile: NetworkPlaybackProfile) => void
+): () => void {
+  if (typeof navigator === 'undefined') return () => {};
+  const nav: any = navigator;
+  const conn: any = nav.connection || nav.mozConnection || nav.webkitConnection;
+  if (!conn || typeof conn.addEventListener !== 'function') return () => {};
+
+  const handler = () => {
+    onChange(getNetworkPlaybackProfile());
+  };
+  conn.addEventListener('change', handler);
+  return () => {
+    try {
+      conn.removeEventListener('change', handler);
+    } catch {}
+  };
+}
+
+/**
+ * Selects the honest best rendition URL based on mobile device capability and internet speed.
  * Never claims adaptive bitrate switching when only a single video source exists.
  */
 export function selectMediaRendition(options: {
@@ -125,6 +153,7 @@ export function selectMediaRendition(options: {
   const canUpgradeToHd =
     !profile.saveData &&
     !profile.isSlowNetwork &&
+    !profile.isLowEndDevice &&
     (options.preferHd ? true : profile.tier === 'high');
 
   return {
@@ -148,7 +177,7 @@ interface RegisteredPlayer {
 class MediaPlaybackCoordinator {
   private players = new Map<string, RegisteredPlayer>();
   private modalLocks = new Set<string>();
-  private activePlayerId: string | null = null;
+  private activePlayers = new Set<string>();
   private activeScreen: string = 'home';
   private documentHidden: boolean = typeof document !== 'undefined' ? Boolean(document.hidden) : false;
 
@@ -158,6 +187,8 @@ class MediaPlaybackCoordinator {
         this.documentHidden = Boolean(document.hidden);
         if (this.documentHidden) {
           this.pauseAll();
+        } else {
+          this.resumeVisiblePlayers();
         }
       });
     }
@@ -179,13 +210,14 @@ class MediaPlaybackCoordinator {
     });
     return () => {
       this.players.delete(id);
-      if (this.activePlayerId === id) {
-        this.activePlayerId = null;
-        this.scheduleMostVisiblePlayback();
-      }
+      this.activePlayers.delete(id);
     };
   }
 
+  /**
+   * Updates viewport visibility for an individual video player.
+   * All visible videos play concurrently without pausing each other; off-screen videos pause cleanly.
+   */
   public updateVisibility(id: string, visibilityRatio: number, playFn?: () => void): void {
     const player = this.players.get(id);
     if (!player) return;
@@ -194,104 +226,75 @@ class MediaPlaybackCoordinator {
       player.play = playFn;
     }
 
-    if (player.visibilityRatio < 0.25) {
+    if (player.visibilityRatio <= 0.01) {
+      this.activePlayers.delete(id);
       try {
         player.pause();
       } catch {}
-      if (this.activePlayerId === id) {
-        this.activePlayerId = null;
-        this.scheduleMostVisiblePlayback();
-      }
       return;
     }
 
-    this.scheduleMostVisiblePlayback();
+    if (this.canPlayerPlay(player)) {
+      this.activePlayers.add(id);
+      if (player.play) {
+        try {
+          player.play();
+        } catch {}
+      }
+    }
   }
 
-  private scheduleMostVisiblePlayback(): void {
+  private canPlayerPlay(player: RegisteredPlayer): boolean {
+    if (this.documentHidden) return false;
+    const isModalPlayer = Boolean(player.isModal || player.id.startsWith('modal:'));
+    if (this.modalLocks.size > 0 && !isModalPlayer) return false;
+    if (player.screen && !isModalPlayer && player.screen !== this.activeScreen) return false;
+    return true;
+  }
+
+  private resumeVisiblePlayers(): void {
     if (this.documentHidden || this.modalLocks.size > 0) return;
-
-    let best: RegisteredPlayer | null = null;
-    let bestScore = -1;
-
     for (const player of this.players.values()) {
       if (player.isModal || player.id.startsWith('modal:')) continue;
       if (player.screen && player.screen !== this.activeScreen) continue;
-      if (player.visibilityRatio < 0.25) continue;
-
-      // Combine viewport visibility ratio with subtle priority tie-breaker
-      const score = player.visibilityRatio + Math.min(player.priority, 20) * 0.005;
-      if (score > bestScore) {
-        bestScore = score;
-        best = player;
-      }
-    }
-
-    if (!best) return;
-
-    const currentActive = this.activePlayerId ? this.players.get(this.activePlayerId) : null;
-    if (
-      currentActive &&
-      currentActive.id !== best.id &&
-      currentActive.visibilityRatio >= 0.25 &&
-      best.visibilityRatio < currentActive.visibilityRatio + 0.08
-    ) {
-      // Avoid jittery ping-pong switching between two similarly visible cards
-      return;
-    }
-
-    if (this.activePlayerId !== best.id) {
-      for (const [otherId, player] of this.players.entries()) {
-        if (otherId !== best.id) {
+      if (player.visibilityRatio > 0.01) {
+        this.activePlayers.add(player.id);
+        if (player.play) {
           try {
-            player.pause();
+            player.play();
           } catch {}
         }
       }
-      this.activePlayerId = best.id;
-    }
-
-    if (best.play) {
-      try {
-        best.play();
-      } catch {}
     }
   }
 
   public isPlayerActive(id: string): boolean {
-    return this.activePlayerId === id;
+    return this.activePlayers.has(id);
   }
 
+  /**
+   * Checks whether a player is allowed to play (tab active, no modal lock, matching screen).
+   * Does NOT pause sibling gallery videos so multiple visible templates autoplay together.
+   */
   public requestPlay(id: string): boolean {
     if (this.documentHidden) return false;
     const requester = this.players.get(id);
     const isModalPlayer = Boolean(requester?.isModal || id.startsWith('modal:'));
 
-    // Do not start background videos if a blocking modal is open
     if (this.modalLocks.size > 0 && !isModalPlayer) {
       return false;
     }
 
-    // Do not play background screen video when user switched to another tab
     if (requester?.screen && !isModalPlayer && requester.screen !== this.activeScreen) {
       return false;
     }
 
-    for (const [otherId, player] of this.players.entries()) {
-      if (otherId !== id) {
-        try {
-          player.pause();
-        } catch {}
-      }
-    }
-    this.activePlayerId = id;
+    this.activePlayers.add(id);
     return true;
   }
 
   public releasePlay(id: string): void {
-    if (this.activePlayerId === id) {
-      this.activePlayerId = null;
-    }
+    this.activePlayers.delete(id);
   }
 
   public setModalLock(modalId: string, locked: boolean): void {
@@ -299,18 +302,16 @@ class MediaPlaybackCoordinator {
       this.modalLocks.add(modalId);
       for (const [id, player] of this.players.entries()) {
         if (!player.isModal && !id.startsWith('modal:')) {
+          this.activePlayers.delete(id);
           try {
             player.pause();
           } catch {}
-          if (this.activePlayerId === id) {
-            this.activePlayerId = null;
-          }
         }
       }
     } else {
       this.modalLocks.delete(modalId);
       if (this.modalLocks.size === 0) {
-        this.scheduleMostVisiblePlayback();
+        this.resumeVisiblePlayers();
       }
     }
   }
@@ -319,15 +320,13 @@ class MediaPlaybackCoordinator {
     this.activeScreen = screen;
     for (const [id, player] of this.players.entries()) {
       if (!player.isModal && !id.startsWith('modal:') && player.screen && player.screen !== screen) {
+        this.activePlayers.delete(id);
         try {
           player.pause();
         } catch {}
-        if (this.activePlayerId === id) {
-          this.activePlayerId = null;
-        }
       }
     }
-    this.scheduleMostVisiblePlayback();
+    this.resumeVisiblePlayers();
   }
 
   public pauseAll(): void {
@@ -336,7 +335,7 @@ class MediaPlaybackCoordinator {
         player.pause();
       } catch {}
     }
-    this.activePlayerId = null;
+    this.activePlayers.clear();
   }
 
   public isModalLocked(): boolean {
@@ -345,7 +344,8 @@ class MediaPlaybackCoordinator {
 
   public getStateSnapshot() {
     return {
-      activePlayerId: this.activePlayerId,
+      activePlayerId: Array.from(this.activePlayers)[0] || null,
+      activePlayerIds: Array.from(this.activePlayers),
       activeScreen: this.activeScreen,
       modalLocks: Array.from(this.modalLocks),
       registeredCount: this.players.size

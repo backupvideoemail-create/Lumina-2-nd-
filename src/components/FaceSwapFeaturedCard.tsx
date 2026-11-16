@@ -17,9 +17,12 @@ import { useApp } from '../context/AppContext';
 import { FaceSwapScene } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import {
+  captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
-  reportMediaPlaybackIssue
+  reportMediaPlaybackIssue,
+  selectMediaRendition,
+  subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
 
 export const FaceSwapFeaturedCard: React.FC = () => {
@@ -52,11 +55,13 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     durationSeconds: 9,
     aspectRatio: '9:16' as const,
     category: 'Dance & Viral',
-    tags: ['Face Swap', 'Dance', 'Instagram Reels'],
-    demoVideoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-party-with-lights-40915-large.mp4'
+    tags: ['Face Swap', 'Dance', 'Instagram Reels']
   };
 
-  const [liveDemoVideoUrl, setLiveDemoVideoUrl] = useState<string>(activeScene.demoVideoUrl || '');
+  const isDeadExternalVideo = (url?: string): boolean => Boolean(url && url.includes('assets.mixkit.co/'));
+
+  const [liveDemoVideoUrl, setLiveDemoVideoUrl] = useState<string>('');
+  const [failedMediaUrls, setFailedMediaUrls] = useState<string[]>([]);
 
   // Fetch live admin-managed global demo video from server
   useEffect(() => {
@@ -64,7 +69,7 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     fetch('/api/faceswap/config')
       .then((res) => res.json())
       .then((data) => {
-        if (isMounted && data.demoVideoUrl) {
+        if (isMounted && data.demoVideoUrl && !isDeadExternalVideo(data.demoVideoUrl)) {
           setLiveDemoVideoUrl(data.demoVideoUrl);
         }
       })
@@ -74,19 +79,44 @@ export const FaceSwapFeaturedCard: React.FC = () => {
     };
   }, []);
 
-  // Determine current media source and whether it is a video
-  const currentMediaUrl =
-    previewMode === 'demo'
-      ? liveDemoVideoUrl || activeScene.demoVideoUrl || 'https://assets.mixkit.co/videos/preview/mixkit-girl-dancing-happy-in-a-party-with-lights-40915-large.mp4'
-      : previewMode === 'after'
-      ? activeScene.resultVideoPreview
-      : activeScene.sourceVideoPreview;
+  const demoCandidates = [
+    liveDemoVideoUrl,
+    !isDeadExternalVideo(activeScene.demoVideoUrl) ? activeScene.demoVideoUrl : '',
+    activeScene.resultVideoPreview,
+    activeScene.sourceVideoPreview
+  ].filter((u): u is string => Boolean(u && !failedMediaUrls.includes(u)));
 
+  const rawCurrentMediaUrl =
+    previewMode === 'demo'
+      ? (demoCandidates[0] || activeScene.resultVideoPreview || activeScene.sourceVideoPreview || '')
+      : previewMode === 'after'
+      ? (activeScene.resultVideoPreview && failedMediaUrls.includes(activeScene.resultVideoPreview)
+          ? (activeScene.sourceVideoPreview || '')
+          : (activeScene.resultVideoPreview || activeScene.sourceVideoPreview || ''))
+      : (activeScene.sourceVideoPreview || '');
+
+  const [networkProfile, setNetworkProfile] = useState(() => getNetworkPlaybackProfile());
+  useEffect(() => subscribeNetworkProfileChange(setNetworkProfile), []);
+
+  const rendition = selectMediaRendition({
+    previewUrl: rawCurrentMediaUrl,
+    hdUrl: (activeScene as any)?.hdVideoUrl || null,
+    network: networkProfile
+  });
+  const currentMediaUrl = rendition.selectedUrl || rawCurrentMediaUrl;
   const isCurrentVideo = isVideoMedia(currentMediaUrl);
-  const networkProfile = getNetworkPlaybackProfile();
+  const [capturedPoster, setCapturedPoster] = useState<string>('');
+  const [isFrameReady, setIsFrameReady] = useState<boolean>(false);
+
   const posterImage =
     (!isVideoMedia(activeScene.resultVideoPreview) && activeScene.resultVideoPreview ? activeScene.resultVideoPreview : undefined) ||
-    (!isVideoMedia(activeScene.sourceVideoPreview) && activeScene.sourceVideoPreview ? activeScene.sourceVideoPreview : undefined);
+    (!isVideoMedia(activeScene.sourceVideoPreview) && activeScene.sourceVideoPreview ? activeScene.sourceVideoPreview : undefined) ||
+    capturedPoster ||
+    undefined;
+
+  useEffect(() => {
+    setIsFrameReady(false);
+  }, [currentMediaUrl]);
 
   // Register featured player with global coordinator
   useEffect(() => {
@@ -252,20 +282,19 @@ export const FaceSwapFeaturedCard: React.FC = () => {
             }`}
           >
             {isCurrentVideo ? (
-              <div className="relative w-full h-full flex items-center justify-center bg-black overflow-hidden">
-                {/* Lightweight CSS / poster backdrop replaces second simultaneous ambient video decoder */}
+              <div className="relative w-full h-full flex items-center justify-center bg-[#16141d] overflow-hidden">
+                {/* Lightweight CSS / poster backdrop prevents black screen while buffering */}
                 {posterImage ? (
                   <img
                     src={posterImage}
-                    alt=""
-                    aria-hidden="true"
+                    alt={activeScene.title}
                     loading="lazy"
-                    className="absolute inset-0 w-full h-full object-cover filter blur-2xl opacity-30 scale-110 pointer-events-none select-none"
+                    className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none z-[1]"
                   />
                 ) : (
                   <div
                     aria-hidden="true"
-                    className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(212,175,55,0.22),rgba(12,10,18,0.95))] pointer-events-none"
+                    className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(212,175,55,0.22),rgba(22,20,29,0.95))] pointer-events-none z-[1]"
                   />
                 )}
                 <video
@@ -273,13 +302,25 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                   key={`${previewMode}_${currentMediaUrl}`}
                   src={currentMediaUrl}
                   poster={posterImage}
-                  autoPlay={networkProfile.allowAutoPlay}
+                  autoPlay
                   preload={networkProfile.maxPreload}
                   playsInline
                   loop
                   muted={isMuted}
                   onContextMenu={(e) => e.preventDefault()}
+                  onLoadedData={(e) => {
+                    setIsFrameReady(true);
+                    if (!posterImage) {
+                      const frame = captureFirstFramePoster(e.currentTarget);
+                      if (frame) setCapturedPoster(frame);
+                    }
+                    if (mediaPlaybackCoordinator.requestPlay('faceswap_featured_card')) {
+                      e.currentTarget.play().then(() => setIsPlaying(true)).catch(() => {});
+                    }
+                  }}
+                  onCanPlay={() => setIsFrameReady(true)}
                   onPlay={() => {
+                    setIsFrameReady(true);
                     mediaPlaybackCoordinator.requestPlay('faceswap_featured_card');
                     setIsPlaying(true);
                   }}
@@ -288,6 +329,16 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                     setIsPlaying(false);
                   }}
                   onError={() => {
+                    setIsFrameReady(false);
+                    const hasFallbackRemaining =
+                      previewMode === 'demo' &&
+                      demoCandidates.some((u) => u !== currentMediaUrl && !failedMediaUrls.includes(u));
+                    if (currentMediaUrl && !failedMediaUrls.includes(currentMediaUrl)) {
+                      setFailedMediaUrls((prev) => [...prev, currentMediaUrl]);
+                    }
+                    if (hasFallbackRemaining) {
+                      return;
+                    }
                     reportMediaPlaybackIssue({
                       vector: 'MEDIA_PLAYBACK_FAILURE',
                       message: `Featured FaceSwap video load failed (${activeScene.id})`,
@@ -296,7 +347,9 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                       endpoint: currentMediaUrl
                     });
                   }}
-                  className="relative z-10 max-h-full max-w-full w-full h-full object-contain select-none"
+                  className={`relative z-10 max-h-full max-w-full w-full h-full object-contain select-none transition-opacity duration-300 ${
+                    isFrameReady ? 'opacity-100' : 'opacity-0'
+                  }`}
                 />
               </div>
             ) : (
