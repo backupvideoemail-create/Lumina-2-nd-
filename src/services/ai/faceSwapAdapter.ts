@@ -20,6 +20,7 @@
 
 import { mediaStorage } from '../storage/mediaStorage.ts';
 import type { ProviderResult } from '../types.ts';
+import { resolveCanonicalModelId } from '../pricing/pricingService.ts';
 
 export const HIGGSFIELD_BASE_IDENTITY_PROMPT =
   "Replace the main character in the source video with the person shown in the uploaded reference images. " +
@@ -45,11 +46,15 @@ export interface GenjutsuMotionTransferParams {
   durationSeconds?: number;
   ownerUserId?: string;
   model?: 'hf_mult_motion_control_flash' | 'hf_mult_replace_object_flash' | 'higgsfield/genjutsu-light/motion-transfer/v1.0' | string;
+  provider?: string;
+  adapter?: string;
+  workflow?: string;
   isCouple?: boolean;
 }
 
 export class HiggsfieldGenjutsuAdapter {
   readonly providerName = 'higgsfield';
+  readonly adapterName = 'faceSwapAdapter';
   readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
   readonly fallbackModelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
   readonly modelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
@@ -63,6 +68,18 @@ export class HiggsfieldGenjutsuAdapter {
     return { apiKey, apiSecret, isConfigured: Boolean(apiKey) };
   }
 
+  public static buildAuthHeader(apiKey: string, apiSecret?: string): string {
+    const cleanKey = String(apiKey || '').trim();
+    const cleanSecret = String(apiSecret || '').trim();
+    if (cleanKey.startsWith('Key ') || cleanKey.startsWith('Bearer ')) {
+      return cleanKey;
+    }
+    if (cleanKey && cleanSecret && !cleanKey.includes(':')) {
+      return `Key ${cleanKey}:${cleanSecret}`;
+    }
+    return `Key ${cleanKey}`;
+  }
+
   getPublicStatus() {
     const config = this.getConfig();
     return {
@@ -72,7 +89,9 @@ export class HiggsfieldGenjutsuAdapter {
       fallbackModel: this.fallbackModelName,
       motionControlModel: this.motionControlModel,
       replaceObjectModel: this.replaceObjectModel,
-      status: config.isConfigured ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'MISSING_SECRET',
+      authHeaderFormat: 'Authorization: Key <api-key>',
+      status: config.isConfigured ? 'UNVERIFIED' : 'MISSING_SECRET',
+      customerGenerationEnabled: process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true',
       supportedResolutions: ['480p', '720p', '1080p']
     };
   }
@@ -84,12 +103,50 @@ export class HiggsfieldGenjutsuAdapter {
    */
   async generateFaceSwapVideo(params: GenjutsuMotionTransferParams): Promise<ProviderResult> {
     const startTime = Date.now();
-    const config = this.getConfig();
 
+    // 1. Fail-closed strict provider, adapter, and model-workflow parity checks
+    if (params.provider && params.provider.trim().toLowerCase() !== this.providerName) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: FaceSwapAdapter cannot execute non-Higgsfield provider '${params.provider}'.`
+      );
+    }
+    if (params.adapter && params.adapter.trim() !== this.adapterName) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: FaceSwapAdapter cannot execute mismatched adapter '${params.adapter}'.`
+      );
+    }
+
+    const rawModel = (params.model || this.primaryModelName).trim();
+    const canonicalModel = resolveCanonicalModelId(rawModel);
+    const isMotionControl =
+      canonicalModel === 'hf_mult_motion_control_flash' ||
+      rawModel.includes('motion-transfer');
+    const isObjectSwap =
+      canonicalModel === 'hf_mult_replace_object_flash' ||
+      rawModel.includes('object-swap');
+
+    if (!isMotionControl && !isObjectSwap) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: Model '${rawModel}' is incompatible with Higgsfield FaceSwapAdapter.`
+      );
+    }
+    const wf = (params.workflow || '').trim().toUpperCase();
+    if (wf === 'OBJECT_SWAP' && isMotionControl) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: Model '${rawModel}' cannot execute OBJECT_SWAP workflow.`
+      );
+    }
+    if (wf === 'MOTION_TRANSFER' && isObjectSwap) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: Model '${rawModel}' cannot execute MOTION_TRANSFER workflow.`
+      );
+    }
+
+    const config = this.getConfig();
     if (!config.isConfigured) {
       throw new Error(
         'HIGGSFIELD_API_KEY is not configured in server environment variables. ' +
-        'Please set HIGGSFIELD_API_KEY (and optional HIGGSFIELD_API_SECRET) to enable real neural motion transfer. ' +
+        'Please set complete HIGGSFIELD_API_KEY (Authorization: Key <api-key>) in server secrets to enable Genjutsu Light. ' +
         'Your credits have been refunded in full.'
       );
     }
@@ -140,16 +197,13 @@ Never blend, average, cross-apply, or fuse their faces.`;
       throw new Error(`VALIDATION_ERROR: Higgsfield prompt length (${finalPrompt.length} chars) exceeds maximum provider limit (4000 chars).`);
     }
 
-    const selectedModel = params.model || this.primaryModelName;
+    const selectedModel = canonicalModel || rawModel;
     const requestedResolution = params.resolution || '480p';
 
-    // Route endpoint by model
-    let targetEndpoint = this.endpoint;
-    if (selectedModel === 'hf_mult_replace_object_flash') {
-      targetEndpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/object-swap/v1.0';
-    } else if (selectedModel === 'hf_mult_motion_control_flash') {
-      targetEndpoint = 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
-    }
+    // Route endpoint strictly by canonical model
+    const targetEndpoint = isObjectSwap
+      ? 'https://api.higgsfield.ai/higgsfield/genjutsu-light/object-swap/v1.0'
+      : 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
 
     // Official documented Higgsfield Genjutsu payload.
     const payload: Record<string, any> = {
@@ -163,17 +217,8 @@ Never blend, average, cross-apply, or fuse their faces.`;
       payload.duration = Number(params.durationSeconds);
     }
 
-    // Official Higgsfield Authorization: "Key ${keyId}:${keySecret}" or "Key ${apiKey}"
-    let authHeaderValue: string;
-    if (config.apiKey && config.apiSecret) {
-      authHeaderValue = `Key ${config.apiKey}:${config.apiSecret}`;
-    } else if (config.apiKey.includes(':')) {
-      authHeaderValue = `Key ${config.apiKey}`;
-    } else if (config.apiKey.startsWith('Bearer ') || config.apiKey.startsWith('Key ')) {
-      authHeaderValue = config.apiKey;
-    } else {
-      authHeaderValue = `Key ${config.apiKey}`;
-    }
+    // Official Open Higgsfield Authorization: single complete key "Authorization: Key <api-key>" (with optional legacy key:secret fallback)
+    const authHeaderValue = HiggsfieldGenjutsuAdapter.buildAuthHeader(config.apiKey, config.apiSecret);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -274,6 +319,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
       success: true,
       resultUrl: stored.publicUrl,
       provider: this.providerName,
+      adapter: this.adapterName,
       model: selectedModel,
       processingTimeMs: Date.now() - startTime
     };

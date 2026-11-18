@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { Readable } from 'stream';
 import firebaseConfig from './firebase-applet-config.json';
 import { SEED_FACE_SWAP_SCENES } from './src/data/faceSwapData.ts';
 import {
@@ -22,8 +23,17 @@ import {
   calculateFaceSwapCredits,
   calculateEstimatedProviderCostUsd,
   calculateEstimatedCustomerCredits,
+  calculateCustomerTemplateQuote,
+  calculateAuthoritativeFaceSwapQuote,
   measureActualProviderCostUsd,
   reconcileCostOnCompletion,
+  refreshLiveUsdInrRate,
+  getLiveFxStatus,
+  hydrateFxCache,
+  configureFxHooks,
+  FACE_SWAP_COMPATIBLE_COMBINATIONS,
+  resolveCanonicalModelId,
+  getRegisteredModelEntry,
   MODEL_REGISTRY
 } from './src/services/pricing/pricingService.ts';
 import { razorpayAdapter } from './src/services/payments/razorpayAdapter.ts';
@@ -58,8 +68,12 @@ import {
   resolveAlert,
   emitCloudMonitoringEvent,
   configureMonitoringPersistence,
-  sanitizeMonitoringString
+  sanitizeMonitoringString,
+  normalizeAlertTo12Fields,
+  getGeminiKeyDiagnosticStatus,
+  getHiggsfieldDiagnosticStatus
 } from './src/services/monitoring/cloudMonitoring.ts';
+import { PHONE_AUTH_ENABLED, AUTH_POLICY } from './src/config/authConfig.ts';
 import {
   validateTemplateReadiness,
   validateFaceSwapSceneReadiness
@@ -78,7 +92,9 @@ import type {
   Generation,
   UserSubscription,
   PaymentRecord,
-  FaceSwapScene
+  FaceSwapScene,
+  OwnerOmniTestRecord,
+  PerTemplateReadinessItem
 } from './src/types/index.ts';
 
 import { execSync } from 'child_process';
@@ -86,10 +102,26 @@ import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from './src/config/ad
 
 dotenv.config({ override: true });
 enforceRuntimeDatabaseLock();
+{
+  const startupDbGuard = getDatabaseGuardState();
+  if (startupDbGuard.blocked) {
+    emitCloudMonitoringEvent(
+      'DATABASE_LOCK_FAILURE',
+      'CRITICAL',
+      startupDbGuard.blockedReason || 'Canonical Firestore database lock blocked invalid target',
+      {
+        source: 'cloud_monitoring',
+        errorStage: 'startup_database_lock',
+        errorCode: 'CRITICAL_FIRESTORE_LOCK',
+        httpStatus: 503
+      }
+    );
+  }
+}
 configureMonitoringPersistence({
   persistIncident: (alert) => prodDb.persistIncidentRecord(alert),
-  resolveIncident: async (alertId, resolvedBy) => {
-    await prodDb.resolveIncidentRecord(alertId, resolvedBy);
+  resolveIncident: async (alertId, resolvedBy, resolutionNote) => {
+    await prodDb.resolveIncidentRecord(alertId, resolvedBy, resolutionNote);
   }
 });
 configureStorageMonitoring((severity, message, context) => {
@@ -100,6 +132,29 @@ configureStorageMonitoring((severity, message, context) => {
     });
   } catch {
     // Non-blocking monitoring reporter
+  }
+});
+configureFxHooks({
+  onPersist: (record) => {
+    try {
+      prodDb.saveFxCacheRecord(record);
+    } catch {}
+  },
+  onExpiredAlert: (fxStatus) => {
+    try {
+      emitCloudMonitoringEvent(
+        'PRICING_FX_EXPIRED',
+        'ERROR',
+        sanitizeMonitoringString(`Live USD/INR FX unavailable (${fxStatus.status}): ${fxStatus.lastError || 'Cache expired (>12h) or unfetched'}`),
+        {
+          source: 'cloud_monitoring',
+          errorStage: 'fx_ttl_check',
+          errorCode: 'FX_RATE_EXPIRED',
+          rootCause: 'Live USD/INR exchange rate cache exceeded 12h TTL or failed initial fetch from external FX APIs.',
+          recommendedAction: 'Check outbound HTTPS connectivity or click Refresh Live FX in Diagnostics.'
+        }
+      );
+    } catch {}
   }
 });
 
@@ -219,6 +274,7 @@ function getSanitizedPlatformAndSyncReport() {
   return {
     firebaseProjectName: CANONICAL_PROJECT_NAME,
     firebaseProjectNumber: CANONICAL_PROJECT_NUMBER,
+    authPolicy: AUTH_POLICY,
     runtimeServiceAccountEmail: guard.runtimeServiceAccountEmail || 'UNAVAILABLE (non-GCE local or ADC unconfigured)',
     cloudRunRegion: guard.cloudRunRegion || 'UNAVAILABLE',
     gitBranch: resolvedGitBranch,
@@ -571,6 +627,73 @@ app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (req, res) => {
   return res.status(404).end();
 });
 
+function setMediaStreamResponseHeaders(
+  res: express.Response,
+  options: { isPublic: boolean; etag?: string; contentRange?: string; contentLength?: number; mimeType?: string }
+) {
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Vary', 'Range');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, If-None-Match');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, ETag');
+  if (options.etag) {
+    res.setHeader('ETag', options.etag);
+  }
+  res.setHeader(
+    'Cache-Control',
+    options.isPublic ? 'public, max-age=86400, stale-while-revalidate=3600' : 'private, max-age=3600'
+  );
+  if (options.contentRange) {
+    res.setHeader('Content-Range', options.contentRange);
+  }
+  if (options.contentLength !== undefined) {
+    res.setHeader('Content-Length', options.contentLength);
+  }
+  if (options.mimeType) {
+    res.setHeader('Content-Type', options.mimeType);
+  }
+}
+
+async function pipeStreamBodySafely(req: express.Request, res: express.Response, body: any) {
+  if (!body) {
+    return res.status(404).end();
+  }
+  if (typeof body.pipe === 'function') {
+    const onClose = () => {
+      try {
+        if (typeof body.destroy === 'function') body.destroy();
+      } catch {}
+    };
+    res.on('close', onClose);
+    body.on('error', (streamErr: any) => {
+      res.off('close', onClose);
+      console.warn('[MediaStream] Upstream stream read error:', streamErr?.message || streamErr);
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Upstream media stream interrupted' });
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    });
+    if (req.method === 'HEAD') {
+      onClose();
+      return res.end();
+    }
+    return body.pipe(res);
+  }
+  if (typeof body.getReader === 'function' && typeof Readable.fromWeb === 'function') {
+    const nodeStream = Readable.fromWeb(body as any);
+    return pipeStreamBodySafely(req, res, nodeStream);
+  }
+  if (typeof body.transformToByteArray === 'function') {
+    const bytes = await body.transformToByteArray();
+    if (req.method === 'HEAD') return res.end();
+    return res.send(Buffer.from(bytes));
+  }
+  return res.send(body);
+}
+
 // Serve media safely with user isolation directly from Cloudflare R2 or local cache
 app.get('/api/media/:fileId', async (req, res) => {
   const fileId = path.basename(req.params.fileId);
@@ -583,13 +706,13 @@ app.get('/api/media/:fileId', async (req, res) => {
       if (meta && !meta.isPublic && meta.ownerUserId && (!user || user.id !== meta.ownerUserId)) {
         return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
       }
-      if (!meta || meta.isPublic !== false) {
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('ETag', stableEtag);
-        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
-        if (req.headers['if-none-match'] === stableEtag && !req.headers.range) {
-          return res.status(304).end();
-        }
+      const isPublicAsset = !meta || meta.isPublic !== false;
+      setMediaStreamResponseHeaders(res, {
+        isPublic: isPublicAsset,
+        etag: isPublicAsset ? stableEtag : undefined
+      });
+      if (isPublicAsset && req.headers['if-none-match'] === stableEtag && !req.headers.range) {
+        return res.status(304).end();
       }
       return res.sendFile(localPath, { acceptRanges: true });
     }
@@ -597,9 +720,7 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (!req.headers.range && req.headers['if-none-match'] === stableEtag) {
       const meta = await mediaStorage.getMetadata(fileId);
       if (!meta || meta.isPublic || (user && user.id === meta.ownerUserId)) {
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('ETag', stableEtag);
-        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+        setMediaStreamResponseHeaders(res, { isPublic: true, etag: stableEtag });
         return res.status(304).end();
       }
     }
@@ -614,23 +735,19 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (authResult.statusCode) {
       res.status(authResult.statusCode);
     }
-    if (authResult.contentRange) {
-      res.setHeader('Content-Range', authResult.contentRange);
-    }
-    if (authResult.contentLength !== undefined) {
-      res.setHeader('Content-Length', authResult.contentLength);
-    }
-    res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('ETag', stableEtag);
-    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
-    if (typeof authResult.body.pipe === 'function') {
-      authResult.body.pipe(res);
-    } else {
-      res.send(authResult.body);
-    }
+    setMediaStreamResponseHeaders(res, {
+      isPublic: true,
+      etag: stableEtag,
+      contentRange: authResult.contentRange,
+      contentLength: authResult.contentLength,
+      mimeType: authResult.mimeType || 'application/octet-stream'
+    });
+    return await pipeStreamBodySafely(req, res, authResult.body);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to retrieve media' });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || 'Failed to retrieve media' });
+    }
+    return res.end();
   }
 });
 
@@ -646,7 +763,7 @@ app.get('/api/media/signed/:token', async (req, res) => {
   try {
     const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
     if (fs.existsSync(localPath)) {
-      res.setHeader('Cache-Control', 'private, max-age=3600');
+      setMediaStreamResponseHeaders(res, { isPublic: false });
       return res.sendFile(localPath, { acceptRanges: true });
     }
 
@@ -660,22 +777,18 @@ app.get('/api/media/signed/:token', async (req, res) => {
     if (authResult.statusCode) {
       res.status(authResult.statusCode);
     }
-    if (authResult.contentRange) {
-      res.setHeader('Content-Range', authResult.contentRange);
-    }
-    if (authResult.contentLength !== undefined) {
-      res.setHeader('Content-Length', authResult.contentLength);
-    }
-    res.setHeader('Content-Type', authResult.mimeType || 'application/octet-stream');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    if (typeof authResult.body.pipe === 'function') {
-      authResult.body.pipe(res);
-    } else {
-      res.send(authResult.body);
-    }
+    setMediaStreamResponseHeaders(res, {
+      isPublic: false,
+      contentRange: authResult.contentRange,
+      contentLength: authResult.contentLength,
+      mimeType: authResult.mimeType || 'application/octet-stream'
+    });
+    return await pipeStreamBodySafely(req, res, authResult.body);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to stream signed media' });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || 'Failed to stream signed media' });
+    }
+    return res.end();
   }
 });
 
@@ -727,15 +840,18 @@ async function verifyFirebaseToken(idToken: string): Promise<{
   phone?: string;
   name?: string;
   avatar?: string;
+  signInProvider?: string;
 } | null> {
   if (!idToken || typeof idToken !== 'string') return null;
 
+  let decodedProviderFromJwt: string | undefined;
   // Audit token claims (aud & iss) across projects
   try {
     const parts = idToken.split('.');
     if (parts.length === 3) {
       const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-      console.log(`[Firebase Token Audit] aud: "${payload.aud}", iss: "${payload.iss}", email: "${payload.email || 'none'}"`);
+      decodedProviderFromJwt = payload?.firebase?.sign_in_provider;
+      console.log(`[Firebase Token Audit] aud: "${payload.aud}", iss: "${payload.iss}", provider: "${decodedProviderFromJwt || 'unknown'}"`);
     }
   } catch {}
 
@@ -750,7 +866,8 @@ async function verifyFirebaseToken(idToken: string): Promise<{
           emailVerified: Boolean(decoded.email_verified),
           phone: decoded.phone_number,
           name: decoded.name,
-          avatar: decoded.picture
+          avatar: decoded.picture,
+          signInProvider: decoded.firebase?.sign_in_provider || decodedProviderFromJwt
         };
       }
     } catch (adminErr: any) {
@@ -793,7 +910,8 @@ async function verifyFirebaseToken(idToken: string): Promise<{
       emailVerified: Boolean(userRecord.emailVerified),
       phone: userRecord.phoneNumber,
       name: userRecord.displayName,
-      avatar: userRecord.photoUrl
+      avatar: userRecord.photoUrl,
+      signInProvider: decodedProviderFromJwt || userRecord.providerUserInfo?.[0]?.providerId
     };
   } catch (err: any) {
     console.error('[Firebase Token Verification Exception]:', err.message);
@@ -801,7 +919,7 @@ async function verifyFirebaseToken(idToken: string): Promise<{
   }
 }
 
-// Real Firebase Auth Session Ingestion (Strict: Requires verified Firebase ID Token)
+// Real Firebase Auth Session Ingestion (Strict: Requires verified Firebase ID Token; Google-only when PHONE_AUTH_ENABLED=false)
 app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) => {
   const correlationId = `auth_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
   res.locals.correlationId = correlationId;
@@ -824,6 +942,8 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
         {
           source: 'auth_session',
           errorStage: 'firebase_token_verification',
+          errorCode: 'AUTH_TOKEN_INVALID',
+          httpStatus: 401,
           endpoint: '/api/auth/firebase-session',
           correlationId
         }
@@ -831,6 +951,31 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       return res.status(401).json({
         error: 'Invalid, forged, or expired Firebase ID token. Cryptographic server verification failed.',
         code: 'AUTH_TOKEN_INVALID',
+        correlationId
+      });
+    }
+
+    const isPhoneOnlySession =
+      verified.signInProvider === 'phone' ||
+      (!verified.email && Boolean(verified.phone) && verified.signInProvider !== 'google.com');
+    if (!PHONE_AUTH_ENABLED && isPhoneOnlySession) {
+      emitCloudMonitoringEvent(
+        'AUTH_LOGIN_FAILURE',
+        'WARNING',
+        'Rejected Phone OTP login because Google-only policy (PHONE_AUTH_ENABLED=false) is active',
+        {
+          source: 'auth_session',
+          errorStage: 'google_only_policy_guard',
+          errorCode: 'PHONE_AUTH_DISABLED',
+          httpStatus: 403,
+          endpoint: '/api/auth/firebase-session',
+          correlationId
+        }
+      );
+      return res.status(403).json({
+        error: 'Phone OTP authentication is disabled. Please sign in with Google.',
+        code: 'PHONE_AUTH_DISABLED',
+        authPolicy: AUTH_POLICY,
         correlationId
       });
     }
@@ -1057,7 +1202,22 @@ app.get('/api/templates', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  await prodDb.syncCatalogIfStale();
+  try {
+    await prodDb.syncCatalogIfStale();
+  } catch (syncErr: any) {
+    emitCloudMonitoringEvent(
+      'CATALOGUE_SYNC_FAILURE',
+      'ERROR',
+      sanitizeMonitoringString(`Template catalogue sync failure: ${syncErr?.message || 'unknown'}`),
+      {
+        source: 'cloud_monitoring',
+        errorStage: 'catalog_sync',
+        errorCode: 'CATALOG_SYNC_ERROR',
+        httpStatus: 500,
+        endpoint: '/api/templates'
+      }
+    );
+  }
 
   const { category, type, search } = req.query;
   let results = prodDb.getTemplates();
@@ -1174,6 +1334,7 @@ app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
     runtimeServiceAccountEmail: platformReport.runtimeServiceAccountEmail,
     cloudRunRegion: platformReport.cloudRunRegion,
     gitBranch: platformReport.gitBranch,
+    authPolicy: platformReport.authPolicy,
     envOverride: platformReport.envOverride,
     firestoreConnectionSource: platformReport.firestoreConnectionSource,
     clientFirebase: {
@@ -1393,12 +1554,22 @@ app.post('/api/errors/report', rateLimit(60000, 30), (req, res) => {
         ? 'media_playback'
         : 'client_error';
 
-    emitCloudMonitoringEvent(vector, severity, sanitizeMonitoringString(rawMsg.slice(0, 240)), {
+    const normalizedMsg = /^<!doctype|<html/i.test(rawMsg.trimStart())
+      ? `Client received HTML response instead of JSON (${endpoint || 'unknown_endpoint'})`
+      : rawMsg;
+
+    const clientHttpStatus =
+      typeof req.body?.httpStatus === 'number' || (typeof req.body?.httpStatus === 'string' && req.body.httpStatus.trim())
+        ? req.body.httpStatus
+        : undefined;
+
+    emitCloudMonitoringEvent(vector, severity, sanitizeMonitoringString(normalizedMsg.slice(0, 240)), {
       source,
       templateId,
       errorStage,
       correlationId,
-      endpoint
+      endpoint,
+      ...(clientHttpStatus !== undefined ? { httpStatus: clientHttpStatus } : {})
     });
 
     return res.json({ success: true, correlationId, vector });
@@ -1407,34 +1578,77 @@ app.post('/api/errors/report', rateLimit(60000, 30), (req, res) => {
   }
 });
 
+// Public Live USD/INR FX Rate Status Endpoint (Never exposes secrets; allows client Credit parity preview)
+app.get('/api/pricing/fx', async (_req, res) => {
+  const current = getLiveFxStatus();
+  if (!current.isFresh && !isIsolatedTestEnv) {
+    try {
+      await refreshLiveUsdInrRate();
+    } catch {}
+  }
+  const fxStatus = getLiveFxStatus();
+  res.json({
+    success: fxStatus.isFresh,
+    fxStatus,
+    markupPercent: 40,
+    creditsPerInr: 1
+  });
+});
+
+// Admin Force Refresh Live USD/INR FX Rate
+app.post('/api/admin/pricing/fx/refresh', requireAdmin, async (_req, res) => {
+  const fxStatus = await refreshLiveUsdInrRate({ force: true });
+  res.status(fxStatus.isFresh ? 200 : 503).json({
+    success: fxStatus.isFresh,
+    fxStatus,
+    error: fxStatus.isFresh ? undefined : (fxStatus.lastError || 'Live FX refresh failed')
+  });
+});
+
 // Admin Adapter Audit Endpoint (Honest connection and capability audit dynamically queried from MODEL_REGISTRY)
 app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
-  const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
-  const hasHiggsfieldKey = Boolean(process.env.HIGGSFIELD_API_KEY && process.env.HIGGSFIELD_API_KEY.trim().length > 0);
+  const geminiKeyDiag = getGeminiKeyDiagnosticStatus();
+  const hfDiag = getHiggsfieldDiagnosticStatus();
+  const hasGeminiKey = geminiKeyDiag.present;
+  const hasHiggsfieldKey = hfDiag.present;
   const storageStatus = mediaStorage.getStatus();
 
   // Dynamically resolve adapters and models from authoritative MODEL_REGISTRY
-  const geminiImgEntry = MODEL_REGISTRY['gemini-3.1-flash-lite-image'];
+  const gemini25Entry = MODEL_REGISTRY['gemini-2.5-flash-image'];
+  const geminiLiteEntry = MODEL_REGISTRY['gemini-3.1-flash-lite-image'];
+  const gemini31Entry = MODEL_REGISTRY['gemini-3.1-flash-image'];
   const hfMotionEntry = MODEL_REGISTRY['hf_mult_motion_control_flash'];
   const hfReplaceEntry = MODEL_REGISTRY['hf_mult_replace_object_flash'];
-  const veoOmniEntry = MODEL_REGISTRY['gemini-omni-1.1-flash'];
+  const veoOmniEntry = MODEL_REGISTRY['gemini-omni-1.2-flash'];
   const smartCanvasEntry = MODEL_REGISTRY['smart_canvas_ffmpeg'];
 
   const adapters = [
     {
       id: 'geminiAdapter',
-      name: 'Google Gemini Image Adapter',
-      model: geminiImgEntry ? geminiImgEntry.modelId : 'gemini-3.1-flash-lite-image',
+      name: 'Google Gemini Image Adapter (Dynamic Multi-Model)',
+      model: geminiLiteEntry ? geminiLiteEntry.modelId : 'gemini-3.1-flash-lite-image',
+      supportedModels: [
+        gemini25Entry?.modelId || 'gemini-2.5-flash-image',
+        geminiLiteEntry?.modelId || 'gemini-3.1-flash-lite-image',
+        gemini31Entry?.modelId || 'gemini-3.1-flash-image'
+      ],
       provider: 'gemini',
-      status: hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET',
+      status: hasGeminiKey
+        ? geminiKeyDiag.isLegacyAndroidU4sw
+          ? 'LEGACY_KEY_MISMATCH'
+          : 'CONFIGURED'
+        : 'MISSING_SECRET',
       connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
-      modelStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
+      keySuffixMasked: geminiKeyDiag.maskedSuffix,
+      isCanonicalProjectKey: geminiKeyDiag.isCanonicalCqZA,
+      modelStatus: geminiLiteEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'GEMINI_API_KEY',
-      supportedResolutions: geminiImgEntry ? Object.keys(geminiImgEntry.resolutionTariffs) : ['1080p'],
-      verificationStatus: geminiImgEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
+      supportedResolutions: geminiLiteEntry ? Object.keys(geminiLiteEntry.resolutionTariffs) : ['1080p'],
+      verificationStatus: geminiLiteEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
       generationTestStatus: 'NOT_TESTED',
-      quoteStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE',
-      pricingStatus: geminiImgEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE'
+      billingStatusNote: 'Gemini prepaid balance reported depleted by Owner — zero live Gemini API calls permitted.',
+      quoteStatus: geminiLiteEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE',
+      pricingStatus: 'PUBLISHED_PER_IMAGE_TARIFF ($0.039–$0.067)'
     },
     {
       id: 'faceSwapAdapter',
@@ -1444,8 +1658,11 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
         hfReplaceEntry ? hfReplaceEntry.modelId : 'hf_mult_replace_object_flash'
       ],
       provider: 'higgsfield',
-      status: hasHiggsfieldKey ? 'CONFIGURED' : 'MISSING_SECRET',
-      connectionStatus: hasHiggsfieldKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
+      status: hfDiag.authStatus,
+      connectionStatus: hasHiggsfieldKey ? 'UNVERIFIED_NO_FREE_AUTH_ENDPOINT' : 'DISCONNECTED',
+      authHeaderFormat: hfDiag.authHeaderFormat,
+      customerGenerationGate: hfDiag.customerGateStatus,
+      estimatedSingleRun: hfDiag.estimatedSingleRun,
       modelStatus: hfMotionEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'HIGGSFIELD_API_KEY',
       supportedResolutions: {
@@ -1455,12 +1672,12 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       verificationStatus: hfMotionEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
       generationTestStatus: 'NOT_TESTED',
       quoteStatus: 'PENDING_QUOTE',
-      pricingStatus: 'PENDING_QUOTE (Account Quote Required)'
+      pricingStatus: 'PENDING_QUOTE ($0.05/sec estimated on 480p · $5 API balance required separately)'
     },
     {
       id: 'videoProviderAdapter',
-      name: 'Google Veo Video Provider Adapter',
-      model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.1-flash',
+      name: 'Google Gemini Omni 1.2 Flash Video Adapter (Evaluation Guarded)',
+      model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.2-flash',
       provider: 'gemini',
       status: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET'),
       connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
@@ -1470,7 +1687,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       verificationStatus: 'EVALUATION_ONLY',
       generationTestStatus: 'NOT_TESTED',
       quoteStatus: 'EVALUATION_ONLY',
-      pricingStatus: 'EVALUATION_ONLY (Guarded from Customer Production)'
+      pricingStatus: 'EVALUATION_ONLY (Owner Console Test Only)'
     },
     {
       id: 'videoTrimmer',
@@ -1503,6 +1720,8 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
   res.json({
     success: true,
     adapters,
+    fxStatus: getLiveFxStatus(),
+    faceSwapCompatibleCombinations: FACE_SWAP_COMPATIBLE_COMBINATIONS,
     timestamp: new Date().toISOString()
   });
 });
@@ -1510,11 +1729,12 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
 // Admin Template Manager (Add from phone gallery or desktop with full Recipe & Input Type)
 app.post('/api/admin/templates', requireAdmin, async (req, res) => {
   try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
     const {
-      title,
-      description,
-      category = 'Trending',
-      aspectRatio = '9:16',
+      title: rawTitle,
+      description: rawDescription,
+      category: rawCategory = 'Trending',
+      aspectRatio: rawAspectRatio = '9:16',
       tags = [],
       mediaBase64,
       coverBase64,
@@ -1536,7 +1756,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       drivingVideoUrl: inputDrivingVideoUrl,
       type = 'video',
       inputType = 'IMAGE_OR_VIDEO',
-      workflow = 'viral-reels',
+      workflow: rawWorkflow = 'viral-reels',
       model,
       engine = 'AI_GENERATION',
       badge,
@@ -1545,20 +1765,29 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       requiredInputs,
       isFeatured = true,
       isActive = true
-    } = req.body;
+    } = body;
 
-    if (!title || !title.trim()) {
-      return res.status(400).json({ error: 'Title is required' });
+    const title = typeof rawTitle === 'string' ? rawTitle.trim() : String(rawTitle || '').trim();
+    const category = (typeof rawCategory === 'string' && rawCategory.trim() ? rawCategory.trim() : 'Trending') as TemplateCategory;
+    const description = typeof rawDescription === 'string' ? rawDescription.trim() : String(rawDescription || '').trim();
+    const aspectRatio = (typeof rawAspectRatio === 'string' && rawAspectRatio.trim() ? rawAspectRatio.trim() : '9:16') as AspectRatio;
+    const workflow = typeof rawWorkflow === 'string' && rawWorkflow.trim() ? rawWorkflow.trim() : 'viral-reels';
+
+    if (!title) {
+      return res.status(400).json({ error: 'Title is required', code: 'MISSING_TITLE' });
     }
-    const finalDescription = (description && description.trim()) || `Trending ${category || 'Creative'} AI Template`;
-    const targetTemplateId = (req.body.id && String(req.body.id).trim()) || `tpl_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const finalDescription = description || `Trending ${category || 'Creative'} AI Template`;
+    const targetTemplateId = (body.id && String(body.id).trim()) || `tpl_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const uploadedAssetMeta: Array<{ key: string; filename: string; publicUrl: string }> = [];
+
+    const isReusableUrl = (val: unknown): val is string =>
+      typeof val === 'string' && (val.startsWith('http://') || val.startsWith('https://') || val.startsWith('/api/media/'));
 
     // 1. Process AFTER / SAMPLE RESULT (Primary visual target reference)
     const effectiveSampleResultInput = sampleResultBase64 || sampleAfterBase64 || inputSampleResult || inputSampleAfter;
     let sampleResultUrl: string | undefined = undefined;
     if (effectiveSampleResultInput) {
-      if (typeof effectiveSampleResultInput === 'string' && (effectiveSampleResultInput.startsWith('http://') || effectiveSampleResultInput.startsWith('https://') || effectiveSampleResultInput.startsWith('/api/media/'))) {
+      if (isReusableUrl(effectiveSampleResultInput)) {
         sampleResultUrl = effectiveSampleResultInput;
       } else {
         const storedSample = await mediaStorage.saveMedia(effectiveSampleResultInput, 'tpl_sample', `${targetTemplateId}_sample`, undefined, true);
@@ -1568,9 +1797,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     }
 
     // 2. Process FACE THUMBNAIL (Display-only example face thumbnail)
-    let sampleFaceThumbnailUrl: string | undefined = inputSampleFaceThumbnail || undefined;
+    let sampleFaceThumbnailUrl: string | undefined = isReusableUrl(inputSampleFaceThumbnail) ? inputSampleFaceThumbnail : undefined;
     if (sampleFaceThumbnailBase64) {
-      if (typeof sampleFaceThumbnailBase64 === 'string' && (sampleFaceThumbnailBase64.startsWith('http://') || sampleFaceThumbnailBase64.startsWith('https://') || sampleFaceThumbnailBase64.startsWith('/api/media/'))) {
+      if (isReusableUrl(sampleFaceThumbnailBase64)) {
         sampleFaceThumbnailUrl = sampleFaceThumbnailBase64;
       } else {
         const storedFace = await mediaStorage.saveMedia(sampleFaceThumbnailBase64, 'tpl_face', `${targetTemplateId}_face`, undefined, true);
@@ -1580,9 +1809,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     }
 
     // 3. Process BEFORE / SOURCE SAMPLE (Original starting context example)
-    let sampleBeforeUrl: string | undefined = inputSampleBefore || undefined;
+    let sampleBeforeUrl: string | undefined = isReusableUrl(inputSampleBefore) ? inputSampleBefore : undefined;
     if (sampleBeforeBase64) {
-      if (typeof sampleBeforeBase64 === 'string' && (sampleBeforeBase64.startsWith('http://') || sampleBeforeBase64.startsWith('https://') || sampleBeforeBase64.startsWith('/api/media/'))) {
+      if (isReusableUrl(sampleBeforeBase64)) {
         sampleBeforeUrl = sampleBeforeBase64;
       } else {
         const storedBefore = await mediaStorage.saveMedia(sampleBeforeBase64, 'tpl_before', `${targetTemplateId}_before`, undefined, true);
@@ -1594,7 +1823,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     // 4. Process Media Preview
     let mediaUrl = sampleResultUrl || '';
     if (mediaBase64) {
-      if (typeof mediaBase64 === 'string' && (mediaBase64.startsWith('http://') || mediaBase64.startsWith('https://') || mediaBase64.startsWith('/api/media/'))) {
+      if (isReusableUrl(mediaBase64)) {
         mediaUrl = mediaBase64;
       } else {
         const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `${targetTemplateId}_preview`, undefined, true);
@@ -1603,30 +1832,32 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       }
     }
 
-    // 5. COVER MEDIA RESOLUTION:
-    // If Admin explicitly selected an independent Cover (Cover Video or Cover Image), honor that explicit Cover!
-    // Only fall back to sampleResultUrl if no explicit Cover media was uploaded/configured.
-    let explicitCoverUrl: string | undefined = undefined;
-    if (coverVideoBase64 || inputCoverVideo) {
-      const explicitInput = coverVideoBase64 || inputCoverVideo;
-      if (typeof explicitInput === 'string' && (explicitInput.startsWith('http://') || explicitInput.startsWith('https://') || explicitInput.startsWith('/api/media/'))) {
-        explicitCoverUrl = explicitInput;
-      } else if (coverVideoBase64) {
-        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
-        explicitCoverUrl = storedCoverVid.publicUrl;
-        if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
-      }
-    } else if (coverImageBase64 || inputCoverImage) {
-      const explicitInput = coverImageBase64 || inputCoverImage;
-      if (typeof explicitInput === 'string' && (explicitInput.startsWith('http://') || explicitInput.startsWith('https://') || explicitInput.startsWith('/api/media/'))) {
-        explicitCoverUrl = explicitInput;
-      } else if (coverImageBase64) {
+    // 5. COVER MEDIA RESOLUTION (Single upload per distinct payload — no duplicate R2 writes)
+    let savedCoverImageUrl: string | undefined = isReusableUrl(inputCoverImage) ? inputCoverImage : undefined;
+    if (coverImageBase64) {
+      if (isReusableUrl(coverImageBase64)) {
+        savedCoverImageUrl = coverImageBase64;
+      } else {
         const storedCoverImg = await mediaStorage.saveMedia(coverImageBase64, 'tpl_cover_img', `${targetTemplateId}_cover_img.jpg`, undefined, true);
-        explicitCoverUrl = storedCoverImg.publicUrl;
+        savedCoverImageUrl = storedCoverImg.publicUrl;
         if (storedCoverImg.r2Key) uploadedAssetMeta.push({ key: storedCoverImg.r2Key, filename: storedCoverImg.fileId, publicUrl: storedCoverImg.publicUrl });
       }
-    } else if (coverBase64) {
-      if (typeof coverBase64 === 'string' && (coverBase64.startsWith('http://') || coverBase64.startsWith('https://') || coverBase64.startsWith('/api/media/'))) {
+    }
+
+    let savedCoverVideoUrl: string | undefined = isReusableUrl(inputCoverVideo) ? inputCoverVideo : undefined;
+    if (coverVideoBase64) {
+      if (isReusableUrl(coverVideoBase64)) {
+        savedCoverVideoUrl = coverVideoBase64;
+      } else {
+        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
+        savedCoverVideoUrl = storedCoverVid.publicUrl;
+        if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
+      }
+    }
+
+    let explicitCoverUrl: string | undefined = savedCoverVideoUrl || savedCoverImageUrl;
+    if (!explicitCoverUrl && coverBase64) {
+      if (isReusableUrl(coverBase64)) {
         explicitCoverUrl = coverBase64;
       } else {
         const storedCover = await mediaStorage.saveMedia(coverBase64, 'tpl_cover', `${targetTemplateId}_cover`, undefined, true);
@@ -1635,40 +1866,22 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       }
     }
 
-    let coverUrl: string | undefined = explicitCoverUrl || sampleResultUrl || mediaUrl;
+    const coverUrl: string | undefined = explicitCoverUrl || sampleResultUrl || mediaUrl;
     const resolvedCover = coverUrl || '';
     const resolvedMedia = mediaUrl || sampleResultUrl || coverUrl || '';
 
-    let coverImageUrl: string | undefined = inputCoverImage || undefined;
-    if (coverImageBase64) {
-      if (typeof coverImageBase64 === 'string' && (coverImageBase64.startsWith('http://') || coverImageBase64.startsWith('https://') || coverImageBase64.startsWith('/api/media/'))) {
-        coverImageUrl = coverImageBase64;
-      } else {
-        const storedCoverImg = await mediaStorage.saveMedia(coverImageBase64, 'tpl_cover_img', `${targetTemplateId}_cover_img.jpg`, undefined, true);
-        coverImageUrl = storedCoverImg.publicUrl;
-        if (storedCoverImg.r2Key) uploadedAssetMeta.push({ key: storedCoverImg.r2Key, filename: storedCoverImg.fileId, publicUrl: storedCoverImg.publicUrl });
-      }
-    } else if (resolvedCover && !resolvedCover.endsWith('.mp4') && !resolvedCover.endsWith('.webm')) {
-      coverImageUrl = resolvedCover;
-    }
+    const coverImageUrl: string | undefined =
+      savedCoverImageUrl ||
+      (resolvedCover && !resolvedCover.endsWith('.mp4') && !resolvedCover.endsWith('.webm') ? resolvedCover : undefined);
 
-    let coverVideoUrl: string | undefined = inputCoverVideo || undefined;
-    if (coverVideoBase64) {
-      if (typeof coverVideoBase64 === 'string' && (coverVideoBase64.startsWith('http://') || coverVideoBase64.startsWith('https://') || coverVideoBase64.startsWith('/api/media/'))) {
-        coverVideoUrl = coverVideoBase64;
-      } else {
-        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
-        coverVideoUrl = storedCoverVid.publicUrl;
-        if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
-      }
-    } else if (resolvedCover && (resolvedCover.endsWith('.mp4') || resolvedCover.endsWith('.webm'))) {
-      coverVideoUrl = resolvedCover;
-    }
+    const coverVideoUrl: string | undefined =
+      savedCoverVideoUrl ||
+      (resolvedCover && (resolvedCover.endsWith('.mp4') || resolvedCover.endsWith('.webm')) ? resolvedCover : undefined);
 
     // 6. Persist style-reference image for photo templates (points to AFTER sample or cover)
-    let referenceImageUrl = inputReferenceImageUrl || sampleResultUrl || coverUrl || '';
+    let referenceImageUrl = (typeof inputReferenceImageUrl === 'string' && inputReferenceImageUrl) || sampleResultUrl || coverUrl || '';
     if (referenceImageBase64) {
-      if (typeof referenceImageBase64 === 'string' && (referenceImageBase64.startsWith('http://') || referenceImageBase64.startsWith('https://') || referenceImageBase64.startsWith('/api/media/'))) {
+      if (isReusableUrl(referenceImageBase64)) {
         referenceImageUrl = referenceImageBase64;
       } else {
         const storedRef = await mediaStorage.saveMedia(referenceImageBase64, 'tpl_ref', `${targetTemplateId}_ref`, undefined, true);
@@ -1679,9 +1892,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       referenceImageUrl = sampleResultUrl || coverUrl || '';
     }
 
-    let drivingVideoUrl = inputDrivingVideoUrl || '';
+    let drivingVideoUrl = typeof inputDrivingVideoUrl === 'string' ? inputDrivingVideoUrl : '';
     if (drivingVideoBase64) {
-      if (typeof drivingVideoBase64 === 'string' && (drivingVideoBase64.startsWith('http://') || drivingVideoBase64.startsWith('https://') || drivingVideoBase64.startsWith('/api/media/'))) {
+      if (isReusableUrl(drivingVideoBase64)) {
         drivingVideoUrl = drivingVideoBase64;
       } else {
         const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `${targetTemplateId}_driving`, undefined, true);
@@ -1695,12 +1908,12 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     // Build Execution Recipe (respect empty/omitted prompts cleanly so readiness catches incomplete templates)
     const categoryPrompt = prodDb.getCategoryPrompt(category);
-    const resolvedRecipe: TemplateExecutionRecipe = recipe
+    const resolvedRecipe: TemplateExecutionRecipe = recipe && typeof recipe === 'object'
       ? {
           version: recipe.version || '1.0',
           inputType: (recipe.inputType || inputType) as TemplateInputType,
-          provider: recipe.provider || (type === 'video' ? 'google_veo' : 'gemini'),
-          model: recipe.model || model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+          provider: recipe.provider || body.provider || (type === 'video' ? 'google_veo' : 'gemini'),
+          model: recipe.model || model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
           engine: (recipe.engine || engine) as TemplateEngine,
           prompt: typeof recipe.prompt === 'string' ? recipe.prompt : '',
           workflow: recipe.workflow || workflow,
@@ -1717,8 +1930,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       : {
           version: '1.0',
           inputType: inputType as TemplateInputType,
-          provider: type === 'video' ? 'google_veo' : 'gemini',
-          model: model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+          provider: body.provider || (type === 'video' ? 'google_veo' : 'gemini'),
+          model: model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
           engine: engine as TemplateEngine,
           prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
           workflow: workflow,
@@ -1735,10 +1948,10 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     const newTemplate: Template = {
       id: targetTemplateId,
-      title: title.trim(),
+      title,
       type: type === 'video' ? 'video' : 'photo',
       inputType: (inputType as TemplateInputType) || (type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY'),
-      category: category.trim() as TemplateCategory,
+      category,
       cover: resolvedCover,
       coverImage: coverImageUrl || undefined,
       coverVideo: coverVideoUrl || undefined,
@@ -1749,8 +1962,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       sampleResult: sampleResultUrl || referenceImageUrl || undefined,
       sampleAfter: sampleResultUrl || referenceImageUrl || undefined,
       description: finalDescription,
-      aspectRatio: (aspectRatio as AspectRatio) || '9:16',
-      requiredInputs: requiredInputs || [
+      aspectRatio,
+      requiredInputs: Array.isArray(requiredInputs) && requiredInputs.length > 0 ? requiredInputs : [
         {
           id: 'user_input_media',
           label: inputType === 'VIDEO_ONLY' ? 'Upload Video' : inputType === 'IMAGE_ONLY' ? 'Upload User Face Photo' : 'Upload User Face Photo or Video',
@@ -1761,7 +1974,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       creditCost: calculatedCredits,
       providerCostUsd: Number(providerCostUsd) || 0.25,
       engine: (engine as TemplateEngine) || 'AI_GENERATION',
-      model: model || resolvedRecipe.model || (type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'),
+      provider: body.provider || resolvedRecipe.provider,
+      adapter: body.adapter,
+      model: model || resolvedRecipe.model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
       workflow: workflow || resolvedRecipe.workflow || 'neural-cinematic-portrait',
       drivingVideoUrl: drivingVideoUrl || resolvedRecipe.drivingVideoUrl || undefined,
       recipe: resolvedRecipe,
@@ -1800,7 +2015,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
             : `Template "${saved.title}" created in category "${saved.category}".`
         }).catch(() => {});
       }
-      res.json({
+      return res.json({
         success: true,
         savedAsDraft,
         published: saved.isActive !== false,
@@ -1811,7 +2026,6 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
           : 'Template published successfully.'
       });
     } catch (saveErr: any) {
-      // In case of Firestore write failure, preserve uploaded R2 assets safely in unassigned inventory
       uploadedAssetMeta.forEach(a => {
         prodDb.unassignedRecoveryAssets.push({
           key: a.key,
@@ -1820,10 +2034,29 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
           publicUrl: a.publicUrl
         });
       });
-      res.status(500).json({ error: saveErr.message || 'Failed to save template to authoritative Firestore database' });
+      const msg = String(saveErr?.message || 'Failed to save template');
+      const isValidationError = msg.includes('Cannot add invalid template');
+      if (isValidationError) {
+        return res.status(400).json({ error: msg, code: 'TEMPLATE_VALIDATION_ERROR', readiness });
+      }
+      emitCloudMonitoringEvent('SERVER_5XX_INCIDENT', 'ERROR', sanitizeMonitoringString(`Admin template save failed: ${msg}`), {
+        source: 'server_5xx',
+        templateId: targetTemplateId,
+        errorStage: 'admin_template_create',
+        endpoint: '/api/admin/templates',
+        httpStatus: 500
+      });
+      return res.status(500).json({ error: msg || 'Failed to save template to authoritative Firestore database' });
     }
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to add template' });
+    const msg = String(err?.message || 'Failed to add template');
+    emitCloudMonitoringEvent('SERVER_5XX_INCIDENT', 'ERROR', sanitizeMonitoringString(`Admin template create exception: ${msg}`), {
+      source: 'server_5xx',
+      errorStage: 'admin_template_create',
+      endpoint: '/api/admin/templates',
+      httpStatus: 500
+    });
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -2432,23 +2665,23 @@ app.get('/api/admin/provider-catalog', requireAdmin, async (_req, res) => {
       {
         id: 'g_gemini_omni_video',
         provider: 'google_veo',
-        sourceId: 'google/gemini-omni-1.1-flash',
-        name: 'Google Video Flash (gemini-omni-1.1-flash)',
-        model: 'gemini-omni-1.1-flash',
+        sourceId: 'google/gemini-omni-1.2-flash',
+        name: 'Google Video Flash (gemini-omni-1.2-flash)',
+        model: 'gemini-omni-1.2-flash',
         operationType: ['image2video', 'text2video'],
         outputType: 'video',
         category: 'Trending',
         aspectRatio: '9:16',
-        description: 'Google DeepMind official video generation model via Interactions API. 60FPS fluid motion.',
+        description: 'Google DeepMind official video generation model via Interactions API. 60FPS fluid motion (Evaluation Guarded).',
         inputType: 'IMAGE_OR_VIDEO',
         requiresDrivingVideo: false,
-        providerCostUsd: 0.25,
+        providerCostUsd: 0.75,
         manualRecipeRequired: false,
         recipe: {
           version: '1.0',
           inputType: 'IMAGE_OR_VIDEO',
           provider: 'google_veo',
-          model: 'gemini-omni-1.1-flash',
+          model: 'gemini-omni-1.2-flash',
           engine: 'AI_GENERATION',
           workflow: 'viral-reels',
           prompt: 'Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.',
@@ -2840,11 +3073,29 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       tags: Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean),
       masterRecipePrompt: req.body.masterRecipePrompt ? String(req.body.masterRecipePrompt).trim() : undefined,
       coverSource: ['auto', 'original', 'after'].includes(coverSource) ? (coverSource as any) : 'auto',
+      provider: req.body.provider ? String(req.body.provider).trim() : undefined,
+      adapter: req.body.adapter ? String(req.body.adapter).trim() : undefined,
+      model: req.body.model ? String(req.body.model).trim() : undefined,
+      workflow: req.body.workflow ? String(req.body.workflow).trim() : undefined,
+      resolution: req.body.resolution ? (String(req.body.resolution).trim() as any) : undefined,
       isActive: Boolean(isActive),
       status: status === 'draft' ? 'draft' : 'published',
       isFeatured: Boolean(isFeatured),
       order: Number(order) || 0
     });
+
+    const providerValidation = validateFaceSwapSceneReadiness(scene);
+    const configErrors = providerValidation.errors.filter((e) =>
+      e.includes('provider') || e.includes('Adapter') || e.includes('Model') || e.includes('Workflow') || e.includes('Resolution') || e.includes('evaluation-only')
+    );
+    if (configErrors.length > 0) {
+      await prodDb.deleteFaceSwapScene(scene.id);
+      return res.status(400).json({
+        error: configErrors[0],
+        code: 'INVALID_SCENE_PROVIDER_CONFIG',
+        errors: configErrors
+      });
+    }
 
     res.json({ success: true, scene });
   } catch (err: any) {
@@ -2906,10 +3157,28 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
         ? req.body.tags
         : String(req.body.tags).split(',').map((t: string) => t.trim()).filter(Boolean);
     }
+    if (req.body.provider !== undefined) updates.provider = req.body.provider ? String(req.body.provider).trim() : undefined;
+    if (req.body.adapter !== undefined) updates.adapter = req.body.adapter ? String(req.body.adapter).trim() : undefined;
+    if (req.body.model !== undefined) updates.model = req.body.model ? String(req.body.model).trim() : undefined;
+    if (req.body.workflow !== undefined) updates.workflow = req.body.workflow ? String(req.body.workflow).trim() : undefined;
+    if (req.body.resolution !== undefined) updates.resolution = req.body.resolution ? String(req.body.resolution).trim() : undefined;
     if (req.body.isActive !== undefined) updates.isActive = Boolean(req.body.isActive);
     if (req.body.status !== undefined) updates.status = req.body.status === 'draft' ? 'draft' : 'published';
     if (req.body.isFeatured !== undefined) updates.isFeatured = Boolean(req.body.isFeatured);
     if (req.body.order !== undefined) updates.order = Number(req.body.order) || 0;
+
+    const mergedCandidate: FaceSwapScene = { ...existing, ...updates };
+    const providerValidation = validateFaceSwapSceneReadiness(mergedCandidate);
+    const configErrors = providerValidation.errors.filter((e) =>
+      e.includes('provider') || e.includes('Adapter') || e.includes('Model') || e.includes('Workflow') || e.includes('Resolution') || e.includes('evaluation-only')
+    );
+    if (configErrors.length > 0) {
+      return res.status(400).json({
+        error: configErrors[0],
+        code: 'INVALID_SCENE_PROVIDER_CONFIG',
+        errors: configErrors
+      });
+    }
 
     const updated = await prodDb.updateFaceSwapScene(id, updates);
     res.json({ success: true, scene: updated });
@@ -4589,6 +4858,23 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   const user = (req as any).user as UserProfile;
   const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource } = req.body;
   const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
+  const rawIdempotencyKey = req.body?.idempotencyKey || req.headers['x-idempotency-key'];
+  const idempotencyKey = typeof rawIdempotencyKey === 'string' && rawIdempotencyKey.trim()
+    ? rawIdempotencyKey.trim().slice(0, 128)
+    : undefined;
+
+  if (idempotencyKey) {
+    const existingDuplicate = prodDb.raw.generations.find(
+      (g: any) => g.userId === user.id && g.templateId === templateId && g.idempotencyKey === idempotencyKey && g.status !== 'failed'
+    );
+    if (existingDuplicate) {
+      return res.json({
+        generation: existingDuplicate,
+        deduplicated: true,
+        remainingCredits: prodDb.getWallet(user.id).balance
+      });
+    }
+  }
 
   const template = prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
@@ -4625,10 +4911,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
   }
 
-  // 1. Validate requested model against server-side MODEL_REGISTRY allowlist
+  // 1. Validate requested model against server-side MODEL_REGISTRY allowlist (with alias support)
   const requestedModel = typeof model === 'string' && model.trim() ? model.trim() : undefined;
   if (requestedModel) {
-    if (!MODEL_REGISTRY[requestedModel]) {
+    if (!MODEL_REGISTRY[requestedModel] && !getRegisteredModelEntry(requestedModel)) {
       return res.status(400).json({
         error: `Unknown model '${requestedModel}'. Model must be registered in server registry.`,
         code: 'INVALID_MODEL',
@@ -4637,17 +4923,73 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
   }
 
-  const effectiveModel = requestedModel
+  const rawEffectiveModel = requestedModel
     ? requestedModel
     : (template.model || (template.type === 'photo' ? 'gemini-3.1-flash-lite-image' : 'hf_mult_motion_control_flash'));
+  const effectiveModel = resolveCanonicalModelId(rawEffectiveModel) || rawEffectiveModel;
 
-  const modelEntry = MODEL_REGISTRY[effectiveModel];
+  const modelEntry = getRegisteredModelEntry(rawEffectiveModel);
   if (!modelEntry && template.engine !== 'SMART_TEMPLATE') {
     return res.status(400).json({
-      error: `Model '${effectiveModel}' is not registered in server model registry.`,
+      error: `Model '${rawEffectiveModel}' is not registered in server model registry.`,
       code: 'INVALID_MODEL',
       stage: 'validation'
     });
+  }
+
+  const templateConfiguredProvider = (
+    template.provider ||
+    template.recipe?.provider ||
+    (template.engine === 'SMART_TEMPLATE' ? 'smart_template' : modelEntry?.provider || (template.type === 'photo' ? 'gemini' : 'google_veo'))
+  )
+    .toString()
+    .trim()
+    .toLowerCase();
+  const templateConfiguredAdapter = (template.adapter || template.recipe?.adapter || modelEntry?.adapterId || '').toString().trim();
+
+  if (modelEntry && template.engine !== 'SMART_TEMPLATE') {
+    const providerOk =
+      templateConfiguredProvider === modelEntry.provider ||
+      (modelEntry.provider === 'gemini' && ['gemini', 'google_omni', 'google_veo'].includes(templateConfiguredProvider));
+    if (!providerOk) {
+      emitCloudMonitoringEvent('PROVIDER_ROUTING_MISMATCH', 'ERROR', `Provider routing mismatch on template ${template.id}`, {
+        source: 'generation_failure',
+        templateId: template.id,
+        templateTitle: template.title,
+        provider: templateConfiguredProvider,
+        adapter: templateConfiguredAdapter,
+        model: effectiveModel,
+        errorCode: 'PROVIDER_ROUTING_MISMATCH',
+        errorStage: 'routing_validation',
+        rootCause: `Template provider '${templateConfiguredProvider}' mismatches model '${effectiveModel}' provider '${modelEntry.provider}'.`,
+        recommendedAction: `Update template provider to '${modelEntry.provider}' or assign a matching model.`
+      });
+      return res.status(400).json({
+        error: `Provider '${templateConfiguredProvider}' is incompatible with model '${effectiveModel}' (${modelEntry.provider}).`,
+        code: 'PROVIDER_ROUTING_MISMATCH',
+        stage: 'validation'
+      });
+    }
+    if (templateConfiguredAdapter && templateConfiguredAdapter !== modelEntry.adapterId) {
+      return res.status(400).json({
+        error: `Adapter '${templateConfiguredAdapter}' is incompatible with model '${effectiveModel}' (expected '${modelEntry.adapterId}').`,
+        code: 'PROVIDER_ROUTING_MISMATCH',
+        stage: 'validation'
+      });
+    }
+  }
+
+  // Genjutsu Light Customer Safety Gate BEFORE media uploads/storage/credit debit
+  if (templateConfiguredProvider === 'higgsfield' || templateConfiguredAdapter === 'faceSwapAdapter') {
+    const hfGateDiag = getHiggsfieldDiagnosticStatus();
+    if (!hfGateDiag.customerGenerationEnabled) {
+      return res.status(503).json({
+        error: 'Genjutsu Light video generation is safely gated pending Higgsfield API auth verification, prepaid balance, and owner approval. No credits were deducted.',
+        code: 'GENJUTSU_LIGHT_SAFELY_GATED',
+        stage: 'safety_gate',
+        preflightEstimate: hfGateDiag.estimatedSingleRun
+      });
+    }
   }
 
   // Model & Workflow Compatibility Guard
@@ -4980,18 +5322,27 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
 
-  // Server-Authoritative Dynamic Cost Calculation & Quoting (Fail Closed)
+  // Server-Authoritative Dynamic Cost Calculation & Quoting (Fail Closed with Live FX)
   const isSmartTemplate = template.engine === 'SMART_TEMPLATE' || effectiveModel === 'smart_canvas_ffmpeg';
   let requiredCredits: number;
 
   if (isSmartTemplate) {
     requiredCredits = template.creditCost || 10;
   } else {
+    if (modelEntry?.isEvaluationOnly) {
+      return res.status(403).json({
+        error: `Model '${effectiveModel}' is strictly guarded for Owner evaluation testing only and cannot be run from customer templates.`,
+        code: 'MODEL_EVALUATION_ONLY',
+        stage: 'pricing'
+      });
+    }
+
     const estimate = calculateEstimatedProviderCostUsd({
       modelId: effectiveModel,
       resolution: requestedResolution as any,
       sourceVideoDurationSeconds: measuredSourceVideoDuration,
-      requestedOutputDurationSeconds: requestedDuration || 1
+      requestedOutputDurationSeconds: requestedDuration || 1,
+      allowPublishedListPriceFallback: modelEntry?.billingUnit === 'per_image'
     });
 
     if (estimate.status === 'PENDING_QUOTE') {
@@ -5018,7 +5369,40 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       });
     }
 
-    requiredCredits = calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
+    // Ensure fresh Live USD/INR FX (attempt live refresh once if stale/unfetched)
+    if (!getLiveFxStatus().isFresh && !isIsolatedTestEnv) {
+      try {
+        await refreshLiveUsdInrRate();
+      } catch {}
+    }
+
+    const customerQuote = calculateCustomerTemplateQuote({
+      modelId: effectiveModel,
+      type: template.type,
+      resolution: requestedResolution as any,
+      durationSeconds: requestedDuration || 1,
+      engine: template.engine,
+      creditCost: template.creditCost,
+      providerCostUsd: template.providerCostUsd
+    });
+
+    if (customerQuote.status === 'FX_EXPIRED') {
+      return res.status(503).json({
+        error: customerQuote.reason || 'Live USD/INR exchange rate expired. Pricing paused until live rate refreshes.',
+        code: 'FX_RATE_EXPIRED',
+        stage: 'pricing'
+      });
+    }
+
+    if (customerQuote.status !== 'QUOTED' || customerQuote.credits <= 0) {
+      return res.status(400).json({
+        error: customerQuote.reason || `Unable to compute authoritative customer credit quote (${customerQuote.status}).`,
+        code: customerQuote.status,
+        stage: 'pricing'
+      });
+    }
+
+    requiredCredits = customerQuote.credits;
   }
   const wallet = prodDb.getWallet(user.id);
 
@@ -5051,7 +5435,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   }
 
   // 2. Record generation record with four-tier duration tracking fields (measured values, never assumed)
-  const generation: Generation = {
+  const generation: Generation & { idempotencyKey?: string } = {
     id: genId,
     userId: user.id,
     templateId: template.id,
@@ -5070,7 +5454,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     durationSeconds: requestedDuration,
     requestedOutputDurationSeconds: requestedDuration,
     sourceVideoDurationSeconds: measuredSourceVideoDuration,
-    wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined
+    wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined,
+    ...(idempotencyKey ? { idempotencyKey } : {})
   };
 
   prodDb.addGeneration(generation);
@@ -5127,6 +5512,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
       const effectiveRecipe = template.recipe ? {
         ...template.recipe,
+        provider: templateConfiguredProvider,
+        adapter: templateConfiguredAdapter || template.recipe.adapter,
         prompt: effectivePrompt,
         model: effectiveModel,
         resolution: requestedResolution,
@@ -5137,7 +5524,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       } : {
         version: '1.0',
         inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
-        provider: template.type === 'photo' ? 'gemini' : 'google_veo',
+        provider: templateConfiguredProvider || (template.type === 'photo' ? 'gemini' : 'google_veo'),
+        adapter: templateConfiguredAdapter || undefined,
         model: effectiveModel,
         engine: template.engine || 'AI_GENERATION',
         prompt: effectivePrompt,
@@ -5153,6 +5541,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         templateTitle: template.title,
         templateType: template.type,
         engine: template.engine,
+        provider: templateConfiguredProvider,
+        adapter: templateConfiguredAdapter || undefined,
         workflow: template.workflow,
         inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
         inputMediaUrls: mediaList,
@@ -5237,17 +5627,40 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       });
     } catch (err: any) {
       console.error('[Generation Pipeline Failed]:', err.message);
+      const errMsg = String(err?.message || 'Unknown error');
+      const derivedCode = errMsg.includes('GEMINI_API_KEY')
+        ? 'MISSING_GEMINI_API_KEY'
+        : errMsg.includes('HIGGSFIELD_API_KEY')
+        ? 'MISSING_HIGGSFIELD_API_KEY'
+        : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
+        ? 'PROVIDER_ROUTING_MISMATCH'
+        : errMsg.includes('MODEL_EVALUATION_ONLY')
+        ? 'MODEL_EVALUATION_ONLY'
+        : 'GENERATION_ERROR';
       try {
         emitCloudMonitoringEvent(
-          'GENERATION_PIPELINE_FAILURE',
+          derivedCode === 'PROVIDER_ROUTING_MISMATCH' ? 'PROVIDER_ROUTING_MISMATCH' : 'GENERATION_PIPELINE_FAILURE',
           'ERROR',
-          sanitizeMonitoringString(`Generation failed for template ${template.id}: ${err.message || 'Unknown error'}`),
+          sanitizeMonitoringString(`Generation failed for template ${template.id} (${template.title}): ${errMsg}`),
           {
             source: 'generation_failure',
             templateId: template.id,
+            templateTitle: template.title,
+            provider: templateConfiguredProvider,
+            adapter: templateConfiguredAdapter || modelEntry?.adapterId,
+            model: effectiveModel,
+            generationId: genId,
+            errorCode: derivedCode,
             errorStage: 'generation_pipeline',
             correlationId: genId,
-            endpoint: '/api/generations/create'
+            endpoint: '/api/generations/create',
+            rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
+            recommendedAction:
+              derivedCode === 'MISSING_GEMINI_API_KEY'
+                ? 'Configure valid GEMINI_API_KEY secret in server environment / Cloud Run.'
+                : derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
+                ? 'Configure valid HIGGSFIELD_API_KEY secret in server environment / Cloud Run.'
+                : 'Inspect template provider/adapter/model assignment and Diagnostics readiness matrix.'
           }
         );
       } catch {}
@@ -5263,14 +5676,43 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   })();
 });
 
-// Calculate Face Swap Credits Dynamically based on trimmed duration (4-15 seconds, default 4s)
-app.post('/api/faceswap/calculate-cost', (req, res) => {
-  const { durationSeconds = 4 } = req.body;
-  const pricing = calculateFaceSwapCredits(Number(durationSeconds) || 4);
-  res.json(pricing);
+// Calculate Face Swap Credits Authoritatively based on trimmed duration, model, resolution, and Live USD/INR FX
+app.post('/api/faceswap/calculate-cost', async (req, res) => {
+  const { durationSeconds = 4, sceneId, model, resolution } = req.body || {};
+  const scene = sceneId ? prodDb.getFaceSwapScene(sceneId) : null;
+  const resolvedModel = model || scene?.model || 'hf_mult_motion_control_flash';
+  const resolvedRes = (resolution || scene?.resolution || '480p') as '480p' | '720p' | '1080p';
+
+  if (!getLiveFxStatus().isFresh && !isIsolatedTestEnv) {
+    try {
+      await refreshLiveUsdInrRate();
+    } catch {}
+  }
+
+  const quote = calculateAuthoritativeFaceSwapQuote({
+    modelId: resolvedModel,
+    resolution: resolvedRes,
+    durationSeconds: Number(durationSeconds) || 4
+  });
+
+  if (quote.status === 'FX_EXPIRED') {
+    return res.status(503).json({
+      ...quote,
+      error: quote.reason || 'Live USD/INR FX rate unavailable or expired.',
+      code: 'FX_RATE_EXPIRED'
+    });
+  }
+  if (quote.status !== 'QUOTED') {
+    return res.status(400).json({
+      ...quote,
+      error: quote.reason || `FaceSwap quote failed (${quote.status}).`,
+      code: quote.status
+    });
+  }
+  res.json(quote);
 });
 
-// Final Face / Character Video Generation Route (Higgsfield Genjutsu Light Motion Transfer with Physical Video Trimming)
+// Final Face / Character Video Generation Route (Higgsfield Genjutsu Light Motion Transfer / Object Swap)
 app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const {
@@ -5330,6 +5772,28 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     }
   }
 
+  const sceneProvider = (selectedScene?.provider || 'higgsfield').trim().toLowerCase();
+  const sceneAdapter = (selectedScene?.adapter || 'faceSwapAdapter').trim();
+  const sceneModel = resolveCanonicalModelId(selectedScene?.model || 'hf_mult_motion_control_flash') || 'hf_mult_motion_control_flash';
+  const sceneWorkflow = (selectedScene?.workflow || (sceneModel === 'hf_mult_replace_object_flash' ? 'OBJECT_SWAP' : 'MOTION_TRANSFER')).trim();
+  const sceneResolution = (selectedScene?.resolution || '480p') as '480p' | '720p' | '1080p';
+
+  const sceneModelEntry = getRegisteredModelEntry(sceneModel);
+  if (sceneModelEntry?.isEvaluationOnly) {
+    return res.status(403).json({
+      error: `Model '${sceneModel}' is restricted to Owner evaluation only and cannot be used for FaceSwap.`,
+      code: 'MODEL_EVALUATION_ONLY',
+      stage: 'readiness_validation'
+    });
+  }
+  if (sceneProvider !== 'higgsfield' || sceneAdapter !== 'faceSwapAdapter') {
+    return res.status(400).json({
+      error: `FaceSwap routing mismatch: provider='${sceneProvider}', adapter='${sceneAdapter}' cannot run on FaceSwap endpoint.`,
+      code: 'PROVIDER_ROUTING_MISMATCH',
+      stage: 'readiness_validation'
+    });
+  }
+
   const hasRawFaceRef =
     (Array.isArray(faceReferenceUrls) && faceReferenceUrls.some((u: any) => typeof u === 'string' && u.trim().length > 0)) ||
     (Array.isArray(faceReferenceBase64List) && faceReferenceBase64List.some((b: any) => typeof b === 'string' && b.trim().length > 0));
@@ -5343,6 +5807,27 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
 
   // 1. Duration Validation: Clamped strictly between 4 and 15 seconds (default 4s)
   const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 4)));
+
+  // Genjutsu Light Customer Generation Safety Gate BEFORE FFmpeg trimming, R2 writes, or wallet debit
+  const hfGateStatus = getHiggsfieldDiagnosticStatus();
+  if (!hfGateStatus.customerGenerationEnabled) {
+    const preflightUsd = Number((requestedDuration * 0.05).toFixed(2));
+    return res.status(503).json({
+      error:
+        'Genjutsu Light customer generation is safely gated until Higgsfield single-key auth, exact model/workflow mapping, and prepaid API balance ($5+) are verified and approved by Owner. No credits were deducted and no media was processed.',
+      code: 'GENJUTSU_LIGHT_SAFELY_GATED',
+      stage: 'safety_gate',
+      preflightQuote: {
+        model: sceneModel,
+        workflow: sceneWorkflow,
+        resolution: sceneResolution,
+        durationSeconds: requestedDuration,
+        ratePerSecondUsd: 0.05,
+        estimatedCostUsd: preflightUsd,
+        requiresOwnerApproval: true
+      }
+    });
+  }
 
   // 2. Physical Video Trimming via FFmpeg
   let trimmedVideoUrl = '';
@@ -5423,9 +5908,36 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     });
   }
 
-  // 4. Server-Authoritative Credit Calculation based on ACTUAL trimmed duration ($0.318/sec + USD/INR + 40% markup)
-  const pricing = calculateFaceSwapCredits(billableDuration);
-  const requiredCredits = pricing.credits;
+  // 4. Server-Authoritative Credit Calculation based on ACTUAL trimmed duration + Live USD/INR FX + 40% markup
+  if (!getLiveFxStatus().isFresh && !isIsolatedTestEnv) {
+    try {
+      await refreshLiveUsdInrRate();
+    } catch {}
+  }
+
+  const faceSwapQuote = calculateAuthoritativeFaceSwapQuote({
+    modelId: sceneModel,
+    resolution: sceneResolution,
+    durationSeconds: billableDuration
+  });
+
+  if (faceSwapQuote.status === 'FX_EXPIRED') {
+    return res.status(503).json({
+      error: faceSwapQuote.reason || 'Live USD/INR FX rate expired. FaceSwap pricing paused until FX rate refreshes.',
+      code: 'FX_RATE_EXPIRED',
+      stage: 'pricing'
+    });
+  }
+
+  if (faceSwapQuote.status !== 'QUOTED' || faceSwapQuote.credits <= 0) {
+    return res.status(400).json({
+      error: faceSwapQuote.reason || `FaceSwap quote unavailable (${faceSwapQuote.status}).`,
+      code: faceSwapQuote.status,
+      stage: 'pricing'
+    });
+  }
+
+  const requiredCredits = faceSwapQuote.credits;
 
   const wallet = prodDb.getWallet(user.id);
   if (wallet.balance < requiredCredits) {
@@ -5433,8 +5945,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       error: 'Insufficient credits for Face/Character Video',
       requiredCredits,
       currentBalance: wallet.balance,
-      durationSeconds: billableDuration,
-      costUsd: pricing.costUsd
+      durationSeconds: billableDuration
     });
   }
 
@@ -5444,27 +5955,29 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const reserved = prodDb.reserveCredits(
     user.id,
     requiredCredits,
-    `Face Swap Video (${billableDuration}s @ 480p)`,
+    `Face Swap Video (${billableDuration}s @ ${sceneResolution})`,
     genId
   );
   if (!reserved) {
     return res.status(402).json({ error: 'Failed to reserve credits' });
   }
 
-  // 6. Record Generation State (Locked to 480p)
+  // 6. Record Generation State with actual configured scene model/workflow
   const generation: Generation = {
     id: genId,
     userId: user.id,
-    templateId: 'tpl_face_swap_genjutsu',
-    templateTitle: `Face Swap Video (${billableDuration}s)`,
+    templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+    templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableDuration}s)` : `Face Swap Video (${billableDuration}s)`,
     templateType: 'video',
     aspectRatio: '9:16',
     status: 'processing',
     inputMediaUrl: allReferenceUrls[0],
     creditCost: requiredCredits,
     engine: 'AI_GENERATION',
-    model: 'higgsfield/genjutsu-light/motion-transfer/v1.0',
-    workflow: 'neural-motion-transfer-480p',
+    model: sceneModel,
+    workflow: sceneWorkflow,
+    resolution: sceneResolution,
+    durationSeconds: billableDuration,
     createdAt: new Date().toISOString(),
     isAiGenerated: true
   };
@@ -5494,7 +6007,11 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
         imageUrls: providerReferenceUrls, // ALL reference images sent
         masterRecipePrompt: selectedScene?.masterRecipePrompt,
         customInstructions: sanitizedInstructions,
-        resolution: '480p',
+        provider: sceneProvider,
+        adapter: sceneAdapter,
+        model: sceneModel,
+        workflow: sceneWorkflow,
+        resolution: sceneResolution,
         durationSeconds: billableDuration,
         ownerUserId: user.id
       });
@@ -5517,17 +6034,34 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       });
     } catch (err: any) {
       console.error('[Higgsfield Motion Transfer Failed]:', err.message);
+      const errMsg = String(err?.message || 'Unknown error');
+      const derivedCode = errMsg.includes('HIGGSFIELD_API_KEY')
+        ? 'MISSING_HIGGSFIELD_API_KEY'
+        : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
+        ? 'PROVIDER_ROUTING_MISMATCH'
+        : 'FACESWAP_PROVIDER_ERROR';
       try {
         emitCloudMonitoringEvent(
           'FACESWAP_PIPELINE_FAILURE',
           'ERROR',
-          sanitizeMonitoringString(`FaceSwap failed for scene ${selectedScene?.id || 'custom'}: ${err.message || 'Unknown error'}`),
+          sanitizeMonitoringString(`FaceSwap failed for scene ${selectedScene?.id || 'custom'}: ${errMsg}`),
           {
             source: 'generation_failure',
             templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+            templateTitle: selectedScene?.title || 'Custom Face Swap',
+            provider: sceneProvider,
+            adapter: sceneAdapter,
+            model: sceneModel,
+            generationId: genId,
+            errorCode: derivedCode,
             errorStage: 'faceswap_pipeline',
             correlationId: genId,
-            endpoint: '/api/faceswap/generate'
+            endpoint: '/api/faceswap/generate',
+            rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
+            recommendedAction:
+              derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
+                ? 'Configure valid HIGGSFIELD_API_KEY (and optional HIGGSFIELD_API_SECRET) in server environment.'
+                : 'Inspect FaceSwap scene provider/model/workflow settings in Template Manager.'
           }
         );
       } catch {}
@@ -5762,28 +6296,34 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       }
     },
 
-    // Module 2: Firebase Phone OTP & reCAPTCHA Verification Pipeline
+    // Module 2: Google-Only Auth Policy & Authorized Domain Configuration
     {
-      id: 'firebase_auth_phone_pipeline',
-      name: 'Firebase Phone OTP & reCAPTCHA Verification Pipeline',
+      id: 'google_only_auth_policy',
+      name: 'Google-Only Auth Policy & OAuth Domain Configuration',
       category: 'Authentication & Identity',
       severity: 'HIGH',
       testType: 'INTEGRATION_CHECK',
-      endpointOrProvider: 'Firebase Phone Auth / reCAPTCHA',
-      expectedResult: 'Active authDomain with SMS OTP authentication capability',
+      endpointOrProvider: 'Firebase Google OAuth · PHONE_AUTH_ENABLED=false',
+      expectedResult: 'Google Sign-In is the sole active login method (PHONE_AUTH_ENABLED=false) with valid authDomain and oAuthClientId',
       execute: async () => {
-        if (!firebaseConfig.authDomain) {
+        if (!firebaseConfig.authDomain || !(firebaseConfig as any).oAuthClientId) {
           return {
             status: 'blocked',
-            actualResult: 'authDomain missing in firebaseConfig',
-            failureReason: 'Firebase authDomain is required for reCAPTCHA OTP verification',
-            rootCauseHypothesis: 'Missing authDomain in deployment settings',
-            recommendedAction: 'Set authDomain in firebase-applet-config.json'
+            actualResult: `authDomain=${firebaseConfig.authDomain || 'missing'}, oAuthClientId=${(firebaseConfig as any).oAuthClientId ? 'present' : 'missing'}`,
+            failureReason: 'Firebase authDomain or oAuthClientId is missing in firebase-applet-config.json',
+            rootCauseHypothesis: 'Missing OAuth settings in deployment configuration',
+            recommendedAction: 'Set authDomain and oAuthClientId in firebase-applet-config.json'
+          };
+        }
+        if (PHONE_AUTH_ENABLED) {
+          return {
+            status: 'warning',
+            actualResult: `PHONE_AUTH_ENABLED=true on '${firebaseConfig.authDomain}' (Google-only cost-saving policy expects false)`
           };
         }
         return {
           status: 'passed',
-          actualResult: `Phone Auth ready on '${firebaseConfig.authDomain}' with reCAPTCHA integration`
+          actualResult: `Google-Only Auth enforced (PHONE_AUTH_ENABLED=false) on '${firebaseConfig.authDomain}' with OAuth client configured`
         };
       }
     },
@@ -6141,12 +6681,18 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
           };
         }
 
-        const geminiApiKeyPresent = Boolean(process.env.GEMINI_API_KEY?.trim());
+        const geminiDiag = getGeminiKeyDiagnosticStatus();
+        const hfDiag = getHiggsfieldDiagnosticStatus();
         const r2Config = mediaStorage.getStatus();
+
+        const geminiLabel = geminiDiag.present
+          ? `${geminiDiag.authStatus} (${geminiDiag.maskedSuffix}, canonicalCqZA=${geminiDiag.isCanonicalCqZA})`
+          : 'MISSING_SECRET';
+        const hfLabel = `${hfDiag.authStatus} (Gate=${hfDiag.customerGateStatus})`;
 
         return {
           status: 'passed',
-          actualResult: `Tenant isolation strictly enforced (Intruder 403 blocked, Owner allowed); AI Provider Key=${geminiApiKeyPresent ? 'Present (Unverified)' : 'Missing'}; Storage=${r2Config.r2Configured ? 'R2 Configured' : 'Local Fallback'}`
+          actualResult: `Tenant isolation strictly enforced (Intruder 403 blocked, Owner allowed); Gemini=${geminiLabel}; Higgsfield=${hfLabel}; Storage=${r2Config.r2Configured ? 'R2 Configured' : 'Local Fallback'} (0 Gemini/Higgsfield API calls made)`
         };
       }
     },
@@ -6655,9 +7201,399 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
   });
 });
 
+// Per-Template & FaceSwap Scene 11-Column Readiness Matrix + Unresolved Alerts Summary
+app.get('/api/admin/readiness/matrix', requireAdmin, async (_req, res) => {
+  const geminiKeyDiag = getGeminiKeyDiagnosticStatus();
+  const hfDiag = getHiggsfieldDiagnosticStatus();
+  const hasGeminiKey = geminiKeyDiag.present;
+  const hasHiggsfieldKey = hfDiag.present;
+  const fxStatus = getLiveFxStatus();
+  const dbGuard = getDatabaseGuardState();
+  const omniTests = prodDb.getOwnerOmniTests(30);
+
+  const items: PerTemplateReadinessItem[] = [];
+  const activeTemplates = prodDb.getAllTemplatesAdmin().filter((t) => t.isActive !== false);
+
+  for (const tpl of activeTemplates) {
+    const rawModel = (tpl.recipe?.model || tpl.model || '').toString().trim();
+    const canonicalModel = resolveCanonicalModelId(rawModel);
+    const regEntry = getRegisteredModelEntry(rawModel);
+    const isSmart = tpl.engine === 'SMART_TEMPLATE' || canonicalModel === 'smart_canvas_ffmpeg';
+    const provider = (tpl.provider || tpl.recipe?.provider || regEntry?.provider || (tpl.type === 'photo' ? 'gemini' : 'google_veo')).toString().trim().toLowerCase();
+    const adapter = (tpl.adapter || tpl.recipe?.adapter || regEntry?.adapterId || (isSmart ? 'smartCanvas' : tpl.type === 'photo' ? 'geminiAdapter' : 'videoProviderAdapter')).toString().trim();
+    const workflow = (tpl.workflow || tpl.recipe?.workflow || regEntry?.workflow || 'UNKNOWN').toString().trim();
+
+    const readiness = validateTemplateReadiness(tpl, { strictPublish: false });
+    const quoteRes = calculateCustomerTemplateQuote({
+      modelId: canonicalModel || rawModel,
+      type: tpl.type,
+      resolution: (tpl.resolutionLabel === '480p' || tpl.resolutionLabel === '720p' || tpl.resolutionLabel === '1080p') ? tpl.resolutionLabel : undefined,
+      durationSeconds: tpl.durationSeconds,
+      engine: tpl.engine,
+      creditCost: tpl.creditCost,
+      providerCostUsd: tpl.providerCostUsd
+    });
+
+    const apiKeyStatus: PerTemplateReadinessItem['apiKeyStatus'] = isSmart
+      ? 'LOCAL_NO_KEY'
+      : provider === 'higgsfield'
+      ? (hasHiggsfieldKey ? 'CONFIGURED_UNVERIFIED_BALANCE' : 'MISSING_SECRET')
+      : (hasGeminiKey ? 'CONFIGURED_UNVERIFIED_BALANCE' : 'MISSING_SECRET');
+
+    const billingStatus: PerTemplateReadinessItem['billingStatus'] = isSmart
+      ? 'FREE_LOCAL'
+      : regEntry?.isEvaluationOnly
+      ? 'EVALUATION_GUARDED'
+      : regEntry
+      ? (regEntry.endpointVerificationStatus === 'VERIFIED' ? 'VERIFIED' : 'PUBLISHED_LIST_ACTIVE')
+      : 'MISSING';
+
+    const quotaOrBalanceStatus: PerTemplateReadinessItem['quotaOrBalanceStatus'] = isSmart
+      ? 'LOCAL_FREE'
+      : apiKeyStatus === 'MISSING_SECRET'
+      ? 'UNKNOWN_MISSING_KEY'
+      : 'UNVERIFIED_EXTERNAL_QUOTA';
+
+    const resDurVerification: PerTemplateReadinessItem['resDurVerification'] = isSmart
+      ? 'VERIFIED'
+      : regEntry
+      ? 'SUPPORTED'
+      : 'MISSING_CONFIG';
+
+    const quoteStatus: PerTemplateReadinessItem['quoteStatus'] = isSmart
+      ? 'QUOTED'
+      : quoteRes.status === 'QUOTED'
+      ? 'QUOTED'
+      : quoteRes.status === 'EVALUATION_ONLY'
+      ? 'EVALUATION_ONLY'
+      : quoteRes.status === 'FX_EXPIRED'
+      ? 'FX_EXPIRED'
+      : 'BLOCKED';
+
+    let finalStatus: PerTemplateReadinessItem['finalStatus'] = 'READY_CONFIG';
+    let rootCause: string | undefined;
+    let recommendedSolution: string | undefined;
+
+    if (regEntry?.isEvaluationOnly) {
+      finalStatus = 'GUARDED_EVALUATION_ONLY';
+      rootCause = `Template uses ${canonicalModel || rawModel} (Evaluation Only) — guarded from public generation until Owner manual video test is verified.`;
+      recommendedSolution = 'Run an Owner-approved test in Gemini Omni 1.2 Console or switch template to a production FaceSwap/Smart workflow.';
+    } else if (!readiness.ready) {
+      finalStatus = 'BLOCKED_CONFIG';
+      rootCause = readiness.errors[0] || `Missing/invalid template configuration (${readiness.missingFields.join(', ')}).`;
+      recommendedSolution = 'Fix template model/provider/media slots in Template Manager.';
+    } else if (apiKeyStatus === 'MISSING_SECRET') {
+      finalStatus = 'BLOCKED_MISSING_SECRET';
+      const reqSecret = provider === 'higgsfield' ? 'HIGGSFIELD_API_KEY' : 'GEMINI_API_KEY';
+      rootCause = `${reqSecret} is missing in runtime environment variables.`;
+      recommendedSolution =
+        provider === 'higgsfield'
+          ? 'Set complete HIGGSFIELD_API_KEY (Authorization: Key <api-key>) in Builder / Cloud Run Secrets.'
+          : 'Set ai-prime-studio GEMINI_API_KEY (...CqZA) in Builder / Cloud Run Secrets with active prepaid balance.';
+    } else if (provider === 'gemini' && geminiKeyDiag.isLegacyAndroidU4sw) {
+      finalStatus = 'BLOCKED_CONFIG';
+      rootCause = 'Detected legacy Android key suffix (...U4sw) instead of canonical ai-prime-studio (...CqZA) key.';
+      recommendedSolution = 'Link ai-prime-studio GEMINI_API_KEY (...CqZA) in Builder / Cloud Run Secrets.';
+    } else if (quoteRes.status === 'FX_EXPIRED') {
+      finalStatus = 'BLOCKED_FX_EXPIRED';
+      rootCause = quoteRes.reason || 'Live USD/INR FX cache expired (>12h) or unfetched.';
+      recommendedSolution = 'Click Refresh Live FX Rate in Diagnostics.';
+    } else if (quoteRes.status !== 'QUOTED') {
+      finalStatus = 'BLOCKED_CONFIG';
+      rootCause = quoteRes.reason || `Model ${rawModel} quote verification failed (${quoteRes.status}).`;
+      recommendedSolution = 'Align model & resolution tariff in pricingService / Template Manager.';
+    }
+
+    const matchingOmniTest = canonicalModel === 'gemini-omni-1.2-flash'
+      ? omniTests.find((t) => t.status === 'completed')
+      : undefined;
+
+    items.push({
+      id: tpl.id,
+      title: tpl.title,
+      itemKind: 'TEMPLATE',
+      type: tpl.type,
+      provider,
+      adapter,
+      model: canonicalModel || rawModel || 'unset',
+      workflow,
+      apiKeyStatus,
+      billingStatus,
+      quotaOrBalanceStatus,
+      resDurVerification,
+      quoteStatus,
+      creditsQuoted: quoteRes.credits || tpl.creditCost || 0,
+      realTestStatus: isSmart ? 'PASSED_LOCAL' : matchingOmniTest ? 'PASSED_OWNER_LIVE' : 'NOT_YET_TESTED_LIVE',
+      finalStatus,
+      rootCause,
+      recommendedSolution
+    });
+  }
+
+  const activeScenes = prodDb.getFaceSwapScenes(false);
+  for (const scene of activeScenes) {
+    const provider = (scene.provider || 'higgsfield').trim().toLowerCase();
+    const adapter = (scene.adapter || 'faceSwapAdapter').trim();
+    const model = resolveCanonicalModelId(scene.model || 'hf_mult_motion_control_flash') || 'hf_mult_motion_control_flash';
+    const workflow = (scene.workflow || 'MOTION_TRANSFER').trim();
+    const sceneCheck = validateFaceSwapSceneReadiness(scene);
+    const quoteRes = calculateAuthoritativeFaceSwapQuote({
+      modelId: model,
+      resolution: scene.resolution || '480p',
+      durationSeconds: scene.durationSeconds || 4
+    });
+
+    let finalStatus: PerTemplateReadinessItem['finalStatus'] = 'READY_CONFIG';
+    let rootCause: string | undefined;
+    let recommendedSolution: string | undefined;
+
+    if (!sceneCheck.ready) {
+      finalStatus = 'BLOCKED_CONFIG';
+      rootCause = sceneCheck.errors[0];
+      recommendedSolution = 'Update FaceSwap scene provider/adapter/model/workflow in Template Manager.';
+    } else if (!hasHiggsfieldKey) {
+      finalStatus = 'BLOCKED_MISSING_SECRET';
+      rootCause = 'HIGGSFIELD_API_KEY is missing in runtime environment variables (Customer Genjutsu Light is SAFELY_GATED).';
+      recommendedSolution = 'Set complete HIGGSFIELD_API_KEY (Authorization: Key <api-key>) in Builder / Cloud Run Secrets and top up $5 minimum API balance.';
+    } else if (!hfDiag.customerGenerationEnabled) {
+      finalStatus = 'GUARDED_EVALUATION_ONLY';
+      rootCause = 'HIGGSFIELD_API_KEY present but UNVERIFIED (no free auth check endpoint); Genjutsu Light stays SAFELY_GATED until balance & Owner approval.';
+      recommendedSolution = 'Confirm $5+ Open Higgsfield balance and Owner cost approval ($0.20-$0.25 @ 480p) before enabling ENABLE_GENJUTSU_CUSTOMER_GENERATION.';
+    } else if (quoteRes.status === 'FX_EXPIRED') {
+      finalStatus = 'BLOCKED_FX_EXPIRED';
+      rootCause = quoteRes.reason || 'Live USD/INR FX cache expired or unfetched.';
+      recommendedSolution = 'Click Refresh Live FX Rate in Diagnostics.';
+    } else if (quoteRes.status !== 'QUOTED') {
+      finalStatus = 'BLOCKED_CONFIG';
+      rootCause = quoteRes.reason;
+      recommendedSolution = 'Verify FaceSwap model resolution & workflow settings.';
+    }
+
+    items.push({
+      id: scene.id,
+      title: scene.title,
+      itemKind: 'FACESWAP_SCENE',
+      type: 'video',
+      provider,
+      adapter,
+      model,
+      workflow,
+      apiKeyStatus: hasHiggsfieldKey ? 'CONFIGURED_UNVERIFIED_BALANCE' : 'MISSING_SECRET',
+      billingStatus: 'PUBLISHED_LIST_ACTIVE',
+      quotaOrBalanceStatus: hasHiggsfieldKey ? 'UNVERIFIED_EXTERNAL_QUOTA' : 'UNKNOWN_MISSING_KEY',
+      resDurVerification: sceneCheck.ready ? 'SUPPORTED' : 'MISSING_CONFIG',
+      quoteStatus: quoteRes.status === 'QUOTED' ? 'QUOTED' : quoteRes.status === 'FX_EXPIRED' ? 'FX_EXPIRED' : 'BLOCKED',
+      creditsQuoted: quoteRes.credits || scene.creditCost || 0,
+      realTestStatus: 'NOT_YET_TESTED_LIVE',
+      finalStatus,
+      rootCause,
+      recommendedSolution
+    });
+  }
+
+  const { incidents } = await prodDb.getIncidentsAuthoritative(100);
+  const localAlerts = getLiveAlerts();
+  const alertMap = new Map<string, any>();
+  for (const a of [...localAlerts.resolved, ...localAlerts.active, ...incidents]) {
+    if (!a?.id) continue;
+    const prev = alertMap.get(a.id);
+    alertMap.set(a.id, prev ? { ...prev, ...a, resolved: Boolean(prev.resolved || a.resolved) } : a);
+  }
+  const unresolvedAlerts = Array.from(alertMap.values())
+    .map((a) => normalizeAlertTo12Fields(a))
+    .filter((a) => !a.resolved)
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+
+  res.json({
+    success: true,
+    items,
+    summary: {
+      totalActive: items.length,
+      readyConfigCount: items.filter((i) => i.finalStatus === 'READY_CONFIG').length,
+      guardedEvalCount: items.filter((i) => i.finalStatus === 'GUARDED_EVALUATION_ONLY').length,
+      blockedSecretCount: items.filter((i) => i.finalStatus === 'BLOCKED_MISSING_SECRET').length,
+      blockedFxCount: items.filter((i) => i.finalStatus === 'BLOCKED_FX_EXPIRED').length,
+      blockedConfigCount: items.filter((i) => i.finalStatus === 'BLOCKED_CONFIG').length
+    },
+    unresolvedAlertsCount: unresolvedAlerts.length,
+    unresolvedAlerts,
+    fxStatus,
+    databaseGuard: dbGuard,
+    ownerOmniTests: omniTests,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Owner-Only Gemini Omni 1.2 Quote Preview (Zero AI Call, No Cost)
+app.post('/api/admin/omni-test/quote', requireAdmin, async (req, res) => {
+  const { durationSeconds = 5, resolution = '720p' } = req.body || {};
+  const resChoice = resolution === '1080p' ? '1080p' : '720p';
+  const clampedDur = Math.max(3, Math.min(15, Math.round(Number(durationSeconds) || 5)));
+
+  if (!getLiveFxStatus().isFresh && !isIsolatedTestEnv) {
+    try {
+      await refreshLiveUsdInrRate();
+    } catch {}
+  }
+
+  const quote = calculateCustomerTemplateQuote({
+    modelId: 'gemini-omni-1.2-flash',
+    type: 'video',
+    resolution: resChoice,
+    durationSeconds: clampedDur,
+    isEvaluationMode: true
+  });
+
+  const ratePerSecUsd = resChoice === '1080p' ? 0.30 : 0.15;
+  const estUsd = Number((clampedDur * ratePerSecUsd).toFixed(3));
+  res.json({
+    success: true,
+    model: 'gemini-omni-1.2-flash',
+    durationSeconds: clampedDur,
+    resolution: resChoice,
+    estimatedUsd: quote.estimatedProviderCostUsd ?? estUsd,
+    ratePerSecondUsd: ratePerSecUsd,
+    fxRate: quote.usdToInrRate,
+    fxStatus: getLiveFxStatus(),
+    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0),
+    requiresExplicitConfirmation: true
+  });
+});
+
+// Owner-Only Gemini Omni 1.2 Manual Paid Video Generation Console (Never Unlocks Customer Routes)
+app.post('/api/admin/omni-test/run', requireAdmin, async (req, res) => {
+  const adminUser = (req as any).user as UserProfile;
+  const {
+    prompt,
+    durationSeconds = 5,
+    resolution = '720p',
+    aspectRatio = '9:16',
+    referenceImageBase64,
+    confirmPaidTest
+  } = req.body || {};
+
+  if (confirmPaidTest !== true) {
+    return res.status(400).json({
+      error: 'Explicit paid test confirmation is required before running Gemini Omni 1.2.',
+      code: 'PAID_TEST_CONFIRMATION_REQUIRED'
+    });
+  }
+
+  const cleanPrompt = String(prompt || '').trim();
+  if (cleanPrompt.length < 5) {
+    return res.status(400).json({
+      error: 'Please enter a video test prompt (at least 5 characters).',
+      code: 'MISSING_PROMPT'
+    });
+  }
+
+  const clampedDur = Math.max(3, Math.min(15, Math.round(Number(durationSeconds) || 5)));
+  const resChoice: '720p' | '1080p' = resolution === '1080p' ? '1080p' : '720p';
+  const estCostUsd = Number((clampedDur * (resChoice === '1080p' ? 0.30 : 0.15)).toFixed(3));
+  const testId = `omni_test_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+
+  if (!process.env.GEMINI_API_KEY || !process.env.GEMINI_API_KEY.trim()) {
+    const failedRec: OwnerOmniTestRecord = {
+      id: testId,
+      adminEmail: adminUser?.email || 'authorized_admin',
+      model: 'gemini-omni-1.2-flash',
+      prompt: cleanPrompt,
+      durationSeconds: clampedDur,
+      resolution: resChoice,
+      estimatedUsd: estCostUsd,
+      status: 'failed',
+      error: 'GEMINI_API_KEY is missing in server runtime environment.',
+      createdAt: new Date().toISOString()
+    };
+    prodDb.recordOwnerOmniTest(failedRec);
+    emitCloudMonitoringEvent('OMNI_MANUAL_TEST_FAILURE', 'ERROR', 'Owner Omni 1.2 test blocked: missing GEMINI_API_KEY', {
+      source: 'admin_probe',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      model: 'gemini-omni-1.2-flash',
+      generationId: testId,
+      errorCode: 'MISSING_GEMINI_API_KEY',
+      errorStage: 'omni_manual_test',
+      rootCause: 'GEMINI_API_KEY environment secret is not configured.',
+      recommendedAction: 'Set billing-enabled GEMINI_API_KEY in Cloud Run / Server Secrets.'
+    });
+    return res.status(400).json({
+      success: false,
+      record: failedRec,
+      error: failedRec.error,
+      code: 'MISSING_GEMINI_API_KEY'
+    });
+  }
+
+  try {
+    const startMs = Date.now();
+    const result = await videoProviderAdapter.generateVideo({
+      prompt: cleanPrompt,
+      durationSeconds: clampedDur,
+      resolution: resChoice,
+      aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+      userImageUrl: typeof referenceImageBase64 === 'string' && referenceImageBase64.trim() ? referenceImageBase64.trim() : undefined,
+      ownerUserId: adminUser?.id || 'owner_omni_eval',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      model: 'gemini-omni-1.2-flash',
+      returnRawDiagnostics: true
+    });
+
+    const completedRec: OwnerOmniTestRecord = {
+      id: testId,
+      adminEmail: adminUser?.email || 'authorized_admin',
+      model: result.model || 'gemini-omni-1.2-flash',
+      prompt: cleanPrompt,
+      durationSeconds: clampedDur,
+      resolution: resChoice,
+      estimatedUsd: estCostUsd,
+      status: 'completed',
+      resultVideoUrl: result.resultUrl,
+      processingTimeMs: result.processingTimeMs || (Date.now() - startMs),
+      rawSanitizedResponse: result.rawSanitizedResponse,
+      createdAt: new Date().toISOString()
+    };
+    prodDb.recordOwnerOmniTest(completedRec);
+    return res.json({ success: true, record: completedRec });
+  } catch (err: any) {
+    const errMsg = sanitizeMonitoringString(err?.message || 'Omni 1.2 video test failed');
+    const failedRec: OwnerOmniTestRecord = {
+      id: testId,
+      adminEmail: adminUser?.email || 'authorized_admin',
+      model: 'gemini-omni-1.2-flash',
+      prompt: cleanPrompt,
+      durationSeconds: clampedDur,
+      resolution: resChoice,
+      estimatedUsd: estCostUsd,
+      status: 'failed',
+      error: errMsg,
+      createdAt: new Date().toISOString()
+    };
+    prodDb.recordOwnerOmniTest(failedRec);
+    emitCloudMonitoringEvent('OMNI_MANUAL_TEST_FAILURE', 'ERROR', `Owner Omni 1.2 manual test failed: ${errMsg}`, {
+      source: 'admin_probe',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      model: 'gemini-omni-1.2-flash',
+      generationId: testId,
+      errorCode: 'OMNI_TEST_FAILED',
+      errorStage: 'omni_manual_test',
+      rootCause: errMsg.slice(0, 200),
+      recommendedAction: 'Verify paid Gemini API key tier, Interactions API quota, and prompt/media inputs.'
+    });
+    return res.status(502).json({
+      success: false,
+      record: failedRec,
+      error: errMsg,
+      code: 'OMNI_TEST_FAILED'
+    });
+  }
+});
+
 // Live Cloud Monitoring Alerts & History Endpoint (Merges authoritative Firestore incidents with in-memory bus cleanly as sorted Array)
 app.get('/api/admin/monitoring/alerts', requireAdmin, async (_req, res) => {
-  const { incidents: firestoreIncidents, isPersistent } = await prodDb.getIncidentsAuthoritative(30);
+  const { incidents: firestoreIncidents, isPersistent } = await prodDb.getIncidentsAuthoritative(100);
   const localAlerts = getLiveAlerts();
 
   const mergedById = new Map<string, any>();
@@ -6675,12 +7611,14 @@ app.get('/api/admin/monitoring/alerts', requireAdmin, async (_req, res) => {
     }
   }
 
-  const mergedAlerts = Array.from(mergedById.values()).sort((a, b) => {
-    if (Boolean(a.resolved) !== Boolean(b.resolved)) {
-      return a.resolved ? 1 : -1;
-    }
-    return String(b.timestamp || '').localeCompare(String(a.timestamp || ''));
-  });
+  const mergedAlerts = Array.from(mergedById.values())
+    .map((a) => normalizeAlertTo12Fields(a))
+    .sort((a, b) => {
+      if (Boolean(a.resolved) !== Boolean(b.resolved)) {
+        return a.resolved ? 1 : -1;
+      }
+      return String(b.timestamp || '').localeCompare(String(a.timestamp || ''));
+    });
 
   res.json({
     success: true,
@@ -6695,13 +7633,14 @@ app.get('/api/admin/monitoring/alerts', requireAdmin, async (_req, res) => {
 
 // Resolve an Active Cloud Monitoring Alert (Durable in Firestore incidents + memory bus)
 app.post('/api/admin/monitoring/resolve', requireAdmin, async (req, res) => {
-  const { alertId } = req.body;
+  const { alertId, resolutionNote } = req.body || {};
   if (!alertId || typeof alertId !== 'string') {
     return res.status(400).json({ error: 'alertId string required' });
   }
   const actorEmail = ((req as any).user as UserProfile)?.email || 'authorized_admin';
-  const memResolved = resolveAlert(alertId, actorEmail);
-  const dbResolved = await prodDb.resolveIncidentRecord(alertId, actorEmail);
+  const note = typeof resolutionNote === 'string' && resolutionNote.trim() ? resolutionNote.trim().slice(0, 300) : undefined;
+  const memResolved = resolveAlert(alertId, actorEmail, note);
+  const dbResolved = await prodDb.resolveIncidentRecord(alertId, actorEmail, note);
   res.json({ success: true, resolved: memResolved || dbResolved });
 });
 
@@ -6756,10 +7695,27 @@ async function startServer() {
   try {
     await refreshRuntimeGcpMetadata();
     await prodDb.readyPromise;
+    const savedFx = prodDb.getFxCacheRecord();
+    if (savedFx) {
+      hydrateFxCache(savedFx);
+    }
+    if (!isIsolatedTestEnv) {
+      refreshLiveUsdInrRate().catch((fxErr: any) => {
+        console.warn('[Server] Initial live USD/INR FX fetch notice:', fxErr?.message || fxErr);
+      });
+    }
     console.log('[Server] Authoritative Firestore database state synchronized successfully.');
   } catch (err: any) {
     console.warn('[Server] Initial Firestore sync notice:', err.message);
   }
+
+  // Guarantee unmatched /api/* routes always return JSON 404 (never fall through to Vite/SPA index.html)
+  app.use('/api', (req, res) => {
+    return res.status(404).json({
+      error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+      code: 'API_NOT_FOUND'
+    });
+  });
 
   const httpServer = http.createServer(app);
 

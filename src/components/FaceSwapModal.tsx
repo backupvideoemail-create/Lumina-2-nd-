@@ -66,10 +66,10 @@ export const FaceSwapModal: React.FC = () => {
   // 4. Custom Instructions (Optional, Hindi/English/Hinglish)
   const [customInstructions, setCustomInstructions] = useState<string>('');
 
-  // 5. Dynamic Credit Calculation (Genjutsu Light 480p @ $0.05/sec + 40% markup)
-  const [calculatedCredits, setCalculatedCredits] = useState<number>(27); // 4s default
-  const [costUsd, setCostUsd] = useState<number>(0.20);
+  // 5. Authoritative Credit Calculation (Live FX + Server Tariff, Credits Only)
+  const [calculatedCredits, setCalculatedCredits] = useState<number>(activeScene?.creditCost || 27);
   const [isCalculating, setIsCalculating] = useState<boolean>(false);
+  const [fxUnavailableMessage, setFxUnavailableMessage] = useState<string | null>(null);
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -86,31 +86,43 @@ export const FaceSwapModal: React.FC = () => {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const imagesInputRef = useRef<HTMLInputElement>(null);
 
-  // Dynamic cost calculation when duration changes
+  // Dynamic cost calculation when duration or active scene changes
   useEffect(() => {
     let isMounted = true;
     const fetchCost = async () => {
       setIsCalculating(true);
+      setFxUnavailableMessage(null);
       try {
         const res = await fetch('/api/faceswap/calculate-cost', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ durationSeconds })
+          body: JSON.stringify({
+            durationSeconds,
+            sceneId: videoSourceMode === 'preset' ? activeScene?.id : undefined,
+            model: activeScene?.model,
+            resolution: activeScene?.resolution
+          })
         });
-        if (res.ok) {
-          const data = await res.json();
+        const data = await res.json().catch(() => null);
+        if (res.ok && data && typeof data.credits === 'number' && data.credits > 0) {
           if (isMounted) {
             setCalculatedCredits(data.credits);
-            setCostUsd(data.costUsd);
+            setFxUnavailableMessage(null);
+          }
+        } else if (isMounted) {
+          if (res.status === 503 || data?.code === 'FX_RATE_EXPIRED') {
+            setFxUnavailableMessage(data?.error || 'Live exchange rate unavailable. Please retry in a moment.');
+            setCalculatedCredits(0);
+          } else if (data?.code === 'EVALUATION_ONLY') {
+            setFxUnavailableMessage('Selected scene model is currently reserved for Owner evaluation.');
+            setCalculatedCredits(0);
+          } else {
+            setFxUnavailableMessage(data?.error || 'Quote unavailable for selected scene.');
           }
         }
       } catch {
-        // Fallback formula: duration * $0.05 * 96.3 * 1.40
-        const usd = durationSeconds * 0.05;
-        const creds = Math.round(usd * 96.3 * 1.4);
         if (isMounted) {
-          setCalculatedCredits(creds);
-          setCostUsd(Number(usd.toFixed(2)));
+          setFxUnavailableMessage('Unable to reach server pricing service. Check connection.');
         }
       } finally {
         if (isMounted) setIsCalculating(false);
@@ -121,12 +133,12 @@ export const FaceSwapModal: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [durationSeconds]);
+  }, [durationSeconds, videoSourceMode, activeScene?.id, activeScene?.model, activeScene?.resolution]);
 
   if (!faceSwapModalOpen) return null;
 
   const userBalance = wallet?.balance ?? 0;
-  const hasCredits = userBalance >= calculatedCredits;
+  const hasCredits = calculatedCredits > 0 && userBalance >= calculatedCredits;
 
   // Handle Video Upload
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -296,7 +308,7 @@ export const FaceSwapModal: React.FC = () => {
               Higgsfield Genjutsu Light
             </span>
             <span className="text-[10px] text-amber-200/90 font-mono font-bold">
-              480p Motion Transfer · $0.05/sec
+              {activeScene?.resolution || '480p'} Motion Transfer · {durationSeconds}s
             </span>
           </div>
           <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
@@ -555,7 +567,7 @@ export const FaceSwapModal: React.FC = () => {
               <span>Authoritative Credit Cost</span>
             </span>
             <span className="text-[11px] font-mono text-stone-400">
-              480p @ $0.05/s + 40% Markup (Genjutsu Light)
+              {activeScene?.resolution || '480p'} · {durationSeconds}s · {activeScene?.workflow === 'OBJECT_SWAP' ? 'Object Swap' : 'Motion Transfer'}
             </span>
           </div>
 
@@ -563,10 +575,12 @@ export const FaceSwapModal: React.FC = () => {
             <div className="p-3 rounded-2xl bg-black/40 border border-white/10 flex items-center justify-between">
               <div>
                 <span className="text-[10px] uppercase font-bold text-stone-400 block">Required</span>
-                <span className="text-xl font-black text-amber-300 font-mono">
-                  {calculatedCredits} ✦
+                <span className="text-xl font-black text-amber-300 font-mono tabular-nums">
+                  {calculatedCredits > 0 ? `${calculatedCredits} ✦` : 'Pending'}
                 </span>
-                <span className="text-[9px] text-stone-500 block font-mono">~${costUsd} USD</span>
+                <span className="text-[9px] text-stone-400 block">
+                  {fxUnavailableMessage ? 'FX Rate Unavailable' : 'Credits Only'}
+                </span>
               </div>
               <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
                 <Sparkles className="w-4 h-4 fill-current" />
@@ -684,6 +698,12 @@ export const FaceSwapModal: React.FC = () => {
             </div>
           </div>
         )}
+        {fxUnavailableMessage && (
+          <div className="p-3 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+            <span>{fxUnavailableMessage}</span>
+          </div>
+        )}
       </main>
 
       {/* Sticky Bottom Generate Button */}
@@ -692,9 +712,9 @@ export const FaceSwapModal: React.FC = () => {
           <button
             type="button"
             onClick={handleGenerate}
-            disabled={isGenerating || isCalculating}
-            className={`w-full py-4 px-6 rounded-2xl text-base font-black flex items-center justify-between shadow-2xl transition-all cursor-pointer ${
-              hasCredits
+            disabled={isGenerating || isCalculating || Boolean(fxUnavailableMessage) || calculatedCredits <= 0}
+            className={`w-full py-4 px-6 rounded-2xl text-base font-black flex items-center justify-between shadow-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              hasCredits && !fxUnavailableMessage
                 ? 'gold-button'
                 : 'bg-stone-800 text-stone-400 border border-white/10 hover:bg-stone-700'
             }`}
@@ -704,17 +724,21 @@ export const FaceSwapModal: React.FC = () => {
               <span>
                 {isGenerating
                   ? 'Synthesizing Genjutsu Video...'
+                  : fxUnavailableMessage
+                  ? 'FX Rate Unavailable'
                   : `Generate Face Video (${durationSeconds}s)`}
               </span>
             </div>
 
-            <div className="flex items-center gap-1 px-3 py-1 rounded-xl bg-black/30 text-xs font-bold text-stone-950">
-              <span>{calculatedCredits} Credits</span>
+            <div className="flex items-center gap-1 px-3 py-1 rounded-xl bg-black/30 text-xs font-bold text-stone-950 tabular-nums">
+              <span>{calculatedCredits > 0 ? `${calculatedCredits} Credits` : 'Pending'}</span>
             </div>
           </button>
 
           <p className="text-[11px] text-center text-stone-400">
-            {hasCredits
+            {fxUnavailableMessage
+              ? fxUnavailableMessage
+              : hasCredits
               ? 'Server-authoritative pipeline with 100% exact credit refund on any failure.'
               : `You need ${calculatedCredits} credits (Balance: ${userBalance}). Tap button above to get credits.`}
           </p>

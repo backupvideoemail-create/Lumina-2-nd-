@@ -1,52 +1,60 @@
 /**
- * Centralized Pricing & Cost Calculation Service.
- * 
+ * Centralized Pricing, Live USD/INR FX & Cost Calculation Service.
+ *
  * Strict Business Rule:
- * Provider API Cost (USD)
- * → USD/INR conversion (e.g. ₹96.3 / USD)
- * → INR Provider Cost
- * → +40% Business Markup
- * → Final Customer Credit Cost (1 Credit = ₹1 INR)
- * 
- * Example:
- * 15-second video provider cost: $5.00
- * $5.00 × 96.3 = ₹481.50 provider cost
- * ₹481.50 × 1.40 = ₹674.10 ≈ 675 Credits
- * 
- * Server-authoritative: Generation endpoints derive required credits dynamically
- * from this service and never trust client-provided costs or discounts.
+ * Actual Provider Cost (USD)
+ * -> Fresh Live USD/INR Conversion (with TTL cache; fail-closed if expired!)
+ * -> INR Provider Cost
+ * -> +40% Business Markup (applied strictly ONCE)
+ * -> Final Customer Credit Cost (1 Credit = ₹1 INR)
+ *
+ * Multi-Unit Tariff Support:
+ * - Photo models: `per_image` tariff (e.g., gemini-2.5-flash-image = $0.039/image)
+ * - Video / FaceSwap models: `per_second` tariff (duration × resolution tariff)
+ * - Smart FFmpeg canvas: local fixed credit / $0 provider cost
+ *
+ * Strict Safety Separation:
+ * - Low-level `calculateEstimatedProviderCostUsd(..., allowPublishedListPriceFallback: false)`
+ *   keeps strict PENDING_QUOTE behavior when account-specific quote verification is absent.
+ * - Customer-facing `calculateCustomerTemplateQuote` / `calculateCustomerFaceSwapQuote`
+ *   computes exact credits from verified account quotes OR published official tariffs when FX is fresh,
+ *   while remaining strictly blocked on `isEvaluationOnly` models (like Gemini Omni 1.2) or expired FX.
  */
 
-import type { Template } from '../../types';
+import type { FxRateStatus, Template } from '../../types';
 
 export interface ProviderCostUsdCatalog {
-  photoSmartUsd: number;      // Fast filter / upscale
-  photoAiDiffusionUsd: number;// Gemini / Imagen diffusion ($0.15)
-  photo4kHdrDiffusionUsd: number; // 4K upscale diffusion ($0.19)
-  videoSmartMotionUsd: number;// Lightweight motion interpolation ($0.26)
-  videoAiDiffusionUsd: number;// Sora / Veo 3.1 video diffusion ($5.00)
-  faceSwapVideoUsd: number;   // Neural face-swap video rendering ($0.26)
-  audioSyncUsd: number;       // Stem sync / beats audio ($0.02)
+  photoSmartUsd: number;
+  photoAiDiffusionUsd: number;
+  photo4kHdrDiffusionUsd: number;
+  videoSmartMotionUsd: number;
+  videoAiDiffusionUsd: number;
+  faceSwapVideoUsd: number;
+  audioSyncUsd: number;
 }
 
 export interface PricingSettings {
-  usdToInrRate: number;       // Current USD/INR rate (Default: 96.3)
-  rateSource: string;         // Authoritative rate source ('RBI_REFERENCE_CENTRAL')
-  updatedAt: string;          // Timestamp of rate verification
-  lastVerifiedRate: number;   // Last confirmed rate
-  markupPercent: number;      // 40% Business Markup Rule
+  usdToInrRate: number;
+  rateSource: string;
+  updatedAt: string;
+  expiresAt: string;
+  lastVerifiedRate: number;
+  markupPercent: number;
   currency: string;
-  creditsPerInr: number;      // 1 Credit = ₹1 INR
+  creditsPerInr: number;
   providerCostsUsd: ProviderCostUsdCatalog;
 }
 
 export type SupportStatus = 'SUPPORTED' | 'UNSUPPORTED' | 'UNKNOWN';
 export type VerificationStatus = 'VERIFIED' | 'PENDING_QUOTE' | 'NOT_TESTED';
+export type BillingUnit = 'per_image' | 'per_second';
 
 export interface ResolutionTariff {
   resolution: '480p' | '720p' | '1080p';
   publishedListPricePerSecondUsd: number;
   accountQuotePerSecondUsd?: number;
+  publishedListPricePerImageUsd?: number;
+  accountQuotePerImageUsd?: number;
   supportStatus: SupportStatus;
   renderingTestStatus: VerificationStatus;
 }
@@ -54,7 +62,18 @@ export interface ResolutionTariff {
 export interface ModelRegistryEntry {
   modelId: string;
   provider: 'higgsfield' | 'gemini' | 'smart_template';
-  workflow: 'VIDEO_FACE_REPLACEMENT' | 'OBJECT_SWAP' | 'MOTION_TRANSFER' | 'VIDEO_EDIT' | 'IMAGE_TO_VIDEO' | 'PHOTO_EDIT' | 'PHOTO_GENERATION';
+  adapterId: 'geminiAdapter' | 'faceSwapAdapter' | 'videoProviderAdapter' | 'smartCanvas';
+  workflow:
+    | 'VIDEO_FACE_REPLACEMENT'
+    | 'OBJECT_SWAP'
+    | 'MOTION_TRANSFER'
+    | 'VIDEO_EDIT'
+    | 'IMAGE_TO_VIDEO'
+    | 'PHOTO_EDIT'
+    | 'PHOTO_GENERATION';
+  billingUnit: BillingUnit;
+  publishedPerImageUsd?: number;
+  accountQuotePerImageUsd?: number;
   resolutionTariffs: Record<'480p' | '720p' | '1080p', ResolutionTariff>;
   appDefaultResolution?: '480p' | '720p' | '1080p';
   minDurationSeconds?: number;
@@ -66,23 +85,125 @@ export interface ModelRegistryEntry {
   isEvaluationOnly?: boolean;
 }
 
+export interface FaceSwapProviderOption {
+  provider: string;
+  providerLabel: string;
+  adapters: Array<{
+    adapter: string;
+    adapterLabel: string;
+    models: Array<{
+      model: string;
+      modelLabel: string;
+      workflows: Array<{ workflow: string; workflowLabel: string }>;
+      supportedResolutions: Array<'480p' | '720p' | '1080p'>;
+      isEvaluationOnly?: boolean;
+    }>;
+  }>;
+}
+
+/**
+ * Cascading FaceSwap / Character Video Provider -> Adapter -> Model -> Workflow Compatibility Matrix.
+ */
+export const FACE_SWAP_COMPATIBLE_COMBINATIONS: FaceSwapProviderOption[] = [
+  {
+    provider: 'higgsfield',
+    providerLabel: 'Higgsfield AI (Genjutsu Light)',
+    adapters: [
+      {
+        adapter: 'faceSwapAdapter',
+        adapterLabel: 'Higgsfield Genjutsu Motion & Swap Adapter',
+        models: [
+          {
+            model: 'hf_mult_motion_control_flash',
+            modelLabel: 'Motion Control Flash (genjutsu-light/motion-transfer/v1.0)',
+            workflows: [
+              { workflow: 'MOTION_TRANSFER', workflowLabel: 'Motion Transfer & Face Swap (MOTION_TRANSFER)' }
+            ],
+            supportedResolutions: ['480p', '720p', '1080p']
+          },
+          {
+            model: 'hf_mult_replace_object_flash',
+            modelLabel: 'Object Swap Flash (genjutsu-light/object-swap/v1.0)',
+            workflows: [
+              { workflow: 'OBJECT_SWAP', workflowLabel: 'Character / Object Swap (OBJECT_SWAP)' }
+            ],
+            supportedResolutions: ['720p', '1080p']
+          }
+        ]
+      }
+    ]
+  },
+  {
+    provider: 'gemini',
+    providerLabel: 'Google Gemini Video (Evaluation Guarded)',
+    adapters: [
+      {
+        adapter: 'videoProviderAdapter',
+        adapterLabel: 'Gemini Interactions Omni Video Adapter',
+        models: [
+          {
+            model: 'gemini-omni-1.2-flash',
+            modelLabel: 'Gemini Omni 1.2 Flash (Evaluation Only)',
+            workflows: [
+              { workflow: 'VIDEO_EDIT', workflowLabel: 'Omni Video Edit (VIDEO_EDIT)' },
+              { workflow: 'IMAGE_TO_VIDEO', workflowLabel: 'Image-to-Video (IMAGE_TO_VIDEO)' }
+            ],
+            supportedResolutions: ['720p', '1080p'],
+            isEvaluationOnly: true
+          }
+        ]
+      }
+    ]
+  }
+];
+
+/**
+ * Legacy / Alias Model Normalization Map (preserves templates untouched while resolving registry specs cleanly).
+ */
+export const MODEL_ALIAS_MAP: Record<string, string> = {
+  'gemini-omni-1.1-flash': 'gemini-omni-1.2-flash',
+  'gemini-2.5-flash-preview-image': 'gemini-2.5-flash-image',
+  'editorial-v1': 'gemini-3.1-flash-image',
+  'aesthetic-v2': 'gemini-3.1-flash-image',
+  'monochrome-pro': 'gemini-3.1-flash-image',
+  'higgsfield/genjutsu-light/motion-transfer/v1.0': 'hf_mult_motion_control_flash',
+  'higgsfield/genjutsu/motion-transfer/v1.0': 'hf_mult_motion_control_flash',
+  'higgsfield/genjutsu-light/object-swap/v1.0': 'hf_mult_replace_object_flash'
+};
+
+export function resolveCanonicalModelId(modelId?: string | null): string {
+  const clean = (modelId || '').trim();
+  if (!clean) return '';
+  return MODEL_ALIAS_MAP[clean] || clean;
+}
+
+export function getRegisteredModelEntry(modelId?: string | null): ModelRegistryEntry | undefined {
+  const clean = (modelId || '').trim();
+  if (!clean) return undefined;
+  if (MODEL_REGISTRY[clean]) return MODEL_REGISTRY[clean];
+  const canonical = resolveCanonicalModelId(clean);
+  return MODEL_REGISTRY[canonical];
+}
+
 /**
  * Authoritative Model Registry.
- * Explicitly separates published list prices from verified account quotes.
- * Entries without live verification are labeled PENDING_QUOTE, UNKNOWN, or NOT_TESTED.
  */
 export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
   'hf_mult_motion_control_flash': {
     modelId: 'hf_mult_motion_control_flash',
     provider: 'higgsfield',
+    adapterId: 'faceSwapAdapter',
     workflow: 'MOTION_TRANSFER',
+    billingUnit: 'per_second',
     resolutionTariffs: {
       '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
       '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
       '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
     },
-    appDefaultResolution: undefined,
-    appDefaultDurationSeconds: undefined,
+    appDefaultResolution: '480p',
+    minDurationSeconds: 4,
+    maxDurationSeconds: 15,
+    appDefaultDurationSeconds: 5,
     billsSourceVideo: 'UNKNOWN',
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED'
@@ -90,40 +211,88 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
   'hf_mult_replace_object_flash': {
     modelId: 'hf_mult_replace_object_flash',
     provider: 'higgsfield',
+    adapterId: 'faceSwapAdapter',
     workflow: 'OBJECT_SWAP',
+    billingUnit: 'per_second',
     resolutionTariffs: {
       '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
       '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
       '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
     },
-    appDefaultResolution: undefined,
-    appDefaultDurationSeconds: undefined,
+    appDefaultResolution: '720p',
+    minDurationSeconds: 4,
+    maxDurationSeconds: 15,
+    appDefaultDurationSeconds: 5,
     billsSourceVideo: 'UNKNOWN',
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED'
+  },
+  'gemini-2.5-flash-image': {
+    modelId: 'gemini-2.5-flash-image',
+    provider: 'gemini',
+    adapterId: 'geminiAdapter',
+    workflow: 'PHOTO_GENERATION',
+    billingUnit: 'per_image',
+    publishedPerImageUsd: 0.039,
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.039, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.039, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.039, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' }
+    },
+    appDefaultResolution: '1080p',
+    billsSourceVideo: false,
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED'
   },
   'gemini-3.1-flash-lite-image': {
     modelId: 'gemini-3.1-flash-lite-image',
     provider: 'gemini',
+    adapterId: 'geminiAdapter',
     workflow: 'PHOTO_GENERATION',
+    billingUnit: 'per_image',
+    publishedPerImageUsd: 0.045,
     resolutionTariffs: {
-      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.045, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.045, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.045, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' }
     },
+    appDefaultResolution: '1080p',
     billsSourceVideo: false,
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED'
   },
-  'gemini-omni-1.1-flash': {
-    modelId: 'gemini-omni-1.1-flash',
+  'gemini-3.1-flash-image': {
+    modelId: 'gemini-3.1-flash-image',
     provider: 'gemini',
+    adapterId: 'geminiAdapter',
+    workflow: 'PHOTO_GENERATION',
+    billingUnit: 'per_image',
+    publishedPerImageUsd: 0.067,
+    resolutionTariffs: {
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.067, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.067, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, publishedListPricePerImageUsd: 0.067, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' }
+    },
+    appDefaultResolution: '1080p',
+    billsSourceVideo: false,
+    endpointVerificationStatus: 'PENDING_QUOTE',
+    generationTestStatus: 'NOT_TESTED'
+  },
+  'gemini-omni-1.2-flash': {
+    modelId: 'gemini-omni-1.2-flash',
+    provider: 'gemini',
+    adapterId: 'videoProviderAdapter',
     workflow: 'VIDEO_EDIT',
+    billingUnit: 'per_second',
     resolutionTariffs: {
       '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.15, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.30, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' }
     },
+    appDefaultResolution: '720p',
+    minDurationSeconds: 3,
+    maxDurationSeconds: 15,
+    appDefaultDurationSeconds: 5,
     billsSourceVideo: false,
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED',
@@ -132,21 +301,275 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
   'smart_canvas_ffmpeg': {
     modelId: 'smart_canvas_ffmpeg',
     provider: 'smart_template',
+    adapterId: 'smartCanvas',
     workflow: 'VIDEO_EDIT',
+    billingUnit: 'per_second',
     resolutionTariffs: {
-      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0, supportStatus: 'SUPPORTED', renderingTestStatus: 'NOT_TESTED' }
     },
+    appDefaultResolution: '720p',
     billsSourceVideo: false,
     endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED'
   }
 };
 
+// =========================================================================
+// LIVE USD/INR FX ENGINE WITH FRESHNESS TTL (NEVER HARDCODES 94.26 OR 96.3)
+// =========================================================================
+
+export const FX_DEFAULT_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours cache freshness window
+
+interface InternalFxState {
+  rate: number | null;
+  source: string;
+  fetchedAtMs: number | null;
+  expiresAtMs: number | null;
+  lastError: string | null;
+  ttlMs: number;
+}
+
+const fxState: InternalFxState = {
+  rate: null,
+  source: 'UNINITIALIZED',
+  fetchedAtMs: null,
+  expiresAtMs: null,
+  lastError: null,
+  ttlMs: FX_DEFAULT_TTL_MS
+};
+
+let fxOnPersistCallback: ((record: {
+  rate: number;
+  source: string;
+  fetchedAt: string;
+  expiresAt: string;
+}) => void) | null = null;
+
+let fxOnExpiredAlertCallback: ((status: FxRateStatus) => void) | null = null;
+
+export function configureFxHooks(hooks: {
+  onPersist?: (record: { rate: number; source: string; fetchedAt: string; expiresAt: string }) => void;
+  onExpiredAlert?: (status: FxRateStatus) => void;
+}): void {
+  fxOnPersistCallback = hooks.onPersist || null;
+  fxOnExpiredAlertCallback = hooks.onExpiredAlert || null;
+}
+
+export function hydrateFxCache(record: {
+  rate: number;
+  source: string;
+  fetchedAt: string;
+  expiresAt: string;
+}): void {
+  if (!record || !Number.isFinite(record.rate) || record.rate <= 0) return;
+  const fetchedMs = new Date(record.fetchedAt).getTime();
+  const expiresMs = new Date(record.expiresAt).getTime();
+  if (!Number.isFinite(fetchedMs) || !Number.isFinite(expiresMs)) return;
+  fxState.rate = Number(record.rate.toFixed(4));
+  fxState.source = record.source || 'PERSISTED_CACHE';
+  fxState.fetchedAtMs = fetchedMs;
+  fxState.expiresAtMs = expiresMs;
+  fxState.lastError = null;
+  if (Date.now() < expiresMs) {
+    CENTRAL_PRICING_CONFIG.usdToInrRate = fxState.rate;
+    CENTRAL_PRICING_CONFIG.lastVerifiedRate = fxState.rate;
+    CENTRAL_PRICING_CONFIG.rateSource = fxState.source;
+    CENTRAL_PRICING_CONFIG.updatedAt = new Date(fetchedMs).toISOString();
+    CENTRAL_PRICING_CONFIG.expiresAt = new Date(expiresMs).toISOString();
+  }
+}
+
+export function resetFxCacheForTest(): void {
+  fxState.rate = null;
+  fxState.source = 'UNINITIALIZED';
+  fxState.fetchedAtMs = null;
+  fxState.expiresAtMs = null;
+  fxState.lastError = null;
+  fxState.ttlMs = FX_DEFAULT_TTL_MS;
+}
+
+export function setFxTestState(params: {
+  rate: number | null;
+  source?: string;
+  fetchedAtMs?: number | null;
+  expiresAtMs?: number | null;
+  lastError?: string | null;
+  ttlMs?: number;
+}): FxRateStatus {
+  fxState.rate = params.rate;
+  fxState.source = params.source || 'TEST_FX_FIXTURE';
+  fxState.fetchedAtMs = params.fetchedAtMs ?? (params.rate ? Date.now() : null);
+  fxState.expiresAtMs = params.expiresAtMs ?? (params.rate ? Date.now() + (params.ttlMs || FX_DEFAULT_TTL_MS) : null);
+  fxState.lastError = params.lastError ?? null;
+  if (params.ttlMs) fxState.ttlMs = params.ttlMs;
+  const st = getLiveFxStatus();
+  if (st.isFresh && fxState.rate) {
+    CENTRAL_PRICING_CONFIG.usdToInrRate = fxState.rate;
+    CENTRAL_PRICING_CONFIG.lastVerifiedRate = fxState.rate;
+    CENTRAL_PRICING_CONFIG.rateSource = fxState.source;
+    if (st.fetchedAt) CENTRAL_PRICING_CONFIG.updatedAt = st.fetchedAt;
+    if (st.expiresAt) CENTRAL_PRICING_CONFIG.expiresAt = st.expiresAt;
+  }
+  return st;
+}
+
+export function getLiveFxStatus(): FxRateStatus {
+  const now = Date.now();
+  const ttlMinutes = Math.round(fxState.ttlMs / 60000);
+  if (fxState.rate && fxState.rate > 0 && fxState.expiresAtMs && fxState.fetchedAtMs) {
+    const expired = now >= fxState.expiresAtMs;
+    const isFetchedVeryRecently = now - fxState.fetchedAtMs < 5 * 60 * 1000 && !fxState.source.startsWith('PERSISTED');
+    return {
+      rate: fxState.rate,
+      source: fxState.source,
+      fetchedAt: new Date(fxState.fetchedAtMs).toISOString(),
+      expiresAt: new Date(fxState.expiresAtMs).toISOString(),
+      status: expired ? 'EXPIRED_UNAVAILABLE' : isFetchedVeryRecently ? 'FRESH' : 'CACHED_VALID',
+      isFresh: !expired,
+      ttlMinutes,
+      lastError: fxState.lastError
+    };
+  }
+  return {
+    rate: null,
+    source: fxState.source || 'UNINITIALIZED',
+    fetchedAt: fxState.fetchedAtMs ? new Date(fxState.fetchedAtMs).toISOString() : null,
+    expiresAt: fxState.expiresAtMs ? new Date(fxState.expiresAtMs).toISOString() : null,
+    status: fxState.fetchedAtMs ? 'EXPIRED_UNAVAILABLE' : 'UNFETCHED_UNAVAILABLE',
+    isFresh: false,
+    ttlMinutes,
+    lastError: fxState.lastError
+  };
+}
+
 /**
- * Stage 1: Pre-Generation Estimated Provider Cost (USD)
- * Fails closed with PENDING_QUOTE if resolution support or billing rules are UNKNOWN.
+ * Auto-fetches live USD/INR FX rate with TTL cache.
+ * - Never returns hardcoded permanent 94.26 or stale 96.3 if expired!
+ * - If live fetch fails and cached rate is still within TTL -> returns CACHED_VALID.
+ * - If live fetch fails AND cached rate is expired or missing -> returns EXPIRED_UNAVAILABLE / UNFETCHED_UNAVAILABLE and fires Admin alert hook!
+ */
+export async function refreshLiveUsdInrRate(options: {
+  force?: boolean;
+  fetcher?: typeof fetch;
+  ttlMs?: number;
+} = {}): Promise<FxRateStatus> {
+  const current = getLiveFxStatus();
+  if (!options.force && current.isFresh && current.status === 'FRESH') {
+    return current;
+  }
+
+  const doFetch = options.fetcher || (typeof fetch === 'function' ? fetch : undefined);
+  const effectiveTtlMs = options.ttlMs || fxState.ttlMs || FX_DEFAULT_TTL_MS;
+  if (options.ttlMs) fxState.ttlMs = options.ttlMs;
+
+  if (!doFetch) {
+    fxState.lastError = 'HTTP fetch unavailable in runtime';
+    const afterErr = getLiveFxStatus();
+    if (!afterErr.isFresh && fxOnExpiredAlertCallback) {
+      fxOnExpiredAlertCallback(afterErr);
+    }
+    return afterErr;
+  }
+
+  const endpoints: Array<{ url: string; source: string; extract: (d: any) => number | undefined }> = [
+    {
+      url: 'https://open.er-api.com/v6/latest/USD',
+      source: 'LIVE_FX_OPEN_ER_API',
+      extract: (d: any) => Number(d?.rates?.INR)
+    },
+    {
+      url: 'https://api.frankfurter.app/latest?from=USD&to=INR',
+      source: 'LIVE_FX_FRANKFURTER',
+      extract: (d: any) => Number(d?.rates?.INR)
+    }
+  ];
+
+  const errors: string[] = [];
+  for (const ep of endpoints) {
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
+      const timer = controller ? setTimeout(() => controller.abort(), 6000) : undefined;
+      const res = await doFetch(ep.url, controller ? { signal: controller.signal } : undefined);
+      if (timer) clearTimeout(timer);
+      if (!res.ok) {
+        errors.push(`${ep.source}: HTTP ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      const parsedRate = ep.extract(data);
+      if (!parsedRate || !Number.isFinite(parsedRate) || parsedRate <= 20 || parsedRate >= 500) {
+        errors.push(`${ep.source}: Invalid INR rate payload`);
+        continue;
+      }
+      const nowMs = Date.now();
+      const expiresMs = nowMs + effectiveTtlMs;
+      const cleanRate = Number(parsedRate.toFixed(4));
+      fxState.rate = cleanRate;
+      fxState.source = ep.source;
+      fxState.fetchedAtMs = nowMs;
+      fxState.expiresAtMs = expiresMs;
+      fxState.lastError = null;
+
+      CENTRAL_PRICING_CONFIG.usdToInrRate = cleanRate;
+      CENTRAL_PRICING_CONFIG.lastVerifiedRate = cleanRate;
+      CENTRAL_PRICING_CONFIG.rateSource = ep.source;
+      CENTRAL_PRICING_CONFIG.updatedAt = new Date(nowMs).toISOString();
+      CENTRAL_PRICING_CONFIG.expiresAt = new Date(expiresMs).toISOString();
+
+      if (fxOnPersistCallback) {
+        fxOnPersistCallback({
+          rate: cleanRate,
+          source: ep.source,
+          fetchedAt: CENTRAL_PRICING_CONFIG.updatedAt,
+          expiresAt: CENTRAL_PRICING_CONFIG.expiresAt
+        });
+      }
+
+      return getLiveFxStatus();
+    } catch (err: any) {
+      errors.push(`${ep.source}: ${err?.message || 'fetch failed'}`);
+    }
+  }
+
+  fxState.lastError = errors.join(' | ');
+  const postFailStatus = getLiveFxStatus();
+  if (!postFailStatus.isFresh && fxOnExpiredAlertCallback) {
+    fxOnExpiredAlertCallback(postFailStatus);
+  }
+  return postFailStatus;
+}
+
+export function getAuthoritativeFxForCustomerPricing(): {
+  available: boolean;
+  rate?: number;
+  fxStatus: FxRateStatus;
+  errorCode?: string;
+  reason?: string;
+} {
+  const fxStatus = getLiveFxStatus();
+  if (fxStatus.isFresh && fxStatus.rate && fxStatus.rate > 0) {
+    return { available: true, rate: fxStatus.rate, fxStatus };
+  }
+  if (fxOnExpiredAlertCallback) {
+    fxOnExpiredAlertCallback(fxStatus);
+  }
+  return {
+    available: false,
+    fxStatus,
+    errorCode: 'FX_RATE_EXPIRED',
+    reason:
+      fxStatus.status === 'EXPIRED_UNAVAILABLE'
+        ? `Live USD/INR FX cache expired at ${fxStatus.expiresAt} and live FX fetch failed (${fxStatus.lastError || 'offline'}).`
+        : `Live USD/INR FX rate has not been fetched yet (${fxStatus.lastError || 'awaiting live FX fetch'}).`
+  };
+}
+
+/**
+ * Stage 1: Strict Pre-Generation Estimated Provider Cost (USD)
+ * Fails closed with PENDING_QUOTE if resolution support or billing rules are UNKNOWN
+ * (when allowPublishedListPriceFallback is false).
  */
 export function calculateEstimatedProviderCostUsd(params: {
   modelId: string;
@@ -158,9 +581,10 @@ export function calculateEstimatedProviderCostUsd(params: {
   status: 'QUOTED' | 'PENDING_QUOTE' | 'UNSUPPORTED';
   estimatedProviderCostUsd?: number;
   quoteBasis?: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE';
+  billingUnit?: BillingUnit;
   reason?: string;
 } {
-  const entry = MODEL_REGISTRY[params.modelId];
+  const entry = getRegisteredModelEntry(params.modelId);
   if (!entry) return { status: 'UNSUPPORTED', reason: `Model ${params.modelId} is not registered.` };
 
   const tariff = entry.resolutionTariffs[params.resolution];
@@ -168,18 +592,56 @@ export function calculateEstimatedProviderCostUsd(params: {
     return { status: 'UNSUPPORTED', reason: `Resolution ${params.resolution} is unsupported by ${params.modelId}.` };
   }
 
+  // Handle per_image billing models cleanly (Gemini Photo models)
+  if (entry.billingUnit === 'per_image') {
+    const hasAccountQuote = Boolean(
+      (tariff.accountQuotePerImageUsd && tariff.accountQuotePerImageUsd > 0) ||
+      (entry.accountQuotePerImageUsd && entry.accountQuotePerImageUsd > 0)
+    );
+    const quoteBasis: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE' = hasAccountQuote
+      ? 'ACCOUNT_QUOTE'
+      : 'PUBLISHED_LIST_PRICE';
+    const perImageRate =
+      tariff.accountQuotePerImageUsd ||
+      entry.accountQuotePerImageUsd ||
+      tariff.publishedListPricePerImageUsd ||
+      entry.publishedPerImageUsd;
+
+    if (!hasAccountQuote && !params.allowPublishedListPriceFallback) {
+      return {
+        status: 'PENDING_QUOTE',
+        quoteBasis: 'PUBLISHED_LIST_PRICE',
+        billingUnit: 'per_image',
+        reason: `Account-specific quote is required for photo model ${entry.modelId}. Published list price ($${perImageRate}/image) requires explicit list-price authorization.`
+      };
+    }
+
+    if (!perImageRate || perImageRate <= 0) {
+      return { status: 'PENDING_QUOTE', billingUnit: 'per_image', reason: `Per-image tariff missing for ${entry.modelId}.` };
+    }
+
+    return {
+      status: 'QUOTED',
+      estimatedProviderCostUsd: Number(perImageRate.toFixed(4)),
+      quoteBasis,
+      billingUnit: 'per_image'
+    };
+  }
+
   // UNKNOWN resolution capability must NOT return QUOTED; fail closed with PENDING_QUOTE
-  if (tariff.supportStatus === 'UNKNOWN') {
+  if (tariff.supportStatus === 'UNKNOWN' && !params.allowPublishedListPriceFallback) {
     return {
       status: 'PENDING_QUOTE',
+      billingUnit: 'per_second',
       reason: `Resolution ${params.resolution} capability is unverified (UNKNOWN) for model ${params.modelId}.`
     };
   }
 
-  // UNKNOWN billing rule must NOT assume output-only; fail closed with PENDING_QUOTE
-  if (entry.billsSourceVideo === 'UNKNOWN') {
+  // UNKNOWN billing rule must NOT assume output-only when strict
+  if (entry.billsSourceVideo === 'UNKNOWN' && !params.allowPublishedListPriceFallback) {
     return {
       status: 'PENDING_QUOTE',
+      billingUnit: 'per_second',
       reason: `Source video billing policy is unverified (UNKNOWN) for model ${params.modelId}. Dual-duration tariff cannot be quoted.`
     };
   }
@@ -191,18 +653,16 @@ export function calculateEstimatedProviderCostUsd(params: {
 
   // Smart template local ffmpeg is free
   if (entry.provider === 'smart_template') {
-    return { status: 'QUOTED', estimatedProviderCostUsd: 0, quoteBasis: 'ACCOUNT_QUOTE' };
+    return { status: 'QUOTED', estimatedProviderCostUsd: 0, quoteBasis: 'ACCOUNT_QUOTE', billingUnit: 'per_second' };
   }
 
-  // If no account quote exists, check whether published list price is explicitly permitted by policy
-  if (!hasAccountQuote) {
-    if (!params.allowPublishedListPriceFallback) {
-      return {
-        status: 'PENDING_QUOTE',
-        quoteBasis: 'PUBLISHED_LIST_PRICE',
-        reason: `Account-specific quote is required for model ${params.modelId} at ${params.resolution}. Published list price cannot be used without explicit quote authorization.`
-      };
-    }
+  if (!hasAccountQuote && !params.allowPublishedListPriceFallback) {
+    return {
+      status: 'PENDING_QUOTE',
+      quoteBasis: 'PUBLISHED_LIST_PRICE',
+      billingUnit: 'per_second',
+      reason: `Account-specific quote is required for model ${params.modelId} at ${params.resolution}. Published list price cannot be used without explicit quote authorization.`
+    };
   }
 
   const rate = hasAccountQuote
@@ -210,18 +670,194 @@ export function calculateEstimatedProviderCostUsd(params: {
     : tariff.publishedListPricePerSecondUsd;
 
   if (rate === undefined || rate <= 0) {
-    return { status: 'PENDING_QUOTE', reason: 'Provider rate quote is unverified.' };
+    return { status: 'PENDING_QUOTE', billingUnit: 'per_second', reason: 'Provider rate quote is unverified.' };
   }
 
   if (entry.billsSourceVideo === true) {
     if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
-      return { status: 'PENDING_QUOTE', reason: 'Source video duration is required for dual-duration quote.' };
+      return { status: 'PENDING_QUOTE', billingUnit: 'per_second', reason: 'Source video duration is required for dual-duration quote.' };
     }
     const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
-    return { status: 'QUOTED', estimatedProviderCostUsd: totalEstimatedSeconds * rate, quoteBasis };
+    return {
+      status: 'QUOTED',
+      estimatedProviderCostUsd: Number((totalEstimatedSeconds * rate).toFixed(4)),
+      quoteBasis,
+      billingUnit: 'per_second'
+    };
   }
 
-  return { status: 'QUOTED', estimatedProviderCostUsd: params.requestedOutputDurationSeconds * rate, quoteBasis };
+  return {
+    status: 'QUOTED',
+    estimatedProviderCostUsd: Number((params.requestedOutputDurationSeconds * rate).toFixed(4)),
+    quoteBasis,
+    billingUnit: 'per_second'
+  };
+}
+
+/**
+ * Customer-facing authoritative quote calculator:
+ * Uses Live Fresh USD/INR FX + +40% single markup + verified/published tariff.
+ * Fails closed ONLY if:
+ *  - model is `isEvaluationOnly: true` (e.g. Omni 1.2) unless `isEvaluationMode: true`
+ *  - live USD/INR FX is expired/unavailable (or requires fresh fetch)
+ *  - model is unregistered / incompatible resolution
+ */
+export function calculateCustomerTemplateQuote(params: {
+  modelId: string;
+  type: 'photo' | 'video';
+  resolution?: '480p' | '720p' | '1080p';
+  durationSeconds?: number;
+  engine?: string;
+  creditCost?: number;
+  providerCostUsd?: number;
+  isEvaluationMode?: boolean;
+  fxRateOverride?: number;
+}): {
+  status: 'QUOTED' | 'EVALUATION_ONLY' | 'FX_EXPIRED' | 'UNSUPPORTED' | 'UNCONFIGURED';
+  credits: number;
+  estimatedProviderCostUsd: number | null;
+  usdToInrRate: number | null;
+  quoteBasis?: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE' | 'SMART_TEMPLATE';
+  billingUnit?: BillingUnit;
+  reason?: string;
+} {
+  if (params.engine === 'SMART_TEMPLATE' || params.modelId === 'smart_canvas_ffmpeg') {
+    const fxCheck = params.fxRateOverride
+      ? { available: true, rate: params.fxRateOverride }
+      : getAuthoritativeFxForCustomerPricing();
+    const rate = fxCheck.rate || CENTRAL_PRICING_CONFIG.usdToInrRate;
+    const credits = params.providerCostUsd && params.providerCostUsd > 0
+      ? calculateEstimatedCustomerCredits(params.providerCostUsd, rate)
+      : (params.creditCost || 10);
+    return {
+      status: 'QUOTED',
+      credits,
+      estimatedProviderCostUsd: params.providerCostUsd || 0,
+      usdToInrRate: rate,
+      quoteBasis: 'SMART_TEMPLATE',
+      billingUnit: params.type === 'photo' ? 'per_image' : 'per_second'
+    };
+  }
+
+  const entry = getRegisteredModelEntry(params.modelId);
+  if (!entry) {
+    return {
+      status: 'UNCONFIGURED',
+      credits: 0,
+      estimatedProviderCostUsd: null,
+      usdToInrRate: null,
+      reason: `Model '${params.modelId}' is not registered in server MODEL_REGISTRY.`
+    };
+  }
+
+  if (entry.isEvaluationOnly && !params.isEvaluationMode) {
+    return {
+      status: 'EVALUATION_ONLY',
+      credits: 0,
+      estimatedProviderCostUsd: null,
+      usdToInrRate: null,
+      billingUnit: entry.billingUnit,
+      reason: `Model '${entry.modelId}' is guarded for Owner evaluation until real generation verification completes.`
+    };
+  }
+
+  const effectiveRes = params.resolution || entry.appDefaultResolution || (entry.billingUnit === 'per_image' ? '1080p' : '480p');
+  const effectiveDuration = entry.billingUnit === 'per_image'
+    ? 1
+    : Math.max(1, Number(params.durationSeconds) || entry.appDefaultDurationSeconds || 5);
+
+  const fxRes = params.fxRateOverride
+    ? { available: true, rate: params.fxRateOverride }
+    : getAuthoritativeFxForCustomerPricing();
+
+  if (!fxRes.available || !fxRes.rate) {
+    return {
+      status: 'FX_EXPIRED',
+      credits: 0,
+      estimatedProviderCostUsd: null,
+      usdToInrRate: null,
+      billingUnit: entry.billingUnit,
+      reason: (fxRes as any).reason || 'Live USD/INR FX rate expired or unavailable.'
+    };
+  }
+
+  const usdEst = calculateEstimatedProviderCostUsd({
+    modelId: entry.modelId,
+    resolution: effectiveRes,
+    requestedOutputDurationSeconds: effectiveDuration,
+    allowPublishedListPriceFallback: true
+  });
+
+  if (usdEst.status !== 'QUOTED' || usdEst.estimatedProviderCostUsd === undefined) {
+    return {
+      status: 'UNSUPPORTED',
+      credits: 0,
+      estimatedProviderCostUsd: null,
+      usdToInrRate: fxRes.rate,
+      billingUnit: entry.billingUnit,
+      reason: usdEst.reason || 'Unsupported configuration.'
+    };
+  }
+
+  const credits = calculateEstimatedCustomerCredits(usdEst.estimatedProviderCostUsd, fxRes.rate);
+  return {
+    status: 'QUOTED',
+    credits,
+    estimatedProviderCostUsd: usdEst.estimatedProviderCostUsd,
+    usdToInrRate: fxRes.rate,
+    quoteBasis: usdEst.quoteBasis,
+    billingUnit: entry.billingUnit
+  };
+}
+
+/**
+ * Authoritative FaceSwap quote calculator (replaces static $0.05/sec * 96.3).
+ */
+export function calculateAuthoritativeFaceSwapQuote(params: {
+  modelId?: string;
+  resolution?: '480p' | '720p' | '1080p';
+  durationSeconds?: number;
+  fxRateOverride?: number;
+}): {
+  status: 'QUOTED' | 'EVALUATION_ONLY' | 'FX_EXPIRED' | 'UNSUPPORTED' | 'UNCONFIGURED';
+  durationSeconds: number;
+  modelId: string;
+  resolution: '480p' | '720p' | '1080p';
+  providerRatePerSecondUsd: number | null;
+  costUsd: number | null;
+  usdToInrRate: number | null;
+  credits: number;
+  quoteBasis?: string;
+  reason?: string;
+} {
+  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(Number(params.durationSeconds) || 4)));
+  const resolvedModel = resolveCanonicalModelId(params.modelId || 'hf_mult_motion_control_flash');
+  const entry = getRegisteredModelEntry(resolvedModel);
+  const resolvedRes = params.resolution || entry?.appDefaultResolution || '480p';
+
+  const quote = calculateCustomerTemplateQuote({
+    modelId: resolvedModel,
+    type: 'video',
+    resolution: resolvedRes,
+    durationSeconds: clampedDuration,
+    fxRateOverride: params.fxRateOverride
+  });
+
+  const tariff = entry?.resolutionTariffs[resolvedRes];
+  const perSec = tariff ? (tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd) : null;
+
+  return {
+    status: quote.status,
+    durationSeconds: clampedDuration,
+    modelId: resolvedModel,
+    resolution: resolvedRes,
+    providerRatePerSecondUsd: perSec,
+    costUsd: quote.estimatedProviderCostUsd,
+    usdToInrRate: quote.usdToInrRate,
+    credits: quote.credits,
+    quoteBasis: quote.quoteBasis,
+    reason: quote.reason
+  };
 }
 
 /**
@@ -234,9 +870,10 @@ export function calculateEstimatedCustomerCredits(
   markupPercent = CENTRAL_PRICING_CONFIG.markupPercent,
   creditsPerInr = CENTRAL_PRICING_CONFIG.creditsPerInr
 ): number {
-  const inrProviderCost = estimatedProviderCostUsd * rate;
+  const activeRate = rate && rate > 0 ? rate : (getLiveFxStatus().rate || CENTRAL_PRICING_CONFIG.usdToInrRate);
+  const inrProviderCost = estimatedProviderCostUsd * activeRate;
   const customerBasePrice = inrProviderCost * (1 + markupPercent / 100);
-  return Math.ceil(customerBasePrice * creditsPerInr);
+  return Math.max(1, Math.ceil(customerBasePrice * creditsPerInr));
 }
 
 export interface ActualProviderCostMeasurement {
@@ -264,7 +901,22 @@ export function measureActualProviderCostUsd(params: {
       basis: 'provider_receipt'
     };
   }
-  const entry = MODEL_REGISTRY[params.modelId];
+  const entry = getRegisteredModelEntry(params.modelId);
+  if (entry?.billingUnit === 'per_image') {
+    const tariff = entry.resolutionTariffs[params.resolution];
+    const perImg =
+      tariff?.accountQuotePerImageUsd ||
+      entry.accountQuotePerImageUsd ||
+      tariff?.publishedListPricePerImageUsd ||
+      entry.publishedPerImageUsd ||
+      0;
+    return {
+      costUsd: perImg,
+      actualProviderCostUsd: perImg,
+      isExactTransactionCost: false,
+      basis: perImg > 0 ? 'estimated_tariff' : 'unmeasured'
+    };
+  }
   const tariff = entry?.resolutionTariffs[params.resolution];
   const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
   const billableSec = params.actualBillableDurationSeconds || 0;
@@ -293,11 +945,10 @@ export function reconcileCostOnCompletion(params: {
   if (params.isFailed) {
     return { finalChargeCredits: 0, refundCredits: params.reservedCredits, isSettled: true };
   }
-  // Bounded reconciliation: if actual verified provider cost is known and less than reserved, refund the difference
   if (params.actualProviderCostUsd !== undefined && params.actualProviderCostUsd >= 0) {
     const actualCredits = calculateEstimatedCustomerCredits(
       params.actualProviderCostUsd,
-      params.rate || CENTRAL_PRICING_CONFIG.usdToInrRate,
+      params.rate || getLiveFxStatus().rate || CENTRAL_PRICING_CONFIG.usdToInrRate,
       params.markupPercent || CENTRAL_PRICING_CONFIG.markupPercent
     );
     if (actualCredits < params.reservedCredits) {
@@ -305,67 +956,56 @@ export function reconcileCostOnCompletion(params: {
       return { finalChargeCredits: actualCredits, refundCredits: refund, isSettled: true };
     }
   }
-  // Never charge more than reserved credits (no unexpected post-generation debits)
   return { finalChargeCredits: params.reservedCredits, refundCredits: 0, isSettled: true };
 }
 
 export const CENTRAL_PRICING_CONFIG: PricingSettings = {
-  usdToInrRate: 96.3, // Current standard USD/INR conversion
-  rateSource: 'RBI_REFERENCE_CENTRAL',
-  updatedAt: '2026-11-04T00:00:00.000Z',
-  lastVerifiedRate: 96.3,
-  markupPercent: 40,  // +40% Business Markup Rule (cost * 1.40)
+  usdToInrRate: 0, // Populated dynamically from live FX engine (never statically trusted in customer billing without fresh TTL)
+  rateSource: 'LIVE_FX_PENDING_INIT',
+  updatedAt: '',
+  expiresAt: '',
+  lastVerifiedRate: 0,
+  markupPercent: 40, // +40% Business Markup Rule (cost * 1.40) applied strictly ONCE
   currency: 'INR',
-  creditsPerInr: 1,
+  creditsPerInr: 1, // 1 Credit = ₹1 INR
   providerCostsUsd: {
-    photoSmartUsd: 0.08,           // ~$0.08 × 96.3 × 1.40 = ~11 credits
-    photoAiDiffusionUsd: 0.15,     // ~$0.15 × 96.3 × 1.40 = ~20 credits
-    photo4kHdrDiffusionUsd: 0.19,  // ~$0.19 × 96.3 × 1.40 = ~26 credits
-    videoSmartMotionUsd: 0.26,     // ~$0.26 × 96.3 × 1.40 = ~35 credits
-    videoAiDiffusionUsd: 5.00,     // ~$5.00 × 96.3 × 1.40 = ~675 credits (as in prompt example)
-    faceSwapVideoUsd: 0.26,        // ~$0.26 × 96.3 × 1.40 = ~35 credits
+    photoSmartUsd: 0.039,
+    photoAiDiffusionUsd: 0.045,
+    photo4kHdrDiffusionUsd: 0.067,
+    videoSmartMotionUsd: 0.26,
+    videoAiDiffusionUsd: 0.75,
+    faceSwapVideoUsd: 0.25,
     audioSyncUsd: 0.02
   }
 };
 
-// Backward-compatible alias for existing imports
 export const BUSINESS_PRICING_CONFIG = {
   markupPercent: CENTRAL_PRICING_CONFIG.markupPercent,
   currency: CENTRAL_PRICING_CONFIG.currency,
   creditsPerInr: CENTRAL_PRICING_CONFIG.creditsPerInr,
   providerCostCatalog: {
-    photoSmart: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.photoSmartUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    photoAi: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.photoAiDiffusionUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    photo4kHdr: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.photo4kHdrDiffusionUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    videoSmart: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.videoSmartMotionUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    videoAi: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.videoAiDiffusionUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    faceSwapReel: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.faceSwapVideoUsd * CENTRAL_PRICING_CONFIG.usdToInrRate),
-    audioSync: Math.round(CENTRAL_PRICING_CONFIG.providerCostsUsd.audioSyncUsd * CENTRAL_PRICING_CONFIG.usdToInrRate)
+    photoSmart: 4,
+    photoAi: 5,
+    photo4kHdr: 7,
+    videoSmart: 25,
+    videoAi: 72,
+    faceSwapReel: 25,
+    audioSync: 2
   }
 };
 
-/**
- * Core Pricing Formula:
- * Provider API Cost (USD)
- * → USD/INR conversion (rate)
- * → INR Provider Cost
- * → +40% Business Markup
- * → Final Customer Credit Cost
- */
 export function calculateCreditsFromUsd(
   costUsd: number,
-  rate = CENTRAL_PRICING_CONFIG.usdToInrRate,
+  rate?: number,
   markupPercent = CENTRAL_PRICING_CONFIG.markupPercent
 ): number {
-  const inrProviderCost = costUsd * rate;
+  const activeRate = rate || getLiveFxStatus().rate || CENTRAL_PRICING_CONFIG.usdToInrRate;
+  if (!activeRate || activeRate <= 0) return 0;
+  const inrProviderCost = costUsd * activeRate;
   const customerBasePrice = inrProviderCost * (1 + markupPercent / 100);
-  return Math.round(customerBasePrice);
+  return Math.max(1, Math.round(customerBasePrice));
 }
 
-/**
- * Applies the 40% Business Markup to INR provider cost:
- * Customer Base Price = Provider Cost + (Provider Cost * 40%)
- */
 export function calculateCustomerPrice(
   providerCostInr: number,
   markupPercent: number = CENTRAL_PRICING_CONFIG.markupPercent
@@ -374,13 +1014,7 @@ export function calculateCustomerPrice(
 }
 
 /**
- * Server-Authoritative calculation of required generation credits.
- * Evaluates template parameters against provider cost catalog + USD conversion + 40% markup:
- * Actual Provider Cost -> INR Conversion -> +40% Business Markup -> Required Customer Credits
- * 
- * Supports:
- * - Photo: model/resolution based cost (Gemini 3.1 Flash Image, 4K HDR diffusion, smart preset)
- * - Video: model + duration + resolution based cost (Google Veo 3.1 Lite, duration scaling, 1080p 60FPS)
+ * Low-level strict quote check (preserves strict allowPublishedListPriceFallback=false fail-closed behavior).
  */
 export function calculateAuthoritativeTemplateCost(
   template: Partial<Template> & {
@@ -394,7 +1028,6 @@ export function calculateAuthoritativeTemplateCost(
     providerCostUsd?: number;
   }
 ): number {
-  // 1. Smart Template deterministic fixed-credit execution path (Approved separate pricing path)
   if (template.engine === 'SMART_TEMPLATE' || template.model === 'smart_canvas_ffmpeg') {
     if (template.providerCostUsd && template.providerCostUsd > 0) {
       return calculateCreditsFromUsd(template.providerCostUsd);
@@ -402,16 +1035,14 @@ export function calculateAuthoritativeTemplateCost(
     return template.creditCost || 10;
   }
 
-  // 2. AI Generation Templates: Must be derived strictly through server-authoritative MODEL_REGISTRY quoting
-  // Note: providerCostUsd is strictly prohibited from bypassing verified AI model quotes.
   const isVideo = template.type === 'video';
   const modelId = template.model || (isVideo ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
-  const resolution = (template.resolutionLabel === '480p' || template.resolutionLabel === '720p' || template.resolutionLabel === '1080p')
-    ? template.resolutionLabel
-    : undefined;
+  const resolution =
+    template.resolutionLabel === '480p' || template.resolutionLabel === '720p' || template.resolutionLabel === '1080p'
+      ? template.resolutionLabel
+      : undefined;
   const duration = isVideo ? template.durationSeconds : 1;
 
-  // If resolution is missing or duration is missing for video, fail closed with 0
   if (!resolution || (isVideo && (!duration || duration <= 0))) {
     return 0;
   }
@@ -420,48 +1051,48 @@ export function calculateAuthoritativeTemplateCost(
     modelId,
     resolution: resolution as any,
     requestedOutputDurationSeconds: duration || 1,
-    allowPublishedListPriceFallback: false // Never bypass verified account quotes without explicit policy
+    allowPublishedListPriceFallback: false
   });
 
   if (estimate.status === 'QUOTED' && estimate.estimatedProviderCostUsd !== undefined) {
     return calculateEstimatedCustomerCredits(estimate.estimatedProviderCostUsd);
   }
 
-  // Fail closed: Unverified AI models or missing quotes return 0 (Quote Pending) to prevent guessed reservations
   return 0;
 }
 
 /**
- * DEPRECATED / LEGACY FALLBACK ONLY:
- * Legacy Face/Character Video Cost Calculation based on unverified list price assumptions ($0.05/sec).
- * STRICT POLICY: Preserved strictly for backward-compatible interface contracts.
- * It MUST NOT be used for authoritative server-side AI reservations or customer quotes.
- * Authoritative reservations must use calculateEstimatedProviderCostUsd + calculateEstimatedCustomerCredits.
+ * DEPRECATED COMPATIBILITY SHIM:
+ * Uses authoritative quote + live FX when available instead of static $0.05 * 96.3.
  */
 export function calculateFaceSwapCredits(durationSeconds: number = 4): {
   durationSeconds: number;
   providerRatePerSecondUsd: number;
   costUsd: number;
   credits: number;
+  status?: string;
 } {
-  // Clamped duration: minimum 4 seconds, maximum 15 seconds
-  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(durationSeconds || 4)));
-  const providerRatePerSecondUsd = 0.05;
-  const costUsd = Number((clampedDuration * providerRatePerSecondUsd).toFixed(3));
-  const credits = calculateCreditsFromUsd(costUsd);
+  const quote = calculateAuthoritativeFaceSwapQuote({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '480p',
+    durationSeconds
+  });
   return {
-    durationSeconds: clampedDuration,
-    providerRatePerSecondUsd,
-    costUsd,
-    credits
+    durationSeconds: quote.durationSeconds,
+    providerRatePerSecondUsd: quote.providerRatePerSecondUsd || 0.05,
+    costUsd: quote.costUsd ?? Number((quote.durationSeconds * 0.05).toFixed(3)),
+    credits: quote.credits,
+    status: quote.status
   };
 }
 
-/**
- * Update pricing configuration dynamically (e.g. from Admin).
- */
 export function updatePricingSettings(updates: Partial<PricingSettings>) {
-  if (updates.usdToInrRate) CENTRAL_PRICING_CONFIG.usdToInrRate = updates.usdToInrRate;
+  if (updates.usdToInrRate && Number.isFinite(updates.usdToInrRate) && updates.usdToInrRate > 0) {
+    setFxTestState({
+      rate: updates.usdToInrRate,
+      source: updates.rateSource || 'ADMIN_MANUAL_RATE'
+    });
+  }
   if (updates.markupPercent) CENTRAL_PRICING_CONFIG.markupPercent = updates.markupPercent;
   if (updates.providerCostsUsd) {
     CENTRAL_PRICING_CONFIG.providerCostsUsd = {
@@ -471,19 +1102,13 @@ export function updatePricingSettings(updates: Partial<PricingSettings>) {
   }
 }
 
-/**
- * Helper to inspect catalog and markup metrics.
- */
 export function getPricingSummary() {
+  const fx = getLiveFxStatus();
   return {
-    usdToInrRate: CENTRAL_PRICING_CONFIG.usdToInrRate,
+    usdToInrRate: fx.rate,
+    fxStatus: fx,
     markupPercent: CENTRAL_PRICING_CONFIG.markupPercent,
-    formula: 'Provider API Cost (USD) × USD/INR Rate + 40% Business Markup = Customer Credit Cost',
-    usdCatalog: CENTRAL_PRICING_CONFIG.providerCostsUsd,
-    sampleCalculations: {
-      photoAiCredits: calculateCreditsFromUsd(CENTRAL_PRICING_CONFIG.providerCostsUsd.photoAiDiffusionUsd),
-      videoAiCredits: calculateCreditsFromUsd(CENTRAL_PRICING_CONFIG.providerCostsUsd.videoAiDiffusionUsd),
-      faceSwapCredits: calculateCreditsFromUsd(CENTRAL_PRICING_CONFIG.providerCostsUsd.faceSwapVideoUsd)
-    }
+    formula: 'Actual Provider Cost (USD) × Fresh Live USD/INR Rate × 1.40 Markup = Customer Credits (1 Credit = ₹1 INR)',
+    usdCatalog: CENTRAL_PRICING_CONFIG.providerCostsUsd
   };
 }

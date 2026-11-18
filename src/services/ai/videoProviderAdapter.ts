@@ -15,10 +15,12 @@
 import { GoogleGenAI } from '@google/genai';
 import { mediaStorage } from '../storage/mediaStorage.ts';
 import type { VideoGenerationParams, ProviderResult } from '../types.ts';
+import { resolveCanonicalModelId } from '../pricing/pricingService.ts';
 
 export class VideoProviderAdapter {
   readonly providerName = 'google_omni';
-  readonly modelName = 'gemini-omni-1.1-flash';
+  readonly adapterName = 'videoProviderAdapter';
+  readonly modelName = 'gemini-omni-1.2-flash';
 
   /**
    * Helper to resolve starting image input into base64 bytes and mimeType.
@@ -57,19 +59,47 @@ export class VideoProviderAdapter {
   }
 
   /**
-   * Generates a real AI video using Gemini Omni Flash via Interactions API.
+   * Generates a real AI video using Gemini Omni 1.2 Flash via Interactions API.
    */
   async generateVideo(params: VideoGenerationParams): Promise<ProviderResult> {
     const startTime = Date.now();
-    const apiKey = process.env.GEMINI_API_KEY;
 
+    // Fail-closed strict provider, adapter, and model routing validation
+    if (params.provider && !['google_omni', 'gemini', 'google_veo'].includes(params.provider.trim().toLowerCase())) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: VideoProviderAdapter cannot execute provider '${params.provider}'.`
+      );
+    }
+    if (params.adapter && params.adapter.trim() !== this.adapterName) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: VideoProviderAdapter cannot execute mismatched adapter '${params.adapter}'.`
+      );
+    }
+
+    const requestedRaw = (params.model || '').trim();
+    const targetModel = requestedRaw ? resolveCanonicalModelId(requestedRaw) : this.modelName;
+    if (!targetModel.includes('omni') && !targetModel.startsWith('veo')) {
+      throw new Error(
+        `PROVIDER_ROUTING_MISMATCH: Model '${requestedRaw || targetModel}' is incompatible with VideoProviderAdapter.`
+      );
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       throw new Error(
         'GEMINI_API_KEY is not configured in environment variables. Please provide a valid Gemini API key to execute Gemini Omni video generation.'
       );
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
+
     // Incorporate prompt directives with clear scene and motion instructions
     const prompt = `Cinematic 9:16 Instagram Reels video: ${params.prompt}. Style: ${params.styleWorkflow || 'viral motion'}. Realistic fluid motion, studio lighting, vivid atmospheric smoke, 60fps aesthetic.`;
 
@@ -103,9 +133,9 @@ export class VideoProviderAdapter {
     const targetResolution = params.resolution === '1080p' ? '1080p' : '720p';
 
     try {
-      // 1. Invoke Interactions API for gemini-omni-1.1-flash
+      // 1. Invoke Interactions API for gemini-omni-1.2-flash
       const interaction = await ai.interactions.create({
-        model: this.modelName,
+        model: targetModel,
         input: inputParts,
         background: false,
         store: false,
@@ -151,7 +181,7 @@ export class VideoProviderAdapter {
 
       if (!videoBuffer || videoBuffer.length === 0) {
         throw new Error(
-          `Gemini Omni Flash completed but returned no video output. Status: ${interaction.status || 'unknown'}`
+          `Gemini Omni Flash (${targetModel}) completed but returned no video output. Status: ${interaction.status || 'unknown'}`
         );
       }
 
@@ -164,12 +194,28 @@ export class VideoProviderAdapter {
         false
       );
 
+      const rawSanitizedResponse = params.returnRawDiagnostics
+        ? {
+            interactionId: (interaction as any)?.id || null,
+            status: interaction?.status || 'completed',
+            model: targetModel,
+            aspectRatio: targetAspectRatio,
+            duration: targetDuration,
+            resolution: targetResolution,
+            stepsCount: Array.isArray(interaction?.steps) ? interaction.steps.length : 0,
+            hasVideoPart: Boolean(videoBuffer?.length),
+            outputBytes: videoBuffer.length
+          }
+        : undefined;
+
       return {
         success: true,
         resultUrl: stored.publicUrl,
         provider: this.providerName,
-        model: this.modelName,
-        processingTimeMs: Date.now() - startTime
+        adapter: this.adapterName,
+        model: targetModel,
+        processingTimeMs: Date.now() - startTime,
+        ...(rawSanitizedResponse ? { rawSanitizedResponse } : {})
       };
     } catch (err: any) {
       console.error('[VideoProviderAdapter] Generation failed:', err.message);

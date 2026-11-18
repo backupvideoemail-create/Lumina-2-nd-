@@ -36,6 +36,7 @@ export type TemplateInputType = 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO';
 
 export interface TemplateWorkflowConfig {
   provider?: 'gemini' | 'google_veo' | 'higgsfield' | 'smart_canvas' | string;
+  adapter?: string;
   model?: string;
   engine?: TemplateEngine;
   prompt?: string;
@@ -55,6 +56,7 @@ export interface TemplateExecutionRecipe {
   version: string;
   inputType: TemplateInputType;
   provider: string;
+  adapter?: string;
   model: string;
   engine: TemplateEngine;
   prompt: string;
@@ -110,6 +112,8 @@ export interface Template {
   requiredInputs: TemplateInputDef[];
   creditCost: number;
   engine: TemplateEngine;
+  provider?: string;
+  adapter?: string;
   model: string;
   workflow: string;
   sortOrder: number;
@@ -324,12 +328,65 @@ export interface FaceSwapScene {
   demoVideoUrl?: string;
   masterRecipePrompt?: string; // Optional Scene Recipe Prompt (Motion Transfer Recipe)
   coverSource?: 'auto' | 'original' | 'after'; // Gallery Cover Source: auto (after if present, else original), original, or after
+  provider?: string; // Strict per-scene Provider selection (e.g. 'higgsfield' | 'gemini')
+  adapter?: string; // Strict per-scene Adapter selection (e.g. 'faceSwapAdapter' | 'videoProviderAdapter')
+  model?: string; // Strict per-scene Model ID (e.g. 'hf_mult_motion_control_flash' | 'hf_mult_replace_object_flash')
+  workflow?: string; // Strict per-scene Workflow (e.g. 'MOTION_TRANSFER' | 'OBJECT_SWAP')
+  resolution?: '480p' | '720p' | '1080p';
   isActive?: boolean;
   status?: 'published' | 'draft';
   isFeatured?: boolean;
   order?: number;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface FxRateStatus {
+  rate: number | null;
+  source: string;
+  fetchedAt: string | null;
+  expiresAt: string | null;
+  status: 'FRESH' | 'CACHED_VALID' | 'EXPIRED_UNAVAILABLE' | 'UNFETCHED_UNAVAILABLE';
+  isFresh: boolean;
+  ttlMinutes: number;
+  lastError?: string | null;
+}
+
+export interface PerTemplateReadinessItem {
+  id: string;
+  title: string;
+  itemKind: 'TEMPLATE' | 'FACESWAP_SCENE';
+  type: 'photo' | 'video';
+  provider: string;
+  adapter: string;
+  model: string;
+  workflow: string;
+  apiKeyStatus: 'LOCAL_NO_KEY' | 'CONFIGURED_UNVERIFIED_BALANCE' | 'MISSING_SECRET';
+  billingStatus: 'FREE_LOCAL' | 'EVALUATION_GUARDED' | 'VERIFIED' | 'PUBLISHED_LIST_ACTIVE' | 'MISSING';
+  quotaOrBalanceStatus: 'LOCAL_FREE' | 'UNKNOWN_MISSING_KEY' | 'UNVERIFIED_EXTERNAL_QUOTA';
+  resDurVerification: 'VERIFIED' | 'SUPPORTED' | 'MISSING_CONFIG';
+  quoteStatus: 'QUOTED' | 'EVALUATION_ONLY' | 'FX_EXPIRED' | 'BLOCKED';
+  creditsQuoted: number;
+  realTestStatus: 'PASSED_LOCAL' | 'PASSED_OWNER_LIVE' | 'NOT_YET_TESTED_LIVE';
+  finalStatus: 'READY_CONFIG' | 'GUARDED_EVALUATION_ONLY' | 'BLOCKED_MISSING_SECRET' | 'BLOCKED_FX_EXPIRED' | 'BLOCKED_CONFIG';
+  rootCause?: string;
+  recommendedSolution?: string;
+}
+
+export interface OwnerOmniTestRecord {
+  id: string;
+  adminEmail: string;
+  model: string;
+  prompt: string;
+  durationSeconds: number;
+  resolution: '480p' | '720p' | '1080p';
+  estimatedUsd: number;
+  status: 'completed' | 'failed';
+  resultVideoUrl?: string;
+  error?: string;
+  processingTimeMs?: number;
+  rawSanitizedResponse?: Record<string, any>;
+  createdAt: string;
 }
 
 export interface FaceSwapGenerateRequest {

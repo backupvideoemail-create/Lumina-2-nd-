@@ -366,7 +366,7 @@ async function runSystemVerification() {
 
   const serverContent = fs.readFileSync('server.ts', 'utf-8');
   assert(!serverContent.includes('veo-3.1-lite-generate-preview'), 'veo-3.1-lite-generate-preview completely removed from server.ts');
-  assert(serverContent.includes('gemini-omni-1.1-flash'), 'gemini-omni-1.1-flash configured in server.ts');
+  assert(serverContent.includes('gemini-omni-1.2-flash'), 'gemini-omni-1.2-flash configured in server.ts');
 
   // 11.3 Plan Page Compact UI Checks
   const plansModalContent = fs.readFileSync('src/components/PlansModal.tsx', 'utf-8');
@@ -1565,10 +1565,10 @@ async function runSystemVerification() {
   } as any);
   assert(unquotedAiCost === 0, '27.2 calculateAuthoritativeTemplateCost returns 0 for unquoted AI templates');
 
-  // 27.3 Central Pricing Settings Rate Source and Update Timestamp
-  assert(CENTRAL_PRICING_CONFIG.rateSource === 'RBI_REFERENCE_CENTRAL', '27.3 Central pricing rate source is RBI_REFERENCE_CENTRAL');
-  assert(CENTRAL_PRICING_CONFIG.lastVerifiedRate === 96.3, '27.3 Central pricing lastVerifiedRate is 96.3');
-  assert(CENTRAL_PRICING_CONFIG.updatedAt === '2026-11-04T00:00:00.000Z', '27.3 Central pricing updatedAt is 2026-11-04T00:00:00.000Z');
+  // 27.3 Central Pricing Settings Rate Source and Live FX Initialization State
+  assert(CENTRAL_PRICING_CONFIG.rateSource === 'LIVE_FX_PENDING_INIT', '27.3 Central pricing rate source initializes as LIVE_FX_PENDING_INIT (no frozen static rate)');
+  assert(CENTRAL_PRICING_CONFIG.lastVerifiedRate === 0, '27.3 Central pricing lastVerifiedRate initializes at 0 until live FX fetch completes');
+  assert(CENTRAL_PRICING_CONFIG.updatedAt === '', '27.3 Central pricing updatedAt initializes empty until live FX fetch completes');
 
   // 27.4 Behavioral: Server generation validation logic for resolution and duration
   const hfEntry = MODEL_REGISTRY['hf_mult_motion_control_flash'];
@@ -1738,7 +1738,7 @@ async function runSystemVerification() {
 
   // 29.5 Central Production Diagnostics: 10 Modules & Formula Verification
   assert(suite29ServerCode.includes('firebase_auth_architecture'), '29.5 Module 1: Firebase Auth Architecture present');
-  assert(suite29ServerCode.includes('firebase_auth_phone_pipeline'), '29.5 Module 2: Firebase Phone OTP Pipeline present');
+  assert(suite29ServerCode.includes('google_only_auth_policy'), '29.5 Module 2: Google-Only Auth Policy check present');
   assert(suite29ServerCode.includes('high_intent_auth_security'), '29.5 Module 3: High-Intent Auth Security present');
   assert(suite29ServerCode.includes('admin_security_rbac'), '29.5 Module 4: Admin RBAC Security present');
   assert(suite29ServerCode.includes('razorpay_order_mandate_arch'), '29.5 Module 5: Razorpay Mandate Architecture present');
@@ -2351,10 +2351,10 @@ async function runSystemVerification() {
   );
   const adminDashSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AdminDashboardModal.tsx'), 'utf8');
   assert(
-    adminDashSrc37.includes("reportSchemaVersion: '2.0-sanitized'") &&
+    adminDashSrc37.includes("reportSchemaVersion: '3.0-sanitized'") &&
       adminDashSrc37.includes('ARCHIVED_HISTORY_SNAPSHOT') &&
       adminDashSrc37.includes('NOT_INSTRUMENTED'),
-    '37.5 AdminDashboardModal Copy Report uses sanitized v2.0 schema and separates archived snapshots from live state'
+    '37.5 AdminDashboardModal Copy Report uses sanitized v3.0 schema and separates archived snapshots from live state'
   );
   const diagModalSrc37 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/DiagnosticsModal.tsx'), 'utf8');
   assert(
@@ -2587,14 +2587,15 @@ async function runSystemVerification() {
     '39.1 getUserByTokenAsyncWithStatus marks Firestore outage as transientError=true so server returns 503 instead of wiping session with 401'
   );
 
-  // Verify AuthModal retry + RecaptchaVerifier cleanup
+  // Verify AuthModal retry + Google-only policy (zero RecaptchaVerifier / signInWithPhoneNumber)
   const authModalSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AuthModal.tsx'), 'utf8');
   assert(
     authModalSrc39.includes('exchangeFirebaseSessionWithRetry') &&
-      authModalSrc39.includes('resetRecaptcha') &&
+      !authModalSrc39.includes('RecaptchaVerifier') &&
+      !authModalSrc39.includes('signInWithPhoneNumber') &&
       authModalSrc39.includes('AUTH_LOGIN_FAILURE') &&
       authModalSrc39.includes('SESSION_PERSISTENCE_FAILURE'),
-    '39.1 AuthModal retries retryable 503 persistence delays, clears RecaptchaVerifier safely, and emits scrubbed auth failure alerts'
+    '39.1 AuthModal retries retryable 503 persistence delays, enforces Google-only UI (zero Phone/reCAPTCHA), and emits scrubbed auth failure alerts'
   );
 
   // 39.2 Part 3 — Honest ABR, Single-Video Coordinator, No Duplicate Decoder, No AutoPlay Storm, Range 206
@@ -2841,6 +2842,549 @@ async function runSystemVerification() {
       featuredSrc39.includes('isDeadExternalVideo') &&
       featuredSrc39.includes('demoCandidates'),
     '40.6 FaceSwapFeaturedCard eliminates dead Mixkit 403 fallback and auto-recovers via live config or scene video previews'
+  );
+
+  // --- SUITE 41: FINAL GENERATION READINESS, STRICT ROUTING, LIVE FX & DIAGNOSTICS ---
+  console.log('\n--- SUITE 41: DYNAMIC PHOTO MODELS, OMNI 1.2 GUARD, STRICT ROUTING & LIVE FX ---');
+
+  const pricingSvc41 = await import('../src/services/pricing/pricingService.ts');
+  const { geminiAdapter: geminiAdapter41 } = await import('../src/services/ai/geminiAdapter.ts');
+  const { videoProviderAdapter: videoAdapter41 } = await import('../src/services/ai/videoProviderAdapter.ts');
+  const { aiRouter: aiRouter41 } = await import('../src/services/ai/aiRouter.ts');
+  const { validateFaceSwapSceneReadiness: validateScene41 } = await import('../src/services/validation/templateReadiness.ts');
+  const { runGoogleCloudMonitoringProbe: runProbe41 } = await import('../src/services/monitoring/cloudMonitoring.ts');
+
+  // 41.1 GeminiAdapter dynamic model support + User-Agent + conditional imageSize
+  const geminiAdapterSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/geminiAdapter.ts'), 'utf8');
+  assert(
+    geminiAdapterSrc41.includes("'gemini-2.5-flash-image'") &&
+      geminiAdapterSrc41.includes("'gemini-3.1-flash-lite-image'") &&
+      geminiAdapterSrc41.includes("'gemini-3.1-flash-image'") &&
+      geminiAdapterSrc41.includes("'User-Agent': 'aistudio-build'") &&
+      geminiAdapterSrc41.includes("targetModel === 'gemini-3.1-flash-image'"),
+    '41.1 GeminiAdapter dynamically supports 2.5-flash-image, 3.1-flash-lite-image, 3.1-flash-image, passes aistudio-build User-Agent, and restricts imageSize:1K safely'
+  );
+
+  // Provider/adapter mismatch fails closed in geminiAdapter before touching external SDK/keys
+  let geminiMismatchErr = '';
+  try {
+    await geminiAdapter41.generateImage({
+      prompt: 'test',
+      userImageUrl: 'https://example.com/u.jpg',
+      provider: 'higgsfield',
+      model: 'gemini-2.5-flash-image'
+    } as any);
+  } catch (err: any) {
+    geminiMismatchErr = err.message;
+  }
+  assert(
+    geminiMismatchErr.includes('PROVIDER_ROUTING_MISMATCH'),
+    '41.1 GeminiAdapter fails closed with PROVIDER_ROUTING_MISMATCH on incompatible provider'
+  );
+
+  // 41.2 VideoProviderAdapter switched to gemini-omni-1.2-flash + User-Agent + rawSanitizedResponse + customer guard
+  const videoAdapterSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/videoProviderAdapter.ts'), 'utf8');
+  assert(
+    videoAdapter41.modelName === 'gemini-omni-1.2-flash' &&
+      videoAdapterSrc41.includes("'User-Agent': 'aistudio-build'") &&
+      videoAdapterSrc41.includes('rawSanitizedResponse'),
+    '41.2 VideoProviderAdapter defaults to gemini-omni-1.2-flash with aistudio-build User-Agent and rawSanitizedResponse diagnostics'
+  );
+
+  let omniGuardErr = '';
+  try {
+    await aiRouter41.processTemplate({
+      templateId: 'tpl_omni_blocked',
+      templateTitle: 'Guarded Omni Video',
+      templateType: 'video',
+      engine: 'AI_GENERATION',
+      aspectRatio: '9:16',
+      inputMediaUrl: 'https://example.com/u.jpg',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      model: 'gemini-omni-1.2-flash',
+      workflow: 'VIDEO_EDIT',
+      recipe: {
+        version: '1.0',
+        inputType: 'IMAGE',
+        provider: 'google_omni',
+        adapter: 'videoProviderAdapter',
+        model: 'gemini-omni-1.2-flash',
+        workflow: 'VIDEO_EDIT',
+        prompt: 'Cinematic video'
+      } as any
+    });
+  } catch (err: any) {
+    omniGuardErr = err.message;
+  }
+  assert(
+    omniGuardErr.includes('MODEL_EVALUATION_ONLY'),
+    '41.2 AIRouter strictly blocks customer production traffic on evaluation-only gemini-omni-1.2-flash'
+  );
+
+  // 41.3 Strict AI Router: zero silent fallback to Omni + Higgsfield workflow mismatch fail-closed
+  let silentFallbackErr = '';
+  try {
+    await aiRouter41.processTemplate({
+      templateId: 'tpl_custom_vid',
+      templateTitle: 'Non-Omni Video',
+      templateType: 'video',
+      engine: 'AI_GENERATION',
+      aspectRatio: '9:16',
+      inputMediaUrl: 'https://example.com/u.mp4',
+      provider: 'custom_unknown_video',
+      model: 'unregistered_vid_model',
+      workflow: 'VIDEO_EDIT'
+    });
+  } catch (err: any) {
+    silentFallbackErr = err.message;
+  }
+  assert(
+    silentFallbackErr.includes('PROVIDER_ROUTING_MISMATCH'),
+    '41.3 AIRouter prevents silent fallback to Gemini Omni on incompatible video providers/models'
+  );
+
+  let wfMismatchErr = '';
+  try {
+    await aiRouter41.generateFaceSwapVideo({
+      videoUrl: 'https://example.com/v.mp4',
+      imageUrls: ['https://example.com/face.jpg'],
+      provider: 'higgsfield',
+      adapter: 'faceSwapAdapter',
+      model: 'hf_mult_motion_control_flash',
+      workflow: 'OBJECT_SWAP'
+    });
+  } catch (err: any) {
+    wfMismatchErr = err.message;
+  }
+  assert(
+    wfMismatchErr.includes('PROVIDER_ROUTING_MISMATCH'),
+    '41.3 Higgsfield FaceSwapAdapter rejects OBJECT_SWAP workflow on hf_mult_motion_control_flash'
+  );
+
+  // 41.4 Live USD/INR FX engine with TTL expiry guard & Full Swag unblocking
+  pricingSvc41.resetFxCacheForTest();
+  const expiredBeforeFetch = pricingSvc41.getAuthoritativeFxForCustomerPricing();
+  assert(
+    expiredBeforeFetch.available === false && expiredBeforeFetch.errorCode === 'FX_RATE_EXPIRED',
+    '41.4 Customer pricing fails closed with FX_RATE_EXPIRED before live FX is fetched'
+  );
+
+  // Simulate live FX fetch (mocked HTTP response, zero hardcoded permanent rate)
+  const fxFetched = await pricingSvc41.refreshLiveUsdInrRate({
+    force: true,
+    fetcher: (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rates: { INR: 94.26 } })
+    })) as any
+  });
+  assert(
+    fxFetched.isFresh && fxFetched.rate === 94.26 && fxFetched.source === 'LIVE_FX_OPEN_ER_API',
+    `41.4 refreshLiveUsdInrRate caches verified live USD/INR rate with TTL (rate=${fxFetched.rate})`
+  );
+
+  // Full Swag (gemini-2.5-flash-image) computes valid per-image credits cleanly (unblocked from PENDING_QUOTE!)
+  const fullSwagQuote = pricingSvc41.calculateCustomerTemplateQuote({
+    modelId: 'gemini-2.5-flash-image',
+    type: 'photo'
+  });
+  assert(
+    fullSwagQuote.status === 'QUOTED' &&
+      fullSwagQuote.billingUnit === 'per_image' &&
+      fullSwagQuote.credits === Math.ceil(0.039 * 94.26 * 1.4) &&
+      fullSwagQuote.credits > 0,
+    `41.4 Full Swag (gemini-2.5-flash-image) quotes cleanly per_image with live FX (${fullSwagQuote.credits} credits)`
+  );
+
+  // Authoritative FaceSwap quote uses dynamic model + resolution + duration + live FX
+  const fsQuote720 = pricingSvc41.calculateAuthoritativeFaceSwapQuote({
+    modelId: 'hf_mult_motion_control_flash',
+    resolution: '720p',
+    durationSeconds: 5
+  });
+  assert(
+    fsQuote720.status === 'QUOTED' &&
+      fsQuote720.providerRatePerSecondUsd === 0.1 &&
+      fsQuote720.credits === Math.ceil(0.5 * 94.26 * 1.4),
+    `41.4 Authoritative FaceSwap quote calculates 720p × 5s dynamically (${fsQuote720.credits} credits)`
+  );
+
+  // Simulate TTL expiry -> blocks customer quote and fires PRICING_FX_EXPIRED alert
+  pricingSvc41.setFxTestState({
+    rate: 94.26,
+    fetchedAtMs: Date.now() - 24 * 60 * 60 * 1000,
+    expiresAtMs: Date.now() - 60 * 1000
+  });
+  const expiredQuote = pricingSvc41.calculateCustomerTemplateQuote({
+    modelId: 'gemini-2.5-flash-image',
+    type: 'photo'
+  });
+  assert(
+    expiredQuote.status === 'FX_EXPIRED' && expiredQuote.credits === 0,
+    '41.4 Expired FX cache fails closed (status=FX_EXPIRED) without serving stale rate'
+  );
+  // Restore fresh test FX for downstream checks
+  pricingSvc41.setFxTestState({ rate: 94.26, source: 'TEST_RESTORE' });
+
+  // 41.5 FaceSwapModal & FaceSwapSceneGallery: Credits-only UI & zero legacy 96.3/$0.05/omni-1.1 hardcodes
+  const fsModalSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/FaceSwapModal.tsx'), 'utf8');
+  assert(
+    !fsModalSrc41.includes('0.05/sec') &&
+      !fsModalSrc41.includes('96.3') &&
+      !fsModalSrc41.includes('~$') &&
+      fsModalSrc41.includes('FX_RATE_EXPIRED') &&
+      !fsGallerySrc40.includes('gemini-omni-1.1-flash'),
+    '41.5 FaceSwapModal shows Credits only (zero USD/96.3/$0.05 exposure) and FaceSwapSceneGallery removes omni-1.1 hardcode'
+  );
+
+  // 41.6 FaceSwap cascading readiness + Diagnostics Readiness Matrix + Owner Omni 1.2 UI + Report 3.0-sanitized
+  const validScene41 = validateScene41({
+    id: 'fsv_test_1',
+    title: 'Test Scene',
+    sourceVideoPreview: 'https://cdn.example.com/src.mp4',
+    creditCost: 25,
+    isActive: true,
+    provider: 'higgsfield',
+    adapter: 'faceSwapAdapter',
+    model: 'hf_mult_motion_control_flash',
+    workflow: 'MOTION_TRANSFER',
+    resolution: '480p'
+  });
+  const invalidScene41 = validateScene41({
+    id: 'fsv_test_bad',
+    title: 'Bad Scene',
+    sourceVideoPreview: 'https://cdn.example.com/src.mp4',
+    creditCost: 25,
+    isActive: true,
+    provider: 'higgsfield',
+    adapter: 'faceSwapAdapter',
+    model: 'hf_mult_motion_control_flash',
+    workflow: 'OBJECT_SWAP', // mismatched with motion_control
+    resolution: '480p'
+  });
+  assert(
+    validScene41.ready === true && invalidScene41.ready === false && invalidScene41.errors.length > 0,
+    '41.6 validateFaceSwapSceneReadiness enforces cascading provider/adapter/model/workflow compatibility'
+  );
+
+  const diagModalSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/DiagnosticsModal.tsx'), 'utf8');
+  const adminDashSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AdminDashboardModal.tsx'), 'utf8');
+  const probe41 = runProbe41();
+  assert(
+    probe41.failureVectorsMonitored >= 22 &&
+      tplMgrSrc40.includes('sceneProvider') &&
+      tplMgrSrc40.includes('FACE_SWAP_COMPATIBLE_COMBINATIONS') &&
+      diagModalSrc41.includes('/api/admin/readiness/matrix') &&
+      diagModalSrc41.includes('/api/admin/omni-test/quote') &&
+      diagModalSrc41.includes('/api/admin/omni-test/run') &&
+      adminDashSrc41.includes("reportSchemaVersion: '3.0-sanitized'") &&
+      adminDashSrc41.includes('perTemplateReadinessMatrix') &&
+      serverSrc39.includes('getIncidentsAuthoritative(100)'),
+    '41.6 Monitoring (22+ vectors), FaceSwap scene cascading UI, Readiness Matrix, Owner Omni 1.2 console & 3.0-sanitized Copy Report verified'
+  );
+
+  // --- SUITE 42: CANONICAL CONFIG REGRESSION, GOOGLE-ONLY AUTH, 7 READY TEMPLATES & 12-FIELD DIAGNOSTICS ---
+  console.log('\n--- SUITE 42: CANONICAL CONFIG LOCK REGRESSION, GOOGLE-ONLY AUTH, 7 READY TEMPLATES & 12-FIELD DIAGNOSTICS ---');
+
+  // 42.1 Permanent firebase-applet-config.json regression & Android isolation check
+  const cfg42 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+  const fbClientSrc42 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf8');
+  const dbSrc42 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  const androidGs42 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/google-services.json'), 'utf8'));
+  const { evaluateDatabaseLock } = await import('../src/services/db/database.ts');
+
+  const validLock42 = evaluateDatabaseLock({
+    configuredProjectId: cfg42.projectId,
+    configuredDatabaseId: cfg42.firestoreDatabaseId,
+    envDatabaseOverride: ''
+  });
+  const wrongDbLock42 = evaluateDatabaseLock({
+    configuredProjectId: cfg42.projectId,
+    configuredDatabaseId: 'ai-studio-lumina2nd-42c53264-bee7-4cc4-8151-566990563e0f',
+    envDatabaseOverride: ''
+  });
+  const wrongEnvLock42 = evaluateDatabaseLock({
+    configuredProjectId: cfg42.projectId,
+    configuredDatabaseId: '(default)',
+    envDatabaseOverride: 'secondary-db'
+  });
+
+  assert(
+    cfg42.projectId === 'ai-prime-studio' &&
+      cfg42.messagingSenderId === '855598524398' &&
+      cfg42.firestoreDatabaseId === '(default)' &&
+      Boolean(cfg42.oAuthClientId) &&
+      !validLock42.blocked &&
+      wrongDbLock42.blocked &&
+      wrongEnvLock42.blocked &&
+      fbClientSrc42.includes('getFirestore(app)') &&
+      !dbSrc42.includes('ai-studio-lumina2nd') &&
+      androidGs42?.project_info?.project_id === 'gen-lang-client-0525281130' &&
+      androidGs42?.project_info?.project_number === '221269328833',
+    '42.1 Canonical Firebase config locked (ai-prime-studio/855598524398/(default)), fail-closed guards reject wrong DB/env, Android legacy config untouched'
+  );
+
+  // 42.2 Google-Only auth policy (PHONE_AUTH_ENABLED=false, zero Phone OTP UI/SDK exports, server 403 block)
+  const { PHONE_AUTH_ENABLED: phoneAuthEnabled42, AUTH_POLICY: authPolicy42 } = await import('../src/config/authConfig.ts');
+  assert(
+    phoneAuthEnabled42 === false &&
+      authPolicy42.googleOnly === true &&
+      !fbClientSrc42.includes('RecaptchaVerifier') &&
+      !fbClientSrc42.includes('signInWithPhoneNumber') &&
+      !fbClientSrc42.includes('ConfirmationResult') &&
+      !authModalSrc39.includes('recaptcha-anchor') &&
+      !authModalSrc39.includes('handleSendPhoneOtp') &&
+      serverSrc39.includes('PHONE_AUTH_DISABLED'),
+    '42.2 Google-Only auth enforced (PHONE_AUTH_ENABLED=false), Phone OTP/reCAPTCHA purged from client, backend guards with PHONE_AUTH_DISABLED'
+  );
+
+  // 42.3 Isolated Google Auth + Wallet Lifecycle (New User -> Refresh -> Logout/Re-Login Single Wallet)
+  const authDb42 = new ProductionDatabase(undefined, { firestoreOverride: new InMemMock38(), persistToDisk: false });
+  const googleUid42 = `google_uid_${Date.now()}`;
+  const firstLogin42 = await authDb42.getOrCreateUserAsync({
+    firebaseUid: googleUid42,
+    email: 'google.creator@example.com',
+    name: 'Google Creator'
+  });
+  const walletAfterSignup42 = await authDb42.getWalletAuthoritative(firstLogin42.user.id);
+  await authDb42.creditWallet(firstLogin42.user.id, 40, 'Suite 42 test credit pack', `tx_42_${Date.now()}`, 'purchase');
+  const walletAfterCredit42 = await authDb42.getWalletAuthoritative(firstLogin42.user.id);
+  const refreshSession42 = await authDb42.getUserByTokenAsyncWithStatus(firstLogin42.token);
+  const reLogin42 = await authDb42.getOrCreateUserAsync({
+    firebaseUid: googleUid42,
+    email: 'google.creator@example.com',
+    name: 'Google Creator'
+  });
+  const walletAfterReLogin42 = await authDb42.getWalletAuthoritative(reLogin42.user.id);
+
+  assert(
+    firstLogin42.isNewUser === true &&
+      firstLogin42.cloudPersisted === true &&
+      walletAfterSignup42.balance === 0 &&
+      walletAfterCredit42.balance === 40 &&
+      refreshSession42.user?.id === firstLogin42.user.id &&
+      reLogin42.isNewUser === false &&
+      reLogin42.user.id === firstLogin42.user.id &&
+      walletAfterReLogin42.balance === 40,
+    '42.3 Isolated Google login lifecycle verifies new user wallet creation, token refresh lookup, and re-login preserving single wallet'
+  );
+
+  // 42.4 Exact 7 Approved READY Smart Canvas Templates + Exclusion of Invalid Seeds
+  const { SEED_TEMPLATES: seedTemplates42 } = await import('../src/data/templatesData.ts');
+  const { validateTemplateReadiness: validateTpl42 } = await import('../src/services/validation/templateReadiness.ts');
+  const approved7Ids42 = [
+    'tpl_retro_35mm_kodak',
+    'tpl_instagram_story_quote',
+    'tpl_dark_academia_library',
+    'tpl_bali_resort_morning',
+    'tpl_instagram_aesthetic_polaroid_carousel',
+    'tpl_daily_status_morning',
+    'tpl_cyber_synthwave_horizon'
+  ];
+  const invalid3Ids42 = ['tpl_milan_vogue', 'tpl_old_money_quiet_luxury', 'tpl_paris_monochrome'];
+
+  const all7Ready = approved7Ids42.every((id) => {
+    const tpl = seedTemplates42.find((t) => t.id === id);
+    return Boolean(tpl && tpl.engine === 'SMART_TEMPLATE' && validateTpl42(tpl, { strictPublish: false }).ready);
+  });
+  const all3Invalid = invalid3Ids42.every((id) => {
+    const tpl = seedTemplates42.find((t) => t.id === id);
+    return Boolean(tpl && !validateTpl42(tpl, { strictPublish: false }).ready);
+  });
+
+  assert(
+    all7Ready && all3Invalid,
+    '42.4 All 7 approved READY Smart Canvas templates validate ready while invalid config templates fail readiness'
+  );
+
+  // 42.5 12-Field Diagnostic Monitoring + Sanitized Markdown & JSON Copy Reports
+  const { normalizeAlertTo12Fields } = await import('../src/services/monitoring/cloudMonitoring.ts');
+  const testAlert42 = emitCloudMonitoringEvent('CATALOGUE_SYNC_FAILURE', 'ERROR', 'Catalogue test failure for token=abc user@test.com', {
+    templateId: 'tpl_test_12f',
+    templateTitle: 'Test 12-Field Alert',
+    endpoint: '/api/templates'
+  });
+  const normalized42 = normalizeAlertTo12Fields(testAlert42);
+  const probe42 = runProbe41();
+  const hasAll12Fields42 = Boolean(
+    normalized42.message &&
+      normalized42.projectDatabaseService &&
+      (normalized42.templateId || normalized42.vector) &&
+      normalized42.provider &&
+      normalized42.adapter &&
+      normalized42.model &&
+      normalized42.apiKeyAccessStatus &&
+      normalized42.billingQuotaEntitlementStatus &&
+      normalized42.httpStatus !== undefined &&
+      normalized42.errorCode &&
+      normalized42.errorStage &&
+      normalized42.rootCause &&
+      normalized42.recommendedAction &&
+      normalized42.ownerAction &&
+      normalized42.officialSetupUrl &&
+      normalized42.timestamp &&
+      normalized42.correlationId
+  );
+
+  assert(
+    probe42.failureVectorsMonitored >= 24 &&
+      hasAll12Fields42 &&
+      !normalized42.message.includes('user@test.com') &&
+      diagModalSrc41.includes('Copy MD') &&
+      diagModalSrc41.includes('Copy JSON') &&
+      diagModalSrc41.includes('Next Owner Action:') &&
+      adminDashSrc41.includes('Copy JSON') &&
+      adminDashSrc41.includes('Next Owner Action:'),
+    '42.5 Cloud Monitoring (24 vectors) emits sanitized 12-field alerts and both DiagnosticsModal & AdminDashboardModal support MD + JSON Copy Reports'
+  );
+
+  // --- SUITE 43: MONITORING REGEX, HTTP 206 MEDIA STREAMING, TEMPLATE SAVE HARDENING, HIGGSFIELD SINGLE-KEY & GEMINI SUFFIX CHECK ---
+  console.log('\n--- SUITE 43: MONITORING REGEX, MEDIA 206/S3 SANITIZER, HIGGSFIELD SINGLE-KEY GATE & GEMINI SUFFIX CHECK ---');
+
+  const {
+    sanitizeMonitoringString: sanitizeMon43,
+    getGeminiKeyDiagnosticStatus: getGeminiDiag43,
+    getHiggsfieldDiagnosticStatus: getHfDiag43,
+    resolveAlert: resolveAlert43
+  } = await import('../src/services/monitoring/cloudMonitoring.ts');
+  const { sanitizeS3MetadataValue } = await import('../src/services/storage/mediaStorage.ts');
+  const { HiggsfieldGenjutsuAdapter } = await import('../src/services/ai/faceSwapAdapter.ts');
+
+  // 43.1 sanitizeMonitoringString preserves 13-digit timestamps in IDs/URLs while scrubbing real phones/emails/tokens
+  const assetMsg43 = sanitizeMon43(
+    'Playback ok for admin_upload_1793711986224_a9f3f555.mp4 fsv_1793709538972_28a461 banner_1793711985914 https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=900'
+  );
+  const piiMsg43 = sanitizeMon43(
+    'Contact +919876543210 or (555) 123-4567 or 9876543210, email user@example.com, Bearer eyJhbGciOiJIUzI1NiJ9, rzp_live_AbCdEf123456'
+  );
+  assert(
+    assetMsg43.includes('admin_upload_1793711986224_a9f3f555.mp4') &&
+      assetMsg43.includes('fsv_1793709538972_28a461') &&
+      assetMsg43.includes('banner_1793711985914') &&
+      assetMsg43.includes('photo-1515886657613-9f3515b0c78f') &&
+      !piiMsg43.includes('9876543210') &&
+      !piiMsg43.includes('123-4567') &&
+      !piiMsg43.includes('user@example.com') &&
+      !piiMsg43.includes('eyJhbGciOiJIUzI1NiJ9') &&
+      !piiMsg43.includes('rzp_live_AbCdEf123456') &&
+      piiMsg43.includes('[REDACTED_PHONE]') &&
+      piiMsg43.includes('[REDACTED_EMAIL]'),
+    '43.1 sanitizeMonitoringString preserves 13-digit asset/URL timestamps while redacting real phone numbers, emails, and tokens'
+  );
+
+  // 43.2 MEDIA_PLAYBACK_FAILURE honest status (no fabricated 502) + resolveAlert note
+  const mediaAlert43 = emitCloudMonitoringEvent('MEDIA_PLAYBACK_FAILURE', 'WARNING', 'Video decode error on preview', {
+    source: 'media_playback',
+    errorStage: 'video_on_error'
+  });
+  const slowAlert43 = emitCloudMonitoringEvent('MEDIA_SLOW_BUFFERING', 'WARNING', 'Buffer wait > 4s', {
+    source: 'media_playback',
+    errorStage: 'video_waiting'
+  });
+  const resolvedOk43 = resolveAlert43(mediaAlert43.id, 'test-auditor', 'Superseded by CORP + Range header fix');
+  resolveAlert43(slowAlert43.id, 'test-auditor', 'Cleared test buffer alert');
+  assert(
+    mediaAlert43.httpStatus === 'CLIENT_MEDIA_ERROR' &&
+      slowAlert43.httpStatus === 'CLIENT_BUFFER_WAIT' &&
+      resolvedOk43 &&
+      mediaAlert43.resolutionNote === 'Superseded by CORP + Range header fix',
+    '43.2 MEDIA_PLAYBACK_FAILURE reports CLIENT_MEDIA_ERROR (never fabricated 502) and resolveAlert records audit resolutionNote'
+  );
+
+  // 43.3 sanitizeS3MetadataValue & real HTTP 206 / 416 / tenant-isolation check on saved media
+  const asciiHindi43 = sanitizeS3MetadataValue('रॉयल लुक टेस्ट 🔥\r\nCover.png', 'fallback_cover');
+  const asciiEmpty43 = sanitizeS3MetadataValue('🔥🔥🔥', 'fallback_empty');
+  const sampleBuf43 = Buffer.from('0123456789ABCDEF', 'utf-8');
+  const savedPriv43 = await mediaStorage.saveMedia(sampleBuf43, 'test_range', 'रॉयल.mp4', 'owner_user_43', false);
+  const range206Res43 = await mediaStorage.getAuthorizedObjectStream(savedPriv43.fileId, 'owner_user_43', 'bytes=0-3');
+  const rangeBytes43 = await new Promise<string>((resolve, reject) => {
+    if (!range206Res43.body) return resolve('');
+    const chunks: Buffer[] = [];
+    range206Res43.body.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
+    range206Res43.body.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    range206Res43.body.on('error', reject);
+  });
+  const range416Res43 = await mediaStorage.getAuthorizedObjectStream(savedPriv43.fileId, 'owner_user_43', 'bytes=999-1005');
+  const unauthRes43 = await mediaStorage.getAuthorizedObjectStream(savedPriv43.fileId, 'other_user_99', 'bytes=0-3');
+  await mediaStorage.deleteMedia(savedPriv43.fileId);
+
+  assert(
+    /^[\x20-\x7E]+$/.test(asciiHindi43) &&
+      !asciiHindi43.includes('\n') &&
+      /^[\x20-\x7E]+$/.test(asciiEmpty43) &&
+      range206Res43.statusCode === 206 &&
+      range206Res43.contentRange === 'bytes 0-3/16' &&
+      range206Res43.contentLength === 4 &&
+      rangeBytes43 === '0123' &&
+      range416Res43.statusCode === 416 &&
+      Boolean(unauthRes43.error?.includes('Unauthorized')),
+    '43.3 S3 metadata sanitizer emits strict printable US-ASCII and mediaStorage serves 206 byte ranges (bytes=0-3 -> "0123"), 416 invalid range, and enforces owner isolation'
+  );
+
+  // 43.4 Higgsfield single complete HIGGSFIELD_API_KEY, honest UNVERIFIED status & SAFELY_GATED preflight check
+  const prevHfKey43 = process.env.HIGGSFIELD_API_KEY;
+  const prevHfSec43 = process.env.HIGGSFIELD_API_SECRET;
+  const prevHfGate43 = process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+  delete process.env.HIGGSFIELD_API_KEY;
+  delete process.env.HIGGSFIELD_API_SECRET;
+  delete process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+
+  const missingHfStatus43 = new HiggsfieldGenjutsuAdapter().getPublicStatus();
+  const gatedDiag43 = getHfDiag43();
+
+  process.env.HIGGSFIELD_API_KEY = 'hf_single_complete_key_demo_only';
+  const presentHfStatus43 = new HiggsfieldGenjutsuAdapter().getPublicStatus();
+  const headerSingle43 = HiggsfieldGenjutsuAdapter.buildAuthHeader('hf_single_complete_key_demo_only');
+  const headerColonFallback43 = HiggsfieldGenjutsuAdapter.buildAuthHeader('legacy_id', 'legacy_sec');
+
+  if (prevHfKey43 !== undefined) process.env.HIGGSFIELD_API_KEY = prevHfKey43; else delete process.env.HIGGSFIELD_API_KEY;
+  if (prevHfSec43 !== undefined) process.env.HIGGSFIELD_API_SECRET = prevHfSec43; else delete process.env.HIGGSFIELD_API_SECRET;
+  if (prevHfGate43 !== undefined) process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION = prevHfGate43; else delete process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+
+  assert(
+    missingHfStatus43.status === 'MISSING_SECRET' &&
+      presentHfStatus43.status === 'UNVERIFIED' &&
+      presentHfStatus43.authHeaderFormat === 'Authorization: Key <api-key>' &&
+      headerSingle43 === 'Key hf_single_complete_key_demo_only' &&
+      headerColonFallback43 === 'Key legacy_id:legacy_sec' &&
+      gatedDiag43.customerGateStatus === 'SAFELY_GATED' &&
+      gatedDiag43.estimatedSingleRun.model === 'hf_mult_motion_control_flash' &&
+      gatedDiag43.estimatedSingleRun.estimatedCostUsd === 0.2,
+    '43.4 Higgsfield adapter uses single complete Authorization: Key <api-key>, reports honest UNVERIFIED (never 404 proof), and keeps Genjutsu SAFELY_GATED'
+  );
+
+  // 43.5 Gemini zero-cost non-network key suffix diagnostic check (...CqZA vs legacy ...U4sw)
+  const prevGemKey43 = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  const gemMissing43 = getGeminiDiag43();
+  process.env.GEMINI_API_KEY = 'AIzaTestMockKey_ai_prime_studio_CqZA';
+  const gemCqza43 = getGeminiDiag43();
+  process.env.GEMINI_API_KEY = 'AIzaTestLegacyAndroidKey_U4sw';
+  const gemU4sw43 = getGeminiDiag43();
+  if (prevGemKey43 !== undefined) process.env.GEMINI_API_KEY = prevGemKey43; else delete process.env.GEMINI_API_KEY;
+
+  assert(
+    gemMissing43.authStatus === 'MISSING_SECRET' &&
+      gemCqza43.present === true &&
+      gemCqza43.isCanonicalCqZA === true &&
+      gemCqza43.maskedSuffix === '...CqZA' &&
+      gemU4sw43.isLegacyAndroidU4sw === true &&
+      gemU4sw43.authStatus === 'LEGACY_KEY_MISMATCH',
+    '43.5 Gemini non-network diagnostic verifies ...CqZA vs legacy ...U4sw suffix with zero paid Gemini API calls'
+  );
+
+  // 43.6 server.ts & DiagnosticsModal guards (stream headers, CORP, idempotencyKey, GENJUTSU_LIGHT_SAFELY_GATED, 400 validation)
+  assert(
+    serverSrc39.includes('setMediaStreamResponseHeaders') &&
+      serverSrc39.includes("Cross-Origin-Resource-Policy', 'cross-origin'") &&
+      serverSrc39.includes('pipeStreamBodySafely') &&
+      serverSrc39.includes('GENJUTSU_LIGHT_SAFELY_GATED') &&
+      serverSrc39.includes('TEMPLATE_VALIDATION_ERROR') &&
+      serverSrc39.includes('g.idempotencyKey === idempotencyKey') &&
+      diagModalSrc41.includes('UNVERIFIED (NO .GIT)') &&
+      diagModalSrc41.includes('alert.resolutionNote'),
+    '43.6 server.ts media headers, Genjutsu safety gate, generation idempotencyKey, 400 template validation & DiagnosticsModal UI guards verified'
   );
 
   console.log('\n====================================================');

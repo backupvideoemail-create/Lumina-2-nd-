@@ -27,6 +27,8 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import { mediaCacheStorage, MediaCacheTelemetry } from '../services/media/mediaCacheStorage';
 import { getQueueStats, QueueStats } from '../services/media/hdDownloadQueue';
 import { AUTHORIZED_ADMIN_EMAILS } from '../config/adminConfig';
+import { normalizeAlertTo12Fields } from '../services/monitoring/cloudMonitoring';
+import { AUTH_POLICY } from '../config/authConfig';
 
 interface AdminDashboardModalProps {
   isOpen: boolean;
@@ -224,9 +226,18 @@ interface MonitoringAlertItem {
   safeTraceId?: string;
   source?: string;
   templateId?: string;
+  templateTitle?: string;
+  provider?: string;
+  adapter?: string;
+  model?: string;
+  generationId?: string;
   errorStage?: string;
+  errorCode?: string;
+  rootCause?: string;
+  recommendedAction?: string;
   correlationId?: string;
   endpoint?: string;
+  occurrenceCount?: number;
   resolvedBy?: string;
 }
 
@@ -317,6 +328,8 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
 
   const [alerts, setAlerts] = useState<MonitoringAlertItem[] | null>(null);
   const [alertsError, setAlertsError] = useState<string | null>(null);
+  const [readinessData, setReadinessData] = useState<any | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
 
   const [cacheStats, setCacheStats] = useState<MediaCacheTelemetry | null>(null);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
@@ -333,6 +346,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
 
   const [loading, setLoading] = useState(false);
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [copyJsonStatus, setCopyJsonStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   const logPageRef = useRef(0);
   logPageRef.current = logPage;
@@ -480,6 +494,23 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
         } catch (err: any) {
           setAlerts(null);
           setAlertsError(err?.message || 'Network error');
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch('/api/admin/readiness/matrix', { headers: getHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            setReadinessData(data);
+            setReadinessError(null);
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            setReadinessData(null);
+            setReadinessError(errData?.error || `HTTP ${res.status}`);
+          }
+        } catch (err: any) {
+          setReadinessData(null);
+          setReadinessError(err?.message || 'Network error');
         }
       })()
     ]);
@@ -682,13 +713,24 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
   }
 
   // Generate 1-Click Complete Sanitized Diagnostic Report (Markdown + Structured JSON)
-  const handleCopyReport = async () => {
+  const handleCopyReport = async (format: 'markdown' | 'json' = 'markdown') => {
     const now = new Date().toISOString();
     const activeActor = user?.email || healthCheck?.actorEmail || 'NOT_VERIFIED';
+    const rawUnresolved =
+      activeAlertsList && activeAlertsList.length > 0
+        ? activeAlertsList
+        : Array.isArray(readinessData?.unresolvedAlerts)
+        ? readinessData.unresolvedAlerts
+        : [];
+    const unresolvedAlertsForReport = rawUnresolved.map((a: any) => normalizeAlertTo12Fields(a));
+    const readinessItemsList: any[] = Array.isArray(readinessData?.items) ? readinessData.items : [];
+    const fxReportStatus = readinessData?.fxStatus || 'UNAVAILABLE';
+    const omniTestsList: any[] = Array.isArray(readinessData?.ownerOmniTests) ? readinessData.ownerOmniTests : [];
 
     const sanitizedPayload = {
-      reportSchemaVersion: '2.0-sanitized',
+      reportSchemaVersion: '3.0-sanitized',
       generatedAt: now,
+      authPolicy: (healthCheck as any)?.authPolicy || AUTH_POLICY,
       applicationAndBuild: {
         environment: appEnvValue,
         appVersion: appVersionValue,
@@ -798,8 +840,45 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
         windowCoverageStatus: systemHealth?.windowCoverageStatus ?? 'UNAVAILABLE',
         windowScope: systemHealth?.windowScope ?? 'UNAVAILABLE',
         recentApiErrors: systemHealth?.recentApiErrors || [],
-        activeMonitoringAlertsCount: activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'
+        activeMonitoringAlertsCount: unresolvedAlertsForReport.length
       },
+      liveUsdInrFx: fxReportStatus,
+      perTemplateReadinessMatrix: {
+        summary: readinessData?.summary || 'UNAVAILABLE',
+        error: readinessError || null,
+        items: readinessItemsList
+      },
+      unresolvedMonitoringAlerts: {
+        count: unresolvedAlertsForReport.length,
+        items: unresolvedAlertsForReport.map((a: any) => ({
+          id: a.id,
+          vector: a.vector,
+          severity: a.severity,
+          source: a.source,
+          title: a.title,
+          message: a.message,
+          projectDatabaseService: a.projectDatabaseService,
+          templateId: a.templateId || null,
+          templateTitle: a.templateTitle || null,
+          provider: a.provider,
+          adapter: a.adapter,
+          model: a.model,
+          generationId: a.generationId || null,
+          apiKeyAccessStatus: a.apiKeyAccessStatus,
+          billingQuotaEntitlementStatus: a.billingQuotaEntitlementStatus,
+          httpStatus: a.httpStatus,
+          errorStage: a.errorStage || 'runtime',
+          errorCode: a.errorCode || null,
+          rootCause: a.rootCause || null,
+          recommendedAction: a.recommendedAction || null,
+          ownerAction: a.ownerAction || null,
+          officialSetupUrl: a.officialSetupUrl || null,
+          correlationId: a.correlationId || a.safeTraceId || a.id,
+          occurrenceCount: a.occurrenceCount || 1,
+          timestamp: a.timestamp
+        }))
+      },
+      ownerOmniManualTests: omniTestsList,
       recentAdminLogs: {
         totalLogs: totalLogs ?? 'UNAVAILABLE',
         shownCount: logs.length,
@@ -902,9 +981,58 @@ ${
     ? systemHealth.recentApiErrors.map((e) => `  - [${e.timestamp}] ${e.method} ${e.path} -> HTTP ${e.status}`).join('\n')
     : '  - No 4xx/5xx entries in window (or unavailable)'
 }
-- Active Monitoring Alerts: ${activeAlertsList ? activeAlertsList.length : 'UNAVAILABLE'}
+- Active Monitoring Alerts: ${unresolvedAlertsForReport.length}
 
-## 9. RECENT ADMIN ACTIVITY LOGS (${logs.length} of ${totalLogs ?? 'UNAVAILABLE'})
+## 9. LIVE USD/INR FX & 11-COLUMN TEMPLATE READINESS MATRIX
+- Live USD/INR FX: ${fxReportStatus && typeof fxReportStatus === 'object' ? `Rate=${fxReportStatus.rate ?? 'UNAVAILABLE'} | Status=${fxReportStatus.status} | Source=${fxReportStatus.source} | Expires=${fxReportStatus.expiresAt || 'N/A'}` : 'UNAVAILABLE'}
+- Summary: ${readinessData?.summary ? `Total=${readinessData.summary.totalActive}, ReadyConfig=${readinessData.summary.readyConfigCount}, EvalGuarded=${readinessData.summary.guardedEvalCount}, MissingSecret=${readinessData.summary.blockedSecretCount}, FxBlocked=${readinessData.summary.blockedFxCount}, ConfigBlocked=${readinessData.summary.blockedConfigCount}` : (readinessError || 'UNAVAILABLE')}
+${
+  readinessItemsList.length > 0
+    ? readinessItemsList
+        .map(
+          (it: any) =>
+            `- [${it.finalStatus}] ${it.title} (${it.itemKind}:${it.id}) | Provider=${it.provider} | Adapter=${it.adapter} | Model=${it.model} | Workflow=${it.workflow} | Key=${it.apiKeyStatus} | Billing=${it.billingStatus} | Quota=${it.quotaOrBalanceStatus} | ResDur=${it.resDurVerification} | Quote=${it.quoteStatus} (${it.creditsQuoted}✦) | Test=${it.realTestStatus}${it.rootCause ? ` | RootCause=${it.rootCause}` : ''}${it.recommendedSolution ? ` | Fix=${it.recommendedSolution}` : ''}`
+        )
+        .join('\n')
+    : '- Readiness matrix items unavailable.'
+}
+
+## 10. ALL UNRESOLVED MONITORING ALERTS — 12-FIELD FORMAT (${unresolvedAlertsForReport.length})
+${
+  unresolvedAlertsForReport.length > 0
+    ? unresolvedAlertsForReport
+        .map(
+          (a: any, i: number) =>
+            `${i + 1}. **What failed:** [${a.severity || 'ERROR'}] ${a.title || a.vector || 'ALERT'} — ${a.message || ''}
+   - Project / Database / Service: ${a.projectDatabaseService}
+   - Affected Template: ${a.templateTitle ? `${a.templateTitle} (${a.templateId || 'N/A'})` : (a.templateId || 'N/A (Platform)')}
+   - Provider / Adapter / Model: ${a.provider} / ${a.adapter} / ${a.model}
+   - API Key / Access Status: ${a.apiKeyAccessStatus}
+   - Billing / Quota / Entitlement: ${a.billingQuotaEntitlementStatus}
+   - HTTP / Error Code & Stage: HTTP=${a.httpStatus} | Code=${a.errorCode || 'N/A'} | Stage=${a.errorStage || 'runtime'} | Occurrences=${a.occurrenceCount || 1}
+   - Root Cause: ${a.rootCause || 'N/A'}
+   - Recommended Fix: ${a.recommendedAction || 'N/A'}
+   - Next Owner Action: ${a.ownerAction || 'N/A'}
+   - Official Setup / Billing URL: ${a.officialSetupUrl || 'N/A'}
+   - Timestamp & Correlation ID: ${a.timestamp} | CorrID=${a.correlationId || a.safeTraceId || a.id}`
+        )
+        .join('\n')
+    : '- No unresolved monitoring alerts.'
+}
+
+## 11. OWNER OMNI 1.2 MANUAL TEST HISTORY (${omniTestsList.length})
+${
+  omniTestsList.length > 0
+    ? omniTestsList
+        .map(
+          (t: any) =>
+            `- [${String(t.status || '').toUpperCase()}] ${t.id} | ${t.durationSeconds}s ${t.resolution} | Est=$${t.estimatedUsd} | ${t.createdAt}${t.error ? ` | Error=${t.error}` : ''}`
+        )
+        .join('\n')
+    : '- No Owner Omni 1.2 manual tests executed yet.'
+}
+
+## 12. RECENT ADMIN ACTIVITY LOGS (${logs.length} of ${totalLogs ?? 'UNAVAILABLE'})
 ${
   logs.length > 0
     ? logs.map((l) => `- [${l.timestamp.slice(0, 19).replace('T', ' ')}] ${l.action} by ${l.actorEmail} (${l.targetId}): ${l.details}`).join('\n')
@@ -913,20 +1041,21 @@ ${
     : '- No admin activity logs recorded yet.'
 }
 
-## 10. KNOWN WARNINGS & UNRESOLVED MISMATCHES
+## 13. KNOWN WARNINGS & UNRESOLVED MISMATCHES
 ${warningsAndMismatches.length > 0 ? warningsAndMismatches.map((w) => `- ${w}`).join('\n') : '- None detected.'}
 
-## 11. STRUCTURED JSON DATA
+## 14. STRUCTURED JSON DATA
 \`\`\`json
 ${JSON.stringify(sanitizedPayload, null, 2)}
 \`\`\`
 
 Note: Strictly sanitized report. API keys, private keys, session tokens, signed URLs, and customer media are excluded.`.trim();
 
+    const textToCopy = format === 'json' ? JSON.stringify(sanitizedPayload, null, 2) : reportMarkdown;
     let copied = false;
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        await navigator.clipboard.writeText(reportMarkdown);
+        await navigator.clipboard.writeText(textToCopy);
         copied = true;
       }
     } catch {
@@ -936,7 +1065,7 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
     if (!copied) {
       try {
         const textarea = document.createElement('textarea');
-        textarea.value = reportMarkdown;
+        textarea.value = textToCopy;
         textarea.style.position = 'fixed';
         textarea.style.opacity = '0';
         document.body.appendChild(textarea);
@@ -949,8 +1078,13 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
       }
     }
 
-    setCopyStatus(copied ? 'copied' : 'failed');
-    setTimeout(() => setCopyStatus('idle'), 2800);
+    if (format === 'json') {
+      setCopyJsonStatus(copied ? 'copied' : 'failed');
+      setTimeout(() => setCopyJsonStatus('idle'), 2800);
+    } else {
+      setCopyStatus(copied ? 'copied' : 'failed');
+      setTimeout(() => setCopyStatus('idle'), 2800);
+    }
   };
 
   if (!isOpen) return null;
@@ -1009,10 +1143,10 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* 1-Click Copy Diagnostic Report */}
+            {/* 1-Click Copy Diagnostic Report (Markdown) */}
             <button
               type="button"
-              onClick={handleCopyReport}
+              onClick={() => handleCopyReport('markdown')}
               className={`min-h-[40px] px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
                 copyStatus === 'copied'
                   ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
@@ -1020,7 +1154,7 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                   ? 'bg-rose-500/20 border-rose-400/60 text-rose-300'
                   : 'bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-amber-500/45 hover:border-amber-400 text-amber-200'
               }`}
-              title="Copy complete sanitized Markdown & JSON diagnostic report"
+              title="Copy complete sanitized Markdown diagnostic report"
             >
               {copyStatus === 'copied' ? (
                 <>
@@ -1038,6 +1172,23 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                   <span>Copy Diagnostic Report</span>
                 </>
               )}
+            </button>
+
+            {/* 1-Click Copy Sanitized JSON Report */}
+            <button
+              type="button"
+              onClick={() => handleCopyReport('json')}
+              className={`min-h-[40px] px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                copyJsonStatus === 'copied'
+                  ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-300'
+                  : copyJsonStatus === 'failed'
+                  ? 'bg-rose-500/20 border-rose-400/60 text-rose-300'
+                  : 'bg-sky-500/15 border-sky-500/40 hover:border-sky-400 text-sky-200'
+              }`}
+              title="Copy pure sanitized JSON diagnostic payload"
+            >
+              {copyJsonStatus === 'copied' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-sky-300" />}
+              <span>{copyJsonStatus === 'copied' ? 'JSON Copied!' : 'Copy JSON'}</span>
             </button>
 
             {/* Refresh Button */}
@@ -1482,7 +1633,12 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                         </p>
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[10px] font-mono text-stone-400">
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                            <span>Template ID: <strong className="text-stone-200">{alert.templateId || 'N/A'}</strong></span>
+                            <span>Template: <strong className="text-stone-200">{alert.templateTitle ? `${alert.templateTitle} (${alert.templateId || 'N/A'})` : (alert.templateId || 'N/A')}</strong></span>
+                            {alert.provider && <span>Provider: <strong className="text-sky-300">{alert.provider}</strong></span>}
+                            {alert.adapter && <span>Adapter: <strong className="text-purple-300">{alert.adapter}</strong></span>}
+                            {alert.model && <span>Model: <strong className="text-amber-300">{alert.model}</strong></span>}
+                            {alert.errorCode && <span>Code: <strong className="text-rose-300">{alert.errorCode}</strong></span>}
+                            {alert.generationId && <span>Gen ID: <strong className="text-stone-200">{alert.generationId}</strong></span>}
                             <span>Stage: <strong className="text-stone-200">{alert.errorStage || 'runtime'}</strong></span>
                             <span>Correlation ID: <strong className="text-stone-200">{alert.correlationId || alert.safeTraceId || alert.id}</strong></span>
                           </div>
@@ -1498,11 +1654,38 @@ Note: Strictly sanitized report. API keys, private keys, session tokens, signed 
                             <span className="text-emerald-400 font-semibold">Resolved</span>
                           )}
                         </div>
+                        {(alert.rootCause || alert.recommendedAction) && (
+                          <div className="p-2 rounded-lg bg-black/50 border border-white/5 text-[10.5px] space-y-0.5">
+                            {alert.rootCause && <div className="text-amber-200"><strong>Root Cause:</strong> {alert.rootCause}</div>}
+                            {alert.recommendedAction && <div className="text-sky-200"><strong>Recommended Fix:</strong> {alert.recommendedAction}</div>}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+
+              {/* Live FX & Per-Template Readiness Summary Strip */}
+              {readinessData?.summary && (
+                <div className="p-4 rounded-2xl bg-black/40 border border-white/10 space-y-2 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-white uppercase tracking-wider">
+                      Per-Template Readiness & Live FX Summary
+                    </span>
+                    <span className="font-mono text-[11px] text-amber-300 tabular-nums">
+                      FX: {readinessData.fxStatus?.rate ? `₹${readinessData.fxStatus.rate}` : 'UNAVAILABLE'} ({readinessData.fxStatus?.status || 'UNKNOWN'})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 font-mono text-[11px] tabular-nums">
+                    <span className="px-2 py-1 rounded bg-white/5 text-stone-200">Active: {readinessData.summary.totalActive}</span>
+                    <span className="px-2 py-1 rounded bg-emerald-500/15 text-emerald-300">Ready Config: {readinessData.summary.readyConfigCount}</span>
+                    <span className="px-2 py-1 rounded bg-purple-500/15 text-purple-300">Eval Guarded: {readinessData.summary.guardedEvalCount}</span>
+                    <span className="px-2 py-1 rounded bg-rose-500/15 text-rose-300">Missing Secret: {readinessData.summary.blockedSecretCount}</span>
+                    <span className="px-2 py-1 rounded bg-amber-500/15 text-amber-300">Config Blocked: {readinessData.summary.blockedConfigCount}</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -37,6 +37,19 @@ export function configureStorageMonitoring(reporter: StorageMonitoringReporter |
   storageMonitoringReporter = reporter;
 }
 
+/**
+ * AWS/R2 SDK requires S3 x-amz-meta-* header values to contain only printable US-ASCII characters.
+ * Unicode template titles or filenames would otherwise throw InvalidCharacterError -> HTTP 500.
+ */
+export function sanitizeS3MetadataValue(raw: string | undefined, fallback: string = 'media'): string {
+  const cleaned = String(raw || '')
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/[\r\n]/g, ' ')
+    .trim()
+    .slice(0, 128);
+  return cleaned || fallback;
+}
+
 export interface StoredMediaMetadata {
   fileId: string;
   originalName: string;
@@ -112,7 +125,8 @@ export class MediaStorageService {
       return;
     }
     try {
-      await adminFirestoreDb.collection('media_metadata').doc(filename).set(metadata, { merge: true });
+      const sanitizedMetadata = JSON.parse(JSON.stringify(metadata));
+      await adminFirestoreDb.collection('media_metadata').doc(filename).set(sanitizedMetadata, { merge: true });
       if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
         const verifyDoc = await adminFirestoreDb.collection('media_metadata').doc(filename).get();
         if (!verifyDoc.exists) {
@@ -159,10 +173,14 @@ export class MediaStorageService {
       this.r2Config.bucketName
     ) {
       try {
-        let rawAcc = this.r2Config.accountId.trim();
+        const rawAcc = this.r2Config.accountId.trim();
         let endpoint = '';
         if (rawAcc.startsWith('http://') || rawAcc.startsWith('https://')) {
-          endpoint = rawAcc.replace(/\/$/, '');
+          try {
+            endpoint = new URL(rawAcc).origin;
+          } catch {
+            endpoint = rawAcc.replace(/\/+$/, '');
+          }
         } else {
           endpoint = `https://${rawAcc}.r2.cloudflarestorage.com`;
         }
@@ -560,8 +578,8 @@ export class MediaStorageService {
           Body: buffer,
           ContentType: mimeType,
           Metadata: {
-            ownerUserId: ownerUserId || 'anonymous',
-            originalName: customFileName || filename,
+            ownerUserId: sanitizeS3MetadataValue(ownerUserId, 'anonymous'),
+            originalName: sanitizeS3MetadataValue(customFileName, filename),
             isPublic: String(Boolean(isPublic || prefix.startsWith('tpl_')))
           }
         }));
@@ -755,12 +773,16 @@ export class MediaStorageService {
     }
 
     if (this.s3Client && this.r2Config.bucketName) {
-      const keysToTry = [
-        meta?.r2Key,
-        `media/public/${safeName}`,
-        `media/general/${safeName}`,
-        requestingUserId ? `media/users/${requestingUserId}/${safeName}` : null
-      ].filter(Boolean) as string[];
+      const keysToTry = Array.from(
+        new Set(
+          [
+            meta?.r2Key,
+            `media/public/${safeName}`,
+            `media/general/${safeName}`,
+            requestingUserId ? `media/users/${requestingUserId}/${safeName}` : null
+          ].filter(Boolean) as string[]
+        )
+      );
 
       const ext = path.extname(safeName).toLowerCase();
       const extMime =

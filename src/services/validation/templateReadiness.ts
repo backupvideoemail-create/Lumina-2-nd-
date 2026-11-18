@@ -1,5 +1,9 @@
 import type { FaceSwapScene, Template } from '../../types';
-import { MODEL_REGISTRY } from '../pricing/pricingService';
+import {
+  FACE_SWAP_COMPATIBLE_COMBINATIONS,
+  getRegisteredModelEntry,
+  resolveCanonicalModelId
+} from '../pricing/pricingService';
 
 export interface TemplateReadinessResult {
   ready: boolean;
@@ -29,7 +33,8 @@ const KNOWN_PHOTO_MODELS = new Set<string>([
 const KNOWN_VIDEO_MODELS = new Set<string>([
   'hf_mult_motion_control_flash',
   'hf_mult_replace_object_flash',
-  'gemini-omni-1.1-flash'
+  'gemini-omni-1.1-flash',
+  'gemini-omni-1.2-flash'
 ]);
 
 const KNOWN_SMART_MODELS = new Set<string>(['smart_canvas_ffmpeg']);
@@ -155,12 +160,14 @@ export function validateTemplateReadiness(
 
   // 4. Model & Registry Compatibility
   const resolvedModel = (tpl.recipe?.model || tpl.model || '').toString().trim();
+  const canonicalModel = resolveCanonicalModelId(resolvedModel);
+  const explicitAdapter = (tpl.adapter || tpl.recipe?.adapter || '').toString().trim();
   let modelValid = Boolean(resolvedModel);
   if (!resolvedModel) {
     missingFields.push('model');
     errors.push('Execution model is required.');
   } else {
-    const registryEntry = MODEL_REGISTRY[resolvedModel];
+    const registryEntry = getRegisteredModelEntry(resolvedModel);
     if (engine === 'SMART_TEMPLATE') {
       if (registryEntry && registryEntry.provider !== 'smart_template') {
         errors.push(`SMART_TEMPLATE engine cannot use AI model '${resolvedModel}'.`);
@@ -185,18 +192,22 @@ export function validateTemplateReadiness(
         errors.push(`Model '${resolvedModel}' (${registryEntry.workflow}) is incompatible with workflow 'OBJECT_SWAP'.`);
         modelValid = false;
       }
+      if (explicitAdapter && registryEntry.adapterId && explicitAdapter !== registryEntry.adapterId) {
+        errors.push(`Adapter '${explicitAdapter}' is incompatible with model '${resolvedModel}' (expected '${registryEntry.adapterId}').`);
+        modelValid = false;
+      }
       if (registryEntry.isEvaluationOnly) {
         warnings.push(`Model '${resolvedModel}' is marked evaluation-only in MODEL_REGISTRY.`);
       }
       if (registryEntry.endpointVerificationStatus === 'PENDING_QUOTE') {
         warnings.push(`Model '${resolvedModel}' pricing quote status is PENDING_QUOTE.`);
       }
-    } else if (tpl.type === 'photo' && KNOWN_PHOTO_MODELS.has(resolvedModel)) {
+    } else if (tpl.type === 'photo' && (KNOWN_PHOTO_MODELS.has(resolvedModel) || KNOWN_PHOTO_MODELS.has(canonicalModel))) {
       if (resolvedProvider !== 'gemini') {
         errors.push(`Gemini photo model '${resolvedModel}' is incompatible with provider '${resolvedProvider}'.`);
         modelValid = false;
       }
-    } else if (tpl.type === 'video' && KNOWN_VIDEO_MODELS.has(resolvedModel)) {
+    } else if (tpl.type === 'video' && (KNOWN_VIDEO_MODELS.has(resolvedModel) || KNOWN_VIDEO_MODELS.has(canonicalModel))) {
       if (resolvedModel.startsWith('hf_') && resolvedProvider !== 'higgsfield') {
         errors.push(`Higgsfield model '${resolvedModel}' is incompatible with provider '${resolvedProvider}'.`);
         modelValid = false;
@@ -352,7 +363,7 @@ export function validateTemplateReadiness(
 }
 
 /**
- * Validates preset FaceSwap Scene readiness before trimming/credit reservation.
+ * Validates preset FaceSwap Scene readiness and cascading provider/adapter/model/workflow/resolution compatibility.
  */
 export function validateFaceSwapSceneReadiness(scene: Partial<FaceSwapScene> | null | undefined): {
   ready: boolean;
@@ -383,6 +394,41 @@ export function validateFaceSwapSceneReadiness(scene: Partial<FaceSwapScene> | n
   if (!scene.creditCost || Number(scene.creditCost) <= 0) {
     missingFields.push('creditCost');
     errors.push('Face Swap scene credit cost must be greater than zero.');
+  }
+
+  // Validate cascading Provider -> Adapter -> Model -> Workflow -> Resolution compatibility if configured
+  const hasAnyProviderConfig = Boolean(scene.provider || scene.adapter || scene.model || scene.workflow || scene.resolution);
+  if (hasAnyProviderConfig) {
+    const providerKey = (scene.provider || 'higgsfield').trim().toLowerCase();
+    const providerEntry = FACE_SWAP_COMPATIBLE_COMBINATIONS.find((p) => p.provider === providerKey);
+    if (!providerEntry) {
+      errors.push(`Unsupported FaceSwap provider '${scene.provider}'.`);
+    } else {
+      const adapterKey = (scene.adapter || providerEntry.adapters[0]?.adapter || '').trim();
+      const adapterEntry = providerEntry.adapters.find((a) => a.adapter === adapterKey);
+      if (!adapterEntry) {
+        errors.push(`Adapter '${adapterKey}' is incompatible with FaceSwap provider '${providerKey}'.`);
+      } else {
+        const modelKey = resolveCanonicalModelId(scene.model || adapterEntry.models[0]?.model || '');
+        const modelEntry = adapterEntry.models.find((m) => m.model === modelKey);
+        if (!modelEntry) {
+          errors.push(`Model '${scene.model || modelKey}' is incompatible with adapter '${adapterKey}'.`);
+        } else {
+          if (modelEntry.isEvaluationOnly && scene.isActive !== false) {
+            errors.push(`Model '${modelEntry.model}' is evaluation-only and cannot be published as an active customer FaceSwap scene.`);
+          }
+          if (scene.workflow) {
+            const wfOk = modelEntry.workflows.some((w) => w.workflow === scene.workflow);
+            if (!wfOk) {
+              errors.push(`Workflow '${scene.workflow}' is incompatible with model '${modelEntry.model}'.`);
+            }
+          }
+          if (scene.resolution && !modelEntry.supportedResolutions.includes(scene.resolution)) {
+            errors.push(`Resolution '${scene.resolution}' is unsupported by model '${modelEntry.model}'.`);
+          }
+        }
+      }
+    }
   }
 
   return {

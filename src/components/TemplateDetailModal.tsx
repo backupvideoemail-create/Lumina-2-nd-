@@ -23,10 +23,17 @@ import {
   Trash2,
   Users
 } from 'lucide-react';
-import { Template, TemplateInputDef } from '../types';
+import { Template, TemplateInputDef, FxRateStatus } from '../types';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
-import { calculateAuthoritativeTemplateCost, calculateEstimatedProviderCostUsd, MODEL_REGISTRY } from '../services/pricing/pricingService';
+import {
+  calculateAuthoritativeTemplateCost,
+  calculateCustomerTemplateQuote,
+  calculateEstimatedProviderCostUsd,
+  getRegisteredModelEntry,
+  MODEL_REGISTRY,
+  resolveCanonicalModelId
+} from '../services/pricing/pricingService';
 import { queueHdDownload, protectMediaUrl, unprotectMediaUrl, isCachedBlobUrl } from '../services/media/hdDownloadQueue';
 import {
   getNetworkPlaybackProfile,
@@ -63,6 +70,7 @@ export const TemplateDetailModal: React.FC = () => {
   const [activeVideoTab, setActiveVideoTab] = useState<'before' | 'after'>('after');
   const [customPrompt, setCustomPrompt] = useState('');
   const [copiedError, setCopiedError] = useState(false);
+  const [liveFxStatus, setLiveFxStatus] = useState<FxRateStatus | null>(null);
   const [diagnosticDetails, setDiagnosticDetails] = useState<{
     httpStatus?: number;
     errorCode?: string;
@@ -80,6 +88,23 @@ export const TemplateDetailModal: React.FC = () => {
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const videoPlayerRef = useRef<HTMLVideoElement>(null);
+
+  // Fetch live USD/INR FX status when modal opens
+  useEffect(() => {
+    if (!selectedTemplate?.id) return;
+    let active = true;
+    fetch('/api/pricing/fx')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (active && data?.fxStatus) {
+          setLiveFxStatus(data.fxStatus);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [selectedTemplate?.id]);
 
   // Reset inputs when selected template changes
   useEffect(() => {
@@ -344,7 +369,7 @@ export const TemplateDetailModal: React.FC = () => {
       setWardrobeSource((selectedTemplate.defaultWardrobeSource as any) || 'AUTO');
       setWardrobeSourceA('AUTO');
       setWardrobeSourceB('AUTO');
-      const modelEntry = selectedTemplate.model ? MODEL_REGISTRY[selectedTemplate.model] : undefined;
+      const modelEntry = getRegisteredModelEntry(selectedTemplate.model);
       const verifiedResolutions = modelEntry
         ? (Object.entries(modelEntry.resolutionTariffs)
             .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
@@ -376,9 +401,10 @@ export const TemplateDetailModal: React.FC = () => {
 
   const tpl = selectedTemplate;
   const userBalance = wallet?.balance ?? 0;
-  const isSmartTemplate = Boolean((tpl as any).isSmartTemplate || (tpl as any).smartMode || (tpl as any).source === 'smart' || (tpl as any).smartAssetRole);
+  const isSmartTemplate = Boolean((tpl as any).isSmartTemplate || (tpl as any).smartMode || (tpl as any).source === 'smart' || (tpl as any).smartAssetRole || tpl.engine === 'SMART_TEMPLATE');
 
-  const modelEntry = tpl.model ? MODEL_REGISTRY[tpl.model] : undefined;
+  const canonicalModel = resolveCanonicalModelId(tpl.model) || tpl.model || '';
+  const modelEntry = getRegisteredModelEntry(tpl.model);
   const supportedResolutions = modelEntry
     ? (Object.entries(modelEntry.resolutionTariffs)
         .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
@@ -388,34 +414,36 @@ export const TemplateDetailModal: React.FC = () => {
   const selectedResolutionTariff = modelEntry?.resolutionTariffs[selectedResolution];
   const isResolutionSupported = selectedResolutionTariff?.supportStatus === 'SUPPORTED';
 
-  const isDurationSupported = modelEntry?.minDurationSeconds !== undefined && modelEntry?.maxDurationSeconds !== undefined
-    ? (selectedDuration >= modelEntry.minDurationSeconds && selectedDuration <= modelEntry.maxDurationSeconds)
-    : (modelEntry?.appDefaultDurationSeconds !== undefined ? selectedDuration === modelEntry.appDefaultDurationSeconds : false);
+  const isDurationSupported = modelEntry?.billingUnit === 'per_image'
+    ? true
+    : (modelEntry?.minDurationSeconds !== undefined && modelEntry?.maxDurationSeconds !== undefined
+        ? (selectedDuration >= modelEntry.minDurationSeconds && selectedDuration <= modelEntry.maxDurationSeconds)
+        : (modelEntry?.appDefaultDurationSeconds !== undefined ? selectedDuration === modelEntry.appDefaultDurationSeconds : false));
 
-  const estimate = modelEntry ? calculateEstimatedProviderCostUsd({
-    modelId: tpl.model || '',
-    resolution: selectedResolution,
-    requestedOutputDurationSeconds: selectedDuration,
-    allowPublishedListPriceFallback: false
-  }) : null;
-
-  const computedCreditCost = calculateAuthoritativeTemplateCost({
-    ...tpl,
-    durationSeconds: selectedDuration,
-    resolutionLabel: selectedResolution
+  const customerQuote = calculateCustomerTemplateQuote({
+    modelId: canonicalModel,
+    type: tpl.type,
+    resolution: (selectedResolution === '480p' || selectedResolution === '720p' || selectedResolution === '1080p') ? selectedResolution : undefined,
+    durationSeconds: selectedDuration || tpl.durationSeconds,
+    engine: tpl.engine,
+    creditCost: tpl.creditCost,
+    providerCostUsd: tpl.providerCostUsd,
+    fxRateOverride: liveFxStatus?.isFresh && liveFxStatus.rate ? liveFxStatus.rate : undefined
   });
 
-  // isQuotePending must evaluate the selected resolution and duration, not just general endpoint status
+  // Fallback check if FX status has not been hydrated yet on client: keep strict evaluation/unsupported guards
   const isQuotePending = !isSmartTemplate && (
-    computedCreditCost <= 0 ||
-    !isResolutionSupported ||
-    (tpl.type === 'video' && !isDurationSupported) ||
-    !estimate ||
-    estimate.status !== 'QUOTED' ||
-    Boolean(modelEntry && modelEntry.endpointVerificationStatus === 'PENDING_QUOTE')
+    customerQuote.status === 'EVALUATION_ONLY' ||
+    customerQuote.status === 'UNCONFIGURED' ||
+    customerQuote.status === 'UNSUPPORTED' ||
+    (customerQuote.status === 'FX_EXPIRED' && liveFxStatus !== null && !liveFxStatus.isFresh) ||
+    (tpl.type === 'video' && !isResolutionSupported) ||
+    (tpl.type === 'video' && !isDurationSupported)
   );
 
-  const liveCreditCost = isSmartTemplate ? (computedCreditCost || tpl.creditCost || 10) : computedCreditCost;
+  const liveCreditCost = isSmartTemplate
+    ? (customerQuote.credits || tpl.creditCost || 10)
+    : (customerQuote.status === 'QUOTED' && customerQuote.credits > 0 ? customerQuote.credits : (tpl.creditCost || 0));
   const hasCredits = userBalance >= liveCreditCost;
 
   // Next / Previous Navigation
@@ -778,9 +806,9 @@ export const TemplateDetailModal: React.FC = () => {
             </>
           )}
 
-          <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1e170d] border border-amber-500/40 text-[11px] font-black text-amber-300">
+          <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1e170d] border border-amber-500/40 text-[11px] font-black text-amber-300 tabular-nums">
             <Sparkles className="w-3 h-3 fill-amber-400 text-amber-400" />
-            <span>{tpl.creditCost}</span>
+            <span>{liveCreditCost > 0 ? liveCreditCost : tpl.creditCost}</span>
           </div>
         </div>
       </header>
@@ -1677,13 +1705,17 @@ export const TemplateDetailModal: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-black/40 text-xs font-black text-white">
+            <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-black/40 text-xs font-black text-white tabular-nums">
               <span>{isQuotePending || liveCreditCost <= 0 ? 'Quote Pending' : `${liveCreditCost} Credits`}</span>
             </div>
           </button>
 
           <p className="text-[10.5px] text-center text-stone-400">
-            {isQuotePending || liveCreditCost <= 0
+            {customerQuote.status === 'FX_EXPIRED' && liveFxStatus && !liveFxStatus.isFresh
+              ? 'Live USD/INR FX exchange rate unavailable right now. Credits calculation paused for accuracy.'
+              : customerQuote.status === 'EVALUATION_ONLY'
+              ? 'Owner evaluation video model is currently guarded for testing before public release.'
+              : isQuotePending || liveCreditCost <= 0
               ? 'Provider quote verification pending. Generation safely paused.'
               : !hasCredits
               ? `Requires ${liveCreditCost} credits (Your Balance: ${userBalance})`

@@ -26,7 +26,8 @@ import type {
   Generation,
   UserSubscription,
   PaymentRecord,
-  FaceSwapScene
+  FaceSwapScene,
+  OwnerOmniTestRecord
 } from '../../types/index.ts';
 import { initializeApp as initAdminApp, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
@@ -570,6 +571,8 @@ export interface ProductionDatabaseSchema {
   deletedTemplateIds?: string[];
   adminLogs?: AdminActivityLog[];
   dailyActivity?: Record<string, DailyActivityMetric>;
+  fxCache?: { rate: number; source: string; fetchedAt: string; expiresAt: string } | null;
+  ownerOmniTests?: OwnerOmniTestRecord[];
 }
 
 export interface DailyActivityMetric {
@@ -783,7 +786,9 @@ export class ProductionDatabase {
         adminTestRuns: [],
         pricingBanner: null,
         categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
-        adminLogs: []
+        adminLogs: [],
+        fxCache: null,
+        ownerOmniTests: []
       };
       this.readyPromise = Promise.resolve();
       return;
@@ -1198,6 +1203,8 @@ export class ProductionDatabase {
         parsed.pricingBanner = parsed.pricingBanner || null;
         parsed.categoryPrompts = { ...DEFAULT_CATEGORY_PROMPTS, ...(parsed.categoryPrompts || {}) };
         parsed.adminLogs = parsed.adminLogs || [];
+        parsed.fxCache = parsed.fxCache || null;
+        parsed.ownerOmniTests = parsed.ownerOmniTests || [];
         return parsed;
       }
     } catch (err) {
@@ -1225,7 +1232,9 @@ export class ProductionDatabase {
       adminTestRuns: [],
       pricingBanner: null,
       categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
-      adminLogs: []
+      adminLogs: [],
+      fxCache: null,
+      ownerOmniTests: []
     };
   }
 
@@ -2971,13 +2980,13 @@ export class ProductionDatabase {
           creditCost: isVideo ? 25 : 10,
           providerCostUsd: isVideo ? 0.25 : 0.08,
           engine: 'AI_GENERATION',
-          model: isVideo ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image',
+          model: isVideo ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image',
           workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
           recipe: {
             version: '1.0',
             inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
             provider: isVideo ? 'google_veo' : 'gemini',
-            model: isVideo ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image',
+            model: isVideo ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image',
             engine: 'AI_GENERATION',
             prompt: categoryPrompt,
             workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
@@ -4098,19 +4107,20 @@ export class ProductionDatabase {
     }
   }
 
-  public async resolveIncidentRecord(alertId: string, resolvedBy?: string): Promise<boolean> {
+  public async resolveIncidentRecord(alertId: string, resolvedBy?: string, resolutionNote?: string): Promise<boolean> {
     const fsDb = this.firestoreDb;
     if (!fsDb || !alertId) return false;
     try {
-      await fsDb.collection('incidents').doc(alertId).set(
-        {
-          id: alertId,
-          resolved: true,
-          resolvedAt: new Date().toISOString(),
-          resolvedBy: resolvedBy || 'authorized_admin'
-        },
-        { merge: true }
-      );
+      const updatePayload: Record<string, any> = {
+        id: alertId,
+        resolved: true,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: resolvedBy || 'authorized_admin'
+      };
+      if (resolutionNote && typeof resolutionNote === 'string' && resolutionNote.trim()) {
+        updatePayload.resolutionNote = resolutionNote.trim().slice(0, 300);
+      }
+      await fsDb.collection('incidents').doc(alertId).set(updatePayload, { merge: true });
       return true;
     } catch (err: any) {
       console.warn('[Incidents] Non-blocking resolveIncidentRecord note:', err?.message || err);
@@ -4118,7 +4128,7 @@ export class ProductionDatabase {
     }
   }
 
-  public async getIncidentsAuthoritative(limit = 30): Promise<{
+  public async getIncidentsAuthoritative(limit = 100): Promise<{
     incidents: any[];
     isPersistent: boolean;
   }> {
@@ -4137,6 +4147,52 @@ export class ProductionDatabase {
       console.warn('[Incidents] Non-blocking getIncidentsAuthoritative note:', err?.message || err);
       return { incidents: [], isPersistent: false };
     }
+  }
+
+  /* =========================================================================
+     LIVE FX RATE CACHE & OWNER OMNI 1.2 MANUAL TEST LEDGER
+  ========================================================================= */
+  public saveFxCacheRecord(record: {
+    rate: number;
+    source: string;
+    fetchedAt: string;
+    expiresAt: string;
+  }): void {
+    this.db.fxCache = record;
+    this.save();
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      fsDb.collection('config').doc('fx_rate_cache').set(JSON.parse(JSON.stringify(record)), { merge: true }).catch(() => {});
+    }
+  }
+
+  public getFxCacheRecord(): {
+    rate: number;
+    source: string;
+    fetchedAt: string;
+    expiresAt: string;
+  } | null {
+    return this.db.fxCache || null;
+  }
+
+  public recordOwnerOmniTest(record: OwnerOmniTestRecord): OwnerOmniTestRecord {
+    if (!Array.isArray(this.db.ownerOmniTests)) {
+      this.db.ownerOmniTests = [];
+    }
+    this.db.ownerOmniTests.unshift(record);
+    if (this.db.ownerOmniTests.length > 50) {
+      this.db.ownerOmniTests = this.db.ownerOmniTests.slice(0, 50);
+    }
+    this.save();
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      fsDb.collection('owner_omni_tests').doc(record.id).set(JSON.parse(JSON.stringify(record)), { merge: true }).catch(() => {});
+    }
+    return record;
+  }
+
+  public getOwnerOmniTests(limit = 30): OwnerOmniTestRecord[] {
+    return (this.db.ownerOmniTests || []).slice(0, limit);
   }
 }
 

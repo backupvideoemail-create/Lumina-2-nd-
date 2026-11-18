@@ -49,6 +49,7 @@ import {
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
 import { CATEGORIES } from '../data/templatesData';
+import { FACE_SWAP_COMPATIBLE_COMBINATIONS } from '../services/pricing/pricingService';
 
 interface TemplateManagerModalProps {
   isOpen: boolean;
@@ -119,6 +120,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [sceneIsFeatured, setSceneIsFeatured] = useState<boolean>(false);
   const [sceneOrder, setSceneOrder] = useState<number>(0);
   const [sceneCoverSource, setSceneCoverSource] = useState<'auto' | 'original' | 'after'>('auto');
+  const [sceneProvider, setSceneProvider] = useState<string>('higgsfield');
+  const [sceneAdapter, setSceneAdapter] = useState<string>('faceSwapAdapter');
+  const [sceneModel, setSceneModel] = useState<string>('hf_mult_motion_control_flash');
+  const [sceneWorkflow, setSceneWorkflow] = useState<string>('MOTION_TRANSFER');
+  const [sceneResolution, setSceneResolution] = useState<'480p' | '720p' | '1080p'>('480p');
 
   // DEFAULT RECIPE PROMPTS (Standardized across Admin and Engine)
   const DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT =
@@ -348,7 +354,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   // Execution Recipe (Separated from display preview MP4/Photo)
   const [recipePreset, setRecipePreset] = useState<'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom'>('veo_video');
   const [recipeProvider, setRecipeProvider] = useState<string>('google_veo');
-  const [recipeModel, setRecipeModel] = useState<string>('gemini-omni-1.1-flash');
+  const [recipeModel, setRecipeModel] = useState<string>('gemini-omni-1.2-flash');
   const [recipeWorkflow, setRecipeWorkflow] = useState<string>('viral-reels');
   const [recipePrompt, setRecipePrompt] = useState<string>('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
   const [recipeDrivingVideoUrl, setRecipeDrivingVideoUrl] = useState<string>('');
@@ -540,7 +546,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setRecipePreset(preset);
     if (preset === 'veo_video') {
       setRecipeProvider('google_veo');
-      setRecipeModel('gemini-omni-1.1-flash');
+      setRecipeModel('gemini-omni-1.2-flash');
       setRecipeWorkflow('viral-reels');
       setRecipePrompt('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
       setTplCostUsd(0.25);
@@ -978,13 +984,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
     if (tpl.recipe) {
       setRecipeProvider(tpl.recipe.provider || (tpl.type === 'video' ? 'google_veo' : 'gemini'));
-      setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
+      setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.recipe.workflow || tpl.workflow);
       setRecipePrompt(tpl.recipe.prompt?.trim() ? tpl.recipe.prompt : (tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT));
       setRecipeDrivingVideoUrl(tpl.recipe.drivingVideoUrl || tpl.drivingVideoUrl || '');
     } else {
       setRecipeProvider(tpl.type === 'video' ? 'google_veo' : 'gemini');
-      setRecipeModel(tpl.model || (tpl.type === 'video' ? 'gemini-omni-1.1-flash' : 'gemini-3.1-flash-image'));
+      setRecipeModel(tpl.model || (tpl.type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'));
       setRecipeWorkflow(tpl.workflow);
       setRecipePrompt(tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT);
       setRecipeDrivingVideoUrl(tpl.drivingVideoUrl || '');
@@ -2177,6 +2183,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneIsFeatured(false);
     setSceneOrder(0);
     setSceneCoverSource('auto');
+    setSceneProvider('higgsfield');
+    setSceneAdapter('faceSwapAdapter');
+    setSceneModel('hf_mult_motion_control_flash');
+    setSceneWorkflow('MOTION_TRANSFER');
+    setSceneResolution('480p');
 
     setSceneSampleFace('');
     setSceneSampleFaceName('');
@@ -2203,6 +2214,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setSceneIsFeatured(Boolean(scene.isFeatured));
     setSceneOrder(scene.order || 0);
     setSceneCoverSource(scene.coverSource || 'auto');
+    setSceneProvider(scene.provider || 'higgsfield');
+    setSceneAdapter(scene.adapter || 'faceSwapAdapter');
+    setSceneModel(scene.model || 'hf_mult_motion_control_flash');
+    setSceneWorkflow(scene.workflow || 'MOTION_TRANSFER');
+    setSceneResolution((scene.resolution as '480p' | '720p' | '1080p') || '480p');
 
     setSceneSampleFace(scene.sampleFace || '');
     setSceneSampleFaceName(scene.sampleFace ? 'Current sample face' : '');
@@ -2532,7 +2548,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         status: targetStatus,
         isFeatured: sceneIsFeatured,
         order: Number(sceneOrder) || 0,
-        coverSource: sceneCoverSource || 'auto'
+        coverSource: sceneCoverSource || 'auto',
+        provider: sceneProvider,
+        adapter: sceneAdapter,
+        model: sceneModel,
+        workflow: sceneWorkflow,
+        resolution: sceneResolution
       };
 
       const url = editingScene
@@ -3877,7 +3898,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         type="text"
                         value={recipeModel}
                         onChange={(e) => setRecipeModel(e.target.value)}
-                        placeholder="e.g. gemini-omni-1.1-flash"
+                        placeholder="e.g. gemini-omni-1.2-flash"
                         className="w-full mt-1 px-3 py-2 rounded-xl bg-black border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       />
                     </div>
@@ -5996,6 +6017,125 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         />
                       </div>
 
+                      {/* CASCADING PROVIDER -> ADAPTER -> MODEL -> WORKFLOW -> RESOLUTION */}
+                      {(() => {
+                        const providerObj =
+                          FACE_SWAP_COMPATIBLE_COMBINATIONS.find((p) => p.provider === sceneProvider) ||
+                          FACE_SWAP_COMPATIBLE_COMBINATIONS[0];
+                        const adaptersList = providerObj?.adapters || [];
+                        const adapterObj =
+                          adaptersList.find((a) => a.adapter === sceneAdapter) || adaptersList[0];
+                        const modelsList = adapterObj?.models || [];
+                        const modelObj =
+                          modelsList.find((m) => m.model === sceneModel) || modelsList[0];
+                        const workflowsList = modelObj?.workflows || [];
+                        const resolutionsList = modelObj?.supportedResolutions || ['480p', '720p', '1080p'];
+
+                        return (
+                          <div className="p-3 rounded-xl bg-stone-950/70 border border-amber-500/20 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wider">
+                                Scene Provider & Model Routing (Strict Backend Execution)
+                              </span>
+                              {modelObj?.isEvaluationOnly && (
+                                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9.5px] font-bold">
+                                  Evaluation Guarded (Owner Test Only)
+                                </span>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                              <div>
+                                <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Provider</label>
+                                <select
+                                  value={providerObj?.provider || sceneProvider}
+                                  onChange={(e) => {
+                                    const nextProv = FACE_SWAP_COMPATIBLE_COMBINATIONS.find((p) => p.provider === e.target.value);
+                                    const nextAd = nextProv?.adapters[0];
+                                    const nextMod = nextAd?.models[0];
+                                    const nextWf = nextMod?.workflows[0];
+                                    const nextRes = nextMod?.supportedResolutions[0] || '480p';
+                                    setSceneProvider(e.target.value);
+                                    if (nextAd) setSceneAdapter(nextAd.adapter);
+                                    if (nextMod) setSceneModel(nextMod.model);
+                                    if (nextWf) setSceneWorkflow(nextWf.workflow);
+                                    setSceneResolution(nextRes);
+                                  }}
+                                  className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400"
+                                >
+                                  {FACE_SWAP_COMPATIBLE_COMBINATIONS.map((p) => (
+                                    <option key={p.provider} value={p.provider}>{p.providerLabel}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Adapter</label>
+                                <select
+                                  value={adapterObj?.adapter || sceneAdapter}
+                                  onChange={(e) => {
+                                    const nextAd = adaptersList.find((a) => a.adapter === e.target.value);
+                                    const nextMod = nextAd?.models[0];
+                                    const nextWf = nextMod?.workflows[0];
+                                    const nextRes = nextMod?.supportedResolutions[0] || '480p';
+                                    setSceneAdapter(e.target.value);
+                                    if (nextMod) setSceneModel(nextMod.model);
+                                    if (nextWf) setSceneWorkflow(nextWf.workflow);
+                                    setSceneResolution(nextRes);
+                                  }}
+                                  className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400"
+                                >
+                                  {adaptersList.map((a) => (
+                                    <option key={a.adapter} value={a.adapter}>{a.adapterLabel}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Model ID</label>
+                                <select
+                                  value={modelObj?.model || sceneModel}
+                                  onChange={(e) => {
+                                    const nextMod = modelsList.find((m) => m.model === e.target.value);
+                                    const nextWf = nextMod?.workflows[0];
+                                    const nextRes = nextMod?.supportedResolutions[0] || '480p';
+                                    setSceneModel(e.target.value);
+                                    if (nextWf) setSceneWorkflow(nextWf.workflow);
+                                    setSceneResolution(nextRes);
+                                  }}
+                                  className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                                >
+                                  {modelsList.map((m) => (
+                                    <option key={m.model} value={m.model}>{m.modelLabel}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Workflow</label>
+                                <select
+                                  value={workflowsList.some((w) => w.workflow === sceneWorkflow) ? sceneWorkflow : (workflowsList[0]?.workflow || sceneWorkflow)}
+                                  onChange={(e) => setSceneWorkflow(e.target.value)}
+                                  className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400"
+                                >
+                                  {workflowsList.map((w) => (
+                                    <option key={w.workflow} value={w.workflow}>{w.workflowLabel}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-stone-400 block mb-0.5">Resolution</label>
+                                <select
+                                  value={resolutionsList.includes(sceneResolution) ? sceneResolution : resolutionsList[0]}
+                                  onChange={(e) => setSceneResolution(e.target.value as '480p' | '720p' | '1080p')}
+                                  className="w-full px-2 py-1.5 rounded-xl bg-stone-900 border border-white/15 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                                >
+                                  {resolutionsList.map((r) => (
+                                    <option key={r} value={r}>{r}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {/* Toggles: Active, Featured, Aspect Ratio */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
                         <label className="flex items-center gap-2 p-2 rounded-xl bg-stone-900/60 border border-white/10 cursor-pointer">
@@ -6377,10 +6517,10 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                 },
                 {
                   id: 'videoProviderAdapter',
-                  name: 'Google Veo Video Provider Adapter',
-                  model: 'gemini-omni-1.1-flash',
+                  name: 'Google Gemini Omni 1.2 Adapter (Guarded)',
+                  model: 'gemini-omni-1.2-flash',
                   status: 'EVALUATION_ONLY',
-                  secretName: 'GOOGLE_VEO_KEY',
+                  secretName: 'GEMINI_API_KEY',
                   supportedResolutions: ['720p', '1080p'],
                   pricingStatus: 'EVALUATION_ONLY'
                 },
@@ -6543,7 +6683,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   setPasteJsonError(null);
                 }}
                 rows={8}
-                placeholder={`{\n  "provider": "google_veo",\n  "model": "gemini-omni-1.1-flash",\n  "workflow": "viral-reels",\n  "prompt": "Cinematic slow-motion 60FPS video reel...",\n  "inputType": "IMAGE_OR_VIDEO"\n}`}
+                placeholder={`{\n  "provider": "gemini",\n  "model": "gemini-omni-1.2-flash",\n  "workflow": "VIDEO_EDIT",\n  "prompt": "Cinematic slow-motion 60FPS video reel...",\n  "inputType": "IMAGE_OR_VIDEO"\n}`}
                 className="w-full font-mono text-xs p-3 rounded-xl bg-black border border-white/15 text-stone-200 focus:border-cyan-400 focus:outline-none"
               />
 

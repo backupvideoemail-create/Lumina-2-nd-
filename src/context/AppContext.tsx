@@ -147,21 +147,38 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Resilient Response Helper for Cloud Run 503 / HTML interception
+// Resilient Response Helper for Cloud Run 502/503/504 / HTML interception
 export async function safeParseJsonResponse<T = any>(
   res: Response
-): Promise<{ ok: boolean; status: number; data: T | null; error?: string }> {
+): Promise<{ ok: boolean; status: number; data: T | null; error?: string; isHtml?: boolean; isRetryable?: boolean }> {
   const contentType = res.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
 
   if (!isJson) {
     const rawText = await res.text().catch(() => '');
+    const trimmed = rawText.trimStart();
+    const isHtml =
+      contentType.includes('text/html') ||
+      /^<!doctype\s+html|^<html\b|<head\b|<body\b/i.test(trimmed);
+
     if (res.status === 503) {
       return {
         ok: false,
         status: 503,
         data: null,
+        isHtml,
+        isRetryable: true,
         error: 'Cloud Run service warming up (503 Service Unavailable). Please retry in a moment.'
+      };
+    }
+    if (res.status === 502 || res.status === 504) {
+      return {
+        ok: false,
+        status: res.status,
+        data: null,
+        isHtml,
+        isRetryable: true,
+        error: `Server is restarting or warming up (HTTP ${res.status}). Please retry in a moment.`
       };
     }
     if (res.status === 401) {
@@ -169,14 +186,30 @@ export async function safeParseJsonResponse<T = any>(
         ok: false,
         status: 401,
         data: null,
+        isHtml,
         error: 'Authentication session expired or required (401 Unauthorized).'
+      };
+    }
+    if (isHtml) {
+      const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const htmlTitle = titleMatch?.[1]?.trim();
+      return {
+        ok: false,
+        status: res.status,
+        data: null,
+        isHtml: true,
+        isRetryable: res.status === 200 || res.status >= 500,
+        error: htmlTitle
+          ? `Server returned HTML proxy response (${htmlTitle}, HTTP ${res.status}). Please retry.`
+          : `Server returned temporary HTML response instead of JSON (HTTP ${res.status}). Please retry.`
       };
     }
     return {
       ok: false,
       status: res.status,
       data: null,
-      error: rawText.slice(0, 160) || `Server returned HTTP ${res.status}`
+      isHtml: false,
+      error: trimmed.slice(0, 160) || `Server returned HTTP ${res.status}`
     };
   }
 

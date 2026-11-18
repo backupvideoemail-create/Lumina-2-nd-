@@ -9,6 +9,9 @@ export interface ImageGenerationParams {
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  provider?: string;
+  adapter?: string;
+  model?: string;
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
@@ -25,6 +28,10 @@ export interface VideoGenerationParams {
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
+  provider?: string;
+  adapter?: string;
+  model?: string;
+  returnRawDiagnostics?: boolean;
   motionStyle?: string;
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
@@ -41,6 +48,10 @@ export interface FaceSwapParams {
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
+  provider?: string;
+  adapter?: string;
+  model?: string;
+  workflow?: string;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
   inputMedia?: Array<{ slotId?: string; type?: string; media?: string; mediaUrl?: string }>;
@@ -65,6 +76,8 @@ export interface TemplateProcessParams {
   detectedInputType?: 'image' | 'video';
   recipe?: any;
   drivingVideoUrl?: string;
+  provider?: string;
+  adapter?: string;
   model?: string;
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
@@ -78,8 +91,10 @@ export interface ProviderResult {
   success: boolean;
   resultUrl: string;
   provider: string;
+  adapter?: string;
   model: string;
   processingTimeMs: number;
+  rawSanitizedResponse?: Record<string, any>;
   error?: string;
 }
 
