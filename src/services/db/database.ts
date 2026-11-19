@@ -67,6 +67,8 @@ export interface DatabaseGuardState {
   connectionSource: 'isolated_test' | 'service_account' | 'adc' | 'blocked' | 'disconnected';
   runtimeServiceAccountEmail: string | null;
   cloudRunRegion: string | null;
+  serviceAccountKeyPresent: boolean;
+  serviceAccountProjectMatch: 'NOT_SET' | 'MATCH' | 'MISMATCH' | 'UNPARSEABLE';
 }
 
 export function evaluateDatabaseLock(params: {
@@ -151,7 +153,9 @@ const runtimeDbGuardState: DatabaseGuardState = {
     process.env.CLOUD_RUN_REGION?.trim() ||
     process.env.GOOGLE_CLOUD_REGION?.trim() ||
     process.env.FUNCTION_REGION?.trim() ||
-    null
+    null,
+  serviceAccountKeyPresent: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.trim()),
+  serviceAccountProjectMatch: 'NOT_SET'
 };
 
 export function enforceRuntimeDatabaseLock(): DatabaseGuardState {
@@ -431,16 +435,31 @@ if (isIsolatedTestEnv) {
   // Attempt Firebase Admin initialization targeting canonical ai-prime-studio/(default) ONLY
   try {
     const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (serviceAccountKey) {
-      let credentialObj: any;
-      if (serviceAccountKey.trim().startsWith('{')) {
-        credentialObj = JSON.parse(serviceAccountKey);
-      } else if (fs.existsSync(serviceAccountKey)) {
-        credentialObj = JSON.parse(fs.readFileSync(serviceAccountKey, 'utf-8'));
+    if (serviceAccountKey && serviceAccountKey.trim()) {
+      runtimeDbGuardState.serviceAccountKeyPresent = true;
+      let credentialObj: any = null;
+      const trimmedKey = serviceAccountKey.trim();
+      try {
+        if (trimmedKey.startsWith('{')) {
+          credentialObj = JSON.parse(trimmedKey);
+        } else if (fs.existsSync(trimmedKey)) {
+          credentialObj = JSON.parse(fs.readFileSync(trimmedKey, 'utf-8'));
+        } else {
+          const decoded = Buffer.from(trimmedKey, 'base64').toString('utf-8');
+          if (decoded.trim().startsWith('{')) {
+            credentialObj = JSON.parse(decoded);
+          }
+        }
+      } catch {
+        credentialObj = null;
       }
 
-      if (credentialObj) {
+      if (!credentialObj) {
+        runtimeDbGuardState.serviceAccountProjectMatch = 'UNPARSEABLE';
+      } else {
         const projectId = credentialObj.project_id || CANONICAL_PROJECT_ID;
+        runtimeDbGuardState.serviceAccountProjectMatch =
+          projectId === CANONICAL_PROJECT_ID ? 'MATCH' : 'MISMATCH';
         if (credentialObj.client_email) {
           runtimeDbGuardState.runtimeServiceAccountEmail = String(credentialObj.client_email);
         }

@@ -159,12 +159,16 @@ configureFxHooks({
 });
 
 // Resolve immutable build-time Git commit SHA, Git branch & immutable startup timestamp
+const VERIFIED_GITHUB_BASELINE_SHA = 'fe2acfcad9ee274b2144f7e527c53b0d132e47aa';
 let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
+let resolvedCommitSource: 'env' | 'git' | 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK' = resolvedCommitSha ? 'env' : 'git';
 if (!resolvedCommitSha) {
   try {
     resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    resolvedCommitSource = 'git';
   } catch {
     resolvedCommitSha = 'UNVERIFIED/BLOCKED';
+    resolvedCommitSource = 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK';
   }
 }
 let resolvedGitBranch = process.env.GIT_BRANCH || process.env.GITHUB_REF_NAME || '';
@@ -1178,6 +1182,8 @@ app.get('/api/version', (_req, res) => {
   const guard = getDatabaseGuardState();
   res.json({
     commitSha: resolvedCommitSha || 'UNVERIFIED/BLOCKED',
+    commitSource: resolvedCommitSource,
+    verifiedGithubBaselineSha: VERIFIED_GITHUB_BASELINE_SHA,
     gitBranch: resolvedGitBranch,
     buildTime: SERVER_STARTUP_IMMUTABLE_BUILD_TIME,
     cloudRunRevision: process.env.K_REVISION || 'local-dev',
@@ -1192,7 +1198,18 @@ app.get('/api/version', (_req, res) => {
       : adminFirestoreDb
       ? 'firestore_authoritative'
       : 'local_authoritative',
-    databaseGuardBlocked: guard.blocked
+    databaseGuardBlocked: guard.blocked,
+    sanitizedGuard: {
+      expectedProjectId: guard.expectedProjectId,
+      configuredProjectId: guard.configuredProjectId,
+      configuredDatabaseId: guard.configuredDatabaseId,
+      configStatus: guard.configStatus,
+      envOverrideStatus: guard.envOverrideStatus,
+      serviceAccountKeyPresent: guard.serviceAccountKeyPresent,
+      serviceAccountProjectMatch: guard.serviceAccountProjectMatch,
+      connectionSource: guard.connectionSource,
+      effectiveDatabaseId: guard.effectiveDatabaseId
+    }
   });
 });
 

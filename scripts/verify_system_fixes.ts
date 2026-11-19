@@ -3387,6 +3387,20 @@ async function runSystemVerification() {
     '43.6 server.ts media headers, Genjutsu safety gate, generation idempotencyKey, 400 template validation & DiagnosticsModal UI guards verified'
   );
 
+  // 43.7 Sanitized database guard statuses & /api/version commit provenance fallback
+  const { getDatabaseGuardState: getDbGuard43 } = await import('../src/services/db/database.ts');
+  const guard43 = getDbGuard43();
+  assert(
+    guard43.expectedProjectId === 'ai-prime-studio' &&
+      guard43.configuredDatabaseId === '(default)' &&
+      typeof guard43.serviceAccountKeyPresent === 'boolean' &&
+      ['NOT_SET', 'MATCH', 'MISMATCH', 'UNPARSEABLE'].includes(guard43.serviceAccountProjectMatch) &&
+      serverSrc39.includes('sanitizedGuard:') &&
+      serverSrc39.includes('verifiedGithubBaselineSha:') &&
+      serverSrc39.includes('commitSource:'),
+    '43.7 Sanitized DatabaseGuardState (serviceAccountProjectMatch, envOverrideStatus, configStatus) & /api/version commit provenance verified'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');
