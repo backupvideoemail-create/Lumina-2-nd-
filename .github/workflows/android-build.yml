@@ -57,6 +57,8 @@ jobs:
           fi
 
       - name: Verify Firebase Configuration
+        env:
+          REQUIRE_ANDROID_GOOGLE_SERVICES: "true"
         run: |
           if [ ! -f "android/app/google-services.json" ]; then
             echo "::error::android/app/google-services.json is missing!"
@@ -96,6 +98,7 @@ jobs:
               console.log(`Verified ${filePath}: project_id=${projectId}, project_number=${projectNumber}, packages=${packageNames.join(", ")}`);
             }
           '
+          npx tsx scripts/verify_system_fixes.ts --verify-android-firebase-config
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

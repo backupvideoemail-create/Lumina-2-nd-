@@ -3,6 +3,19 @@ import type { FaceSwapScene } from '../src/types/index';
 process.env.NODE_ENV = 'test';
 process.env.IS_ISOLATED_TEST = 'true';
 
+function validateGoogleServicesPackages(jsonContent: string): { isValid: boolean; packages: string[] } {
+  try {
+    const parsed = JSON.parse(jsonContent);
+    const packages = (parsed.client || []).map((c: any) => c.client_info?.android_client_info?.package_name).filter(Boolean);
+    return {
+      isValid: packages.includes('com.aiprimestudio.app') && packages.includes('com.aiprimestudio.app.debug'),
+      packages
+    };
+  } catch {
+    return { isValid: false, packages: [] };
+  }
+}
+
 async function runSystemVerification() {
   // Dynamic imports guarantee environment flags are evaluated BEFORE modules initialize
   const { prodDb, adminFirestoreDb, ProductionDatabase, validateTemplate } = await import('../src/services/db/database.ts');
@@ -1089,19 +1102,7 @@ async function runSystemVerification() {
   assert(buildGradleContent.includes('https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app'), '21.1 Debug API URL defaults to verified production Cloud Run URL');
   assert(buildGradleContent.includes('CRITICAL RELEASE ERROR'), '21.1 Release build strictly enforces production PROD_SERVER_URL and rejects ais-dev');
 
-  // 21.2 Firebase Package Validation Logic Helper
-  function validateGoogleServicesPackages(jsonContent: string): { isValid: boolean; packages: string[] } {
-    try {
-      const parsed = JSON.parse(jsonContent);
-      const packages = (parsed.client || []).map((c: any) => c.client_info?.android_client_info?.package_name).filter(Boolean);
-      return {
-        isValid: packages.includes('com.aiprimestudio.app') && packages.includes('com.aiprimestudio.app.debug'),
-        packages
-      };
-    } catch {
-      return { isValid: false, packages: [] };
-    }
-  }
+  // 21.2 Firebase Package Validation Logic Helper (shared top-level validateGoogleServicesPackages)
 
   // Test the pure validation helper using safe non-secret fixtures
   const validFixture = JSON.stringify({
@@ -2720,14 +2721,29 @@ async function runSystemVerification() {
     '39.3 Admin Diagnostics includes Modules 16 & 17 (auth persistence & media/monitoring audit)'
   );
 
-  // Verify Part 5 Google Services Android config untouched
-  const androidGoogleServices39 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/google-services.json'), 'utf8'));
-  assert(
-    androidGoogleServices39?.project_info?.project_id === 'gen-lang-client-0525281130' &&
-      androidGoogleServices39?.project_info?.project_number === '221269328833' &&
-      androidGoogleServices39?.client?.[0]?.client_info?.android_client_info?.package_name === 'com.aiprimestudio.app',
-    '39.4 Part 5 Android google-services.json preserved untouched on gen-lang-client-0525281130 / 221269328833'
-  );
+  // Verify Part 5 Google Services Android config untouched (strict on disk or post-secret CI; pre-secret CI defers disk check to Verify Firebase Configuration)
+  const androidGoogleServicesPath39 = pathUtil.resolve(process.cwd(), 'android/app/google-services.json');
+  const requireAndroidGs39 = process.env.REQUIRE_ANDROID_GOOGLE_SERVICES === 'true';
+  const workflowSrc39 = fs.readFileSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml'), 'utf8');
+  if (fs.existsSync(androidGoogleServicesPath39) || requireAndroidGs39) {
+    const androidGoogleServices39 = JSON.parse(fs.readFileSync(androidGoogleServicesPath39, 'utf8'));
+    assert(
+      androidGoogleServices39?.project_info?.project_id === 'gen-lang-client-0525281130' &&
+        androidGoogleServices39?.project_info?.project_number === '221269328833' &&
+        androidGoogleServices39?.client?.[0]?.client_info?.android_client_info?.package_name === 'com.aiprimestudio.app',
+      '39.4 Part 5 Android google-services.json preserved untouched on gen-lang-client-0525281130 / 221269328833'
+    );
+  } else {
+    const verifyCfgIdx39 = workflowSrc39.indexOf('Verify Firebase Configuration');
+    const restoreSecIdx39 = workflowSrc39.indexOf('Recreate google-services.json from secret');
+    assert(
+      verifyCfgIdx39 > restoreSecIdx39 &&
+        workflowSrc39.includes('--verify-android-firebase-config') &&
+        workflowSrc39.includes('EXPECTED_PROJECT_ID = "gen-lang-client-0525281130"') &&
+        workflowSrc39.includes('EXPECTED_PROJECT_NUMBER = "221269328833"'),
+      '39.4 Part 5 Android google-services.json absent pre-secret on CI runner; strict post-secret Verify Firebase Configuration stage verified'
+    );
+  }
 
   // --- SUITE 40: PART A VIDEO PREVIEW/AUTOPLAY & PART B HERO SWIPE/DURATION ---
   console.log('\n--- SUITE 40: VIDEO PREVIEW SOURCE, SINGLE-ACTIVE AUTOPLAY & HERO SWIPE/DURATION ---');
@@ -3098,7 +3114,21 @@ async function runSystemVerification() {
   const cfg42 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
   const fbClientSrc42 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf8');
   const dbSrc42 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
-  const androidGs42 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/google-services.json'), 'utf8'));
+  const androidGsPath42 = pathUtil.resolve(process.cwd(), 'android/app/google-services.json');
+  const requireAndroidGs42 = process.env.REQUIRE_ANDROID_GOOGLE_SERVICES === 'true';
+  const androidGsOk42 = (fs.existsSync(androidGsPath42) || requireAndroidGs42)
+    ? (() => {
+        const androidGs42 = JSON.parse(fs.readFileSync(androidGsPath42, 'utf8'));
+        return (
+          androidGs42?.project_info?.project_id === 'gen-lang-client-0525281130' &&
+          androidGs42?.project_info?.project_number === '221269328833'
+        );
+      })()
+    : (
+        workflowSrc39.includes('--verify-android-firebase-config') &&
+        workflowSrc39.includes('EXPECTED_PROJECT_ID = "gen-lang-client-0525281130"') &&
+        workflowSrc39.includes('EXPECTED_PROJECT_NUMBER = "221269328833"')
+      );
   const { evaluateDatabaseLock } = await import('../src/services/db/database.ts');
 
   const validLock42 = evaluateDatabaseLock({
@@ -3127,8 +3157,7 @@ async function runSystemVerification() {
       wrongEnvLock42.blocked &&
       fbClientSrc42.includes('getFirestore(app)') &&
       !dbSrc42.includes('ai-studio-lumina2nd') &&
-      androidGs42?.project_info?.project_id === 'gen-lang-client-0525281130' &&
-      androidGs42?.project_info?.project_number === '221269328833',
+      androidGsOk42,
     '42.1 Canonical Firebase config locked (ai-prime-studio/855598524398/(default)), fail-closed guards reject wrong DB/env, Android legacy config untouched'
   );
 
@@ -3475,14 +3504,17 @@ async function runSystemVerification() {
   const auditSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'docs/operations/CONFIGURATION_AUDIT.md'), 'utf8');
   const verifyStepIdx44 = ciSrc44.indexOf('Verify Web Build & Type Check');
   const secretStepIdx44 = ciSrc44.indexOf('Recreate google-services.json from secret');
+  const postSecretFbIdx44 = ciSrc44.indexOf('Verify Firebase Configuration');
   assert(
     dbSrc44.includes('missing required project_id') &&
       dbSrc44.includes('Hydrate Catalog Metadata Revision on startup') &&
       serverSrc39.includes("VERIFIED_GITHUB_BASELINE_SHA = '1ee049a00d241ca9c3f26a1d2a7f7e9d6dcf6047'") &&
       verifyStepIdx44 > 0 &&
       secretStepIdx44 > verifyStepIdx44 &&
+      postSecretFbIdx44 > secretStepIdx44 &&
+      ciSrc44.includes('--verify-android-firebase-config') &&
       auditSrc44.includes('SUPERSEDED'),
-    '44.3 Fail-closed SA project_id check, catalogRevision startup hydration, baseline SHA update, Android CI order, and audit reconciliation verified'
+    '44.3 Fail-closed SA project_id check, catalogRevision startup hydration, baseline SHA update, Android CI pre/post-secret ordering, and audit reconciliation verified'
   );
 
   console.log('\n====================================================');
@@ -3494,7 +3526,48 @@ async function runSystemVerification() {
   }
 }
 
-runSystemVerification().catch(err => {
+async function runPostSecretAndroidFirebaseVerification() {
+  const fs = await import('fs');
+  const pathUtil = await import('path');
+
+  const releasePath = pathUtil.resolve(process.cwd(), 'android/app/google-services.json');
+  const debugPath = pathUtil.resolve(process.cwd(), 'android/app/src/debug/google-services.json');
+  const targets = [
+    { label: 'release', filePath: releasePath },
+    ...(fs.existsSync(debugPath) ? [{ label: 'debug', filePath: debugPath }] : [])
+  ];
+
+  if (!fs.existsSync(releasePath)) {
+    throw new Error(`CRITICAL: Post-secret Android Firebase check failed — missing ${releasePath}`);
+  }
+  if (process.env.CI === 'true' && !fs.existsSync(debugPath)) {
+    throw new Error(`CRITICAL: Post-secret Android Firebase check failed — missing ${debugPath}`);
+  }
+
+  for (const target of targets) {
+    const raw = fs.readFileSync(target.filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const projectId = parsed?.project_info?.project_id;
+    const projectNumber = String(parsed?.project_info?.project_number || '');
+    const pkgResult = validateGoogleServicesPackages(raw);
+    if (projectId !== 'gen-lang-client-0525281130') {
+      throw new Error(`${target.label} google-services.json invalid project_id '${projectId}' (expected 'gen-lang-client-0525281130')`);
+    }
+    if (projectNumber !== '221269328833') {
+      throw new Error(`${target.label} google-services.json invalid project_number '${projectNumber}' (expected '221269328833')`);
+    }
+    if (!pkgResult.isValid) {
+      throw new Error(`${target.label} google-services.json missing required packages (found: ${pkgResult.packages.join(', ')})`);
+    }
+    console.log(`[PASS] Post-Secret Android Firebase Validation (${target.label}): project_id=${projectId}, project_number=${projectNumber}, packages=${pkgResult.packages.join(', ')}`);
+  }
+}
+
+const cliEntry = process.argv.includes('--verify-android-firebase-config')
+  ? runPostSecretAndroidFirebaseVerification
+  : runSystemVerification;
+
+cliEntry().catch(err => {
   console.error('Fatal verification error:', err);
   process.exit(1);
 });
