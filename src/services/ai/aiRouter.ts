@@ -16,6 +16,7 @@ import type {
 import { geminiAdapter } from './geminiAdapter.ts';
 import { videoProviderAdapter } from './videoProviderAdapter.ts';
 import { faceSwapAdapter } from './faceSwapAdapter.ts';
+import { smartCanvasAdapter } from './smartCanvasAdapter.ts';
 import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
 import { MODEL_REGISTRY, calculateEstimatedProviderCostUsd, getRegisteredModelEntry, resolveCanonicalModelId } from '../pricing/pricingService.ts';
 
@@ -266,22 +267,30 @@ export class AIRouter {
       }
     }
 
-    const rawProvider = (
-      activeWorkflowConfig?.provider ||
-      params.provider ||
-      (params.templateType === 'video' ? 'google_veo' : 'gemini')
-    )
-      .toString()
-      .trim()
-      .toLowerCase();
+    const explicitProvider = (activeWorkflowConfig?.provider || params.provider || '').toString().trim().toLowerCase();
     const resolvedAdapter = (activeWorkflowConfig?.adapter || params.adapter || '').toString().trim();
+    const isSmartTemplateRoute =
+      params.engine === 'SMART_TEMPLATE' ||
+      explicitProvider === 'smart_template' ||
+      resolvedAdapter === 'smartCanvas';
+
+    const rawProvider = isSmartTemplateRoute
+      ? 'smart_template'
+      : (
+          explicitProvider ||
+          (params.templateType === 'video' ? 'google_veo' : 'gemini')
+        );
     const workflowName = (activeWorkflowConfig?.workflow || params.workflow || '').toString().trim();
     const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
 
     const rawModel = (activeWorkflowConfig?.model || params.model || '').toString().trim();
     let selectedModel: string | undefined = rawModel ? resolveCanonicalModelId(rawModel) : undefined;
 
-    if (!selectedModel || selectedModel === 'auto') {
+    if (isSmartTemplateRoute) {
+      if (!selectedModel || selectedModel === 'auto') {
+        selectedModel = params.templateType === 'video' ? 'smart_canvas_ffmpeg' : 'smart_canvas';
+      }
+    } else if (!selectedModel || selectedModel === 'auto') {
       const modality = drivingVideoUrl && isInputImage ? 'face_swap' : (isInputVideo || params.templateType === 'video' ? 'video' : 'image');
       selectedModel = selectBestCompatibleModel(modality, workflowName) || undefined;
       if (!selectedModel) {
@@ -401,7 +410,24 @@ export class AIRouter {
       });
     }
 
-    // 4. Execute according to resolved target media type & provider (NO silent fallback to Gemini Omni)
+    // 4. Native Smart Template Canvas Route (Resvg + FFmpeg — Photo & Video)
+    if (isSmartTemplateRoute) {
+      return await smartCanvasAdapter.processSmartTemplate({
+        templateId: params.templateId,
+        templateTitle: params.templateTitle,
+        templateType: params.templateType,
+        workflow: workflowName || rawModel || 'smart_canvas',
+        model: selectedModel || (params.templateType === 'video' ? 'smart_canvas_ffmpeg' : 'smart_canvas'),
+        inputMediaUrls: customerMediaUrls,
+        aspectRatio: activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16',
+        customPrompt: params.customPrompt,
+        durationSeconds: params.durationSeconds,
+        resolution: params.resolution,
+        ownerUserId: params.ownerUserId
+      });
+    }
+
+    // 5. Execute according to resolved target media type & provider (NO silent fallback to Gemini Omni)
     const sampleBeforeUrl =
       params.sampleBeforeUrl ||
       activeWorkflowConfig?.sampleBefore ||

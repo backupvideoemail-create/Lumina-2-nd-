@@ -25,37 +25,96 @@ export class VideoProviderAdapter {
   /**
    * Helper to resolve starting image input into base64 bytes and mimeType.
    */
-  private async resolveImagePayload(imageInput: string): Promise<{ data: string; mimeType: string }> {
-    if (imageInput.startsWith('data:')) {
-      const match = imageInput.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) return { mimeType: match[1], data: match[2] };
-    }
+  /**
+   * Helper to resolve starting image or video input into base64 bytes, normalized mimeType, and part type.
+   */
+  private async resolveMediaPayload(mediaInput: string, ownerUserId?: string): Promise<{ data: string; mimeType: string; partType: 'image' | 'video' }> {
+    const cleanMime = (raw?: string | null, fallback = 'image/jpeg') => {
+      const normalized = String(raw || fallback).split(';')[0].trim().toLowerCase();
+      return normalized || fallback;
+    };
 
-    if (imageInput.startsWith('/api/media/')) {
-      const fileId = imageInput.replace('/api/media/', '');
-      const filePath = mediaStorage.getFilePath(fileId);
-      if (filePath) {
-        const fs = await import('fs');
-        const buf = fs.readFileSync(filePath);
+    if (mediaInput.startsWith('data:')) {
+      const match = mediaInput.match(/^data:([^;]+);base64,(.+)$/i);
+      if (match) {
+        const mimeType = cleanMime(match[1]);
         return {
-          data: buf.toString('base64'),
-          mimeType: fileId.endsWith('.png') ? 'image/png' : 'image/jpeg'
+          mimeType,
+          data: match[2],
+          partType: mimeType.startsWith('video/') ? 'video' : 'image'
         };
       }
     }
 
-    if (imageInput.startsWith('http://') || imageInput.startsWith('https://')) {
-      const res = await fetch(imageInput);
+    if (mediaInput.startsWith('/api/media/') && !mediaInput.startsWith('/api/media/signed/')) {
+      const fileId = mediaInput.split('?')[0].replace('/api/media/', '');
+      const filePath = mediaStorage.getFilePath(fileId);
+      if (filePath) {
+        const fs = await import('fs');
+        const buf = fs.readFileSync(filePath);
+        const lower = fileId.toLowerCase();
+        const mimeType = lower.endsWith('.mp4')
+          ? 'video/mp4'
+          : lower.endsWith('.mov')
+          ? 'video/quicktime'
+          : lower.endsWith('.webm')
+          ? 'video/webm'
+          : lower.endsWith('.png')
+          ? 'image/png'
+          : lower.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/jpeg';
+        return {
+          data: buf.toString('base64'),
+          mimeType,
+          partType: mimeType.startsWith('video/') ? 'video' : 'image'
+        };
+      }
+
+      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, ownerUserId);
+      if (streamRes.body) {
+        const chunks: Buffer[] = [];
+        if (typeof streamRes.body.transformToByteArray === 'function') {
+          chunks.push(Buffer.from(await streamRes.body.transformToByteArray()));
+        } else {
+          for await (const c of streamRes.body) {
+            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+          }
+        }
+        const buf = Buffer.concat(chunks);
+        const mimeType = cleanMime(streamRes.mimeType, 'image/jpeg');
+        return {
+          data: buf.toString('base64'),
+          mimeType,
+          partType: mimeType.startsWith('video/') ? 'video' : 'image'
+        };
+      }
+    }
+
+    if (mediaInput.startsWith('http://') || mediaInput.startsWith('https://')) {
+      const res = await fetch(mediaInput);
       if (!res.ok) {
-        throw new Error(`Failed to fetch source image for video from ${imageInput}`);
+        throw new Error(`Failed to fetch source media for video from ${mediaInput}: HTTP ${res.status}`);
       }
       const arrayBuffer = await res.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const mimeType = res.headers.get('content-type') || 'image/jpeg';
-      return { data: buffer.toString('base64'), mimeType };
+      const mimeType = cleanMime(res.headers.get('content-type'), 'image/jpeg');
+      return {
+        data: buffer.toString('base64'),
+        mimeType,
+        partType: mimeType.startsWith('video/') ? 'video' : 'image'
+      };
     }
 
-    return { data: imageInput, mimeType: 'image/jpeg' };
+    return { data: mediaInput, mimeType: 'image/jpeg', partType: 'image/jpeg'.startsWith('video/') ? 'video' : 'image' };
+  }
+
+  private async fetchOutputVideoUri(uri: string, apiKey: string): Promise<Buffer | null> {
+    const isGoogleUri = uri.includes('googleapis.com') || uri.includes('generativelanguage');
+    const res = await fetch(uri, isGoogleUri ? { headers: { 'x-goog-api-key': apiKey } } : undefined);
+    if (!res.ok) return null;
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
   }
 
   /**
@@ -105,15 +164,15 @@ export class VideoProviderAdapter {
 
     const inputParts: any[] = [];
 
-    // Customer Image is the primary identity starting frame (CUSTOMER_SOURCE_PHOTO)
+    // Customer Image or Video is the primary identity starting frame (CUSTOMER_SOURCE_PHOTO / VIDEO)
     const primaryIdentityMedia = params.userImageUrl || params.sourceMediaUrl;
     if (primaryIdentityMedia) {
       try {
-        const imgPayload = await this.resolveImagePayload(primaryIdentityMedia);
+        const mediaPayload = await this.resolveMediaPayload(primaryIdentityMedia, params.ownerUserId);
         inputParts.push({
-          type: 'image',
-          data: imgPayload.data,
-          mime_type: imgPayload.mimeType
+          type: mediaPayload.partType,
+          data: mediaPayload.data,
+          mime_type: mediaPayload.mimeType
         });
       } catch (err: any) {
         throw new Error(`Starting frame resolution failed for customer media: ${err.message}`);
@@ -127,9 +186,11 @@ export class VideoProviderAdapter {
     });
 
     const targetAspectRatio = params.aspectRatio === '16:9' ? '16:9' : '9:16';
-    const targetDuration = params.durationSeconds && Number(params.durationSeconds) > 0
-      ? `${Math.round(Number(params.durationSeconds))}s`
-      : '5s';
+    const numericDuration = Number(params.durationSeconds);
+    const clampedDuration = Number.isFinite(numericDuration) && numericDuration > 0
+      ? Math.max(3, Math.min(15, Math.round(numericDuration)))
+      : 5;
+    const targetDuration = `${clampedDuration}s`;
     const targetResolution = params.resolution === '1080p' ? '1080p' : '720p';
 
     try {
@@ -154,11 +215,7 @@ export class VideoProviderAdapter {
       if (videoPart?.data) {
         videoBuffer = Buffer.from(videoPart.data, 'base64');
       } else if ((videoPart as any)?.uri) {
-        const videoRes = await fetch((videoPart as any).uri);
-        if (videoRes.ok) {
-          const ab = await videoRes.arrayBuffer();
-          videoBuffer = Buffer.from(ab);
-        }
+        videoBuffer = await this.fetchOutputVideoUri((videoPart as any).uri, apiKey);
       } else {
         // Inspect steps for model_output video
         for (const step of (interaction.steps || []) as any[]) {
@@ -168,12 +225,8 @@ export class VideoProviderAdapter {
               videoBuffer = Buffer.from((vContent as any).data, 'base64');
               break;
             } else if (vContent && (vContent as any).uri) {
-              const videoRes = await fetch((vContent as any).uri);
-              if (videoRes.ok) {
-                const ab = await videoRes.arrayBuffer();
-                videoBuffer = Buffer.from(ab);
-                break;
-              }
+              videoBuffer = await this.fetchOutputVideoUri((vContent as any).uri, apiKey);
+              if (videoBuffer) break;
             }
           }
         }

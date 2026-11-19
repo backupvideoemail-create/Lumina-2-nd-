@@ -41,7 +41,7 @@ function reportAuthFailure(
 
 async function exchangeFirebaseSessionWithRetry(
   payload: Record<string, any>,
-  maxRetries: number = 2
+  maxRetries: number = 4
 ): Promise<{
   ok: boolean;
   status: number;
@@ -56,7 +56,7 @@ async function exchangeFirebaseSessionWithRetry(
       body: JSON.stringify(payload)
     });
     const parsed = await safeParseJsonResponse<any>(res);
-    if (res.ok && parsed.data?.success) {
+    if (res.ok && parsed.data?.success && parsed.data?.cloudPersisted === true) {
       return { ok: true, status: res.status, data: parsed.data };
     }
     const isRetryableTransient =
@@ -67,7 +67,7 @@ async function exchangeFirebaseSessionWithRetry(
         Boolean(parsed.data?.retryable || parsed.data?.code === 'SESSION_PERSISTENCE_FAILED' || parsed.isHtml));
     if (isRetryableTransient && attempt < maxRetries) {
       attempt += 1;
-      await new Promise((r) => setTimeout(r, 750 * attempt));
+      await new Promise((r) => setTimeout(r, Math.min(2500, 750 * attempt)));
       continue;
     }
     const cleanErr =
@@ -127,7 +127,7 @@ export const AuthModal: React.FC = () => {
 
       setLoading(false);
 
-      if (sessionRes.ok && sessionRes.data?.success) {
+      if (sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
         setStep('authenticated');
         setTimeout(() => {
           onAuthSuccess(sessionRes.data.user, sessionRes.data.token);

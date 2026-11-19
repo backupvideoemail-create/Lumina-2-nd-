@@ -370,7 +370,16 @@ export const TemplateDetailModal: React.FC = () => {
       setWardrobeSourceA('AUTO');
       setWardrobeSourceB('AUTO');
       const modelEntry = getRegisteredModelEntry(selectedTemplate.model);
-      const verifiedResolutions = modelEntry
+      const isSmartSelected = Boolean(
+        (selectedTemplate as any).isSmartTemplate ||
+        (selectedTemplate as any).smartMode ||
+        (selectedTemplate as any).source === 'smart' ||
+        (selectedTemplate as any).smartAssetRole ||
+        selectedTemplate.engine === 'SMART_TEMPLATE'
+      );
+      const verifiedResolutions = isSmartSelected
+        ? (['720p', '1080p'] as Array<'480p' | '720p' | '1080p'>)
+        : modelEntry
         ? (Object.entries(modelEntry.resolutionTariffs)
             .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
             .map(([res]) => res as '480p' | '720p' | '1080p'))
@@ -384,7 +393,9 @@ export const TemplateDetailModal: React.FC = () => {
       } else {
         setSelectedResolution('' as any);
       }
-      if (modelEntry?.appDefaultDurationSeconds) {
+      if (isSmartSelected) {
+        setSelectedDuration(selectedTemplate.durationSeconds || 5);
+      } else if (modelEntry?.appDefaultDurationSeconds) {
         setSelectedDuration(modelEntry.appDefaultDurationSeconds);
       } else if (selectedTemplate.durationSeconds) {
         setSelectedDuration(selectedTemplate.durationSeconds);
@@ -405,16 +416,18 @@ export const TemplateDetailModal: React.FC = () => {
 
   const canonicalModel = resolveCanonicalModelId(tpl.model) || tpl.model || '';
   const modelEntry = getRegisteredModelEntry(tpl.model);
-  const supportedResolutions = modelEntry
+  const supportedResolutions = isSmartTemplate
+    ? (['720p', '1080p'] as Array<'480p' | '720p' | '1080p'>)
+    : modelEntry
     ? (Object.entries(modelEntry.resolutionTariffs)
         .filter(([_, t]) => t.supportStatus === 'SUPPORTED')
         .map(([res]) => res as '480p' | '720p' | '1080p'))
     : [];
 
   const selectedResolutionTariff = modelEntry?.resolutionTariffs[selectedResolution];
-  const isResolutionSupported = selectedResolutionTariff?.supportStatus === 'SUPPORTED';
+  const isResolutionSupported = isSmartTemplate ? true : selectedResolutionTariff?.supportStatus === 'SUPPORTED';
 
-  const isDurationSupported = modelEntry?.billingUnit === 'per_image'
+  const isDurationSupported = isSmartTemplate || modelEntry?.billingUnit === 'per_image'
     ? true
     : (modelEntry?.minDurationSeconds !== undefined && modelEntry?.maxDurationSeconds !== undefined
         ? (selectedDuration >= modelEntry.minDurationSeconds && selectedDuration <= modelEntry.maxDurationSeconds)
@@ -1407,12 +1420,36 @@ export const TemplateDetailModal: React.FC = () => {
                   <span className="text-[10px] text-stone-400">Credits scale proportionally</span>
                 </div>
                 <div className="flex gap-2">
-                  {(!modelEntry || modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' || modelEntry.minDurationSeconds === undefined || modelEntry.maxDurationSeconds === undefined) ? (
+                  {isSmartTemplate ? (
+                    [5, 8].map((dur) => (
+                      <button
+                        key={dur}
+                        type="button"
+                        onClick={() => setSelectedDuration(dur)}
+                        className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                          selectedDuration === dur
+                            ? 'bg-gradient-to-r from-amber-400 to-[#d4af37] text-stone-950 shadow-md font-black'
+                            : 'bg-white/5 text-stone-300 hover:bg-white/10 border border-white/10'
+                        }`}
+                      >
+                        {dur}s
+                      </button>
+                    ))
+                  ) : (!modelEntry || modelEntry.endpointVerificationStatus === 'PENDING_QUOTE' || modelEntry.minDurationSeconds === undefined || modelEntry.maxDurationSeconds === undefined) ? (
                     <div className="w-full py-2 px-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs text-center font-medium">
                       Duration verification pending (जाँच लंबित)
                     </div>
                   ) : (
-                    Array.from(new Set([modelEntry.minDurationSeconds, modelEntry.maxDurationSeconds]))
+                    Array.from(
+                      new Set(
+                        [
+                          modelEntry.minDurationSeconds,
+                          modelEntry.appDefaultDurationSeconds,
+                          modelEntry.maxDurationSeconds
+                        ].filter((v): v is number => typeof v === 'number' && v > 0)
+                      )
+                    )
+                      .sort((a, b) => a - b)
                       .map((dur) => (
                         <button
                           key={dur}

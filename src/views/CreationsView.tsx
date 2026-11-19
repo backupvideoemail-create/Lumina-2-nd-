@@ -57,9 +57,16 @@ export const CreationsView: React.FC = () => {
   const handleDownload = (e: React.MouseEvent, gen: Generation) => {
     e.stopPropagation();
     const url = gen.resultMediaUrl || gen.inputMediaUrl;
+    const cleanUrl = (url || '').split('?')[0].toLowerCase();
+    const ext =
+      gen.templateType === 'video' || cleanUrl.endsWith('.mp4') || cleanUrl.endsWith('.webm') || cleanUrl.endsWith('.mov')
+        ? 'mp4'
+        : cleanUrl.endsWith('.png')
+        ? 'png'
+        : 'jpg';
     const a = document.createElement('a');
     a.href = url;
-    a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+    a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

@@ -963,11 +963,11 @@ Note: Sanitized diagnostic report — no API keys, private keys, tokens, or PII 
                   Owner-Only Gemini Omni 1.2 Manual Video Test Console
                 </h4>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                  gemini-omni-1.2-flash · Customer Guarded
+                  gemini-omni-1.2-flash · Admin Paid Test Console
                 </span>
               </div>
               <p className="text-[11px] text-stone-300 leading-relaxed">
-                Public customer routes remain locked behind <code>MODEL_EVALUATION_ONLY</code>. Only authorized Owner/Admin accounts can preview cost, explicitly confirm paid API usage, and verify live Omni 1.2 video generation here. Keep zero-cost checks only when Gemini prepaid balance is depleted.
+                Gemini Omni 1.2 Flash is unlocked for customer video templates with verified per-second tariffs (+40% markup). This manual diagnostic console remains strictly restricted to authorized Owner/Admin accounts for direct paid smoke testing.
               </p>
             </div>
 

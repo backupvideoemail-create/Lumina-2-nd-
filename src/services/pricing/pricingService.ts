@@ -135,7 +135,7 @@ export const FACE_SWAP_COMPATIBLE_COMBINATIONS: FaceSwapProviderOption[] = [
   },
   {
     provider: 'gemini',
-    providerLabel: 'Google Gemini Video (Evaluation Guarded)',
+    providerLabel: 'Google Gemini Video (Omni 1.2 Flash)',
     adapters: [
       {
         adapter: 'videoProviderAdapter',
@@ -143,13 +143,13 @@ export const FACE_SWAP_COMPATIBLE_COMBINATIONS: FaceSwapProviderOption[] = [
         models: [
           {
             model: 'gemini-omni-1.2-flash',
-            modelLabel: 'Gemini Omni 1.2 Flash (Evaluation Only)',
+            modelLabel: 'Gemini Omni 1.2 Flash',
             workflows: [
               { workflow: 'VIDEO_EDIT', workflowLabel: 'Omni Video Edit (VIDEO_EDIT)' },
               { workflow: 'IMAGE_TO_VIDEO', workflowLabel: 'Image-to-Video (IMAGE_TO_VIDEO)' }
             ],
             supportedResolutions: ['720p', '1080p'],
-            isEvaluationOnly: true
+            isEvaluationOnly: false
           }
         ]
       }
@@ -241,7 +241,7 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     },
     appDefaultResolution: '1080p',
     billsSourceVideo: false,
-    endpointVerificationStatus: 'PENDING_QUOTE',
+    endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED'
   },
   'gemini-3.1-flash-lite-image': {
@@ -258,7 +258,7 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     },
     appDefaultResolution: '1080p',
     billsSourceVideo: false,
-    endpointVerificationStatus: 'PENDING_QUOTE',
+    endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED'
   },
   'gemini-3.1-flash-image': {
@@ -275,7 +275,7 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     },
     appDefaultResolution: '1080p',
     billsSourceVideo: false,
-    endpointVerificationStatus: 'PENDING_QUOTE',
+    endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED'
   },
   'gemini-omni-1.2-flash': {
@@ -294,9 +294,9 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     maxDurationSeconds: 15,
     appDefaultDurationSeconds: 5,
     billsSourceVideo: false,
-    endpointVerificationStatus: 'PENDING_QUOTE',
+    endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED',
-    isEvaluationOnly: true
+    isEvaluationOnly: false
   },
   'smart_canvas_ffmpeg': {
     modelId: 'smart_canvas_ffmpeg',

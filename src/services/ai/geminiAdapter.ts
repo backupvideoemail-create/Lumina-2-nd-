@@ -41,16 +41,32 @@ export class GeminiAdapter {
       }
     }
 
-    // 2. If it is a local storage path / file ID
-    if (imageInput.startsWith('/api/media/')) {
-      const fileId = imageInput.replace('/api/media/', '');
+    // 2. If it is a local storage path / file ID (fallback to R2 stream on stateless Cloud Run)
+    if (imageInput.startsWith('/api/media/') && !imageInput.startsWith('/api/media/signed/')) {
+      const fileId = imageInput.split('?')[0].replace('/api/media/', '');
       const filePath = mediaStorage.getFilePath(fileId);
       if (filePath) {
         const fs = await import('fs');
         const buf = fs.readFileSync(filePath);
         return {
           data: buf.toString('base64'),
-          mimeType: fileId.endsWith('.png') ? 'image/png' : 'image/jpeg'
+          mimeType: fileId.endsWith('.png') ? 'image/png' : fileId.endsWith('.webp') ? 'image/webp' : 'image/jpeg'
+        };
+      }
+      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId);
+      if (streamRes.body) {
+        const chunks: Buffer[] = [];
+        if (typeof streamRes.body.transformToByteArray === 'function') {
+          chunks.push(Buffer.from(await streamRes.body.transformToByteArray()));
+        } else {
+          for await (const c of streamRes.body) {
+            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+          }
+        }
+        const buf = Buffer.concat(chunks);
+        return {
+          data: buf.toString('base64'),
+          mimeType: (streamRes.mimeType || 'image/jpeg').split(';')[0].trim()
         };
       }
     }

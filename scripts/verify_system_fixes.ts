@@ -2882,7 +2882,7 @@ async function runSystemVerification() {
     '41.1 GeminiAdapter fails closed with PROVIDER_ROUTING_MISMATCH on incompatible provider'
   );
 
-  // 41.2 VideoProviderAdapter switched to gemini-omni-1.2-flash + User-Agent + rawSanitizedResponse + customer guard
+  // 41.2 VideoProviderAdapter switched to gemini-omni-1.2-flash + User-Agent + rawSanitizedResponse + customer tariff unlocked
   const videoAdapterSrc41 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/videoProviderAdapter.ts'), 'utf8');
   assert(
     videoAdapter41.modelName === 'gemini-omni-1.2-flash' &&
@@ -2891,11 +2891,22 @@ async function runSystemVerification() {
     '41.2 VideoProviderAdapter defaults to gemini-omni-1.2-flash with aistudio-build User-Agent and rawSanitizedResponse diagnostics'
   );
 
-  let omniGuardErr = '';
+  const { calculateCustomerTemplateQuote: quoteOmni41, MODEL_REGISTRY: reg41 } = await import('../src/services/pricing/pricingService.ts');
+  const omniQuote41 = quoteOmni41({
+    modelId: 'gemini-omni-1.2-flash',
+    type: 'video',
+    resolution: '720p',
+    durationSeconds: 5,
+    fxRateOverride: 85
+  });
+  // Verify generic evaluation-only guard remains active when a model is flagged isEvaluationOnly
+  const prevOmniEvalFlag = reg41['gemini-omni-1.2-flash'].isEvaluationOnly;
+  reg41['gemini-omni-1.2-flash'].isEvaluationOnly = true;
+  let genericEvalGuardErr = '';
   try {
     await aiRouter41.processTemplate({
-      templateId: 'tpl_omni_blocked',
-      templateTitle: 'Guarded Omni Video',
+      templateId: 'tpl_eval_guard_check',
+      templateTitle: 'Evaluation Guarded Probe',
       templateType: 'video',
       engine: 'AI_GENERATION',
       aspectRatio: '9:16',
@@ -2903,23 +2914,19 @@ async function runSystemVerification() {
       provider: 'google_omni',
       adapter: 'videoProviderAdapter',
       model: 'gemini-omni-1.2-flash',
-      workflow: 'VIDEO_EDIT',
-      recipe: {
-        version: '1.0',
-        inputType: 'IMAGE',
-        provider: 'google_omni',
-        adapter: 'videoProviderAdapter',
-        model: 'gemini-omni-1.2-flash',
-        workflow: 'VIDEO_EDIT',
-        prompt: 'Cinematic video'
-      } as any
+      workflow: 'VIDEO_EDIT'
     });
   } catch (err: any) {
-    omniGuardErr = err.message;
+    genericEvalGuardErr = err.message;
+  } finally {
+    reg41['gemini-omni-1.2-flash'].isEvaluationOnly = prevOmniEvalFlag;
   }
   assert(
-    omniGuardErr.includes('MODEL_EVALUATION_ONLY'),
-    '41.2 AIRouter strictly blocks customer production traffic on evaluation-only gemini-omni-1.2-flash'
+    prevOmniEvalFlag === false &&
+      omniQuote41.status === 'QUOTED' &&
+      omniQuote41.credits > 0 &&
+      genericEvalGuardErr.includes('MODEL_EVALUATION_ONLY'),
+    '41.2 gemini-omni-1.2-flash is unlocked with verified customer pricing while generic MODEL_EVALUATION_ONLY guard stays intact'
   );
 
   // 41.3 Strict AI Router: zero silent fallback to Omni + Higgsfield workflow mismatch fail-closed
@@ -3399,6 +3406,83 @@ async function runSystemVerification() {
       serverSrc39.includes('verifiedGithubBaselineSha:') &&
       serverSrc39.includes('commitSource:'),
     '43.7 Sanitized DatabaseGuardState (serviceAccountProjectMatch, envOverrideStatus, configStatus) & /api/version commit provenance verified'
+  );
+
+  // --- SUITE 44: SMART CANVAS 7 WORKFLOWS, CUSTOMER OMNI 1.2 UNLOCK, AUTH/CACHE/DOWNLOAD HARDENING & CI ORDER ---
+  console.log('\n--- SUITE 44: SMART CANVAS 7 WORKFLOWS, CUSTOMER OMNI 1.2, AUTH/CACHE/DOWNLOAD HARDENING & CI ORDER ---');
+
+  // 44.1 Real native Resvg + FFmpeg execution of ALL 7 SMART_TEMPLATE workflows
+  const { smartCanvasAdapter } = await import('../src/services/ai/smartCanvasAdapter.ts');
+  const { Resvg: ResvgTest } = await import('@resvg/resvg-js');
+  const sampleSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#d4af37"/></svg>';
+  const samplePngDataUri = `data:image/png;base64,${Buffer.from(new ResvgTest(sampleSvg).render().asPng()).toString('base64')}`;
+
+  const smartCases44: Array<{ id: string; workflow: string; type: 'photo' | 'video'; ext: string }> = [
+    { id: 'tpl_retro_35mm_kodak', workflow: 'retro-polaroid-warm', type: 'photo', ext: '.png' },
+    { id: 'tpl_instagram_story_quote', workflow: 'story-clean-minimal', type: 'photo', ext: '.png' },
+    { id: 'tpl_dark_academia_library', workflow: 'dark-academia-mood', type: 'photo', ext: '.png' },
+    { id: 'tpl_bali_resort_morning', workflow: 'bali-jungle-glow', type: 'photo', ext: '.png' },
+    { id: 'tpl_instagram_aesthetic_polaroid_carousel', workflow: 'film-strip-carousel', type: 'photo', ext: '.png' },
+    { id: 'tpl_daily_status_morning', workflow: 'good-morning-frame', type: 'photo', ext: '.png' },
+    { id: 'tpl_cyber_synthwave_horizon', workflow: 'synthwave-grid-animation', type: 'video', ext: '.mp4' }
+  ];
+
+  let allSmartPassed44 = true;
+  for (const sc of smartCases44) {
+    const out = await aiRouter41.processTemplate({
+      templateId: sc.id,
+      templateTitle: `Smart ${sc.workflow}`,
+      templateType: sc.type,
+      engine: 'SMART_TEMPLATE',
+      inputMediaUrl: samplePngDataUri,
+      inputMediaUrls: sc.workflow === 'film-strip-carousel' ? [samplePngDataUri, samplePngDataUri] : [samplePngDataUri],
+      aspectRatio: '9:16',
+      workflow: sc.workflow,
+      customPrompt: 'Lumina Verified Render',
+      durationSeconds: sc.type === 'video' ? 3 : undefined,
+      ownerUserId: 'suite44_user'
+    });
+    const outFile = pathUtil.basename(out.resultUrl);
+    const diskPath = mediaStorage.getFilePath(outFile);
+    const sizeBytes = diskPath && fs.existsSync(diskPath) ? fs.statSync(diskPath).size : 0;
+    if (!out.success || out.adapter !== 'smartCanvas' || !out.resultUrl.endsWith(sc.ext) || sizeBytes < 500) {
+      allSmartPassed44 = false;
+    }
+    await mediaStorage.deleteMedia(outFile);
+  }
+  assert(
+    allSmartPassed44 && Boolean(smartCanvasAdapter),
+    '44.1 All 7 SMART_TEMPLATE workflows (6 Resvg PNG photos + 1 FFmpeg H.264 MP4 video) render real outputs via AIRouter'
+  );
+
+  // 44.2 Frontend Auth, AppContext safe JSON & offline cache protection, dynamic download extensions
+  const authModalSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AuthModal.tsx'), 'utf8');
+  const appContextSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  const creationsSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/CreationsView.tsx'), 'utf8');
+  const viewerSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/GenerationViewerModal.tsx'), 'utf8');
+  assert(
+    authModalSrc44.includes('cloudPersisted === true') &&
+      appContextSrc44.includes('databaseGuardBlocked') &&
+      appContextSrc44.includes('safeParseJsonResponse') &&
+      creationsSrc44.includes("'mp4'") &&
+      viewerSrc44.includes("'mp4'"),
+    '44.2 AuthModal cloudPersisted enforcement, AppContext cache guard & safeParseJsonResponse, and dynamic .mp4 download extensions verified'
+  );
+
+  // 44.3 Database fail-closed project_id & catalogRevision startup check + CI workflow order + Audit reconciliation
+  const dbSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+  const ciSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), '.github/workflows/android-build.yml'), 'utf8');
+  const auditSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'docs/operations/CONFIGURATION_AUDIT.md'), 'utf8');
+  const verifyStepIdx44 = ciSrc44.indexOf('Verify Web Build & Type Check');
+  const secretStepIdx44 = ciSrc44.indexOf('Recreate google-services.json from secret');
+  assert(
+    dbSrc44.includes('missing required project_id') &&
+      dbSrc44.includes('Hydrate Catalog Metadata Revision on startup') &&
+      serverSrc39.includes("VERIFIED_GITHUB_BASELINE_SHA = '1ee049a00d241ca9c3f26a1d2a7f7e9d6dcf6047'") &&
+      verifyStepIdx44 > 0 &&
+      secretStepIdx44 > verifyStepIdx44 &&
+      auditSrc44.includes('SUPERSEDED'),
+    '44.3 Fail-closed SA project_id check, catalogRevision startup hydration, baseline SHA update, Android CI order, and audit reconciliation verified'
   );
 
   console.log('\n====================================================');

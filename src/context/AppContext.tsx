@@ -353,10 +353,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Sync Plans and Top-Up packs from Central Server Configuration
   useEffect(() => {
     fetch('/api/payments/config')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.plans) setPlans(data.plans);
-        if (data?.topUps) setTopUps(data.topUps);
+      .then((res) => safeParseJsonResponse<any>(res))
+      .then((parsed) => {
+        if (parsed.ok && parsed.data?.plans) setPlans(parsed.data.plans);
+        if (parsed.ok && parsed.data?.topUps) setTopUps(parsed.data.topUps);
       })
       .catch((err) => console.warn('[AppContext] Payment config sync note:', err));
   }, []);
@@ -381,19 +381,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
   }, []);
 
-  // Fetch Full Active Template Catalog (Publicly accessible to any visitor; filters apply client-side without wiping catalog)
+  // Fetch Full Active Template Catalog (Publicly accessible to any visitor; protects cached catalog on proxy/offline anomalies)
   const fetchTemplates = useCallback(async () => {
     try {
       setLoadingTemplates(true);
-      const res = await fetch('/api/templates');
-      if (res.ok) {
-        const data = await res.json();
-        const incoming = Array.isArray(data?.templates) ? data.templates : [];
+      let res = await fetch('/api/templates');
+      let parsed = await safeParseJsonResponse<any>(res);
+      if (parsed.isRetryable) {
+        await new Promise((r) => setTimeout(r, 900));
+        res = await fetch('/api/templates');
+        parsed = await safeParseJsonResponse<any>(res);
+      }
+
+      if (parsed.ok && parsed.data) {
+        const incoming = Array.isArray(parsed.data?.templates) ? parsed.data.templates : [];
+        const isServerOffline =
+          Boolean(parsed.data?.databaseGuardBlocked) ||
+          parsed.data?.catalogueStatus === 'OFFLINE';
+
+        if (isServerOffline && incoming.length === 0) {
+          setCatalogueStatus((prev) => (prev === 'ready' ? 'ready' : 'offline_error'));
+          return;
+        }
+
         setTemplates(incoming);
         setCatalogueStatus(incoming.length > 0 ? 'ready' : 'empty');
-        try {
-          localStorage.setItem('lumina_public_templates_cache', JSON.stringify(incoming));
-        } catch {}
+        if (incoming.length > 0) {
+          try {
+            localStorage.setItem('lumina_public_templates_cache', JSON.stringify(incoming));
+          } catch {}
+        }
       } else {
         setCatalogueStatus((prev) => (prev === 'ready' ? 'ready' : 'offline_error'));
       }
@@ -425,11 +442,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const fetchFaceSwapScenes = useCallback(async () => {
     try {
       const res = await fetch('/api/faceswap/scenes');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.scenes && Array.isArray(data.scenes) && data.scenes.length > 0) {
-          setFaceSwapScenes(data.scenes);
-        }
+      const parsed = await safeParseJsonResponse<any>(res);
+      if (parsed.ok && parsed.data?.scenes && Array.isArray(parsed.data.scenes) && parsed.data.scenes.length > 0) {
+        setFaceSwapScenes(parsed.data.scenes);
       }
     } catch (err) {
       console.warn('[AppContext] Could not fetch face swap scenes:', err);
@@ -524,7 +539,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
-      const res = await fetch('/api/auth/me', {
+      let res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -538,13 +553,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
-      // Preserve session during temporary outages (Firestore OFFLINE, 5xx, timeouts, network errors)
-      if (!res.ok) {
-        console.warn(`[AppContext] /api/auth/me returned HTTP ${res.status}. Preserving session token for outage recovery.`);
+      let parsedMe = await safeParseJsonResponse<any>(res);
+      if (parsedMe.isRetryable) {
+        await new Promise((r) => setTimeout(r, 900));
+        res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.status === 401) {
+          localStorage.removeItem('lumina_session_token');
+          setUser(null);
+          setIsAdmin(false);
+          setServerAdminVerified(false);
+          return;
+        }
+        parsedMe = await safeParseJsonResponse<any>(res);
+      }
+
+      // Preserve session during temporary outages (Firestore OFFLINE, 5xx, proxy HTML, timeouts)
+      if (!parsedMe.ok || !parsedMe.data) {
+        console.warn(`[AppContext] /api/auth/me returned HTTP ${res.status} (${parsedMe.error || 'transient'}). Preserving session token for outage recovery.`);
         return;
       }
 
-      const data = await res.json();
+      const data = parsedMe.data;
       if (data?.user) {
         setUser(data.user);
         if (data.wallet) setWallet(data.wallet);
@@ -556,7 +587,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Server-side cryptographic admin verification:
         // Keep "/api/admin/verify" as the SOLE source of "serverAdminVerified = true".
-        // Never set "serverAdminVerified" merely from a client-side Gmail comparison.
         const isCandidateAdmin = Boolean(
           (data.isAdmin === true || data.user.role === 'admin') ||
           isAuthorizedAdminEmail(data.user.email)
@@ -567,15 +597,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const adminCheckRes = await fetch('/api/admin/verify', {
               headers: { Authorization: `Bearer ${token}` }
             });
-            if (adminCheckRes.ok) {
-              const adminData = await adminCheckRes.json();
-              if (adminData.authorized === true) {
-                setIsAdmin(true);
-                setServerAdminVerified(true);
-              } else {
-                setIsAdmin(false);
-                setServerAdminVerified(false);
-              }
+            const adminParsed = await safeParseJsonResponse<any>(adminCheckRes);
+            if (adminParsed.ok && adminParsed.data?.authorized === true) {
+              setIsAdmin(true);
+              setServerAdminVerified(true);
             } else {
               setIsAdmin(false);
               setServerAdminVerified(false);
@@ -589,12 +614,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setServerAdminVerified(false);
         }
       } else {
-        // If response is 200 but user object is not yet populated (e.g. database syncing or offline),
-        // DO NOT delete session token. Keep token for automatic recovery.
         console.warn('[AppContext] User record not returned in /api/auth/me. Preserving session token for recovery.');
       }
     } catch (err) {
-      // Network errors, fetch aborts, or client offline: preserve token and keep current state
       console.warn('[AppContext] Network or timeout error during session refresh. Preserving session token:', err);
     }
   }, []);
@@ -612,11 +634,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const res = await fetch('/api/generations', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.generations) {
-          setGenerations(data.generations);
-        }
+      const parsed = await safeParseJsonResponse<any>(res);
+      if (parsed.ok && parsed.data?.generations) {
+        setGenerations(parsed.data.generations);
       }
     } catch {
       // Keep existing

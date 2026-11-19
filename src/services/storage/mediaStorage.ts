@@ -512,9 +512,19 @@ export class MediaStorageService {
 
     if (Buffer.isBuffer(payload)) {
       buffer = payload;
-      if (customFileName?.endsWith('.mp4')) {
+      const lowerName = (customFileName || '').toLowerCase();
+      if (lowerName.endsWith('.mp4')) {
         mimeType = 'video/mp4';
         ext = 'mp4';
+      } else if (lowerName.endsWith('.png')) {
+        mimeType = 'image/png';
+        ext = 'png';
+      } else if (lowerName.endsWith('.webp')) {
+        mimeType = 'image/webp';
+        ext = 'webp';
+      } else if (lowerName.endsWith('.gif')) {
+        mimeType = 'image/gif';
+        ext = 'gif';
       }
     } else if (typeof payload === 'string' && payload.startsWith('data:')) {
       const commaIdx = payload.indexOf(',');

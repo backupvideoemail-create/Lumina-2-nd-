@@ -1,35 +1,39 @@
-# AI PRIME STUDIO LUMINA — CONFIGURATION & ENVIRONMENT AUDIT
+# AI PRIME STUDIO — CONFIGURATION & ENVIRONMENT AUDIT (RECONCILED)
 **Repository:** `backupvideoemail-create/Lumina-2-nd-`  
-**Current Approved Main Baseline:** `4a0aba4554131cb902240dc979db5f978ccef0fa`  
-**Previous Verified Commit:** `1818df837de995635cf8344f821de871392cc10f`  
-**Base Commit:** `8409287262d84e9621daf971e1cd30c88884ea3b`  
-**Feature Branch:** `feature/secondary-hero-cache-sync`  
-**Execution Environment:** Sandbox Container vs. Cloud Run Secret Manager  
-**Audit Date:** 2026-11-08  
+**Verified Main Baseline:** `1ee049a00d241ca9c3f26a1d2a7f7e9d6dcf6047`  
+**Cloud Run Service:** `ai-prime-studio-photo-video` (`asia-southeast1`, hosted in legacy GCP project `gen-lang-client-0525281130`)  
+**Public App URL:** `https://ai-prime-studio-photo-video.ai.studio`  
+**Reconciliation Date:** 2026-11-19  
 
 ---
 
-## 1. Runtime Environment Inventory
+## 1. Authoritative Target Reconciliation (Supersedes 2026-11-08 Audit)
 
-| Variable Name | Required Scope | Sandbox Local Status | Live Cloud Run Target Status | Action Required |
+> **Notice:** Earlier 2026-11-08 notes mentioning named Firestore database `ai-studio-lumina2nd-...` or treating `gen-lang-client-0525281130` as the application's Firestore/Auth project are **SUPERSEDED**.
+
+- **Authoritative Customer Database & Auth Project:** `ai-prime-studio`
+- **Authoritative Firestore Database ID:** `(default)` (legacy named databases are strictly blocked by `src/services/db/database.ts`)
+- **Authoritative Cloudflare R2 Bucket:** `lumina-prime-ai-media` (strictly preserved; zero bucket creation or migration)
+- **Legacy Cloud Run Hosting & Android Identity:** `gen-lang-client-0525281130` / Project Number `221269328833` / Package `com.aiprimestudio.app` (preserved intentionally so the public URL and Android builds do not break)
+
+---
+
+## 2. Runtime Environment Inventory
+
+| Variable Name | Required Scope | Sandbox Local Status | Live Cloud Run Target Status | Notes / Action |
 |:---|:---|:---|:---|:---|
-| `FIREBASE_SERVICE_ACCOUNT_KEY` | Backend | `MISSING (Local Mode)` | Secret Manager Binding | Owner binds GCP Service Account JSON in Cloud Run Secret Manager |
-| `FIRESTORE_DATABASE_ID` | DB / Client | `ai-studio-lumina2nd-42c53264...` | Configured | Verified in `firebase-applet-config.json` |
-| `RAZORPAY_KEY_ID` | Payments | `Configured in Live` | Configured in Secret Manager | Live key used on production website |
-| `RAZORPAY_KEY_SECRET` | Payments | `Configured in Live` | Configured in Secret Manager | Live secret used for HMAC verification |
-| `RAZORPAY_WEBHOOK_SECRET` | Payments | `Configured in Live` | Configured in Secret Manager | Live secret used for webhook verification |
-| `R2_ACCOUNT_ID` | Storage | `MISSING (Local Disk Mode)` | Secret Manager Binding | Owner binds Cloudflare R2 Account ID in Secret Manager |
-| `R2_ACCESS_KEY_ID` | Storage | `MISSING (Local Disk Mode)` | Secret Manager Binding | Owner binds Cloudflare R2 Access Key ID in Secret Manager |
-| `R2_SECRET_ACCESS_KEY` | Storage | `MISSING (Local Disk Mode)` | Secret Manager Binding | Owner binds Cloudflare R2 Secret Access Key in Secret Manager |
-| `R2_BUCKET_NAME` | Storage | `lumina-prime-ai-media` | Configured | Verified bucket name matches authoritative configuration |
-| `GEMINI_API_KEY` | AI Model | `Configured on Live` | Configured in Secret Manager | Owner checks Google AI Studio / GCP billing quota (resolves 402) |
-| `HIGGSFIELD_API_KEY` | Face Swap | `PENDING_CONFIG` | Optional | Required only if Higgsfield Genjutsu Light is enabled |
-| `ADMIN_SECRET_KEY` | Admin API | `Configured on Live` | Configured in Secret Manager | Protects sensitive administrative endpoints |
-| `AUTHORIZED_ADMIN_EMAILS` | Admin Auth | `Single Config Module` | Configured (`src/config/adminConfig.ts`) | Single allowlist: `backupvideoemail@gmail.com` and `ai.prime.studio.pro@gmail.com` |
+| `FIREBASE_SERVICE_ACCOUNT_KEY` | Backend (`ai-prime-studio`) | Configured (bound to `ai-prime-studio`) | Secret Manager Recommended | Must belong strictly to `ai-prime-studio`; fail closed if missing/mismatched `project_id` |
+| `FIRESTORE_DATABASE_ID` | DB Guard | `(default)` | `(default)` (Live on rev `00036-h5r+`) | Must be unset or exactly `(default)` |
+| `R2_BUCKET_NAME` | Storage | Env-dependent | `lumina-prime-ai-media` | Never modify or create alternate buckets |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Storage | Env-dependent | Secret Manager Recommended | Migrate from plain Cloud Run env vars to Secret Manager & rotate cleanly |
+| `GEMINI_API_KEY` | AI Photo & Omni 1.2 Video | Env-dependent | Secret Manager Recommended | Powers `geminiAdapter` + `videoProviderAdapter` (`gemini-omni-1.2-flash`) |
+| `HIGGSFIELD_API_KEY` | Face Swap | Optional / Gated | Optional Secret Manager | Customer generation gated until `ENABLE_GENJUTSU_CUSTOMER_GENERATION=true` |
+| `RAZORPAY_*` / `ADMIN_SECRET_KEY` | Payments & Admin | Env-dependent | Secret Manager Recommended | Protect razorpay/cashfree/admin secrets in Secret Manager |
+| `AUTHORIZED_ADMIN_EMAILS` | Admin Auth | `src/config/adminConfig.ts` | Authoritative code config | `backupvideoemail@gmail.com`, `ai.prime.studio.pro@gmail.com` |
 
 ---
 
-## 2. Environment Policy Directives (AC-07)
-1. **No Speculative Missing Claims**: Missing variables in the local build container are accurately documented as `SANDBOX_LOCAL_MODE` and are **not** falsely claimed to be missing in production Cloud Run.
-2. **Zero Redundancy**: No duplicate Google Cloud projects, Cloud Firestore databases, or Cloudflare R2 buckets will be created. The existing project `gen-lang-client-0525281130` and bucket `lumina-prime-ai-media` remain strictly authoritative.
-3. **No Automatic Paid Activation**: Quota exhaustions (such as Gemini HTTP 402) are clearly documented for the Owner. No paid billing will be enabled automatically by code.
+## 3. Security & Secret Manager Hardening Directives
+1. **Staged Secret Manager Migration**: Bind sensitive credentials (`FIREBASE_SERVICE_ACCOUNT_KEY`, `GEMINI_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `ADMIN_SECRET_KEY`) via Google Cloud Secret Manager (`--set-secrets`) on `ai-prime-studio-photo-video`, verify live health on the new revision, then remove duplicate plain-text env vars (`--remove-env-vars`).
+2. **Staged Credential Rotation**: Rotate previously screenshot-exposed keys one service at a time (R2 token, Gemini API key, Razorpay secret if exposed, Firebase Service Account private key) only AFTER confirming the new Secret Manager version resolves cleanly.
+3. **No Speculative Missing Claims**: Missing external secrets inside the isolated sandbox container never override verified live Cloud Run bindings.

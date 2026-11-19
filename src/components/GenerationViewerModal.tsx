@@ -103,21 +103,33 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
   const handleDownload = async () => {
     const url = gen.resultMediaUrl || gen.inputMediaUrl;
     if (!url) return;
+    const cleanUrl = url.split('?')[0].toLowerCase();
+    const inferExt = (blobType?: string) => {
+      const mime = (blobType || '').toLowerCase();
+      if (mime.includes('mp4') || mime.includes('video') || gen.templateType === 'video' || cleanUrl.endsWith('.mp4') || cleanUrl.endsWith('.webm') || cleanUrl.endsWith('.mov')) {
+        return 'mp4';
+      }
+      if (mime.includes('png') || cleanUrl.endsWith('.png')) return 'png';
+      return 'jpg';
+    };
+    const baseName = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}`;
     try {
       const res = await fetch(url);
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
+      const ext = inferExt(blob.type);
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+      a.download = `${baseName}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
     } catch {
+      const ext = inferExt();
       const a = document.createElement('a');
       a.href = url;
-      a.download = `aiprime_${gen.templateTitle.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+      a.download = `${baseName}.${ext}`;
       a.target = '_blank';
       document.body.appendChild(a);
       a.click();

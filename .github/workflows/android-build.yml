@@ -30,6 +30,12 @@ jobs:
       - name: Install npm Dependencies
         run: npm install --legacy-peer-deps --no-audit
 
+      - name: Verify Web Build & Type Check
+        run: |
+          npm run lint
+          npm test
+          npm run build
+
       - name: Recreate google-services.json from secret
         env:
           GOOGLE_SERVICES_SECRET: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -90,12 +96,6 @@ jobs:
               console.log(`Verified ${filePath}: project_id=${projectId}, project_number=${projectNumber}, packages=${packageNames.join(", ")}`);
             }
           '
-
-      - name: Verify Web Build & Type Check
-        run: |
-          npm run lint
-          npm test
-          npm run build
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

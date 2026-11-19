@@ -456,10 +456,15 @@ if (isIsolatedTestEnv) {
 
       if (!credentialObj) {
         runtimeDbGuardState.serviceAccountProjectMatch = 'UNPARSEABLE';
+        runtimeDbGuardState.blocked = true;
+        runtimeDbGuardState.connectionSource = 'blocked';
+        runtimeDbGuardState.effectiveDatabaseId = 'BLOCKED_INVALID_PROJECT';
+        runtimeDbGuardState.blockedReason = `CRITICAL_BLOCKED: FIREBASE_SERVICE_ACCOUNT_KEY could not be parsed as valid JSON. Silent fallback to unverified credentials blocked.`;
+        console.error(`[Database CRITICAL BLOCKED] ${runtimeDbGuardState.blockedReason}`);
       } else {
-        const projectId = credentialObj.project_id || CANONICAL_PROJECT_ID;
+        const projectId = typeof credentialObj.project_id === 'string' ? credentialObj.project_id.trim() : '';
         runtimeDbGuardState.serviceAccountProjectMatch =
-          projectId === CANONICAL_PROJECT_ID ? 'MATCH' : 'MISMATCH';
+          !projectId ? 'UNPARSEABLE' : (projectId === CANONICAL_PROJECT_ID ? 'MATCH' : 'MISMATCH');
         if (credentialObj.client_email) {
           runtimeDbGuardState.runtimeServiceAccountEmail = String(credentialObj.client_email);
         }
@@ -467,7 +472,9 @@ if (isIsolatedTestEnv) {
           runtimeDbGuardState.blocked = true;
           runtimeDbGuardState.connectionSource = 'blocked';
           runtimeDbGuardState.effectiveDatabaseId = 'BLOCKED_INVALID_PROJECT';
-          runtimeDbGuardState.blockedReason = `CRITICAL_BLOCKED: Service account project_id '${projectId}' mismatches canonical '${CANONICAL_PROJECT_ID}'. Silent cross-project connection blocked.`;
+          runtimeDbGuardState.blockedReason = !projectId
+            ? `CRITICAL_BLOCKED: Service account credential is missing required project_id field (expected '${CANONICAL_PROJECT_ID}').`
+            : `CRITICAL_BLOCKED: Service account project_id '${projectId}' mismatches canonical '${CANONICAL_PROJECT_ID}'. Silent cross-project connection blocked.`;
           console.error(`[Database CRITICAL BLOCKED] ${runtimeDbGuardState.blockedReason}`);
         } else {
           const adminApp = initAdminApp({
@@ -756,8 +763,8 @@ export class ProductionDatabase {
       if (metaDoc.exists) {
         const data = metaDoc.data();
         const remoteRev = typeof data?.revision === 'number' ? data.revision : 0;
-        if (remoteRev > this.catalogRevision) {
-          console.log(`[Database] Detected remote catalog revision ${remoteRev} > local ${this.catalogRevision}. Reloading templates & banners...`);
+        if (remoteRev > 0 && remoteRev !== this.catalogRevision) {
+          console.log(`[Database] Detected remote catalog revision ${remoteRev} != local ${this.catalogRevision}. Reloading templates & banners...`);
           await this.reloadTemplatesFromFirestore();
           this.catalogRevision = remoteRev;
         }
@@ -1016,6 +1023,14 @@ export class ProductionDatabase {
             this.db.adminLogs = loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           }
         } catch {}
+
+        // 14. Hydrate Catalog Metadata Revision on startup
+        try {
+          const metaDoc = await adminFirestoreDb.collection('config').doc('catalog_metadata').get();
+          if (metaDoc.exists && typeof metaDoc.data()?.revision === 'number') {
+            this.catalogRevision = metaDoc.data()!.revision;
+          }
+        } catch {}
       } catch {
         // config docs optional
       }
@@ -1143,6 +1158,13 @@ export class ProductionDatabase {
           ...promptsDoc.data().prompts
         };
       }
+      // 7. Catalog Metadata Revision
+      try {
+        const metaDoc = await adminFirestoreDb.collection('config').doc('catalog_metadata').get();
+        if (metaDoc.exists && typeof metaDoc.data()?.revision === 'number') {
+          this.catalogRevision = metaDoc.data()!.revision;
+        }
+      } catch {}
     } catch (cfgErr: any) {
       console.warn('[Database] Catalog config docs note during targeted refresh:', cfgErr.message);
     }

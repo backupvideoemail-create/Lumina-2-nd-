@@ -159,7 +159,7 @@ configureFxHooks({
 });
 
 // Resolve immutable build-time Git commit SHA, Git branch & immutable startup timestamp
-const VERIFIED_GITHUB_BASELINE_SHA = 'fe2acfcad9ee274b2144f7e527c53b0d132e47aa';
+const VERIFIED_GITHUB_BASELINE_SHA = '1ee049a00d241ca9c3f26a1d2a7f7e9d6dcf6047';
 let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
 let resolvedCommitSource: 'env' | 'git' | 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK' = resolvedCommitSha ? 'env' : 'git';
 if (!resolvedCommitSha) {
@@ -1268,7 +1268,13 @@ app.get('/api/templates', async (req, res) => {
     );
   }
 
-  res.json({ templates: results });
+  const guardState = getDatabaseGuardState();
+  res.json({
+    templates: results,
+    catalogueStatus: guardState.blocked ? 'OFFLINE' : prodDb.getCatalogueStatus(),
+    databaseGuardBlocked: guardState.blocked,
+    catalogRevision: prodDb.getCatalogRevision()
+  });
 });
 
 app.get('/api/templates/:id', async (req, res) => {
@@ -1693,18 +1699,20 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
     },
     {
       id: 'videoProviderAdapter',
-      name: 'Google Gemini Omni 1.2 Flash Video Adapter (Evaluation Guarded)',
+      name: veoOmniEntry?.isEvaluationOnly ? 'Google Gemini Omni 1.2 Flash Video Adapter (Evaluation Guarded)' : 'Google Gemini Omni 1.2 Flash Video Adapter',
       model: veoOmniEntry ? veoOmniEntry.modelId : 'gemini-omni-1.2-flash',
       provider: 'gemini',
       status: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (hasGeminiKey ? 'CONFIGURED' : 'MISSING_SECRET'),
       connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
-      modelStatus: 'EVALUATION_ONLY',
+      modelStatus: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : 'MODEL_AVAILABLE',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: ['720p', '1080p'],
-      verificationStatus: 'EVALUATION_ONLY',
-      generationTestStatus: 'NOT_TESTED',
-      quoteStatus: 'EVALUATION_ONLY',
-      pricingStatus: 'EVALUATION_ONLY (Owner Console Test Only)'
+      verificationStatus: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : (veoOmniEntry?.endpointVerificationStatus || 'VERIFIED'),
+      generationTestStatus: veoOmniEntry?.generationTestStatus || 'NOT_TESTED',
+      quoteStatus: veoOmniEntry?.isEvaluationOnly ? 'EVALUATION_ONLY' : 'QUOTE_VERIFIED',
+      pricingStatus: veoOmniEntry?.isEvaluationOnly
+        ? 'EVALUATION_ONLY (Owner Console Test Only)'
+        : 'PUBLISHED_PER_SECOND_TARIFF ($0.15/s @ 720p · $0.30/s @ 1080p)'
     },
     {
       id: 'videoTrimmer',
@@ -5122,7 +5130,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const requestedDuration = Number(durationSeconds) > 0
     ? Number(durationSeconds)
-    : (template.durationSeconds && Number(template.durationSeconds) > 0 ? Number(template.durationSeconds) : modelEntry?.appDefaultDurationSeconds);
+    : (template.durationSeconds && Number(template.durationSeconds) > 0
+        ? Number(template.durationSeconds)
+        : (template.engine === 'SMART_TEMPLATE' ? 5 : modelEntry?.appDefaultDurationSeconds));
 
   if (template.type === 'video' && (!requestedDuration || requestedDuration <= 0)) {
     return res.status(400).json({
@@ -5359,7 +5369,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       resolution: requestedResolution as any,
       sourceVideoDurationSeconds: measuredSourceVideoDuration,
       requestedOutputDurationSeconds: requestedDuration || 1,
-      allowPublishedListPriceFallback: modelEntry?.billingUnit === 'per_image'
+      allowPublishedListPriceFallback: modelEntry?.provider === 'gemini'
     });
 
     if (estimate.status === 'PENDING_QUOTE') {
@@ -5462,11 +5472,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     status: 'processing',
     creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
     inputMediaUrl,
-    engine: 'AI_GENERATION',
+    engine: isSmartTemplate ? 'SMART_TEMPLATE' : (template.engine || 'AI_GENERATION'),
     model: effectiveModel,
     workflow: template.workflow,
     createdAt: new Date().toISOString(),
-    isAiGenerated: true,
+    isAiGenerated: !isSmartTemplate,
     resolution: requestedResolution,
     durationSeconds: requestedDuration,
     requestedOutputDurationSeconds: requestedDuration,
