@@ -81,6 +81,9 @@ export class HiggsfieldGenjutsuAdapter {
 
   getPublicStatus() {
     const config = this.getConfig();
+    const billingVerified = process.env.HIGGSFIELD_BILLING_VERIFIED === 'true';
+    const flagEnabled = process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true';
+    const objectSwapFlagEnabled = process.env.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION === 'true';
     return {
       provider: this.providerName,
       model: this.modelName,
@@ -89,8 +92,10 @@ export class HiggsfieldGenjutsuAdapter {
       replaceObjectModel: this.replaceObjectModel,
       authHeaderFormat: 'Authorization: Key <api-key>',
       status: config.isConfigured ? 'UNVERIFIED' : 'MISSING_SECRET',
-      customerGenerationEnabled:
-        config.isConfigured && process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true',
+      billingVerified,
+      customerGenerationEnabled: config.isConfigured && billingVerified && flagEnabled,
+      objectSwapCustomerGenerationEnabled:
+        config.isConfigured && billingVerified && flagEnabled && objectSwapFlagEnabled,
       supportedResolutions: ['480p', '720p', '1080p'],
       verifiedOutputDurationSeconds: 4
     };
@@ -205,17 +210,13 @@ Never blend, average, cross-apply, or fuse their faces.`;
       ? 'https://api.higgsfield.ai/higgsfield/genjutsu-light/object-swap/v1.0'
       : 'https://api.higgsfield.ai/higgsfield/genjutsu-light/motion-transfer/v1.0';
 
-    // Official documented Higgsfield Genjutsu payload.
+    // Official documented Higgsfield Genjutsu payload (duration follows the prepared trimmed video_url; do not send unsupported duration param).
     const payload: Record<string, any> = {
       video_url: params.videoUrl,
       image_urls: params.imageUrls,
       prompt: finalPrompt,
       resolution: requestedResolution
     };
-
-    if (params.durationSeconds && Number(params.durationSeconds) > 0) {
-      payload.duration = Math.ceil(Number(params.durationSeconds));
-    }
 
     // Official Open Higgsfield Authorization: single complete key "Authorization: Key <api-key>" (with optional legacy key:secret fallback)
     const authHeaderValue = HiggsfieldGenjutsuAdapter.buildAuthHeader(config.apiKey, config.apiSecret);

@@ -558,6 +558,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
+  // Shared Firebase silent session recovery helper (resets UID lock on transient network/5xx failures)
+  const attemptFirebaseSessionRecovery = useCallback(async (triggerSource: string): Promise<string | null> => {
+    const fbUser = auth.currentUser;
+    if (
+      !fbUser ||
+      explicitLogoutRef.current ||
+      sessionRecoveryInFlightRef.current ||
+      sessionRecoveryAttemptedForUidRef.current === fbUser.uid
+    ) {
+      return null;
+    }
+
+    sessionRecoveryInFlightRef.current = true;
+    sessionRecoveryAttemptedForUidRef.current = fbUser.uid;
+    let transientFailure = false;
+    try {
+      const freshIdToken = await fbUser.getIdToken(true);
+      const recovered = await exchangeFirebaseSessionWithRetry({
+        idToken: freshIdToken,
+        firebaseUid: fbUser.uid,
+        email: fbUser.email,
+        name: fbUser.displayName,
+        avatar: fbUser.photoURL,
+        authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
+      });
+      if (recovered.ok && recovered.data?.success && recovered.data?.cloudPersisted === true) {
+        localStorage.setItem('lumina_session_token', recovered.data.token);
+        setUser(recovered.data.user);
+        return recovered.data.token;
+      }
+      if (recovered.status === 0 || recovered.status >= 500) {
+        transientFailure = true;
+      }
+      return null;
+    } catch (recoverErr: any) {
+      const errCode = String(recoverErr?.code || '');
+      if (errCode !== 'auth/user-token-expired' && errCode !== 'auth/user-disabled' && errCode !== 'auth/invalid-user-token') {
+        transientFailure = true;
+      }
+      console.warn(`[AppContext] Firebase silent session recovery (${triggerSource}) failed:`, recoverErr);
+      return null;
+    } finally {
+      sessionRecoveryInFlightRef.current = false;
+      if (transientFailure) {
+        // Allow automatic retry on future focus, online reconnect, or refreshUserData calls
+        sessionRecoveryAttemptedForUidRef.current = null;
+      }
+    }
+  }, []);
+
   // Fetch User & Wallet (Only if session token exists)
   const refreshUserData = useCallback(async () => {
     const token = localStorage.getItem('lumina_session_token');
@@ -574,81 +624,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     try {
+      let activeToken = token;
       let res = await fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${activeToken}` }
       });
 
-      // Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401
-      if (res.status === 401) {
-        console.warn('[AppContext] Server confirmed backend token invalid/expired (HTTP 401).');
+      const handleConfirmedUnauthorizedMe = async (stage: string): Promise<Response | null> => {
+        console.warn(`[AppContext] Server confirmed backend token invalid/expired (HTTP 401 at ${stage}).`);
         localStorage.removeItem('lumina_session_token');
-
-        // Auto-recovery if Firebase SDK still holds a valid signed-in user in browserLocalPersistence
-        const fbUser = auth.currentUser;
-        if (
-          fbUser &&
-          !explicitLogoutRef.current &&
-          !sessionRecoveryInFlightRef.current &&
-          sessionRecoveryAttemptedForUidRef.current !== fbUser.uid
-        ) {
-          sessionRecoveryInFlightRef.current = true;
-          sessionRecoveryAttemptedForUidRef.current = fbUser.uid;
-          try {
-            const freshIdToken = await fbUser.getIdToken(true);
-            const recovered = await exchangeFirebaseSessionWithRetry({
-              idToken: freshIdToken,
-              firebaseUid: fbUser.uid,
-              email: fbUser.email,
-              name: fbUser.displayName,
-              avatar: fbUser.photoURL,
-              authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
-            });
-            if (recovered.ok && recovered.data?.success && recovered.data?.cloudPersisted === true) {
-              localStorage.setItem('lumina_session_token', recovered.data.token);
-              setUser(recovered.data.user);
-              sessionRecoveryInFlightRef.current = false;
-              res = await fetch('/api/auth/me', {
-                headers: { Authorization: `Bearer ${recovered.data.token}` }
-              });
-              if (res.ok) {
-                const parsedRecovered = await safeParseJsonResponse<any>(res);
-                if (parsedRecovered.ok && parsedRecovered.data?.user) {
-                  setUser(parsedRecovered.data.user);
-                  if (parsedRecovered.data.wallet) setWallet(parsedRecovered.data.wallet);
-                  setActiveSubscription(parsedRecovered.data.activeSubscription || null);
-                  if (parsedRecovered.data.likedTemplates) setLikedTemplates(parsedRecovered.data.likedTemplates);
-                  if (typeof parsedRecovered.data.isIntroEligible === 'boolean') {
-                    setIsIntroEligible(parsedRecovered.data.isIntroEligible);
-                  }
-                  return;
-                }
-              }
-            }
-          } catch (recoverErr) {
-            console.warn('[AppContext] Firebase silent session auto-recovery failed:', recoverErr);
-          } finally {
-            sessionRecoveryInFlightRef.current = false;
-          }
+        const recoveredToken = await attemptFirebaseSessionRecovery(stage);
+        if (recoveredToken) {
+          activeToken = recoveredToken;
+          return await fetch('/api/auth/me', {
+            headers: { Authorization: `Bearer ${recoveredToken}` }
+          });
         }
-
         setUser(null);
         setIsAdmin(false);
         setServerAdminVerified(false);
-        return;
-      }
+        return null;
+      };
 
-      let parsedMe = await safeParseJsonResponse<any>(res);
-      if (parsedMe.isRetryable) {
-        await new Promise((r) => setTimeout(r, 900));
-        res = await fetch('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+      // Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401
+      if (res.status === 401) {
+        const retriedRes = await handleConfirmedUnauthorizedMe('initial_me');
+        if (!retriedRes) return;
+        res = retriedRes;
         if (res.status === 401) {
           localStorage.removeItem('lumina_session_token');
           setUser(null);
           setIsAdmin(false);
           setServerAdminVerified(false);
           return;
+        }
+      }
+
+      let parsedMe = await safeParseJsonResponse<any>(res);
+      if (parsedMe.isRetryable) {
+        await new Promise((r) => setTimeout(r, 900));
+        res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${activeToken}` }
+        });
+        if (res.status === 401) {
+          const retriedResAfterTransient = await handleConfirmedUnauthorizedMe('retry_me');
+          if (!retriedResAfterTransient) return;
+          res = retriedResAfterTransient;
+          if (res.status === 401) {
+            localStorage.removeItem('lumina_session_token');
+            setUser(null);
+            setIsAdmin(false);
+            setServerAdminVerified(false);
+            return;
+          }
         }
         parsedMe = await safeParseJsonResponse<any>(res);
       }
@@ -679,7 +706,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (isCandidateAdmin) {
           try {
             const adminCheckRes = await fetch('/api/admin/verify', {
-              headers: { Authorization: `Bearer ${token}` }
+              headers: { Authorization: `Bearer ${activeToken}` }
             });
             const adminParsed = await safeParseJsonResponse<any>(adminCheckRes);
             if (adminParsed.ok && adminParsed.data?.authorized === true) {
@@ -703,7 +730,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('[AppContext] Network or timeout error during session refresh. Preserving session token:', err);
     }
-  }, []);
+  }, [attemptFirebaseSessionRecovery]);
 
   // Fetch Generations for Authenticated User
   const refreshGenerations = useCallback(async () => {
@@ -739,7 +766,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const completeRedirectAndMonitorAuth = async () => {
       try {
-        await ensureAuthLocalPersistence();
+        const persistStatus = await ensureAuthLocalPersistence();
+        if (!persistStatus.persisted) {
+          console.warn('[AppContext] Auth local persistence unavailable:', persistStatus.error);
+        }
         const redirectResult = await getRedirectResult(auth);
         try {
           sessionStorage.removeItem(REDIRECT_AUTH_IN_PROGRESS_KEY);
@@ -779,45 +809,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     completeRedirectAndMonitorAuth();
 
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (!isMounted) return;
-      if (!firebaseUser) return;
-      explicitLogoutRef.current = false;
-
-      const existingToken = localStorage.getItem('lumina_session_token');
-      if (existingToken) return;
-      if (sessionRecoveryInFlightRef.current) return;
-      if (sessionRecoveryAttemptedForUidRef.current === firebaseUser.uid) return;
-
-      sessionRecoveryInFlightRef.current = true;
-      sessionRecoveryAttemptedForUidRef.current = firebaseUser.uid;
-      try {
-        const idToken = await firebaseUser.getIdToken();
-        const sessionRes = await exchangeFirebaseSessionWithRetry({
-          idToken,
-          firebaseUid: firebaseUser.uid,
-          email: firebaseUser.email,
-          name: firebaseUser.displayName,
-          avatar: firebaseUser.photoURL,
-          authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
-        });
-        if (isMounted && sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
-          localStorage.setItem('lumina_session_token', sessionRes.data.token);
-          setUser(sessionRes.data.user);
-          await refreshUserData();
-        }
-      } catch (err: any) {
-        console.warn('[AppContext] onAuthStateChanged session recovery notice:', err?.message);
-      } finally {
-        sessionRecoveryInFlightRef.current = false;
+    const triggerRecoveryIfSignedInWithoutToken = async (source: string) => {
+      if (!isMounted || explicitLogoutRef.current) return;
+      if (localStorage.getItem('lumina_session_token')) return;
+      if (!auth.currentUser) return;
+      const recovered = await attemptFirebaseSessionRecovery(source);
+      if (isMounted && recovered) {
+        await refreshUserData();
       }
+    };
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!isMounted || !firebaseUser) return;
+      explicitLogoutRef.current = false;
+      await triggerRecoveryIfSignedInWithoutToken('onAuthStateChanged');
     });
+
+    const onFocusOrOnline = () => {
+      triggerRecoveryIfSignedInWithoutToken('window_focus_or_online');
+    };
+    window.addEventListener('focus', onFocusOrOnline);
+    window.addEventListener('online', onFocusOrOnline);
 
     return () => {
       isMounted = false;
       unsubscribe();
+      window.removeEventListener('focus', onFocusOrOnline);
+      window.removeEventListener('online', onFocusOrOnline);
     };
-  }, [refreshUserData, refreshGenerations]);
+  }, [refreshUserData, refreshGenerations, attemptFirebaseSessionRecovery]);
 
   useEffect(() => {
     if (user) {

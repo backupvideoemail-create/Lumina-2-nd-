@@ -42,6 +42,7 @@ import { isVideoMedia } from '../utils/mediaUtils';
 import {
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
+  reportHtmlVideoError,
   reportMediaPlaybackIssue,
   selectMediaRendition
 } from '../services/media/mediaPlaybackManager';
@@ -785,10 +786,10 @@ export const HomeView: React.FC = () => {
                       }}
                       onPlay={() => mediaPlaybackCoordinator.requestPlay('home_hero_banner')}
                       onPause={() => mediaPlaybackCoordinator.releasePlay('home_hero_banner')}
-                      onError={() => {
-                        reportMediaPlaybackIssue({
-                          vector: 'MEDIA_PLAYBACK_FAILURE',
-                          message: `Hero banner video failed to load (${activeBanner.id})`,
+                      onError={(e) => {
+                        reportHtmlVideoError({
+                          videoEl: e.currentTarget,
+                          contextLabel: `Hero banner video failed to load (${activeBanner.id})`,
                           templateId: activeBanner.targetTemplateId || activeBanner.id,
                           errorStage: 'hero_banner_video',
                           endpoint: heroVideoSrc

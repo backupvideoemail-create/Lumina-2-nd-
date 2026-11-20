@@ -79,7 +79,15 @@ export const AuthModal: React.FC = () => {
     setRedirecting(true);
     setErrorMessage('');
     try {
-      await ensureAuthLocalPersistence();
+      const persistRes = await ensureAuthLocalPersistence();
+      if (!persistRes.persisted) {
+        reportAuthFailure(
+          'SESSION_PERSISTENCE_FAILURE',
+          `Browser local persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
+          'google_signin_persistence',
+          'AUTH_PERSISTENCE_UNAVAILABLE'
+        );
+      }
       if (pendingAction) {
         savePendingAuthActionToStorage(pendingAction);
       }
@@ -109,7 +117,7 @@ export const AuthModal: React.FC = () => {
         setErrorMessage(msg);
         reportAuthFailure(
           'AUTH_LOGIN_FAILURE',
-          `Google redirect (${triggerReason}) failed: ${msg}`,
+          `Google redirect (${triggerReason}) failed on ${window.location.hostname}: ${msg}`,
           'google_signin_redirect',
           redirectErr?.code || 'AUTH_REDIRECT_ERROR'
         );
@@ -126,7 +134,15 @@ export const AuthModal: React.FC = () => {
     setShowRedirectFallbackButton(false);
 
     try {
-      await ensureAuthLocalPersistence();
+      const persistRes = await ensureAuthLocalPersistence();
+      if (!persistRes.persisted) {
+        reportAuthFailure(
+          'SESSION_PERSISTENCE_FAILURE',
+          `Browser local persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
+          'google_signin_persistence',
+          'AUTH_PERSISTENCE_UNAVAILABLE'
+        );
+      }
       const result = await signInWithPopup(auth, googleProvider);
       const idToken = await result.user.getIdToken();
 

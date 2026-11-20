@@ -33,6 +33,7 @@ import {
   configureFxHooks,
   FACE_SWAP_COMPATIBLE_COMBINATIONS,
   resolveCanonicalModelId,
+  resolveAuthoritativeTemplatePricing,
   getRegisteredModelEntry,
   MODEL_REGISTRY
 } from './src/services/pricing/pricingService.ts';
@@ -462,11 +463,13 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// CORS & Preflight Handling
+// CORS & Preflight Handling (includes Byte-Range, ETag, and CORP headers for video streaming & mobile Chrome)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-admin-key');
+  res.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, If-None-Match, x-user-id, x-admin-key');
+  res.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, ETag');
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -657,6 +660,22 @@ function setMediaStreamResponseHeaders(
   }
   if (options.mimeType) {
     res.setHeader('Content-Type', options.mimeType);
+  }
+}
+
+async function normalizeFutureVideoDataUriIfNeeded(dataUriOrPayload: string): Promise<string | Buffer> {
+  if (typeof dataUriOrPayload !== 'string' || !dataUriOrPayload.startsWith('data:video/')) {
+    return dataUriOrPayload;
+  }
+  try {
+    const match = dataUriOrPayload.match(/^data:[^;]+;base64,(.+)$/);
+    if (!match) return dataUriOrPayload;
+    const rawBuf = Buffer.from(match[1], 'base64');
+    if (rawBuf.length === 0) return dataUriOrPayload;
+    const norm = await videoTrimmer.normalizeVideoBufferForBrowser(rawBuf);
+    return norm.buffer;
+  } catch {
+    return dataUriOrPayload;
   }
 }
 
@@ -1857,7 +1876,15 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (isReusableUrl(mediaBase64)) {
         mediaUrl = mediaBase64;
       } else {
-        const stored = await mediaStorage.saveMedia(mediaBase64, 'tpl_asset', `${targetTemplateId}_preview`, undefined, true);
+        const mediaPayload =
+          typeof mediaBase64 === 'string' && mediaBase64.startsWith('data:video/')
+            ? await normalizeFutureVideoDataUriIfNeeded(mediaBase64)
+            : mediaBase64;
+        const previewFilename =
+          typeof mediaBase64 === 'string' && mediaBase64.startsWith('data:video/')
+            ? `${targetTemplateId}_preview.mp4`
+            : `${targetTemplateId}_preview`;
+        const stored = await mediaStorage.saveMedia(mediaPayload, 'tpl_asset', previewFilename, undefined, true);
         mediaUrl = stored.publicUrl;
         if (stored.r2Key) uploadedAssetMeta.push({ key: stored.r2Key, filename: stored.fileId, publicUrl: stored.publicUrl });
       }
@@ -1880,7 +1907,8 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (isReusableUrl(coverVideoBase64)) {
         savedCoverVideoUrl = coverVideoBase64;
       } else {
-        const storedCoverVid = await mediaStorage.saveMedia(coverVideoBase64, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
+        const normCoverVid = await normalizeFutureVideoDataUriIfNeeded(coverVideoBase64);
+        const storedCoverVid = await mediaStorage.saveMedia(normCoverVid, 'tpl_cover_vid', `${targetTemplateId}_cover_vid.mp4`, undefined, true);
         savedCoverVideoUrl = storedCoverVid.publicUrl;
         if (storedCoverVid.r2Key) uploadedAssetMeta.push({ key: storedCoverVid.r2Key, filename: storedCoverVid.fileId, publicUrl: storedCoverVid.publicUrl });
       }
@@ -1928,14 +1956,30 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       if (isReusableUrl(drivingVideoBase64)) {
         drivingVideoUrl = drivingVideoBase64;
       } else {
-        const storedDriving = await mediaStorage.saveMedia(drivingVideoBase64, 'tpl_driving', `${targetTemplateId}_driving`, undefined, true);
+        const normDrivingVid = await normalizeFutureVideoDataUriIfNeeded(drivingVideoBase64);
+        const storedDriving = await mediaStorage.saveMedia(normDrivingVid, 'tpl_driving', `${targetTemplateId}_driving.mp4`, undefined, true);
         drivingVideoUrl = storedDriving.publicUrl;
         if (storedDriving.r2Key) uploadedAssetMeta.push({ key: storedDriving.r2Key, filename: storedDriving.fileId, publicUrl: storedDriving.publicUrl });
       }
     }
 
-    // Dynamic cost calculated using USD + 40% Markup Rule
-    const calculatedCredits = calculateCreditsFromUsd(Number(providerCostUsd) || 0.25);
+    const resolvedModelForPricing =
+      (recipe && typeof recipe === 'object' && recipe.model) ||
+      model ||
+      (engine === 'SMART_TEMPLATE' ? 'smart_canvas_ffmpeg' : type === 'video' ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-lite-image');
+    const resolvedResForPricing =
+      (typeof body.resolutionLabel === 'string' && (body.resolutionLabel === '480p' || body.resolutionLabel === '720p' || body.resolutionLabel === '1080p')
+        ? body.resolutionLabel
+        : undefined) as '480p' | '720p' | '1080p' | undefined;
+    const authoritativePricing = resolveAuthoritativeTemplatePricing({
+      modelId: resolvedModelForPricing,
+      type: type === 'video' ? 'video' : 'photo',
+      engine: engine as string,
+      resolution: resolvedResForPricing,
+      durationSeconds: typeof body.durationSeconds === 'number' && body.durationSeconds > 0 ? body.durationSeconds : undefined,
+      fallbackProviderCostUsd: Number(providerCostUsd) || undefined
+    });
+    const calculatedCredits = authoritativePricing.creditCost;
 
     // Build Execution Recipe (respect empty/omitted prompts cleanly so readiness catches incomplete templates)
     const categoryPrompt = prodDb.getCategoryPrompt(category);
@@ -2017,7 +2061,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
         }
       ],
       creditCost: calculatedCredits,
-      providerCostUsd: Number(providerCostUsd) || 0.25,
+      providerCostUsd: authoritativePricing.providerCostUsd,
       engine: (engine as TemplateEngine) || 'AI_GENERATION',
       provider: body.provider || resolvedRecipe.provider || defaultProvider,
       adapter: body.adapter,
@@ -2410,10 +2454,11 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       if (typeof updates.drivingVideoBase64 === 'string' && (updates.drivingVideoBase64.startsWith('http://') || updates.drivingVideoBase64.startsWith('https://') || updates.drivingVideoBase64.startsWith('/api/media/'))) {
         updates.drivingVideoUrl = updates.drivingVideoBase64;
       } else {
+        const normDrivingVid = await normalizeFutureVideoDataUriIfNeeded(updates.drivingVideoBase64);
         const storedDriving = await mediaStorage.saveMedia(
-          updates.drivingVideoBase64,
+          normDrivingVid,
           'tpl_driving',
-          `driving_${Date.now()}`,
+          `driving_${Date.now()}.mp4`,
           undefined,
           true
         );
@@ -2442,8 +2487,28 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Template not found' });
     }
 
-    if (updates.providerCostUsd && Number(updates.providerCostUsd) > 0) {
-      updates.creditCost = calculateCreditsFromUsd(Number(updates.providerCostUsd));
+    if (
+      updates.providerCostUsd !== undefined ||
+      updates.model !== undefined ||
+      updates.engine !== undefined ||
+      updates.resolutionLabel !== undefined ||
+      updates.durationSeconds !== undefined
+    ) {
+      const effectiveType = (updates.type || existing.type || 'photo') as 'photo' | 'video';
+      const effectiveEngine = updates.engine || existing.engine;
+      const effectiveModel = updates.model || updates.recipe?.model || existing.model;
+      const effectiveRes = (updates.resolutionLabel || existing.resolutionLabel) as '480p' | '720p' | '1080p' | undefined;
+      const effectiveDur = updates.durationSeconds ?? existing.durationSeconds;
+      const authPricing = resolveAuthoritativeTemplatePricing({
+        modelId: effectiveModel,
+        type: effectiveType,
+        engine: effectiveEngine,
+        resolution: effectiveRes === '480p' || effectiveRes === '720p' || effectiveRes === '1080p' ? effectiveRes : undefined,
+        durationSeconds: typeof effectiveDur === 'number' && effectiveDur > 0 ? effectiveDur : undefined,
+        fallbackProviderCostUsd: Number(updates.providerCostUsd) > 0 ? Number(updates.providerCostUsd) : undefined
+      });
+      updates.providerCostUsd = authPricing.providerCostUsd;
+      updates.creditCost = authPricing.creditCost;
     }
 
     // Evaluate readiness before modifying an Active published template (Safety Condition #2)
@@ -3091,10 +3156,11 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Original / Before Video is required', code: 'MISSING_SOURCE_VIDEO' });
     }
 
-    // Defensive check: Ensure database NEVER stores raw base64 data URIs
+    // Defensive check: Ensure database NEVER stores raw base64 data URIs (and normalize future uploads to H.264)
     let cleanSourceVideo = sourceVideoPreview.trim();
     if (cleanSourceVideo.startsWith('data:')) {
-      const stored = await mediaStorage.saveMedia(cleanSourceVideo, 'fsv_source', `source_${Date.now()}`, undefined, true);
+      const normSrc = await normalizeFutureVideoDataUriIfNeeded(cleanSourceVideo);
+      const stored = await mediaStorage.saveMedia(normSrc, 'fsv_source', `source_${Date.now()}.mp4`, undefined, true);
       cleanSourceVideo = stored.publicUrl;
     }
 
@@ -3106,7 +3172,8 @@ app.post('/api/admin/faceswap/scenes', requireAdmin, async (req, res) => {
 
     let cleanResultVideo = resultVideoPreview ? resultVideoPreview.trim() : '';
     if (cleanResultVideo && cleanResultVideo.startsWith('data:')) {
-      const stored = await mediaStorage.saveMedia(cleanResultVideo, 'fsv_result', `result_${Date.now()}`, undefined, true);
+      const normRes = await normalizeFutureVideoDataUriIfNeeded(cleanResultVideo);
+      const stored = await mediaStorage.saveMedia(normRes, 'fsv_result', `result_${Date.now()}.mp4`, undefined, true);
       cleanResultVideo = stored.publicUrl;
     }
 
@@ -3184,7 +3251,8 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     if (req.body.sourceVideoPreview !== undefined) {
       let src = String(req.body.sourceVideoPreview).trim();
       if (src.startsWith('data:')) {
-        const stored = await mediaStorage.saveMedia(src, 'fsv_source', `source_${Date.now()}`, undefined, true);
+        const normSrc = await normalizeFutureVideoDataUriIfNeeded(src);
+        const stored = await mediaStorage.saveMedia(normSrc, 'fsv_source', `source_${Date.now()}.mp4`, undefined, true);
         src = stored.publicUrl;
       }
       updates.sourceVideoPreview = src;
@@ -3193,7 +3261,8 @@ app.put('/api/admin/faceswap/scenes/:id', requireAdmin, async (req, res) => {
     if (req.body.resultVideoPreview !== undefined) {
       let resVid = String(req.body.resultVideoPreview).trim();
       if (resVid.startsWith('data:')) {
-        const stored = await mediaStorage.saveMedia(resVid, 'fsv_result', `result_${Date.now()}`, undefined, true);
+        const normRes = await normalizeFutureVideoDataUriIfNeeded(resVid);
+        const stored = await mediaStorage.saveMedia(normRes, 'fsv_result', `result_${Date.now()}.mp4`, undefined, true);
         resVid = stored.publicUrl;
       }
       updates.resultVideoPreview = resVid;
@@ -5033,10 +5102,17 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   // Genjutsu Light Customer Safety Gate BEFORE media uploads/storage/credit debit
   if (templateConfiguredProvider === 'higgsfield' || templateConfiguredAdapter === 'faceSwapAdapter') {
     const hfGateDiag = getHiggsfieldDiagnosticStatus();
-    if (!hfGateDiag.customerGenerationEnabled) {
+    const isObjectSwapReq =
+      template.workflow === 'OBJECT_SWAP' || effectiveModel === 'hf_mult_replace_object_flash';
+    const isAllowed = isObjectSwapReq
+      ? hfGateDiag.objectSwapCustomerGenerationEnabled
+      : hfGateDiag.customerGenerationEnabled;
+    if (!isAllowed) {
       return res.status(503).json({
-        error: 'Genjutsu Light video generation is safely gated pending Higgsfield API auth verification, prepaid balance, and owner approval. No credits were deducted.',
-        code: 'GENJUTSU_LIGHT_SAFELY_GATED',
+        error: isObjectSwapReq
+          ? 'Genjutsu Light Object Swap generation is safely gated until Motion Transfer billing & Object Swap activation pass. No credits were deducted.'
+          : 'Genjutsu Light video generation is safely gated pending Higgsfield API auth verification, prepaid balance, and owner approval. No credits were deducted.',
+        code: isObjectSwapReq ? 'GENJUTSU_OBJECT_SWAP_SAFELY_GATED' : 'GENJUTSU_LIGHT_SAFELY_GATED',
         stage: 'safety_gate',
         preflightEstimate: hfGateDiag.estimatedSingleRun
       });
@@ -5883,13 +5959,27 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   }
   const requestedDuration = rawRequestedSeconds;
 
+  const resTariff = sceneModelEntry?.resolutionTariffs?.[sceneResolution];
+  if (resTariff && resTariff.supportStatus === 'UNSUPPORTED') {
+    return res.status(400).json({
+      error: `Resolution '${sceneResolution}' is unsupported for model '${sceneModel}'. No credits were deducted.`,
+      code: 'UNSUPPORTED_RESOLUTION',
+      stage: 'validation'
+    });
+  }
+
   // Genjutsu Light Customer Generation Safety Gate BEFORE FFmpeg trimming, R2 writes, or wallet debit
   const hfGateStatus = getHiggsfieldDiagnosticStatus();
-  if (!hfGateStatus.customerGenerationEnabled) {
+  const isObjectSwapScene = sceneWorkflow === 'OBJECT_SWAP' || sceneModel === 'hf_mult_replace_object_flash';
+  const sceneGenerationAllowed = isObjectSwapScene
+    ? hfGateStatus.objectSwapCustomerGenerationEnabled
+    : hfGateStatus.customerGenerationEnabled;
+  if (!sceneGenerationAllowed) {
     return res.status(503).json({
-      error:
-        'Genjutsu Light customer generation is safely gated until Higgsfield single-key auth, exact account tariff, and prepaid API balance ($5+) are verified and approved by Owner. No credits were deducted and no media was processed.',
-      code: 'GENJUTSU_LIGHT_SAFELY_GATED',
+      error: isObjectSwapScene
+        ? 'Genjutsu Light Object Swap generation is gated separately until Motion Transfer live verification succeeds and ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION=true. No credits were deducted.'
+        : 'Genjutsu Light customer generation is safely gated until Higgsfield single-key auth, exact account tariff, and prepaid API balance ($5+) are verified and approved by Owner. No credits were deducted and no media was processed.',
+      code: isObjectSwapScene ? 'GENJUTSU_OBJECT_SWAP_SAFELY_GATED' : 'GENJUTSU_LIGHT_SAFELY_GATED',
       stage: 'safety_gate',
       preflightQuote: {
         model: sceneModel,
@@ -5904,9 +5994,11 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   }
 
   // 2. Physical Video Trimming & Source Probing via FFmpeg
+  // Genjutsu Light processes the first 15s max of the source video (never artificially clipped to 4s output limit)
   let trimmedVideoUrl = '';
-  let billableDuration = requestedDuration;
-  let clampedSourceDuration = Math.min(15, requestedDuration);
+  const billableOutputDuration = requestedDuration;
+  let clampedSourceDuration = Math.min(15, billableOutputDuration);
+  let totalBillableDuration = clampedSourceDuration + billableOutputDuration;
 
   try {
     const rawVideoInput = resolvedSourceVideo;
@@ -5914,12 +6006,14 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       return res.status(400).json({ error: 'Please upload or provide a source video.' });
     }
 
-    // Physically trim source video (up to 15s source preprocessing window) and measure durations with FFprobe
-    const trimResult = await videoTrimmer.trimVideo(rawVideoInput, requestedDuration);
-    billableDuration = Math.min(maxOutputDuration, Math.max(minOutputDuration, Math.ceil(trimResult.trimmedDurationSeconds || requestedDuration)));
-    clampedSourceDuration = Math.min(15, trimResult.originalDurationSeconds || trimResult.billableDurationSeconds || requestedDuration);
+    // Physically prepare up to first 15s of source video and measure exact trimmed duration sent to Higgsfield
+    const trimResult = await videoTrimmer.trimVideo(rawVideoInput, 15, { ownerUserId: user.id });
+    clampedSourceDuration = Number(
+      Math.min(15, Math.max(3.8, trimResult.trimmedDurationSeconds || trimResult.originalDurationSeconds || 4)).toFixed(2)
+    );
+    totalBillableDuration = Number((clampedSourceDuration + billableOutputDuration).toFixed(2));
 
-    // Save physically trimmed video asset privately
+    // Save physically trimmed source video asset privately
     const trimmedBuffer = fs.readFileSync(trimResult.trimmedFilePath);
     const storedTrimmed = await mediaStorage.saveMedia(
       trimmedBuffer,
@@ -5994,7 +6088,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const faceSwapQuote = calculateAuthoritativeFaceSwapQuote({
     modelId: sceneModel,
     resolution: sceneResolution,
-    durationSeconds: billableDuration,
+    durationSeconds: billableOutputDuration,
     sourceVideoDurationSeconds: clampedSourceDuration
   });
 
@@ -6022,7 +6116,9 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       error: 'Insufficient credits for Face/Character Video',
       requiredCredits,
       currentBalance: wallet.balance,
-      durationSeconds: billableDuration
+      durationSeconds: billableOutputDuration,
+      sourceVideoDurationSeconds: clampedSourceDuration,
+      billableDurationSeconds: totalBillableDuration
     });
   }
 
@@ -6032,19 +6128,19 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const reserved = prodDb.reserveCredits(
     user.id,
     requiredCredits,
-    `Face Swap Video (${billableDuration}s @ ${sceneResolution})`,
+    `Face Swap Video (${clampedSourceDuration}s src + ${billableOutputDuration}s out @ ${sceneResolution})`,
     genId
   );
   if (!reserved) {
     return res.status(402).json({ error: 'Failed to reserve credits' });
   }
 
-  // 6. Record Generation State with actual configured scene model/workflow
+  // 6. Record Generation State with actual configured scene model/workflow & exact dual-duration fields
   const generation: Generation = {
     id: genId,
     userId: user.id,
     templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
-    templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableDuration}s)` : `Face Swap Video (${billableDuration}s)`,
+    templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableOutputDuration}s)` : `Face Swap Video (${billableOutputDuration}s)`,
     templateType: 'video',
     aspectRatio: '9:16',
     status: 'processing',
@@ -6054,7 +6150,9 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     model: sceneModel,
     workflow: sceneWorkflow,
     resolution: sceneResolution,
-    durationSeconds: billableDuration,
+    durationSeconds: billableOutputDuration,
+    requestedOutputDurationSeconds: billableOutputDuration,
+    sourceVideoDurationSeconds: clampedSourceDuration,
     createdAt: new Date().toISOString(),
     isAiGenerated: true
   };
@@ -6063,7 +6161,9 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   res.json({
     generation,
     requiredCredits,
-    durationSeconds: billableDuration,
+    durationSeconds: billableOutputDuration,
+    sourceVideoDurationSeconds: clampedSourceDuration,
+    billableDurationSeconds: totalBillableDuration,
     remainingCredits: prodDb.getWallet(user.id).balance
   });
 
@@ -6089,7 +6189,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
         model: sceneModel,
         workflow: sceneWorkflow,
         resolution: sceneResolution,
-        durationSeconds: billableDuration,
+        durationSeconds: billableOutputDuration,
         ownerUserId: user.id
       });
 
@@ -6104,9 +6204,45 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
         throw new Error('Face swap provider returned empty result video URL');
       }
 
+      // Probe actual output video duration & reconcile exact dual-duration billing
+      let actualOutputDuration: number | undefined;
+      try {
+        actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl, { ownerUserId: user.id });
+      } catch (probeErr: any) {
+        console.warn('[FaceSwap Duration Probe Note]:', probeErr?.message || probeErr);
+      }
+
+      const measuredOutputRounded = actualOutputDuration !== undefined ? Math.ceil(actualOutputDuration) : billableOutputDuration;
+      const actualBillableSeconds = Number((clampedSourceDuration + measuredOutputRounded).toFixed(2));
+      const costMeasurement = measureActualProviderCostUsd({
+        modelId: sceneModel,
+        resolution: sceneResolution,
+        actualBillableDurationSeconds: actualBillableSeconds
+      });
+      const reconciliation = reconcileCostOnCompletion({
+        reservedCredits: requiredCredits,
+        actualProviderCostUsd: costMeasurement.costUsd,
+        isFailed: false,
+        hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
+      });
+      if (reconciliation.refundCredits > 0) {
+        prodDb.refundCredits(
+          user.id,
+          reconciliation.refundCredits,
+          `Reconciliation Refund: FaceSwap duration adjustment (${actualBillableSeconds}s)`,
+          genId
+        );
+      }
+
       prodDb.updateGeneration(genId, {
         status: 'completed',
         resultMediaUrl: result.resultUrl,
+        actualOutputDurationSeconds: actualOutputDuration,
+        actualBillableDurationSeconds: actualBillableSeconds,
+        actualCostStatus: costMeasurement.isExactTransactionCost ? 'MEASURED_RECEIPT' : 'UNMEASURED',
+        reconciliationStatus: costMeasurement.isExactTransactionCost ? 'RECONCILED' : 'UNMEASURED_NO_POST_DEBIT',
+        actualProviderCostUsd: costMeasurement.costUsd,
+        reconciledCostCredits: reconciliation.finalChargeCredits,
         completedAt: new Date().toISOString()
       });
     } catch (err: any) {
@@ -6150,7 +6286,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       prodDb.refundCredits(
         user.id,
         requiredCredits,
-        `Refund: Failed Face Video Generation (${billableDuration}s)`,
+        `Refund: Failed Face Video Generation (${totalBillableDuration}s)`,
         genId
       );
     }

@@ -11,7 +11,15 @@ import {
   onAuthStateChanged,
   User as FirebaseUser
 } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  doc,
+  getDocFromServer,
+  setLogLevel,
+  disableNetwork,
+  enableNetwork
+} from 'firebase/firestore';
 import firebaseConfig from '../../../firebase-applet-config.json';
 
 export const CANONICAL_FIREBASE_PROJECT_ID = 'ai-prime-studio';
@@ -56,6 +64,14 @@ export function assertCanonicalFirestoreClient(): void {
   }
 }
 
+try {
+  initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+  });
+} catch {
+  // Safe no-op if Firestore was already initialized (e.g., during HMR)
+}
+
 export const db = getFirestore(app);
 
 export function getCanonicalDb() {
@@ -64,19 +80,35 @@ export function getCanonicalDb() {
 }
 
 export const auth = getAuth(app);
-export const authPersistencePromise: Promise<void> =
-  typeof window !== 'undefined'
-    ? setPersistence(auth, browserLocalPersistence).catch((err: any) => {
-        console.warn('[Firebase Auth] browserLocalPersistence fallback note:', err?.message || err);
-      })
-    : Promise.resolve();
+export interface AuthPersistenceStatus {
+  persisted: boolean;
+  mode: 'local' | 'failed';
+  error?: string;
+}
 
-export async function ensureAuthLocalPersistence(): Promise<void> {
+export const authPersistencePromise: Promise<AuthPersistenceStatus> =
+  typeof window !== 'undefined'
+    ? setPersistence(auth, browserLocalPersistence)
+        .then(() => ({ persisted: true, mode: 'local' as const }))
+        .catch((err: any) => {
+          const msg = err?.message || String(err || 'setPersistence failed');
+          console.warn('[Firebase Auth] browserLocalPersistence fallback note:', msg);
+          return { persisted: false, mode: 'failed' as const, error: msg };
+        })
+    : Promise.resolve({ persisted: true, mode: 'local' as const });
+
+export async function ensureAuthLocalPersistence(): Promise<AuthPersistenceStatus> {
+  if (typeof window === 'undefined') {
+    return { persisted: true, mode: 'local' };
+  }
   try {
     await authPersistencePromise;
     await setPersistence(auth, browserLocalPersistence);
+    return { persisted: true, mode: 'local' };
   } catch (err: any) {
-    console.warn('[Firebase Auth] ensureAuthLocalPersistence notice:', err?.message || err);
+    const msg = err?.message || String(err || 'setPersistence failed');
+    console.warn('[Firebase Auth] ensureAuthLocalPersistence notice:', msg);
+    return { persisted: false, mode: 'failed', error: msg };
   }
 }
 
@@ -130,23 +162,75 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+let onlineRecoveryListenerAttached = false;
+
+function attachOnlineRecoveryListener(): void {
+  if (onlineRecoveryListenerAttached || typeof window === 'undefined') return;
+  onlineRecoveryListenerAttached = true;
+  window.addEventListener(
+    'online',
+    () => {
+      enableNetwork(db).catch(() => {});
+    },
+    { once: true }
+  );
+}
+
 // Connection test per skill guidelines with timeout, fail-closed DB lock guard, and offline resilience
 async function testConnection() {
+  if (typeof window === 'undefined') {
+    return;
+  }
   if (firestoreClientLockError) {
     console.warn('[Firebase] Client Firestore probe skipped because canonical (default) database lock is active.');
     return;
   }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    await disableNetwork(db).catch(() => {});
+    attachOnlineRecoveryListener();
+    console.warn('[Firebase] Browser reports offline; Firestore client operating in local/offline-resilient mode.');
+    return;
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const probePromise = getDocFromServer(doc(db, 'test', 'connection'));
   try {
-    const probePromise = getDocFromServer(doc(db, 'test', 'connection'));
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('connection-timeout: the client is offline or backend unreachable')), 4000)
-    );
+    // Suppress internal WebChannel/OnlineStateTracker console.error noise during non-blocking startup probe
+    setLogLevel('silent');
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('connection-timeout: the client is offline or backend unreachable')),
+        4000
+      );
+    });
     await Promise.race([probePromise, timeoutPromise]);
+    setLogLevel('error');
   } catch (error) {
-    if (error instanceof Error && (error.message.includes('client is offline') || error.message.includes('connection-timeout') || error.message.includes('Could not reach Cloud Firestore'))) {
+    probePromise.catch(() => {});
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errCode = (error as any)?.code;
+    if (errCode === 'permission-denied' || errMsg.includes('Missing or insufficient permissions')) {
+      // Cloud Firestore responded cleanly over the network; app data flows via server-side API routes.
+      setLogLevel('error');
+      return;
+    }
+    // Cancel lingering background retry timers so OnlineStateTracker never logs delayed console.error
+    await disableNetwork(db).catch(() => {});
+    attachOnlineRecoveryListener();
+    setLogLevel('error');
+    if (
+      errCode === 'unavailable' ||
+      errMsg.includes('client is offline') ||
+      errMsg.includes('connection-timeout') ||
+      errMsg.includes('Could not reach Cloud Firestore')
+    ) {
       console.warn('[Firebase] Firestore client is operating in local/offline-resilient mode.');
     } else {
       console.warn('[Firebase] Firestore probe notice:', error);
+    }
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
     }
   }
 }

@@ -385,6 +385,47 @@ export function reportMediaPlaybackIssue(params: {
   }).catch(() => {});
 }
 
+export function reportHtmlVideoError(params: {
+  videoEl: HTMLVideoElement | null;
+  contextLabel: string;
+  templateId?: string;
+  errorStage: string;
+  endpoint?: string;
+}): void {
+  const mediaErr = params.videoEl?.error || null;
+  const errCode = mediaErr?.code ?? 0;
+
+  // Ignore benign user/lifecycle-triggered MEDIA_ERR_ABORTED (code === 1) caused by element src swap or navigation
+  if (errCode === 1) {
+    return;
+  }
+
+  const codeLabel =
+    errCode === 2
+      ? 'MEDIA_ERR_NETWORK'
+      : errCode === 3
+      ? 'MEDIA_ERR_DECODE'
+      : errCode === 4
+      ? 'MEDIA_ERR_SRC_NOT_SUPPORTED'
+      : 'MEDIA_ERR_UNKNOWN';
+
+  let hevcHint = '';
+  if ((errCode === 3 || errCode === 4) && params.videoEl && typeof params.videoEl.canPlayType === 'function') {
+    const hevcSupport = params.videoEl.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+    if (!hevcSupport) {
+      hevcHint = ' (browser reports no HEVC/H.265 decode support; verify H.264/yuv420p encoding)';
+    }
+  }
+
+  reportMediaPlaybackIssue({
+    vector: 'MEDIA_PLAYBACK_FAILURE',
+    message: `${params.contextLabel} [${codeLabel}/${errCode}]${hevcHint}`,
+    templateId: params.templateId,
+    errorStage: `${params.errorStage}:${codeLabel.toLowerCase()}`,
+    endpoint: params.endpoint
+  });
+}
+
 /**
  * Safely captures a lightweight first-frame poster JPEG from a decoded video element
  * when no explicit poster image exists. Returns null cleanly on CORS-tainted canvases.

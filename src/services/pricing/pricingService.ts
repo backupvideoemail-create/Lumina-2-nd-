@@ -572,6 +572,80 @@ export function getAuthoritativeFxForCustomerPricing(): {
  * Fails closed with PENDING_QUOTE if resolution support or billing rules are UNKNOWN
  * (when allowPublishedListPriceFallback is false).
  */
+export function getConfiguredHiggsfieldAccountRateOverride(res: '480p' | '720p' | '1080p'): number | undefined {
+  if (typeof process === 'undefined' || process.env?.HIGGSFIELD_BILLING_VERIFIED !== 'true') return undefined;
+  const raw =
+    res === '480p'
+      ? process.env?.HIGGSFIELD_VERIFIED_RATE_480P_USD
+      : res === '720p'
+      ? process.env?.HIGGSFIELD_VERIFIED_RATE_720P_USD
+      : process.env?.HIGGSFIELD_VERIFIED_RATE_1080P_USD;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function resolveAuthoritativeTemplatePricing(params: {
+  modelId?: string | null;
+  type: 'photo' | 'video';
+  engine?: string;
+  resolution?: '480p' | '720p' | '1080p';
+  durationSeconds?: number;
+  sourceVideoDurationSeconds?: number;
+  fallbackProviderCostUsd?: number;
+  fallbackCreditCost?: number;
+}): {
+  providerCostUsd: number;
+  creditCost: number;
+  source: 'MODEL_REGISTRY' | 'SMART_TEMPLATE' | 'FALLBACK';
+} {
+  if (params.engine === 'SMART_TEMPLATE' || params.modelId === 'smart_canvas_ffmpeg') {
+    const costUsd = Number(params.fallbackProviderCostUsd) > 0 ? Number(params.fallbackProviderCostUsd) : 0;
+    const credits =
+      costUsd > 0
+        ? calculateCreditsFromUsd(costUsd) || Math.max(1, Number(params.fallbackCreditCost) || 10)
+        : Math.max(1, Number(params.fallbackCreditCost) || 10);
+    return { providerCostUsd: costUsd, creditCost: credits, source: 'SMART_TEMPLATE' };
+  }
+
+  const entry = getRegisteredModelEntry(params.modelId);
+  if (!entry) {
+    const costUsd = Number(params.fallbackProviderCostUsd) > 0 ? Number(params.fallbackProviderCostUsd) : 0.08;
+    return {
+      providerCostUsd: costUsd,
+      creditCost: calculateCreditsFromUsd(costUsd) || Math.max(1, Number(params.fallbackCreditCost) || 12),
+      source: 'FALLBACK'
+    };
+  }
+
+  const effectiveRes = params.resolution || entry.appDefaultResolution || (entry.billingUnit === 'per_image' ? '1080p' : '480p');
+  const effectiveDur = entry.billingUnit === 'per_image' ? 1 : Math.ceil(Number(params.durationSeconds) || entry.appDefaultDurationSeconds || 4);
+  const est = calculateEstimatedProviderCostUsd({
+    modelId: entry.modelId,
+    resolution: effectiveRes,
+    sourceVideoDurationSeconds:
+      entry.billsSourceVideo === true
+        ? Math.min(15, Number(params.sourceVideoDurationSeconds) > 0 ? Number(params.sourceVideoDurationSeconds) : 15)
+        : undefined,
+    requestedOutputDurationSeconds: effectiveDur,
+    allowPublishedListPriceFallback: true
+  });
+
+  if (est.status === 'QUOTED' && est.estimatedProviderCostUsd !== undefined) {
+    return {
+      providerCostUsd: est.estimatedProviderCostUsd,
+      creditCost: calculateEstimatedCustomerCredits(est.estimatedProviderCostUsd) || Math.max(1, Number(params.fallbackCreditCost) || 10),
+      source: 'MODEL_REGISTRY'
+    };
+  }
+
+  const costUsd = Number(params.fallbackProviderCostUsd) > 0 ? Number(params.fallbackProviderCostUsd) : 0.25;
+  return {
+    providerCostUsd: costUsd,
+    creditCost: calculateCreditsFromUsd(costUsd) || Math.max(1, Number(params.fallbackCreditCost) || 10),
+    source: 'FALLBACK'
+  };
+}
+
 export function calculateEstimatedProviderCostUsd(params: {
   modelId: string;
   resolution: '480p' | '720p' | '1080p';
@@ -647,19 +721,10 @@ export function calculateEstimatedProviderCostUsd(params: {
     };
   }
 
-  const getConfiguredAccountRateOverride = (res: '480p' | '720p' | '1080p'): number | undefined => {
-    if (typeof process === 'undefined' || process.env?.HIGGSFIELD_BILLING_VERIFIED !== 'true') return undefined;
-    const raw =
-      res === '480p'
-        ? process.env?.HIGGSFIELD_VERIFIED_RATE_480P_USD
-        : res === '720p'
-        ? process.env?.HIGGSFIELD_VERIFIED_RATE_720P_USD
-        : process.env?.HIGGSFIELD_VERIFIED_RATE_1080P_USD;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  };
+  // Account rate lookup uses module-level getConfiguredHiggsfieldAccountRateOverride helper
 
-  const configuredAccountRate = entry.provider === 'higgsfield' ? getConfiguredAccountRateOverride(params.resolution) : undefined;
+  const configuredAccountRate =
+    entry.provider === 'higgsfield' ? getConfiguredHiggsfieldAccountRateOverride(params.resolution) : undefined;
   const effectiveAccountRate =
     configuredAccountRate !== undefined
       ? configuredAccountRate
@@ -897,7 +962,8 @@ export function calculateAuthoritativeFaceSwapQuote(params: {
   });
 
   const tariff = entry?.resolutionTariffs[resolvedRes];
-  const perSec = tariff ? (tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd) : null;
+  const verifiedOverride = entry?.provider === 'higgsfield' ? getConfiguredHiggsfieldAccountRateOverride(resolvedRes) : undefined;
+  const perSec = verifiedOverride ?? (tariff ? (tariff.accountQuotePerSecondUsd || tariff.publishedListPricePerSecondUsd) : null);
 
   return {
     status: quote.status,
@@ -973,7 +1039,8 @@ export function measureActualProviderCostUsd(params: {
     };
   }
   const tariff = entry?.resolutionTariffs[params.resolution];
-  const rate = tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0;
+  const verifiedOverride = entry?.provider === 'higgsfield' ? getConfiguredHiggsfieldAccountRateOverride(params.resolution) : undefined;
+  const rate = verifiedOverride ?? (tariff?.accountQuotePerSecondUsd || tariff?.publishedListPricePerSecondUsd || 0);
   const billableSec = params.actualBillableDurationSeconds || 0;
   const calculatedCost = billableSec * rate;
   return {

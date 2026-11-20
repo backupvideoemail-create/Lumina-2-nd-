@@ -20,7 +20,7 @@ import {
   captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
-  reportMediaPlaybackIssue,
+  reportHtmlVideoError,
   selectMediaRendition,
   subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
@@ -328,7 +328,8 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                     mediaPlaybackCoordinator.releasePlay('faceswap_featured_card');
                     setIsPlaying(false);
                   }}
-                  onError={() => {
+                  onError={(e) => {
+                    if (e.currentTarget.error?.code === 1) return;
                     setIsFrameReady(false);
                     const hasFallbackRemaining =
                       previewMode === 'demo' &&
@@ -339,9 +340,9 @@ export const FaceSwapFeaturedCard: React.FC = () => {
                     if (hasFallbackRemaining) {
                       return;
                     }
-                    reportMediaPlaybackIssue({
-                      vector: 'MEDIA_PLAYBACK_FAILURE',
-                      message: `Featured FaceSwap video load failed (${activeScene.id})`,
+                    reportHtmlVideoError({
+                      videoEl: e.currentTarget,
+                      contextLabel: `Featured FaceSwap video load failed (${activeScene.id})`,
                       templateId: activeScene.id,
                       errorStage: 'faceswap_featured_video',
                       endpoint: currentMediaUrl

@@ -3,6 +3,7 @@ import {
   captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
+  reportHtmlVideoError,
   reportMediaPlaybackIssue,
   selectMediaRendition,
   subscribeNetworkProfileChange
@@ -217,11 +218,12 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
               waitingTimerRef.current = null;
             }
           }}
-          onError={() => {
+          onError={(e) => {
+            if (e.currentTarget.error?.code === 1) return;
             setHasError(true);
-            reportMediaPlaybackIssue({
-              vector: 'MEDIA_PLAYBACK_FAILURE',
-              message: `Video decode/load failed in ${errorStage}`,
+            reportHtmlVideoError({
+              videoEl: e.currentTarget,
+              contextLabel: `Video decode/load failed in ${errorStage}`,
               templateId,
               errorStage,
               endpoint: effectiveSrc

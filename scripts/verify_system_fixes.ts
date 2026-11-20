@@ -3405,8 +3405,14 @@ async function runSystemVerification() {
       headerColonFallback43 === 'Key legacy_id:legacy_sec' &&
       gatedDiag43.customerGateStatus === 'SAFELY_GATED' &&
       gatedDiag43.estimatedSingleRun.model === 'hf_mult_motion_control_flash' &&
-      gatedDiag43.estimatedSingleRun.estimatedCostUsd === 0.2,
-    '43.4 Higgsfield adapter uses single complete Authorization: Key <api-key>, reports honest UNVERIFIED (never 404 proof), and keeps Genjutsu SAFELY_GATED'
+      gatedDiag43.estimatedSingleRun.sourceDurationSeconds === 15 &&
+      gatedDiag43.estimatedSingleRun.outputDurationSeconds === 4 &&
+      gatedDiag43.estimatedSingleRun.billableDurationSeconds === 19 &&
+      gatedDiag43.estimatedSingleRun.estimatedCostUsd === 0.95 &&
+      gatedDiag43.estimatedSingleRun.resolutionEstimatesUsd['480p'] === 0.95 &&
+      gatedDiag43.estimatedSingleRun.resolutionEstimatesUsd['720p'] === 1.9 &&
+      gatedDiag43.estimatedSingleRun.resolutionEstimatesUsd['1080p'] === 3.8,
+    '43.4 Higgsfield adapter uses single complete Authorization: Key <api-key>, reports honest UNVERIFIED, scopes $0.95 strictly to 19s at 480p, and keeps Genjutsu SAFELY_GATED'
   );
 
   // 43.5 Gemini zero-cost non-network key suffix diagnostic check (...CqZA vs legacy ...U4sw)
@@ -3607,9 +3613,12 @@ async function runSystemVerification() {
   const prevHf480Rate45 = process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD;
   const prevHfKey45 = process.env.HIGGSFIELD_API_KEY;
   const prevHfEnable45 = process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+  const prevHfObjFlag45 = process.env.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION;
   let verifiedOverrideUsd45 = 0;
   let flagOnlyGateEnabled45 = true;
+  let unverifiedBillingBlocked45 = true;
   let bothKeyAndFlagEnabled45 = false;
+  let objSwapWithoutOwnFlag45 = true;
   try {
     process.env.HIGGSFIELD_BILLING_VERIFIED = 'true';
     process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD = '0.0739';
@@ -3627,12 +3636,20 @@ async function runSystemVerification() {
     flagOnlyGateEnabled45 = getHfDiag45().customerGenerationEnabled;
 
     process.env.HIGGSFIELD_API_KEY = 'hf_test_key_gate';
-    bothKeyAndFlagEnabled45 = getHfDiag45().customerGenerationEnabled;
+    delete process.env.HIGGSFIELD_BILLING_VERIFIED;
+    unverifiedBillingBlocked45 = getHfDiag45().customerGenerationEnabled;
+
+    process.env.HIGGSFIELD_BILLING_VERIFIED = 'true';
+    delete process.env.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION;
+    const enabledDiag45 = getHfDiag45();
+    bothKeyAndFlagEnabled45 = enabledDiag45.customerGenerationEnabled;
+    objSwapWithoutOwnFlag45 = enabledDiag45.objectSwapCustomerGenerationEnabled;
   } finally {
     if (prevHfVerified45 !== undefined) process.env.HIGGSFIELD_BILLING_VERIFIED = prevHfVerified45; else delete process.env.HIGGSFIELD_BILLING_VERIFIED;
     if (prevHf480Rate45 !== undefined) process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD = prevHf480Rate45; else delete process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD;
     if (prevHfKey45 !== undefined) process.env.HIGGSFIELD_API_KEY = prevHfKey45; else delete process.env.HIGGSFIELD_API_KEY;
     if (prevHfEnable45 !== undefined) process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION = prevHfEnable45; else delete process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+    if (prevHfObjFlag45 !== undefined) process.env.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION = prevHfObjFlag45; else delete process.env.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION;
   }
   assert(
     hfMotionEntry45.resolutionTariffs['480p'].openApiDocPricePerSecondUsd === 0.0739 &&
@@ -3642,8 +3659,10 @@ async function runSystemVerification() {
       hfMotionEntry45.maxDurationSeconds === 4 &&
       Math.abs(verifiedOverrideUsd45 - Number((14 * 0.0739).toFixed(4))) < 0.0001 &&
       flagOnlyGateEnabled45 === false &&
-      bothKeyAndFlagEnabled45 === true,
-    '45.3 Higgsfield tariff reconciliation, HIGGSFIELD_BILLING_VERIFIED override, dual-duration min(src,15)+ceil(out), 4s cap & dual gate verified'
+      unverifiedBillingBlocked45 === false &&
+      bothKeyAndFlagEnabled45 === true &&
+      objSwapWithoutOwnFlag45 === false,
+    '45.3 Higgsfield tariff reconciliation, HIGGSFIELD_BILLING_VERIFIED triple gate, separate Object Swap flag, and dual-duration min(src,15)+ceil(out) verified'
   );
 
   // 45.4 Omni Evaluation-Only Guard & Zero Default google_veo Fallbacks + 4 Admin Presets
@@ -3661,6 +3680,148 @@ async function runSystemVerification() {
       tplMgrSrc45.includes('SMART_CANVAS_WORKFLOW_OPTIONS') &&
       tplMgrSrc45.includes('engine: tplEngine'),
     '45.4 Omni evaluation-only defaults eliminated across backend & UI, and TemplateManagerModal persists all 4 presets including SMART_TEMPLATE'
+  );
+
+  // 45.5 Firestore Client Long-Polling & Offline-Resilient Boot Probe (prevents WebChannel unavailable console.error)
+  assert(
+    fbClientSrc45.includes('experimentalForceLongPolling: true') &&
+      fbClientSrc45.includes('export const db = getFirestore(app);') &&
+      fbClientSrc45.includes("typeof window === 'undefined'") &&
+      fbClientSrc45.includes('navigator.onLine === false') &&
+      fbClientSrc45.includes('disableNetwork(db)') &&
+      fbClientSrc45.includes('enableNetwork(db)'),
+    '45.5 Firestore client configures experimentalForceLongPolling, 1-arg (default) DB lock, SSR/offline guard, and disableNetwork cleanup'
+  );
+
+  // =========================================================================
+  // SUITE 46: Final Technical Audit & Customer-Ready Remediation Checks
+  // =========================================================================
+  console.log('\n--- Suite 46: 15s Source Trimming, Adapter Schema, Pricing Registry & Auth Recovery ---');
+
+  // 46.1 VideoTrimmer 15s cap + exact shorter duration + <3.8s rejection + H.264 normalization
+  const { exec: execCmd46 } = await import('child_process');
+  const { promisify: promisify46 } = await import('util');
+  const execAsync46 = promisify46(execCmd46);
+  const { videoTrimmer: vt46 } = await import('../src/services/video/videoTrimmer.ts');
+  const temp46Dir = pathUtil.resolve(process.cwd(), '.data', 'temp_trim');
+  if (!fs.existsSync(temp46Dir)) fs.mkdirSync(temp46Dir, { recursive: true });
+
+  const longSrc46 = pathUtil.join(temp46Dir, `test_long_18s_${Date.now()}.mp4`);
+  const midSrc46 = pathUtil.join(temp46Dir, `test_mid_10s_${Date.now()}.mp4`);
+  const shortSrc46 = pathUtil.join(temp46Dir, `test_short_2s_${Date.now()}.mp4`);
+  const createdTempFiles46: string[] = [longSrc46, midSrc46, shortSrc46];
+
+  let trim15Dur46 = 0;
+  let trim10Dur46 = 0;
+  let shortRejected46 = false;
+  let normChecked46 = false;
+  try {
+    await execAsync46(`ffmpeg -y -f lavfi -i color=c=blue:s=320x240:d=18 -c:v libx264 -pix_fmt yuv420p "${longSrc46}"`);
+    await execAsync46(`ffmpeg -y -f lavfi -i color=c=green:s=320x240:d=10.3 -c:v libx264 -pix_fmt yuv420p "${midSrc46}"`);
+    await execAsync46(`ffmpeg -y -f lavfi -i color=c=red:s=320x240:d=2.2 -c:v libx264 -pix_fmt yuv420p "${shortSrc46}"`);
+
+    const longTrimRes = await vt46.trimVideo(longSrc46, 15);
+    createdTempFiles46.push(longTrimRes.trimmedFilePath);
+    trim15Dur46 = longTrimRes.trimmedDurationSeconds;
+
+    const midTrimRes = await vt46.trimVideo(midSrc46, 15);
+    createdTempFiles46.push(midTrimRes.trimmedFilePath);
+    trim10Dur46 = midTrimRes.trimmedDurationSeconds;
+
+    try {
+      const shortTrimRes = await vt46.trimVideo(shortSrc46, 15);
+      createdTempFiles46.push(shortTrimRes.trimmedFilePath);
+    } catch {
+      shortRejected46 = true;
+    }
+
+    const normRes46 = await vt46.normalizeVideoBufferForBrowser(fs.readFileSync(midSrc46));
+    normChecked46 = normRes46.buffer.length > 0 && normRes46.originalCodec === 'h264';
+  } finally {
+    for (const f of createdTempFiles46) {
+      if (fs.existsSync(f)) {
+        try { fs.unlinkSync(f); } catch {}
+      }
+    }
+  }
+  assert(
+    trim15Dur46 >= 14.5 &&
+      trim15Dur46 <= 15.2 &&
+      trim10Dur46 >= 9.8 &&
+      trim10Dur46 <= 10.6 &&
+      shortRejected46 === true &&
+      normChecked46 === true,
+    '46.1 VideoTrimmer sends full 15s (not 4s) for longer sources, preserves 10.3s shorter sources, rejects <3.8s, and probes H.264 codec'
+  );
+
+  // 46.2 FaceSwapAdapter omits unsupported duration & server.ts uses 15s trim + Object Swap gate + completion reconciliation
+  const faceSwapAdapterSrc46 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/faceSwapAdapter.ts'), 'utf8');
+  const serverLatestSrc46 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(
+    !faceSwapAdapterSrc46.includes('duration: clampedDuration') &&
+      serverLatestSrc46.includes('videoTrimmer.trimVideo(rawVideoInput, 15') &&
+      serverLatestSrc46.includes('GENJUTSU_OBJECT_SWAP_SAFELY_GATED') &&
+      serverLatestSrc46.includes('reconcileCostOnCompletion'),
+    '46.2 FaceSwapAdapter sends clean Genjutsu schema without unsupported duration; server trims first 15s and runs completion reconciliation'
+  );
+
+  // 46.3 MODEL_REGISTRY authoritative template pricing overrides legacy $0.25 defaults
+  const { resolveAuthoritativeTemplatePricing: resolveTplPrice46 } = await import('../src/services/pricing/pricingService.ts');
+  const gemPrice46 = resolveTplPrice46({
+    modelId: 'gemini-3.1-flash-lite-image',
+    type: 'photo',
+    engine: 'AI_GENERATION',
+    resolution: '1080p',
+    fallbackProviderCostUsd: 0.25
+  });
+  const hf480Price46 = resolveTplPrice46({
+    modelId: 'hf_mult_motion_control_flash',
+    type: 'video',
+    engine: 'AI_GENERATION',
+    resolution: '480p',
+    durationSeconds: 4,
+    fallbackProviderCostUsd: 0.25
+  });
+  const hf720Price46 = resolveTplPrice46({
+    modelId: 'hf_mult_motion_control_flash',
+    type: 'video',
+    engine: 'AI_GENERATION',
+    resolution: '720p',
+    durationSeconds: 4,
+    fallbackProviderCostUsd: 0.4
+  });
+  assert(
+    gemPrice46.source === 'MODEL_REGISTRY' &&
+      gemPrice46.providerCostUsd === 0.045 &&
+      hf480Price46.source === 'MODEL_REGISTRY' &&
+      hf480Price46.providerCostUsd === 0.95 &&
+      hf720Price46.source === 'MODEL_REGISTRY' &&
+      hf720Price46.providerCostUsd === 1.9 &&
+      !tplMgrSrc45.includes('setTplCostUsd(0.25)') &&
+      !tplMgrSrc45.includes('setTplCostUsd(0.40)'),
+    '46.3 Authoritative MODEL_REGISTRY pricing overrides legacy $0.25/$0.40 UI defaults across photo and video presets'
+  );
+
+  // 46.4 Google Auth edge cases: persistence status, second-401 recovery, transient failure unlock & focus recovery
+  const latestFbClient46 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf8');
+  const appCtxSrc46 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+  assert(
+    latestFbClient46.includes('export interface AuthPersistenceStatus') &&
+      appCtxSrc46.includes('attemptFirebaseSessionRecovery') &&
+      appCtxSrc46.includes("handleConfirmedUnauthorizedMe('initial_me')") &&
+      appCtxSrc46.includes("handleConfirmedUnauthorizedMe('retry_me')") &&
+      appCtxSrc46.includes("window.addEventListener('focus', onFocusOrOnline)"),
+    '46.4 Google Auth recovers across both 401 branches, resets UID lock on transient errors, exposes persistence status, and recovers on focus/online'
+  );
+
+  // 46.5 CORS preflight Range/CORP headers & Video MediaError abort filtering
+  const mediaMgrSrc46 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/media/mediaPlaybackManager.ts'), 'utf8');
+  assert(
+    serverLatestSrc46.includes('Content-Type, Authorization, Range, If-None-Match') &&
+      serverLatestSrc46.includes('Access-Control-Expose-Headers') &&
+      mediaMgrSrc46.includes('export function reportHtmlVideoError') &&
+      mediaMgrSrc46.includes('if (errCode === 1)'),
+    '46.5 CORS preflight exposes Byte-Range/CORP headers and reportHtmlVideoError ignores benign aborts while surfacing HEVC/decode telemetry'
   );
 
   console.log('\n====================================================');

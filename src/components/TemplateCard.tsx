@@ -10,6 +10,7 @@ import {
   captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
+  reportHtmlVideoError,
   reportMediaPlaybackIssue,
   selectMediaRendition,
   subscribeNetworkProfileChange
@@ -415,13 +416,14 @@ export const TemplateCard: React.FC<TemplateCardProps> = memo(({
                 waitingTimerRef.current = null;
               }
             }}
-            onError={() => {
+            onError={(e) => {
+              if (e.currentTarget.error?.code === 1) return;
               setHasVideoError(true);
               setIsVideoFrameReady(false);
               setIsMediaLoaded(true);
-              reportMediaPlaybackIssue({
-                vector: 'MEDIA_PLAYBACK_FAILURE',
-                message: `Template card preview failed (${template.id})`,
+              reportHtmlVideoError({
+                videoEl: e.currentTarget,
+                contextLabel: `Template card preview failed (${template.id})`,
                 templateId: template.id,
                 errorStage: 'template_card_preview',
                 endpoint: resolvedVideoSrc

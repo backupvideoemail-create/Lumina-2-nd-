@@ -8,7 +8,7 @@ import {
   captureFirstFramePoster,
   getNetworkPlaybackProfile,
   mediaPlaybackCoordinator,
-  reportMediaPlaybackIssue,
+  reportHtmlVideoError,
   selectMediaRendition,
   subscribeNetworkProfileChange
 } from '../services/media/mediaPlaybackManager';
@@ -308,12 +308,13 @@ export const FaceSwapSceneGallery: React.FC = () => {
                         onPlaying={() => {
                           setReadyVideos((prev) => (prev[scene.id] ? prev : { ...prev, [scene.id]: true }));
                         }}
-                        onError={() => {
+                        onError={(e) => {
+                          if (e.currentTarget.error?.code === 1) return;
                           setFailedVideos((prev) => ({ ...prev, [scene.id]: true }));
                           setReadyVideos((prev) => ({ ...prev, [scene.id]: false }));
-                          reportMediaPlaybackIssue({
-                            vector: 'MEDIA_PLAYBACK_FAILURE',
-                            message: `FaceSwap scene preview failed (${scene.id})`,
+                          reportHtmlVideoError({
+                            videoEl: e.currentTarget,
+                            contextLabel: `FaceSwap scene preview failed (${scene.id})`,
                             templateId: scene.id,
                             errorStage: 'faceswap_gallery_preview',
                             endpoint: previewMedia

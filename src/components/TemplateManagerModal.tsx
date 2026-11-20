@@ -49,7 +49,12 @@ import {
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
 import { CATEGORIES } from '../data/templatesData';
-import { FACE_SWAP_COMPATIBLE_COMBINATIONS, getRegisteredModelEntry } from '../services/pricing/pricingService';
+import {
+  FACE_SWAP_COMPATIBLE_COMBINATIONS,
+  getRegisteredModelEntry,
+  calculateEstimatedProviderCostUsd,
+  resolveAuthoritativeTemplatePricing
+} from '../services/pricing/pricingService';
 
 const SMART_CANVAS_WORKFLOW_OPTIONS: Array<{ value: string; label: string; type: 'photo' | 'video' }> = [
   { value: 'retro-polaroid-warm', label: 'Retro Polaroid Warm (Photo)', type: 'photo' },
@@ -571,28 +576,46 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       setTplDurationSeconds(undefined);
     } else if (preset === 'higgsfield_motion') {
       const reg = getRegisteredModelEntry('hf_mult_motion_control_flash');
+      const resLabel = reg?.appDefaultResolution || '480p';
+      const outDur = reg?.appDefaultDurationSeconds || 4;
+      const est = calculateEstimatedProviderCostUsd({
+        modelId: 'hf_mult_motion_control_flash',
+        resolution: resLabel,
+        sourceVideoDurationSeconds: 15,
+        requestedOutputDurationSeconds: outDur,
+        allowPublishedListPriceFallback: true
+      });
       setTplEngine('AI_GENERATION');
       setRecipeProvider(reg?.provider || 'higgsfield');
       setRecipeModel(reg?.modelId || 'hf_mult_motion_control_flash');
       setRecipeWorkflow(reg?.workflow || 'MOTION_TRANSFER');
       setRecipePrompt(DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT);
-      setTplCostUsd(0.25);
+      setTplCostUsd(est.estimatedProviderCostUsd ?? 0.95);
       setTplDetectedType('video');
       setTplInputType('IMAGE_ONLY');
-      setTplResolutionLabel(reg?.appDefaultResolution || '480p');
-      setTplDurationSeconds(reg?.appDefaultDurationSeconds || 4);
+      setTplResolutionLabel(resLabel);
+      setTplDurationSeconds(outDur);
     } else if (preset === 'higgsfield_object_swap') {
       const reg = getRegisteredModelEntry('hf_mult_replace_object_flash');
+      const resLabel = reg?.appDefaultResolution || '480p';
+      const outDur = reg?.appDefaultDurationSeconds || 4;
+      const est = calculateEstimatedProviderCostUsd({
+        modelId: 'hf_mult_replace_object_flash',
+        resolution: resLabel,
+        sourceVideoDurationSeconds: 15,
+        requestedOutputDurationSeconds: outDur,
+        allowPublishedListPriceFallback: true
+      });
       setTplEngine('AI_GENERATION');
       setRecipeProvider(reg?.provider || 'higgsfield');
       setRecipeModel(reg?.modelId || 'hf_mult_replace_object_flash');
       setRecipeWorkflow(reg?.workflow || 'OBJECT_SWAP');
       setRecipePrompt('Seamless AI object/character replacement matching scene lighting, reflections, shadows, and natural depth of field.');
-      setTplCostUsd(0.40);
+      setTplCostUsd(est.estimatedProviderCostUsd ?? 0.95);
       setTplDetectedType('video');
       setTplInputType('IMAGE_ONLY');
-      setTplResolutionLabel(reg?.appDefaultResolution || '720p');
-      setTplDurationSeconds(reg?.appDefaultDurationSeconds || 4);
+      setTplResolutionLabel(resLabel);
+      setTplDurationSeconds(outDur);
     } else if (preset === 'smart_canvas') {
       const reg = getRegisteredModelEntry('smart_canvas_ffmpeg');
       setTplEngine('SMART_TEMPLATE');
@@ -1149,7 +1172,14 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           durationSeconds: resolvedDuration,
           recipe: recipePayload,
           requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
-          providerCostUsd: Number(tplCostUsd) || 0.25
+          providerCostUsd: resolveAuthoritativeTemplatePricing({
+            modelId: recipeModel,
+            type: tplDetectedType,
+            engine: tplEngine,
+            resolution: (tplResolutionLabel === '480p' || tplResolutionLabel === '720p' || tplResolutionLabel === '1080p' ? tplResolutionLabel : undefined) as any,
+            durationSeconds: resolvedDuration,
+            fallbackProviderCostUsd: Number(tplCostUsd) || undefined
+          }).providerCostUsd
         };
 
         if (tplSampleFaceThumbnail.startsWith('data:')) {
@@ -1291,7 +1321,14 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             durationSeconds: resolvedDuration,
             recipe: recipePayload,
             requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
-            providerCostUsd: Number(tplCostUsd) || 0.25
+            providerCostUsd: resolveAuthoritativeTemplatePricing({
+              modelId: recipeModel,
+              type: tplDetectedType,
+              engine: tplEngine,
+              resolution: (tplResolutionLabel === '480p' || tplResolutionLabel === '720p' || tplResolutionLabel === '1080p' ? tplResolutionLabel : undefined) as any,
+              durationSeconds: resolvedDuration,
+              fallbackProviderCostUsd: Number(tplCostUsd) || undefined
+            }).providerCostUsd
           })
         });
 

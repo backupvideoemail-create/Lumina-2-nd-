@@ -239,7 +239,9 @@ export function getHiggsfieldDiagnosticStatus(): {
   secretName: 'HIGGSFIELD_API_KEY';
   authHeaderFormat: 'Authorization: Key <api-key>';
   authStatus: 'UNVERIFIED' | 'MISSING_SECRET';
+  billingVerified: boolean;
   customerGenerationEnabled: boolean;
+  objectSwapCustomerGenerationEnabled: boolean;
   customerGateStatus: 'SAFELY_GATED' | 'ENABLED';
   tariffVerificationStatus: 'VERIFIED_OVERRIDE' | 'PENDING_ACCOUNT_BILLING_CHECK';
   billingFormula: string;
@@ -247,23 +249,48 @@ export function getHiggsfieldDiagnosticStatus(): {
     model: string;
     workflow: string;
     resolution: '480p';
+    sourceDurationSeconds: number;
+    outputDurationSeconds: number;
+    billableDurationSeconds: number;
     durationSeconds: number;
     ratePerSecondUsd: number;
     estimatedCostUsd: number;
+    resolutionEstimatesUsd: Record<'480p' | '720p' | '1080p', number>;
+    costScopeNote: string;
   };
 } {
   const rawKey = typeof process !== 'undefined' ? (process.env?.HIGGSFIELD_API_KEY || '').trim() : '';
   const gateFlagEnabled =
     typeof process !== 'undefined' && process.env?.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true';
-  const customerGenerationEnabled = Boolean(rawKey) && gateFlagEnabled;
+  const objectSwapFlagEnabled =
+    typeof process !== 'undefined' && process.env?.ENABLE_GENJUTSU_OBJECT_SWAP_CUSTOMER_GENERATION === 'true';
   const billingVerified =
     typeof process !== 'undefined' && process.env?.HIGGSFIELD_BILLING_VERIFIED === 'true';
+  // Manual activation alone MUST NOT bypass unverified billing status.
+  const customerGenerationEnabled = Boolean(rawKey) && billingVerified && gateFlagEnabled;
+  const objectSwapCustomerGenerationEnabled = customerGenerationEnabled && objectSwapFlagEnabled;
+
+  const parseVerifiedRate = (envName: string, publishedRate: number): number => {
+    if (!billingVerified || typeof process === 'undefined') return publishedRate;
+    const val = Number(process.env?.[envName]);
+    return Number.isFinite(val) && val > 0 ? val : publishedRate;
+  };
+  const rate480p = parseVerifiedRate('HIGGSFIELD_VERIFIED_RATE_480P_USD', 0.05);
+  const rate720p = parseVerifiedRate('HIGGSFIELD_VERIFIED_RATE_720P_USD', 0.1);
+  const rate1080p = parseVerifiedRate('HIGGSFIELD_VERIFIED_RATE_1080P_USD', 0.2);
+
+  const sourceDurationSeconds = 15;
+  const outputDurationSeconds = 4;
+  const billableDurationSeconds = sourceDurationSeconds + outputDurationSeconds;
+
   return {
     present: Boolean(rawKey),
     secretName: 'HIGGSFIELD_API_KEY',
     authHeaderFormat: 'Authorization: Key <api-key>',
     authStatus: rawKey ? 'UNVERIFIED' : 'MISSING_SECRET',
+    billingVerified,
     customerGenerationEnabled,
+    objectSwapCustomerGenerationEnabled,
     customerGateStatus: customerGenerationEnabled ? 'ENABLED' : 'SAFELY_GATED',
     tariffVerificationStatus: billingVerified ? 'VERIFIED_OVERRIDE' : 'PENDING_ACCOUNT_BILLING_CHECK',
     billingFormula: 'Math.min(sourceDurationSeconds, 15) + Math.ceil(outputDurationSeconds)',
@@ -271,9 +298,19 @@ export function getHiggsfieldDiagnosticStatus(): {
       model: 'hf_mult_motion_control_flash',
       workflow: 'MOTION_TRANSFER',
       resolution: '480p',
-      durationSeconds: 4,
-      ratePerSecondUsd: 0.05,
-      estimatedCostUsd: 0.2
+      sourceDurationSeconds,
+      outputDurationSeconds,
+      billableDurationSeconds,
+      durationSeconds: billableDurationSeconds,
+      ratePerSecondUsd: rate480p,
+      estimatedCostUsd: Number((billableDurationSeconds * rate480p).toFixed(4)),
+      resolutionEstimatesUsd: {
+        '480p': Number((billableDurationSeconds * rate480p).toFixed(4)),
+        '720p': Number((billableDurationSeconds * rate720p).toFixed(4)),
+        '1080p': Number((billableDurationSeconds * rate1080p).toFixed(4))
+      },
+      costScopeNote:
+        'Applies strictly to 19 billable seconds (15s max source + 4s output) at 480p; shorter sources and 720p/1080p scale by exact measured seconds and resolution rate.'
     }
   };
 }
