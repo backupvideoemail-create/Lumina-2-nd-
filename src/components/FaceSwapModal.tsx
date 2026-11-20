@@ -24,6 +24,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { FaceSwapScene, FaceSwapGenerateRequest } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
+import { getRegisteredModelEntry } from '../services/pricing/pricingService';
 
 export const FaceSwapModal: React.FC = () => {
   const {
@@ -56,8 +57,12 @@ export const FaceSwapModal: React.FC = () => {
     }
   }, [activeScene]);
 
-  // 2. Video Duration Trimmer (Clamped between 4 and 15 seconds, default 4s)
-  const [durationSeconds, setDurationSeconds] = useState<number>(4);
+  const activeModelEntry = getRegisteredModelEntry(activeScene?.model || 'hf_mult_motion_control_flash');
+  const minAllowedDuration = activeModelEntry?.minDurationSeconds ?? 4;
+  const maxAllowedDuration = activeModelEntry?.maxDurationSeconds ?? 4;
+
+  // 2. Output Duration Trimmer (strictly bounded by verified Genjutsu Light model limits, 4s default)
+  const [durationSeconds, setDurationSeconds] = useState<number>(minAllowedDuration);
   const [detectedVideoDuration, setDetectedVideoDuration] = useState<number | null>(null);
 
   // 3. Face Reference Images (1 to 8 photos, recommended 4-5, starts strictly with 0 customer references)
@@ -93,11 +98,16 @@ export const FaceSwapModal: React.FC = () => {
       setIsCalculating(true);
       setFxUnavailableMessage(null);
       try {
+        const effectiveSourceSeconds =
+          videoSourceMode === 'upload'
+            ? (detectedVideoDuration ? Math.min(15, detectedVideoDuration) : durationSeconds)
+            : (activeScene?.durationSeconds ? Math.min(15, activeScene.durationSeconds) : durationSeconds);
         const res = await fetch('/api/faceswap/calculate-cost', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             durationSeconds,
+            sourceVideoDurationSeconds: effectiveSourceSeconds,
             sceneId: videoSourceMode === 'preset' ? activeScene?.id : undefined,
             model: activeScene?.model,
             resolution: activeScene?.resolution
@@ -133,7 +143,7 @@ export const FaceSwapModal: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [durationSeconds, videoSourceMode, activeScene?.id, activeScene?.model, activeScene?.resolution]);
+  }, [durationSeconds, detectedVideoDuration, videoSourceMode, activeScene?.id, activeScene?.model, activeScene?.resolution, activeScene?.durationSeconds]);
 
   if (!faceSwapModalOpen) return null;
 
@@ -165,8 +175,8 @@ export const FaceSwapModal: React.FC = () => {
         setDetectedVideoDuration(null);
         return;
       }
-      setDetectedVideoDuration(Math.round(dur));
-      const targetSec = Math.max(4, Math.min(15, Math.round(dur)));
+      setDetectedVideoDuration(Math.min(15, Math.ceil(dur)));
+      const targetSec = Math.max(minAllowedDuration, Math.min(maxAllowedDuration, Math.ceil(dur)));
       setDurationSeconds(targetSec);
     };
     tempVideo.src = tempVideoUrl;
@@ -442,33 +452,40 @@ export const FaceSwapModal: React.FC = () => {
             </div>
           )}
 
-          {/* DURATION TRIMMER SLIDER (4 to 15 seconds) */}
+          {/* VERIFIED OUTPUT DURATION CONTROL (Bounded by Genjutsu Light limits) */}
           <div className="p-3.5 rounded-2xl bg-black/40 border border-white/5 space-y-2 mt-3">
             <div className="flex items-center justify-between text-xs">
               <span className="text-stone-300 font-semibold flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
-                <span>Trimmed Video Duration:</span>
+                <span>Verified Output Duration:</span>
               </span>
               <span className="font-mono font-bold text-amber-300 text-sm">
                 {durationSeconds} Seconds
               </span>
             </div>
 
-            <input
-              type="range"
-              min={4}
-              max={15}
-              step={1}
-              value={durationSeconds}
-              onChange={(e) => setDurationSeconds(Number(e.target.value))}
-              className="w-full accent-amber-400 cursor-pointer"
-            />
-
-            <div className="flex justify-between text-[10px] text-stone-500 font-mono">
-              <span>Min: 4s</span>
-              <span>Recommended: 5s – 8s</span>
-              <span>Max: 15s</span>
-            </div>
+            {minAllowedDuration < maxAllowedDuration ? (
+              <>
+                <input
+                  type="range"
+                  min={minAllowedDuration}
+                  max={maxAllowedDuration}
+                  step={1}
+                  value={durationSeconds}
+                  onChange={(e) => setDurationSeconds(Number(e.target.value))}
+                  className="w-full accent-amber-400 cursor-pointer"
+                />
+                <div className="flex justify-between text-[10px] text-stone-500 font-mono">
+                  <span>Min: {minAllowedDuration}s</span>
+                  <span>Max: {maxAllowedDuration}s</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-between text-[10px] text-stone-400 font-mono pt-0.5">
+                <span>Genjutsu Light Verified Output: {minAllowedDuration}s</span>
+                <span>Source preprocessed ≤ 15s</span>
+              </div>
+            )}
           </div>
         </section>
 

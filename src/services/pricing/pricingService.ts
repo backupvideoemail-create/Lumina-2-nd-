@@ -52,6 +52,7 @@ export type BillingUnit = 'per_image' | 'per_second';
 export interface ResolutionTariff {
   resolution: '480p' | '720p' | '1080p';
   publishedListPricePerSecondUsd: number;
+  openApiDocPricePerSecondUsd?: number;
   accountQuotePerSecondUsd?: number;
   publishedListPricePerImageUsd?: number;
   accountQuotePerImageUsd?: number;
@@ -149,7 +150,7 @@ export const FACE_SWAP_COMPATIBLE_COMBINATIONS: FaceSwapProviderOption[] = [
               { workflow: 'IMAGE_TO_VIDEO', workflowLabel: 'Image-to-Video (IMAGE_TO_VIDEO)' }
             ],
             supportedResolutions: ['720p', '1080p'],
-            isEvaluationOnly: false
+            isEvaluationOnly: true
           }
         ]
       }
@@ -196,15 +197,15 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     workflow: 'MOTION_TRANSFER',
     billingUnit: 'per_second',
     resolutionTariffs: {
-      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, openApiDocPricePerSecondUsd: 0.0739, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, openApiDocPricePerSecondUsd: 0.1471, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, openApiDocPricePerSecondUsd: 0.2936, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
     },
     appDefaultResolution: '480p',
     minDurationSeconds: 4,
-    maxDurationSeconds: 15,
-    appDefaultDurationSeconds: 5,
-    billsSourceVideo: 'UNKNOWN',
+    maxDurationSeconds: 4,
+    appDefaultDurationSeconds: 4,
+    billsSourceVideo: true,
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED'
   },
@@ -215,15 +216,15 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     workflow: 'OBJECT_SWAP',
     billingUnit: 'per_second',
     resolutionTariffs: {
-      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
-      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
-      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
+      '480p': { resolution: '480p', publishedListPricePerSecondUsd: 0.05, openApiDocPricePerSecondUsd: 0.0739, supportStatus: 'UNSUPPORTED', renderingTestStatus: 'NOT_TESTED' },
+      '720p': { resolution: '720p', publishedListPricePerSecondUsd: 0.10, openApiDocPricePerSecondUsd: 0.1471, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' },
+      '1080p': { resolution: '1080p', publishedListPricePerSecondUsd: 0.20, openApiDocPricePerSecondUsd: 0.2936, supportStatus: 'UNKNOWN', renderingTestStatus: 'NOT_TESTED' }
     },
     appDefaultResolution: '720p',
     minDurationSeconds: 4,
-    maxDurationSeconds: 15,
-    appDefaultDurationSeconds: 5,
-    billsSourceVideo: 'UNKNOWN',
+    maxDurationSeconds: 4,
+    appDefaultDurationSeconds: 4,
+    billsSourceVideo: true,
     endpointVerificationStatus: 'PENDING_QUOTE',
     generationTestStatus: 'NOT_TESTED'
   },
@@ -296,7 +297,7 @@ export const MODEL_REGISTRY: Record<string, ModelRegistryEntry> = {
     billsSourceVideo: false,
     endpointVerificationStatus: 'VERIFIED',
     generationTestStatus: 'NOT_TESTED',
-    isEvaluationOnly: false
+    isEvaluationOnly: true
   },
   'smart_canvas_ffmpeg': {
     modelId: 'smart_canvas_ffmpeg',
@@ -646,7 +647,25 @@ export function calculateEstimatedProviderCostUsd(params: {
     };
   }
 
-  const hasAccountQuote = Boolean(tariff.accountQuotePerSecondUsd && tariff.accountQuotePerSecondUsd > 0);
+  const getConfiguredAccountRateOverride = (res: '480p' | '720p' | '1080p'): number | undefined => {
+    if (typeof process === 'undefined' || process.env?.HIGGSFIELD_BILLING_VERIFIED !== 'true') return undefined;
+    const raw =
+      res === '480p'
+        ? process.env?.HIGGSFIELD_VERIFIED_RATE_480P_USD
+        : res === '720p'
+        ? process.env?.HIGGSFIELD_VERIFIED_RATE_720P_USD
+        : process.env?.HIGGSFIELD_VERIFIED_RATE_1080P_USD;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  };
+
+  const configuredAccountRate = entry.provider === 'higgsfield' ? getConfiguredAccountRateOverride(params.resolution) : undefined;
+  const effectiveAccountRate =
+    configuredAccountRate !== undefined
+      ? configuredAccountRate
+      : tariff.accountQuotePerSecondUsd;
+
+  const hasAccountQuote = Boolean(effectiveAccountRate && effectiveAccountRate > 0);
   const quoteBasis: 'ACCOUNT_QUOTE' | 'PUBLISHED_LIST_PRICE' = hasAccountQuote
     ? 'ACCOUNT_QUOTE'
     : 'PUBLISHED_LIST_PRICE';
@@ -666,7 +685,7 @@ export function calculateEstimatedProviderCostUsd(params: {
   }
 
   const rate = hasAccountQuote
-    ? tariff.accountQuotePerSecondUsd!
+    ? effectiveAccountRate!
     : tariff.publishedListPricePerSecondUsd;
 
   if (rate === undefined || rate <= 0) {
@@ -675,9 +694,11 @@ export function calculateEstimatedProviderCostUsd(params: {
 
   if (entry.billsSourceVideo === true) {
     if (!params.sourceVideoDurationSeconds || params.sourceVideoDurationSeconds <= 0) {
-      return { status: 'PENDING_QUOTE', billingUnit: 'per_second', reason: 'Source video duration is required for dual-duration quote.' };
+      return { status: 'PENDING_QUOTE', billingUnit: 'per_second', reason: 'Source video duration (first 15s max) is required for dual-duration quote.' };
     }
-    const totalEstimatedSeconds = params.sourceVideoDurationSeconds + params.requestedOutputDurationSeconds;
+    const clampedSourceSeconds = Math.min(15, Math.max(0, params.sourceVideoDurationSeconds));
+    const roundedOutputSeconds = Math.ceil(Math.max(1, params.requestedOutputDurationSeconds));
+    const totalEstimatedSeconds = clampedSourceSeconds + roundedOutputSeconds;
     return {
       status: 'QUOTED',
       estimatedProviderCostUsd: Number((totalEstimatedSeconds * rate).toFixed(4)),
@@ -686,9 +707,10 @@ export function calculateEstimatedProviderCostUsd(params: {
     };
   }
 
+  const roundedOutputOnly = Math.ceil(Math.max(1, params.requestedOutputDurationSeconds));
   return {
     status: 'QUOTED',
-    estimatedProviderCostUsd: Number((params.requestedOutputDurationSeconds * rate).toFixed(4)),
+    estimatedProviderCostUsd: Number((roundedOutputOnly * rate).toFixed(4)),
     quoteBasis,
     billingUnit: 'per_second'
   };
@@ -700,13 +722,14 @@ export function calculateEstimatedProviderCostUsd(params: {
  * Fails closed ONLY if:
  *  - model is `isEvaluationOnly: true` (e.g. Omni 1.2) unless `isEvaluationMode: true`
  *  - live USD/INR FX is expired/unavailable (or requires fresh fetch)
- *  - model is unregistered / incompatible resolution
+ *  - model is unregistered / incompatible resolution or unsupported duration
  */
 export function calculateCustomerTemplateQuote(params: {
   modelId: string;
   type: 'photo' | 'video';
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
+  sourceVideoDurationSeconds?: number;
   engine?: string;
   creditCost?: number;
   providerCostUsd?: number;
@@ -764,7 +787,23 @@ export function calculateCustomerTemplateQuote(params: {
   const effectiveRes = params.resolution || entry.appDefaultResolution || (entry.billingUnit === 'per_image' ? '1080p' : '480p');
   const effectiveDuration = entry.billingUnit === 'per_image'
     ? 1
-    : Math.max(1, Number(params.durationSeconds) || entry.appDefaultDurationSeconds || 5);
+    : Math.ceil(Math.max(1, Number(params.durationSeconds) || entry.appDefaultDurationSeconds || 4));
+
+  if (
+    entry.billingUnit === 'per_second' &&
+    entry.minDurationSeconds !== undefined &&
+    entry.maxDurationSeconds !== undefined &&
+    (effectiveDuration < entry.minDurationSeconds || effectiveDuration > entry.maxDurationSeconds)
+  ) {
+    return {
+      status: 'UNSUPPORTED',
+      credits: 0,
+      estimatedProviderCostUsd: null,
+      usdToInrRate: null,
+      billingUnit: entry.billingUnit,
+      reason: `Output duration ${effectiveDuration}s is outside verified bounds [${entry.minDurationSeconds}s - ${entry.maxDurationSeconds}s] for ${entry.modelId}.`
+    };
+  }
 
   const fxRes = params.fxRateOverride
     ? { available: true, rate: params.fxRateOverride }
@@ -784,6 +823,7 @@ export function calculateCustomerTemplateQuote(params: {
   const usdEst = calculateEstimatedProviderCostUsd({
     modelId: entry.modelId,
     resolution: effectiveRes,
+    sourceVideoDurationSeconds: params.sourceVideoDurationSeconds,
     requestedOutputDurationSeconds: effectiveDuration,
     allowPublishedListPriceFallback: true
   });
@@ -811,16 +851,21 @@ export function calculateCustomerTemplateQuote(params: {
 }
 
 /**
- * Authoritative FaceSwap quote calculator (replaces static $0.05/sec * 96.3).
+ * Authoritative FaceSwap quote calculator:
+ * Enforces verified duration limits (default/max 4s per current Genjutsu Light listing)
+ * and dual-duration billing: Math.min(sourceDuration, 15) + Math.ceil(outputDuration).
  */
 export function calculateAuthoritativeFaceSwapQuote(params: {
   modelId?: string;
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
+  sourceVideoDurationSeconds?: number;
   fxRateOverride?: number;
 }): {
   status: 'QUOTED' | 'EVALUATION_ONLY' | 'FX_EXPIRED' | 'UNSUPPORTED' | 'UNCONFIGURED';
   durationSeconds: number;
+  sourceDurationSeconds: number | null;
+  billableDurationSeconds: number | null;
   modelId: string;
   resolution: '480p' | '720p' | '1080p';
   providerRatePerSecondUsd: number | null;
@@ -830,16 +875,24 @@ export function calculateAuthoritativeFaceSwapQuote(params: {
   quoteBasis?: string;
   reason?: string;
 } {
-  const clampedDuration = Math.max(4, Math.min(15, Math.ceil(Number(params.durationSeconds) || 4)));
   const resolvedModel = resolveCanonicalModelId(params.modelId || 'hf_mult_motion_control_flash');
   const entry = getRegisteredModelEntry(resolvedModel);
+  const minDur = entry?.minDurationSeconds ?? 4;
+  const maxDur = entry?.maxDurationSeconds ?? 4;
+  const roundedRequested = Math.ceil(Number(params.durationSeconds) || minDur);
+  const clampedDuration = Math.max(minDur, Math.min(maxDur, roundedRequested));
   const resolvedRes = params.resolution || entry?.appDefaultResolution || '480p';
+  const clampedSourceDuration =
+    params.sourceVideoDurationSeconds && params.sourceVideoDurationSeconds > 0
+      ? Math.min(15, params.sourceVideoDurationSeconds)
+      : undefined;
 
   const quote = calculateCustomerTemplateQuote({
     modelId: resolvedModel,
     type: 'video',
     resolution: resolvedRes,
     durationSeconds: clampedDuration,
+    sourceVideoDurationSeconds: clampedSourceDuration,
     fxRateOverride: params.fxRateOverride
   });
 
@@ -849,6 +902,8 @@ export function calculateAuthoritativeFaceSwapQuote(params: {
   return {
     status: quote.status,
     durationSeconds: clampedDuration,
+    sourceDurationSeconds: clampedSourceDuration ?? null,
+    billableDurationSeconds: clampedSourceDuration !== undefined ? clampedSourceDuration + clampedDuration : null,
     modelId: resolvedModel,
     resolution: resolvedRes,
     providerRatePerSecondUsd: perSec,

@@ -9,13 +9,23 @@ import {
   Check
 } from 'lucide-react';
 import { Logo } from './Logo';
-import { useApp, safeParseJsonResponse } from '../context/AppContext';
+import { useApp } from '../context/AppContext';
 import { AUTH_POLICY, PHONE_AUTH_ENABLED } from '../config/authConfig';
 import {
   auth,
   googleProvider,
-  signInWithPopup
+  signInWithPopup,
+  signInWithRedirect,
+  ensureAuthLocalPersistence
 } from '../services/firebase/firebaseClient';
+import {
+  exchangeFirebaseSessionWithRetry,
+  isMobileOrStandaloneBrowser,
+  isRunningInsideIframe,
+  savePendingAuthActionToStorage,
+  REDIRECT_AUTH_IN_PROGRESS_KEY,
+  REDIRECT_ATTEMPT_TS_KEY
+} from '../utils/authSession';
 
 function reportAuthFailure(
   vector: 'AUTH_LOGIN_FAILURE' | 'SESSION_PERSISTENCE_FAILURE',
@@ -39,57 +49,14 @@ function reportAuthFailure(
   } catch {}
 }
 
-async function exchangeFirebaseSessionWithRetry(
-  payload: Record<string, any>,
-  maxRetries: number = 4
-): Promise<{
-  ok: boolean;
-  status: number;
-  data: any;
-  error?: string;
-}> {
-  let attempt = 0;
-  while (attempt <= maxRetries) {
-    const res = await fetch('/api/auth/firebase-session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const parsed = await safeParseJsonResponse<any>(res);
-    if (res.ok && parsed.data?.success && parsed.data?.cloudPersisted === true) {
-      return { ok: true, status: res.status, data: parsed.data };
-    }
-    const isRetryableTransient =
-      Boolean(parsed.isRetryable) ||
-      res.status === 502 ||
-      res.status === 504 ||
-      (res.status === 503 &&
-        Boolean(parsed.data?.retryable || parsed.data?.code === 'SESSION_PERSISTENCE_FAILED' || parsed.isHtml));
-    if (isRetryableTransient && attempt < maxRetries) {
-      attempt += 1;
-      await new Promise((r) => setTimeout(r, Math.min(2500, 750 * attempt)));
-      continue;
-    }
-    const cleanErr =
-      parsed.error && !/^<!doctype|<html/i.test(parsed.error.trimStart())
-        ? parsed.error
-        : `Server returned invalid non-JSON response (HTTP ${res.status}). Please retry.`;
-    return {
-      ok: false,
-      status: res.status,
-      data: parsed.data,
-      error: parsed.data?.error || cleanErr || 'Authentication session mapping failed.'
-    };
-  }
-  return { ok: false, status: 503, data: null, error: 'Session synchronization timed out.' };
-}
-
 export const AuthModal: React.FC = () => {
   const { authModalOpen, setAuthModalOpen, onAuthSuccess, pendingAction } = useApp();
 
   const [step, setStep] = useState<'ready' | 'authenticated'>('ready');
   const [loading, setLoading] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [showRedirectFallbackButton, setShowRedirectFallbackButton] = useState(false);
   const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
   const [copiedDomain, setCopiedDomain] = useState(false);
 
@@ -100,18 +67,66 @@ export const AuthModal: React.FC = () => {
       setUnauthorizedDomain(null);
       setCopiedDomain(false);
       setLoading(false);
+      setRedirecting(false);
+      setShowRedirectFallbackButton(false);
     }
   }, [authModalOpen]);
 
   if (!authModalOpen) return null;
 
+  const startGoogleRedirectFlow = async (triggerReason: string) => {
+    setLoading(true);
+    setRedirecting(true);
+    setErrorMessage('');
+    try {
+      await ensureAuthLocalPersistence();
+      if (pendingAction) {
+        savePendingAuthActionToStorage(pendingAction);
+      }
+      try {
+        sessionStorage.setItem(REDIRECT_AUTH_IN_PROGRESS_KEY, '1');
+        sessionStorage.setItem(REDIRECT_ATTEMPT_TS_KEY, String(Date.now()));
+      } catch {}
+      await signInWithRedirect(auth, googleProvider);
+    } catch (redirectErr: any) {
+      setLoading(false);
+      setRedirecting(false);
+      try {
+        sessionStorage.removeItem(REDIRECT_AUTH_IN_PROGRESS_KEY);
+      } catch {}
+      if (redirectErr?.code === 'auth/unauthorized-domain') {
+        const domain = window.location.hostname;
+        setUnauthorizedDomain(domain);
+        setErrorMessage(`Hosting domain (${domain}) is not authorized in Firebase Authentication.`);
+        reportAuthFailure(
+          'AUTH_LOGIN_FAILURE',
+          `Unauthorized domain during redirect (${domain})`,
+          'google_unauthorized_domain',
+          'auth/unauthorized-domain'
+        );
+      } else {
+        const msg = redirectErr?.message || 'Google redirect sign-in failed.';
+        setErrorMessage(msg);
+        reportAuthFailure(
+          'AUTH_LOGIN_FAILURE',
+          `Google redirect (${triggerReason}) failed: ${msg}`,
+          'google_signin_redirect',
+          redirectErr?.code || 'AUTH_REDIRECT_ERROR'
+        );
+      }
+    }
+  };
+
   // Real Firebase Google Sign-In (Sole customer authentication method when PHONE_AUTH_ENABLED=false)
+  // Uses browserLocalPersistence + Popup primary + automatic Redirect fallback for mobile Chrome / strict popups
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setErrorMessage('');
     setUnauthorizedDomain(null);
+    setShowRedirectFallbackButton(false);
 
     try {
+      await ensureAuthLocalPersistence();
       const result = await signInWithPopup(auth, googleProvider);
       const idToken = await result.user.getIdToken();
 
@@ -143,10 +158,39 @@ export const AuthModal: React.FC = () => {
         );
       }
     } catch (err: any) {
+      const code = String(err?.code || '');
+      const isPopupOrEnvFallbackCode =
+        code === 'auth/popup-blocked' ||
+        code === 'auth/cancelled-popup-request' ||
+        code === 'auth/operation-not-supported-in-this-environment' ||
+        code === 'auth/web-storage-unsupported';
+
+      let lastRedirectTs = 0;
+      try {
+        lastRedirectTs = Number(sessionStorage.getItem(REDIRECT_ATTEMPT_TS_KEY) || '0');
+      } catch {}
+      const canAutoRedirect = !lastRedirectTs || Date.now() - lastRedirectTs > 15000;
+
+      // Mobile Chrome / Standalone PWA network or popup block fallback
+      const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+      const shouldAutoRedirectOnNetworkErr =
+        code === 'auth/network-request-failed' &&
+        isOnline &&
+        isMobileOrStandaloneBrowser() &&
+        !isRunningInsideIframe() &&
+        canAutoRedirect;
+
+      if ((isPopupOrEnvFallbackCode && canAutoRedirect) || shouldAutoRedirectOnNetworkErr) {
+        await startGoogleRedirectFlow(code || 'popup_fallback');
+        return;
+      }
+
       setLoading(false);
-      if (err?.code === 'auth/popup-closed-by-user') {
-        setErrorMessage('Sign-in popup was closed. Please try again.');
-      } else if (err?.code === 'auth/unauthorized-domain') {
+
+      if (code === 'auth/popup-closed-by-user') {
+        setErrorMessage('Sign-in popup was closed. Please try again or use Safe Redirect Sign-In.');
+        setShowRedirectFallbackButton(true);
+      } else if (code === 'auth/unauthorized-domain') {
         const domain = window.location.hostname;
         console.warn('[Google Auth Note]: Domain not yet authorized in Firebase Console:', domain);
         setUnauthorizedDomain(domain);
@@ -157,15 +201,31 @@ export const AuthModal: React.FC = () => {
           'google_unauthorized_domain',
           'auth/unauthorized-domain'
         );
+      } else if (code === 'auth/network-request-failed') {
+        const inIframe = isRunningInsideIframe();
+        const hint = !isOnline
+          ? 'Internet connection looks offline. Reconnect and tap Retry.'
+          : inIframe
+          ? 'Preview iframe blocked external Google auth network request. Open app directly on production URL or tap Redirect Sign-In.'
+          : 'Mobile network or popup interruption occurred (auth/network-request-failed). Please tap Redirect Sign-In below.';
+        setErrorMessage(hint);
+        setShowRedirectFallbackButton(true);
+        reportAuthFailure(
+          'AUTH_LOGIN_FAILURE',
+          `Google Sign-In network error (iframe=${inIframe}, online=${isOnline}): ${err?.message || code}`,
+          'google_signin_network_failed',
+          code
+        );
       } else {
         console.error('[Google Auth Error]:', err);
         const msg = err?.message || 'Google Sign-In failed.';
         setErrorMessage(msg);
+        setShowRedirectFallbackButton(true);
         reportAuthFailure(
           'AUTH_LOGIN_FAILURE',
-          `Google Sign-In error (${err?.code || 'unknown'}): ${msg}`,
+          `Google Sign-In error (${code || 'unknown'}): ${msg}`,
           'google_signin_popup',
-          err?.code || 'AUTH_POPUP_ERROR'
+          code || 'AUTH_POPUP_ERROR'
         );
       }
     }
@@ -304,8 +364,24 @@ export const AuthModal: React.FC = () => {
                       d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                     />
                   </svg>
-                  <span>{loading ? 'Connecting with Google...' : 'Continue with Google'}</span>
+                  <span>
+                    {redirecting
+                      ? 'Redirecting to Google...'
+                      : loading
+                      ? 'Connecting with Google...'
+                      : 'Continue with Google'}
+                  </span>
                 </button>
+
+                {showRedirectFallbackButton && !loading && (
+                  <button
+                    type="button"
+                    onClick={() => startGoogleRedirectFlow('manual_fallback_button')}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-amber-200 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    <span>Safe Mobile Redirect Sign-In (Popup-Free)</span>
+                  </button>
+                )}
               </div>
 
               {/* Dismiss & Browse */}

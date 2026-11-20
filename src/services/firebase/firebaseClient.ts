@@ -3,6 +3,10 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  setPersistence,
+  browserLocalPersistence,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser
@@ -60,6 +64,22 @@ export function getCanonicalDb() {
 }
 
 export const auth = getAuth(app);
+export const authPersistencePromise: Promise<void> =
+  typeof window !== 'undefined'
+    ? setPersistence(auth, browserLocalPersistence).catch((err: any) => {
+        console.warn('[Firebase Auth] browserLocalPersistence fallback note:', err?.message || err);
+      })
+    : Promise.resolve();
+
+export async function ensureAuthLocalPersistence(): Promise<void> {
+  try {
+    await authPersistencePromise;
+    await setPersistence(auth, browserLocalPersistence);
+  } catch (err: any) {
+    console.warn('[Firebase Auth] ensureAuthLocalPersistence notice:', err?.message || err);
+  }
+}
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
@@ -135,6 +155,10 @@ testConnection();
 export type { FirebaseUser };
 export {
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  setPersistence,
+  browserLocalPersistence,
   signOut,
   onAuthStateChanged
 };

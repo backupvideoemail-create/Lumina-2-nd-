@@ -56,7 +56,6 @@ export class HiggsfieldGenjutsuAdapter {
   readonly providerName = 'higgsfield';
   readonly adapterName = 'faceSwapAdapter';
   readonly primaryModelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
-  readonly fallbackModelName = 'higgsfield/genjutsu/motion-transfer/v1.0';
   readonly modelName = 'higgsfield/genjutsu-light/motion-transfer/v1.0';
   readonly motionControlModel = 'hf_mult_motion_control_flash';
   readonly replaceObjectModel = 'hf_mult_replace_object_flash';
@@ -86,13 +85,14 @@ export class HiggsfieldGenjutsuAdapter {
       provider: this.providerName,
       model: this.modelName,
       primaryModel: this.primaryModelName,
-      fallbackModel: this.fallbackModelName,
       motionControlModel: this.motionControlModel,
       replaceObjectModel: this.replaceObjectModel,
       authHeaderFormat: 'Authorization: Key <api-key>',
       status: config.isConfigured ? 'UNVERIFIED' : 'MISSING_SECRET',
-      customerGenerationEnabled: process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true',
-      supportedResolutions: ['480p', '720p', '1080p']
+      customerGenerationEnabled:
+        config.isConfigured && process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true',
+      supportedResolutions: ['480p', '720p', '1080p'],
+      verifiedOutputDurationSeconds: 4
     };
   }
 
@@ -214,7 +214,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
     };
 
     if (params.durationSeconds && Number(params.durationSeconds) > 0) {
-      payload.duration = Number(params.durationSeconds);
+      payload.duration = Math.ceil(Number(params.durationSeconds));
     }
 
     // Official Open Higgsfield Authorization: single complete key "Authorization: Key <api-key>" (with optional legacy key:secret fallback)

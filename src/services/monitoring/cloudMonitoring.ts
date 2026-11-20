@@ -241,6 +241,8 @@ export function getHiggsfieldDiagnosticStatus(): {
   authStatus: 'UNVERIFIED' | 'MISSING_SECRET';
   customerGenerationEnabled: boolean;
   customerGateStatus: 'SAFELY_GATED' | 'ENABLED';
+  tariffVerificationStatus: 'VERIFIED_OVERRIDE' | 'PENDING_ACCOUNT_BILLING_CHECK';
+  billingFormula: string;
   estimatedSingleRun: {
     model: string;
     workflow: string;
@@ -251,8 +253,11 @@ export function getHiggsfieldDiagnosticStatus(): {
   };
 } {
   const rawKey = typeof process !== 'undefined' ? (process.env?.HIGGSFIELD_API_KEY || '').trim() : '';
-  const customerGenerationEnabled =
+  const gateFlagEnabled =
     typeof process !== 'undefined' && process.env?.ENABLE_GENJUTSU_CUSTOMER_GENERATION === 'true';
+  const customerGenerationEnabled = Boolean(rawKey) && gateFlagEnabled;
+  const billingVerified =
+    typeof process !== 'undefined' && process.env?.HIGGSFIELD_BILLING_VERIFIED === 'true';
   return {
     present: Boolean(rawKey),
     secretName: 'HIGGSFIELD_API_KEY',
@@ -260,6 +265,8 @@ export function getHiggsfieldDiagnosticStatus(): {
     authStatus: rawKey ? 'UNVERIFIED' : 'MISSING_SECRET',
     customerGenerationEnabled,
     customerGateStatus: customerGenerationEnabled ? 'ENABLED' : 'SAFELY_GATED',
+    tariffVerificationStatus: billingVerified ? 'VERIFIED_OVERRIDE' : 'PENDING_ACCOUNT_BILLING_CHECK',
+    billingFormula: 'Math.min(sourceDurationSeconds, 15) + Math.ceil(outputDurationSeconds)',
     estimatedSingleRun: {
       model: 'hf_mult_motion_control_flash',
       workflow: 'MOTION_TRANSFER',

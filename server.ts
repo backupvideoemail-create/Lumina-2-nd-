@@ -1695,7 +1695,7 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
       verificationStatus: hfMotionEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
       generationTestStatus: 'NOT_TESTED',
       quoteStatus: 'PENDING_QUOTE',
-      pricingStatus: 'PENDING_QUOTE ($0.05/sec estimated on 480p · $5 API balance required separately)'
+      pricingStatus: 'PENDING_ACCOUNT_CHECK (Playground $0.05/$0.10/$0.20 vs Docs $0.0739/$0.1471/$0.2936 · Dual-duration min(src,15s)+ceil(out) · 4s output limit)'
     },
     {
       id: 'videoProviderAdapter',
@@ -1779,9 +1779,9 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       referenceImageUrl: inputReferenceImageUrl,
       drivingVideoBase64,
       drivingVideoUrl: inputDrivingVideoUrl,
-      type = 'video',
-      inputType = 'IMAGE_OR_VIDEO',
-      workflow: rawWorkflow = 'viral-reels',
+      type = 'photo',
+      inputType = type === 'video' ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
+      workflow: rawWorkflow,
       model,
       engine = 'AI_GENERATION',
       badge,
@@ -1796,7 +1796,13 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     const category = (typeof rawCategory === 'string' && rawCategory.trim() ? rawCategory.trim() : 'Trending') as TemplateCategory;
     const description = typeof rawDescription === 'string' ? rawDescription.trim() : String(rawDescription || '').trim();
     const aspectRatio = (typeof rawAspectRatio === 'string' && rawAspectRatio.trim() ? rawAspectRatio.trim() : '9:16') as AspectRatio;
-    const workflow = typeof rawWorkflow === 'string' && rawWorkflow.trim() ? rawWorkflow.trim() : 'viral-reels';
+    const defaultWorkflowForType =
+      engine === 'SMART_TEMPLATE'
+        ? 'retro-polaroid-warm'
+        : type === 'video'
+        ? 'MOTION_TRANSFER'
+        : 'PHOTO_GENERATION';
+    const workflow = typeof rawWorkflow === 'string' && rawWorkflow.trim() ? rawWorkflow.trim() : defaultWorkflowForType;
 
     if (!title) {
       return res.status(400).json({ error: 'Title is required', code: 'MISSING_TITLE' });
@@ -1933,17 +1939,31 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
 
     // Build Execution Recipe (respect empty/omitted prompts cleanly so readiness catches incomplete templates)
     const categoryPrompt = prodDb.getCategoryPrompt(category);
+    const defaultProvider =
+      engine === 'SMART_TEMPLATE' ? 'smart_template' : type === 'video' ? 'higgsfield' : 'gemini';
+    const defaultModel =
+      engine === 'SMART_TEMPLATE'
+        ? 'smart_canvas_ffmpeg'
+        : type === 'video'
+        ? 'hf_mult_motion_control_flash'
+        : 'gemini-3.1-flash-lite-image';
+    const resolvedDuration =
+      typeof body.durationSeconds === 'number' && body.durationSeconds > 0
+        ? body.durationSeconds
+        : type === 'video'
+        ? (engine === 'SMART_TEMPLATE' ? 5 : 4)
+        : undefined;
     const resolvedRecipe: TemplateExecutionRecipe = recipe && typeof recipe === 'object'
       ? {
           version: recipe.version || '1.0',
           inputType: (recipe.inputType || inputType) as TemplateInputType,
-          provider: recipe.provider || body.provider || (type === 'video' ? 'google_veo' : 'gemini'),
-          model: recipe.model || model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
+          provider: recipe.provider || body.provider || defaultProvider,
+          model: recipe.model || model || defaultModel,
           engine: (recipe.engine || engine) as TemplateEngine,
           prompt: typeof recipe.prompt === 'string' ? recipe.prompt : '',
           workflow: recipe.workflow || workflow,
           aspectRatio: (recipe.aspectRatio || aspectRatio) as AspectRatio,
-          duration: recipe.duration ?? (type === 'video' ? 5 : undefined),
+          duration: recipe.duration ?? resolvedDuration,
           drivingVideoUrl: recipe.drivingVideoUrl || drivingVideoUrl || undefined,
           referenceAssets: recipe.referenceAssets || (referenceImageUrl ? [referenceImageUrl] : undefined),
           referenceImageUrl: recipe.referenceImageUrl || referenceImageUrl || undefined,
@@ -1955,13 +1975,13 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       : {
           version: '1.0',
           inputType: inputType as TemplateInputType,
-          provider: body.provider || (type === 'video' ? 'google_veo' : 'gemini'),
-          model: model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
+          provider: body.provider || defaultProvider,
+          model: model || defaultModel,
           engine: engine as TemplateEngine,
           prompt: type === 'photo' ? categoryPrompt : `${title}. Style: ${workflow}. High aesthetic production quality.`,
           workflow: workflow,
           aspectRatio: aspectRatio as AspectRatio,
-          duration: type === 'video' ? 5 : undefined,
+          duration: resolvedDuration,
           drivingVideoUrl: drivingVideoUrl || undefined,
           referenceAssets: referenceImageUrl ? [referenceImageUrl] : undefined,
           referenceImageUrl: referenceImageUrl || undefined,
@@ -1999,10 +2019,10 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       creditCost: calculatedCredits,
       providerCostUsd: Number(providerCostUsd) || 0.25,
       engine: (engine as TemplateEngine) || 'AI_GENERATION',
-      provider: body.provider || resolvedRecipe.provider,
+      provider: body.provider || resolvedRecipe.provider || defaultProvider,
       adapter: body.adapter,
-      model: model || resolvedRecipe.model || (type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'),
-      workflow: workflow || resolvedRecipe.workflow || 'neural-cinematic-portrait',
+      model: model || resolvedRecipe.model || defaultModel,
+      workflow: workflow || resolvedRecipe.workflow || 'PHOTO_GENERATION',
       drivingVideoUrl: drivingVideoUrl || resolvedRecipe.drivingVideoUrl || undefined,
       recipe: resolvedRecipe,
       badge: badge || undefined,
@@ -2011,7 +2031,13 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       isActive: isActive !== false,
       tags: Array.isArray(tags) ? tags : ['Trending', 'Reels'],
       likesCount: 0,
-      resolutionLabel: type === 'video' ? '1080p 60FPS' : '4K Ultra HD'
+      resolutionLabel:
+        typeof body.resolutionLabel === 'string' && body.resolutionLabel.trim()
+          ? body.resolutionLabel.trim()
+          : type === 'video'
+          ? (engine === 'SMART_TEMPLATE' ? '720p' : '480p')
+          : '1080p',
+      durationSeconds: resolvedDuration
     };
 
     const readiness = validateTemplateReadiness(newTemplate, { strictPublish: true });
@@ -4965,7 +4991,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   const templateConfiguredProvider = (
     template.provider ||
     template.recipe?.provider ||
-    (template.engine === 'SMART_TEMPLATE' ? 'smart_template' : modelEntry?.provider || (template.type === 'photo' ? 'gemini' : 'google_veo'))
+    (template.engine === 'SMART_TEMPLATE' ? 'smart_template' : modelEntry?.provider || (template.type === 'photo' ? 'gemini' : 'higgsfield'))
   )
     .toString()
     .trim()
@@ -5408,6 +5434,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       type: template.type,
       resolution: requestedResolution as any,
       durationSeconds: requestedDuration || 1,
+      sourceVideoDurationSeconds:
+        measuredSourceVideoDuration !== undefined
+          ? Math.min(15, measuredSourceVideoDuration)
+          : undefined,
       engine: template.engine,
       creditCost: template.creditCost,
       providerCostUsd: template.providerCostUsd
@@ -5551,7 +5581,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       } : {
         version: '1.0',
         inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
-        provider: templateConfiguredProvider || (template.type === 'photo' ? 'gemini' : 'google_veo'),
+        provider: templateConfiguredProvider || (template.type === 'photo' ? 'gemini' : 'higgsfield'),
         adapter: templateConfiguredAdapter || undefined,
         model: effectiveModel,
         engine: template.engine || 'AI_GENERATION',
@@ -5613,11 +5643,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         console.warn('[Duration Probe] Failed to probe video duration:', probeErr);
       }
 
-      // Determine billable duration strictly according to verified provider billing rules
+      // Determine billable duration strictly according to verified provider dual-duration rules:
+      // min(source, 15s) + ceil(output)
       if (modelEntry?.billsSourceVideo === true && measuredSourceVideoDuration !== undefined && actualOutputDuration !== undefined) {
-        actualBillableDuration = measuredSourceVideoDuration + actualOutputDuration;
+        actualBillableDuration = Math.min(15, measuredSourceVideoDuration) + Math.ceil(actualOutputDuration);
       } else if (modelEntry?.billsSourceVideo === false && actualOutputDuration !== undefined) {
-        actualBillableDuration = actualOutputDuration;
+        actualBillableDuration = Math.ceil(actualOutputDuration);
       } else {
         // When billsSourceVideo is UNKNOWN, do not falsely label output duration as billable
         actualBillableDuration = undefined;
@@ -5703,12 +5734,18 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   })();
 });
 
-// Calculate Face Swap Credits Authoritatively based on trimmed duration, model, resolution, and Live USD/INR FX
+// Calculate Face Swap Credits Authoritatively based on source + output duration, model, resolution, and Live USD/INR FX
 app.post('/api/faceswap/calculate-cost', async (req, res) => {
-  const { durationSeconds = 4, sceneId, model, resolution } = req.body || {};
+  const { durationSeconds = 4, sourceVideoDurationSeconds, sceneId, model, resolution } = req.body || {};
   const scene = sceneId ? prodDb.getFaceSwapScene(sceneId) : null;
   const resolvedModel = model || scene?.model || 'hf_mult_motion_control_flash';
   const resolvedRes = (resolution || scene?.resolution || '480p') as '480p' | '720p' | '1080p';
+  const resolvedSourceSeconds =
+    Number(sourceVideoDurationSeconds) > 0
+      ? Math.min(15, Number(sourceVideoDurationSeconds))
+      : scene?.durationSeconds
+      ? Math.min(15, Number(scene.durationSeconds))
+      : Math.min(15, Math.ceil(Number(durationSeconds) || 4));
 
   if (!getLiveFxStatus().isFresh && !isIsolatedTestEnv) {
     try {
@@ -5719,7 +5756,8 @@ app.post('/api/faceswap/calculate-cost', async (req, res) => {
   const quote = calculateAuthoritativeFaceSwapQuote({
     modelId: resolvedModel,
     resolution: resolvedRes,
-    durationSeconds: Number(durationSeconds) || 4
+    durationSeconds: Number(durationSeconds) || 4,
+    sourceVideoDurationSeconds: resolvedSourceSeconds
   });
 
   if (quote.status === 'FX_EXPIRED') {
@@ -5832,33 +5870,43 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     });
   }
 
-  // 1. Duration Validation: Clamped strictly between 4 and 15 seconds (default 4s)
-  const requestedDuration = Math.max(4, Math.min(15, Math.ceil(Number(durationSeconds) || 4)));
+  // 1. Output Duration Validation against verified Genjutsu Light limits (default/verified 4s)
+  const minOutputDuration = sceneModelEntry?.minDurationSeconds ?? 4;
+  const maxOutputDuration = sceneModelEntry?.maxDurationSeconds ?? 4;
+  const rawRequestedSeconds = Math.ceil(Number(durationSeconds) || minOutputDuration);
+  if (rawRequestedSeconds < minOutputDuration || rawRequestedSeconds > maxOutputDuration) {
+    return res.status(400).json({
+      error: `Output duration ${rawRequestedSeconds}s is outside verified limits [${minOutputDuration}s - ${maxOutputDuration}s] for ${sceneModel}. No credits were deducted.`,
+      code: 'UNSUPPORTED_DURATION',
+      stage: 'validation'
+    });
+  }
+  const requestedDuration = rawRequestedSeconds;
 
   // Genjutsu Light Customer Generation Safety Gate BEFORE FFmpeg trimming, R2 writes, or wallet debit
   const hfGateStatus = getHiggsfieldDiagnosticStatus();
   if (!hfGateStatus.customerGenerationEnabled) {
-    const preflightUsd = Number((requestedDuration * 0.05).toFixed(2));
     return res.status(503).json({
       error:
-        'Genjutsu Light customer generation is safely gated until Higgsfield single-key auth, exact model/workflow mapping, and prepaid API balance ($5+) are verified and approved by Owner. No credits were deducted and no media was processed.',
+        'Genjutsu Light customer generation is safely gated until Higgsfield single-key auth, exact account tariff, and prepaid API balance ($5+) are verified and approved by Owner. No credits were deducted and no media was processed.',
       code: 'GENJUTSU_LIGHT_SAFELY_GATED',
       stage: 'safety_gate',
       preflightQuote: {
         model: sceneModel,
         workflow: sceneWorkflow,
         resolution: sceneResolution,
-        durationSeconds: requestedDuration,
-        ratePerSecondUsd: 0.05,
-        estimatedCostUsd: preflightUsd,
+        outputDurationSeconds: requestedDuration,
+        billingFormula: hfGateStatus.billingFormula,
+        tariffVerificationStatus: hfGateStatus.tariffVerificationStatus,
         requiresOwnerApproval: true
       }
     });
   }
 
-  // 2. Physical Video Trimming via FFmpeg
+  // 2. Physical Video Trimming & Source Probing via FFmpeg
   let trimmedVideoUrl = '';
   let billableDuration = requestedDuration;
+  let clampedSourceDuration = Math.min(15, requestedDuration);
 
   try {
     const rawVideoInput = resolvedSourceVideo;
@@ -5866,9 +5914,10 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       return res.status(400).json({ error: 'Please upload or provide a source video.' });
     }
 
-    // Physically trim source video and measure actual output duration with FFprobe
+    // Physically trim source video (up to 15s source preprocessing window) and measure durations with FFprobe
     const trimResult = await videoTrimmer.trimVideo(rawVideoInput, requestedDuration);
-    billableDuration = trimResult.billableDurationSeconds;
+    billableDuration = Math.min(maxOutputDuration, Math.max(minOutputDuration, Math.ceil(trimResult.trimmedDurationSeconds || requestedDuration)));
+    clampedSourceDuration = Math.min(15, trimResult.originalDurationSeconds || trimResult.billableDurationSeconds || requestedDuration);
 
     // Save physically trimmed video asset privately
     const trimmedBuffer = fs.readFileSync(trimResult.trimmedFilePath);
@@ -5945,7 +5994,8 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const faceSwapQuote = calculateAuthoritativeFaceSwapQuote({
     modelId: sceneModel,
     resolution: sceneResolution,
-    durationSeconds: billableDuration
+    durationSeconds: billableDuration,
+    sourceVideoDurationSeconds: clampedSourceDuration
   });
 
   if (faceSwapQuote.status === 'FX_EXPIRED') {
@@ -7246,8 +7296,8 @@ app.get('/api/admin/readiness/matrix', requireAdmin, async (_req, res) => {
     const canonicalModel = resolveCanonicalModelId(rawModel);
     const regEntry = getRegisteredModelEntry(rawModel);
     const isSmart = tpl.engine === 'SMART_TEMPLATE' || canonicalModel === 'smart_canvas_ffmpeg';
-    const provider = (tpl.provider || tpl.recipe?.provider || regEntry?.provider || (tpl.type === 'photo' ? 'gemini' : 'google_veo')).toString().trim().toLowerCase();
-    const adapter = (tpl.adapter || tpl.recipe?.adapter || regEntry?.adapterId || (isSmart ? 'smartCanvas' : tpl.type === 'photo' ? 'geminiAdapter' : 'videoProviderAdapter')).toString().trim();
+    const provider = (tpl.provider || tpl.recipe?.provider || regEntry?.provider || (tpl.type === 'photo' ? 'gemini' : 'higgsfield')).toString().trim().toLowerCase();
+    const adapter = (tpl.adapter || tpl.recipe?.adapter || regEntry?.adapterId || (isSmart ? 'smartCanvas' : tpl.type === 'photo' ? 'geminiAdapter' : 'faceSwapAdapter')).toString().trim();
     const workflow = (tpl.workflow || tpl.recipe?.workflow || regEntry?.workflow || 'UNKNOWN').toString().trim();
 
     const readiness = validateTemplateReadiness(tpl, { strictPublish: false });
@@ -7256,6 +7306,7 @@ app.get('/api/admin/readiness/matrix', requireAdmin, async (_req, res) => {
       type: tpl.type,
       resolution: (tpl.resolutionLabel === '480p' || tpl.resolutionLabel === '720p' || tpl.resolutionLabel === '1080p') ? tpl.resolutionLabel : undefined,
       durationSeconds: tpl.durationSeconds,
+      sourceVideoDurationSeconds: provider === 'higgsfield' ? Math.min(15, tpl.durationSeconds || 4) : undefined,
       engine: tpl.engine,
       creditCost: tpl.creditCost,
       providerCostUsd: tpl.providerCostUsd
@@ -7367,7 +7418,8 @@ app.get('/api/admin/readiness/matrix', requireAdmin, async (_req, res) => {
     const quoteRes = calculateAuthoritativeFaceSwapQuote({
       modelId: model,
       resolution: scene.resolution || '480p',
-      durationSeconds: scene.durationSeconds || 4
+      durationSeconds: scene.durationSeconds || 4,
+      sourceVideoDurationSeconds: Math.min(15, scene.durationSeconds || 4)
     });
 
     let finalStatus: PerTemplateReadinessItem['finalStatus'] = 'READY_CONFIG';

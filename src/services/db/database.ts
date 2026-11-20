@@ -1405,6 +1405,25 @@ export class ProductionDatabase {
     return null;
   }
 
+  private touchSessionTokenLru(identity: AuthIdentity, token: string, persistIfShifted: boolean = true): void {
+    if (!Array.isArray(identity.sessionTokens)) {
+      identity.sessionTokens = [token];
+      return;
+    }
+    const existingIdx = identity.sessionTokens.indexOf(token);
+    const tailDistance = existingIdx >= 0 ? identity.sessionTokens.length - 1 - existingIdx : -1;
+    const deduped = identity.sessionTokens.filter((t) => t !== token);
+    deduped.push(token);
+    identity.sessionTokens = deduped;
+    if (identity.sessionTokens.length > 15) {
+      identity.sessionTokens = identity.sessionTokens.slice(-15);
+    }
+    if (persistIfShifted && tailDistance > 3) {
+      this.save();
+      this.syncToFirestore('auth_identities', identity.userId, identity);
+    }
+  }
+
   public getUserByToken(token: string): UserProfile | null {
     if (!token) return null;
     const ensureAdminRole = (u: UserProfile | undefined, identity?: AuthIdentity): UserProfile | null => {
@@ -1423,6 +1442,7 @@ export class ProductionDatabase {
 
     for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
       if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
+        this.touchSessionTokenLru(identity, token, true);
         return ensureAdminRole(this.db.users[userId], identity);
       }
     }
@@ -1433,6 +1453,7 @@ export class ProductionDatabase {
           if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
             this.db.users[userId] = diskDb.users[userId];
             this.db.authIdentities[userId] = identity;
+            this.touchSessionTokenLru(identity, token, true);
             return ensureAdminRole(this.db.users[userId], identity);
           }
         }
@@ -1479,6 +1500,8 @@ export class ProductionDatabase {
           const docSnap = snap.docs[0];
           const identity = docSnap.data() as AuthIdentity;
           const userId = docSnap.id;
+          if (!identity.userId) identity.userId = userId;
+          this.touchSessionTokenLru(identity, token, true);
           this.db.authIdentities[userId] = identity;
 
           if (!this.db.users[userId]) {
@@ -1611,13 +1634,7 @@ export class ProductionDatabase {
         };
         this.db.authIdentities[existingUser.id] = identity;
       }
-      if (!Array.isArray(identity.sessionTokens)) {
-        identity.sessionTokens = [];
-      }
-      identity.sessionTokens.push(sessionToken);
-      if (identity.sessionTokens.length > 15) {
-        identity.sessionTokens = identity.sessionTokens.slice(-15);
-      }
+      this.touchSessionTokenLru(identity, sessionToken, false);
       identity.lastLoginAt = new Date().toISOString();
       if (params.email && !identity.email) identity.email = params.email;
       if (params.phone && !identity.phone) identity.phone = params.phone;
@@ -1680,10 +1697,11 @@ export class ProductionDatabase {
   }
 
   public revokeToken(token: string): boolean {
-    for (const identity of Object.values(this.db.authIdentities)) {
+    for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
       if (identity.sessionTokens && identity.sessionTokens.includes(token)) {
         identity.sessionTokens = identity.sessionTokens.filter(t => t !== token);
         this.save();
+        this.syncToFirestore('auth_identities', userId, identity);
         return true;
       }
     }
@@ -3021,16 +3039,17 @@ export class ProductionDatabase {
           creditCost: isVideo ? 25 : 10,
           providerCostUsd: isVideo ? 0.25 : 0.08,
           engine: 'AI_GENERATION',
-          model: isVideo ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image',
-          workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
+          provider: isVideo ? 'higgsfield' : 'gemini',
+          model: isVideo ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-image',
+          workflow: isVideo ? 'MOTION_TRANSFER' : 'gemini-photo-style',
           recipe: {
             version: '1.0',
             inputType: isVideo ? 'IMAGE_OR_VIDEO' : 'IMAGE_ONLY',
-            provider: isVideo ? 'google_veo' : 'gemini',
-            model: isVideo ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image',
+            provider: isVideo ? 'higgsfield' : 'gemini',
+            model: isVideo ? 'hf_mult_motion_control_flash' : 'gemini-3.1-flash-image',
             engine: 'AI_GENERATION',
             prompt: categoryPrompt,
-            workflow: isVideo ? 'viral-reels' : 'gemini-photo-style',
+            workflow: isVideo ? 'MOTION_TRANSFER' : 'gemini-photo-style',
             aspectRatio: '9:16',
             referenceAssets: [sampleResultUrl],
             referenceImageUrl: sampleResultUrl,

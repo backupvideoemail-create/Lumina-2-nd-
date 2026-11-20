@@ -1207,7 +1207,10 @@ async function runSystemVerification() {
     faceSwapAdapter.primaryModelName === 'higgsfield/genjutsu-light/motion-transfer',
     '22.1 Higgsfield Genjutsu Light is configured as primary model'
   );
-  assert(faceSwapAdapter.fallbackModelName === 'higgsfield/genjutsu/motion-transfer/v1.0', '22.1 Full Higgsfield Genjutsu v1.0 is preserved as fallback candidate');
+  assert(
+    !('fallbackModelName' in faceSwapAdapter),
+    '22.1 Full Higgsfield Genjutsu fallback is cleanly eliminated so Genjutsu Light never silently falls back'
+  );
   const pubStatus = faceSwapAdapter.getPublicStatus();
   assert(
     pubStatus.primaryModel === 'higgsfield/genjutsu-light/motion-transfer/v1.0' ||
@@ -2908,16 +2911,21 @@ async function runSystemVerification() {
   );
 
   const { calculateCustomerTemplateQuote: quoteOmni41, MODEL_REGISTRY: reg41 } = await import('../src/services/pricing/pricingService.ts');
-  const omniQuote41 = quoteOmni41({
+  const omniCustomerQuote41 = quoteOmni41({
     modelId: 'gemini-omni-1.2-flash',
     type: 'video',
     resolution: '720p',
     durationSeconds: 5,
     fxRateOverride: 85
   });
-  // Verify generic evaluation-only guard remains active when a model is flagged isEvaluationOnly
-  const prevOmniEvalFlag = reg41['gemini-omni-1.2-flash'].isEvaluationOnly;
-  reg41['gemini-omni-1.2-flash'].isEvaluationOnly = true;
+  const omniEvalQuote41 = quoteOmni41({
+    modelId: 'gemini-omni-1.2-flash',
+    type: 'video',
+    resolution: '720p',
+    durationSeconds: 5,
+    fxRateOverride: 85,
+    isEvaluationMode: true
+  });
   let genericEvalGuardErr = '';
   try {
     await aiRouter41.processTemplate({
@@ -2934,15 +2942,14 @@ async function runSystemVerification() {
     });
   } catch (err: any) {
     genericEvalGuardErr = err.message;
-  } finally {
-    reg41['gemini-omni-1.2-flash'].isEvaluationOnly = prevOmniEvalFlag;
   }
   assert(
-    prevOmniEvalFlag === false &&
-      omniQuote41.status === 'QUOTED' &&
-      omniQuote41.credits > 0 &&
+    reg41['gemini-omni-1.2-flash'].isEvaluationOnly === true &&
+      omniCustomerQuote41.status === 'EVALUATION_ONLY' &&
+      omniEvalQuote41.status === 'QUOTED' &&
+      omniEvalQuote41.credits > 0 &&
       genericEvalGuardErr.includes('MODEL_EVALUATION_ONLY'),
-    '41.2 gemini-omni-1.2-flash is unlocked with verified customer pricing while generic MODEL_EVALUATION_ONLY guard stays intact'
+    '41.2 gemini-omni-1.2-flash is strictly guarded (isEvaluationOnly: true) for customer templates while Owner evaluation mode quotes cleanly'
   );
 
   // 41.3 Strict AI Router: zero silent fallback to Omni + Higgsfield workflow mismatch fail-closed
@@ -3020,17 +3027,29 @@ async function runSystemVerification() {
     `41.4 Full Swag (gemini-2.5-flash-image) quotes cleanly per_image with live FX (${fullSwagQuote.credits} credits)`
   );
 
-  // Authoritative FaceSwap quote uses dynamic model + resolution + duration + live FX
+  // Authoritative FaceSwap quote uses dual-duration formula: min(source, 15s) + ceil(output) capped at verified 4s output
   const fsQuote720 = pricingSvc41.calculateAuthoritativeFaceSwapQuote({
     modelId: 'hf_mult_motion_control_flash',
     resolution: '720p',
-    durationSeconds: 5
+    durationSeconds: 3.2,
+    sourceVideoDurationSeconds: 20
+  });
+  const fsUnsupportedDurationQuote = pricingSvc41.calculateCustomerTemplateQuote({
+    modelId: 'hf_mult_motion_control_flash',
+    type: 'video',
+    resolution: '480p',
+    durationSeconds: 5,
+    sourceVideoDurationSeconds: 5
   });
   assert(
     fsQuote720.status === 'QUOTED' &&
+      fsQuote720.durationSeconds === 4 &&
+      fsQuote720.sourceDurationSeconds === 15 &&
+      fsQuote720.billableDurationSeconds === 19 &&
       fsQuote720.providerRatePerSecondUsd === 0.1 &&
-      fsQuote720.credits === Math.ceil(0.5 * 94.26 * 1.4),
-    `41.4 Authoritative FaceSwap quote calculates 720p × 5s dynamically (${fsQuote720.credits} credits)`
+      fsQuote720.credits === Math.ceil(1.9 * 94.26 * 1.4) &&
+      fsUnsupportedDurationQuote.status === 'UNSUPPORTED',
+    `41.4 FaceSwap quote enforces 4s output limit + dual-duration (15s src + 4s out = 19s -> ${fsQuote720.credits} credits)`
   );
 
   // Simulate TTL expiry -> blocks customer quote and fires PRICING_FX_EXPIRED alert
@@ -3515,6 +3534,133 @@ async function runSystemVerification() {
       ciSrc44.includes('--verify-android-firebase-config') &&
       auditSrc44.includes('SUPERSEDED'),
     '44.3 Fail-closed SA project_id check, catalogRevision startup hydration, baseline SHA update, Android CI pre/post-secret ordering, and audit reconciliation verified'
+  );
+
+  // --- SUITE 45: PRODUCTION COMPLETION (GOOGLE REDIRECT AUTH + LRU SESSION + GENJUTSU DUAL-DURATION + 4 ADMIN PRESETS) ---
+  console.log('\n--- SUITE 45: GOOGLE REDIRECT AUTH, LRU SESSION, GENJUTSU DUAL-DURATION, OMNI GUARD & 4 PRESETS ---');
+
+  // 45.1 Mobile/Desktop/PWA Google Auth Persistence + Popup-to-Redirect Fallback + Session Recovery
+  const fbClientSrc45 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf8');
+  const authSessionSrc45 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/utils/authSession.ts'), 'utf8');
+  assert(
+    fbClientSrc45.includes('browserLocalPersistence') &&
+      fbClientSrc45.includes('signInWithRedirect') &&
+      fbClientSrc45.includes('getRedirectResult') &&
+      fbClientSrc45.includes('ensureAuthLocalPersistence') &&
+      authSessionSrc45.includes('exchangeFirebaseSessionWithRetry') &&
+      authSessionSrc45.includes('cloudPersisted === true') &&
+      authModalSrc44.includes('startGoogleRedirectFlow') &&
+      authModalSrc44.includes('Safe Mobile Redirect Sign-In') &&
+      appContextSrc44.includes('getRedirectResult') &&
+      appContextSrc44.includes('onAuthStateChanged') &&
+      appContextSrc44.includes('signOut(auth)'),
+    '45.1 Firebase browserLocalPersistence, popup-to-redirect fallback, redirect result recovery, and onAuthStateChanged auto-recovery verified'
+  );
+
+  // 45.2 LRU Session Token Cap & Persistent Logout Revocation
+  const lruFbUid = `fb_lru_${Date.now()}`;
+  const lruTokens: string[] = [];
+  for (let i = 0; i < 16; i++) {
+    const authRes = prodDb.getOrCreateUser({
+      firebaseUid: lruFbUid,
+      email: 'lru_user@test.local',
+      name: 'LRU Test',
+      skipBackgroundSync: true
+    });
+    lruTokens.push(authRes.token);
+  }
+  // Promoting token[1] via getUserByToken prevents it from being evicted on future logins
+  const promotedUser = prodDb.getUserByToken(lruTokens[1]);
+  const extraAuth = prodDb.getOrCreateUser({
+    firebaseUid: lruFbUid,
+    email: 'lru_user@test.local',
+    name: 'LRU Test',
+    skipBackgroundSync: true
+  });
+  const token0Expired = prodDb.getUserByToken(lruTokens[0]) === null;
+  const token1StillValid = prodDb.getUserByToken(lruTokens[1]) !== null;
+  const token2EvictedAsOldestUnused = prodDb.getUserByToken(lruTokens[2]) === null;
+  const newestValid = prodDb.getUserByToken(extraAuth.token) !== null;
+  const revokeOk = prodDb.revokeToken(lruTokens[1]);
+  const token1Revoked = prodDb.getUserByToken(lruTokens[1]) === null;
+  assert(
+    promotedUser !== null &&
+      token0Expired &&
+      token1StillValid &&
+      token2EvictedAsOldestUnused &&
+      newestValid &&
+      revokeOk &&
+      token1Revoked &&
+      dbSrc44.includes('touchSessionTokenLru') &&
+      dbSrc44.includes("this.syncToFirestore('auth_identities', userId, identity)"),
+    '45.2 Database LRU session retention keeps active tokens across >15 logins while revokeToken invalidates & persists to Firestore'
+  );
+
+  // 45.3 Higgsfield Open API Docs tariff reference + verified env override + Dual Gate (KEY && FLAG)
+  const {
+    MODEL_REGISTRY: reg45,
+    calculateEstimatedProviderCostUsd: estCost45
+  } = await import('../src/services/pricing/pricingService.ts');
+  const { getHiggsfieldDiagnosticStatus: getHfDiag45 } = await import('../src/services/monitoring/cloudMonitoring.ts');
+  const hfMotionEntry45 = reg45['hf_mult_motion_control_flash'];
+  const prevHfVerified45 = process.env.HIGGSFIELD_BILLING_VERIFIED;
+  const prevHf480Rate45 = process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD;
+  const prevHfKey45 = process.env.HIGGSFIELD_API_KEY;
+  const prevHfEnable45 = process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+  let verifiedOverrideUsd45 = 0;
+  let flagOnlyGateEnabled45 = true;
+  let bothKeyAndFlagEnabled45 = false;
+  try {
+    process.env.HIGGSFIELD_BILLING_VERIFIED = 'true';
+    process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD = '0.0739';
+    const overrideRes45 = estCost45({
+      modelId: 'hf_mult_motion_control_flash',
+      resolution: '480p',
+      sourceVideoDurationSeconds: 10,
+      requestedOutputDurationSeconds: 3.1, // rounds up to 4s -> total 14s
+      allowPublishedListPriceFallback: true
+    });
+    verifiedOverrideUsd45 = overrideRes45.estimatedProviderCostUsd || 0;
+
+    delete process.env.HIGGSFIELD_API_KEY;
+    process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION = 'true';
+    flagOnlyGateEnabled45 = getHfDiag45().customerGenerationEnabled;
+
+    process.env.HIGGSFIELD_API_KEY = 'hf_test_key_gate';
+    bothKeyAndFlagEnabled45 = getHfDiag45().customerGenerationEnabled;
+  } finally {
+    if (prevHfVerified45 !== undefined) process.env.HIGGSFIELD_BILLING_VERIFIED = prevHfVerified45; else delete process.env.HIGGSFIELD_BILLING_VERIFIED;
+    if (prevHf480Rate45 !== undefined) process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD = prevHf480Rate45; else delete process.env.HIGGSFIELD_VERIFIED_RATE_480P_USD;
+    if (prevHfKey45 !== undefined) process.env.HIGGSFIELD_API_KEY = prevHfKey45; else delete process.env.HIGGSFIELD_API_KEY;
+    if (prevHfEnable45 !== undefined) process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION = prevHfEnable45; else delete process.env.ENABLE_GENJUTSU_CUSTOMER_GENERATION;
+  }
+  assert(
+    hfMotionEntry45.resolutionTariffs['480p'].openApiDocPricePerSecondUsd === 0.0739 &&
+      hfMotionEntry45.resolutionTariffs['720p'].openApiDocPricePerSecondUsd === 0.1471 &&
+      hfMotionEntry45.resolutionTariffs['1080p'].openApiDocPricePerSecondUsd === 0.2936 &&
+      hfMotionEntry45.minDurationSeconds === 4 &&
+      hfMotionEntry45.maxDurationSeconds === 4 &&
+      Math.abs(verifiedOverrideUsd45 - Number((14 * 0.0739).toFixed(4))) < 0.0001 &&
+      flagOnlyGateEnabled45 === false &&
+      bothKeyAndFlagEnabled45 === true,
+    '45.3 Higgsfield tariff reconciliation, HIGGSFIELD_BILLING_VERIFIED override, dual-duration min(src,15)+ceil(out), 4s cap & dual gate verified'
+  );
+
+  // 45.4 Omni Evaluation-Only Guard & Zero Default google_veo Fallbacks + 4 Admin Presets
+  const aiRouterSrc45 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/aiRouter.ts'), 'utf8');
+  const readinessSrc45 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/validation/templateReadiness.ts'), 'utf8');
+  const tplMgrSrc45 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/TemplateManagerModal.tsx'), 'utf8');
+  assert(
+    !aiRouterSrc45.includes(": 'google_veo'") &&
+      !readinessSrc45.includes("tpl.type === 'video' ? 'google_veo'") &&
+      !dbSrc44.includes("isVideo ? 'google_veo'") &&
+      tplMgrSrc45.includes("applyRecipePreset('gemini_photo')") &&
+      tplMgrSrc45.includes("applyRecipePreset('higgsfield_motion')") &&
+      tplMgrSrc45.includes("applyRecipePreset('higgsfield_object_swap')") &&
+      tplMgrSrc45.includes("applyRecipePreset('smart_canvas')") &&
+      tplMgrSrc45.includes('SMART_CANVAS_WORKFLOW_OPTIONS') &&
+      tplMgrSrc45.includes('engine: tplEngine'),
+    '45.4 Omni evaluation-only defaults eliminated across backend & UI, and TemplateManagerModal persists all 4 presets including SMART_TEMPLATE'
   );
 
   console.log('\n====================================================');

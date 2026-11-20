@@ -269,6 +269,8 @@ export class AIRouter {
 
     const explicitProvider = (activeWorkflowConfig?.provider || params.provider || '').toString().trim().toLowerCase();
     const resolvedAdapter = (activeWorkflowConfig?.adapter || params.adapter || '').toString().trim();
+    const workflowName = (activeWorkflowConfig?.workflow || params.workflow || '').toString().trim();
+    const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
     const isSmartTemplateRoute =
       params.engine === 'SMART_TEMPLATE' ||
       explicitProvider === 'smart_template' ||
@@ -278,10 +280,8 @@ export class AIRouter {
       ? 'smart_template'
       : (
           explicitProvider ||
-          (params.templateType === 'video' ? 'google_veo' : 'gemini')
+          (params.templateType === 'video' ? (drivingVideoUrl ? 'higgsfield' : '') : 'gemini')
         );
-    const workflowName = (activeWorkflowConfig?.workflow || params.workflow || '').toString().trim();
-    const drivingVideoUrl = activeWorkflowConfig?.drivingVideoUrl || params.drivingVideoUrl || recipe?.drivingVideoUrl;
 
     const rawModel = (activeWorkflowConfig?.model || params.model || '').toString().trim();
     let selectedModel: string | undefined = rawModel ? resolveCanonicalModelId(rawModel) : undefined;

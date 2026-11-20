@@ -38,7 +38,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { Template, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
+import { Template, TemplateEngine, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
 import {
   HomeBannerItem,
   DEFAULT_BANNER_DURATION_SECONDS,
@@ -49,7 +49,17 @@ import {
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
 import { CATEGORIES } from '../data/templatesData';
-import { FACE_SWAP_COMPATIBLE_COMBINATIONS } from '../services/pricing/pricingService';
+import { FACE_SWAP_COMPATIBLE_COMBINATIONS, getRegisteredModelEntry } from '../services/pricing/pricingService';
+
+const SMART_CANVAS_WORKFLOW_OPTIONS: Array<{ value: string; label: string; type: 'photo' | 'video' }> = [
+  { value: 'retro-polaroid-warm', label: 'Retro Polaroid Warm (Photo)', type: 'photo' },
+  { value: 'story-clean-minimal', label: 'Story Clean Minimal (Photo)', type: 'photo' },
+  { value: 'dark-academia-mood', label: 'Dark Academia Mood (Photo)', type: 'photo' },
+  { value: 'bali-jungle-glow', label: 'Bali Jungle Glow (Photo)', type: 'photo' },
+  { value: 'film-strip-carousel', label: 'Film Strip Carousel (Photo)', type: 'photo' },
+  { value: 'good-morning-frame', label: 'Good Morning Frame (Photo)', type: 'photo' },
+  { value: 'synthwave-grid-animation', label: 'Synthwave Grid Animation (5s Video)', type: 'video' }
+];
 
 interface TemplateManagerModalProps {
   isOpen: boolean;
@@ -190,7 +200,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplIsActive, setTplIsActive] = useState(true);
   const [tplBadge, setTplBadge] = useState<string>('HOT');
   const [tplTagsInput, setTplTagsInput] = useState('Viral, AI, Instagram Reels');
-  const [tplCostUsd, setTplCostUsd] = useState<number>(0.25);
+  const [tplCostUsd, setTplCostUsd] = useState<number>(0.04);
   const [tplMediaPreview, setTplMediaPreview] = useState<string>('');
   const [tplCoverPreview, setTplCoverPreview] = useState<string>('');
   const [tplCoverVideoPreview, setTplCoverVideoPreview] = useState<string>('');
@@ -199,10 +209,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [tplSampleFaceThumbnail, setTplSampleFaceThumbnail] = useState<string>('');
   const [tplSampleBefore, setTplSampleBefore] = useState<string>('');
   const [showCustomCoverOverride, setShowCustomCoverOverride] = useState<boolean>(false);
-  const [tplDetectedType, setTplDetectedType] = useState<'photo' | 'video'>('video');
+  const [tplDetectedType, setTplDetectedType] = useState<'photo' | 'video'>('photo');
+  const [tplEngine, setTplEngine] = useState<TemplateEngine>('AI_GENERATION');
+  const [tplResolutionLabel, setTplResolutionLabel] = useState<'480p' | '720p' | '1080p'>('1080p');
+  const [tplDurationSeconds, setTplDurationSeconds] = useState<number | undefined>(undefined);
 
   // Input Type Enforcement: 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO'
-  const [tplInputType, setTplInputType] = useState<TemplateInputType>('IMAGE_OR_VIDEO');
+  const [tplInputType, setTplInputType] = useState<TemplateInputType>('IMAGE_ONLY');
   const [tplRequiredInputs, setTplRequiredInputs] = useState<TemplateInputDef[]>([]);
 
   // BULK PHOTO IMPORT & CATEGORY-LEVEL PROMPTS STATE
@@ -352,11 +365,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   );
 
   // Execution Recipe (Separated from display preview MP4/Photo)
-  const [recipePreset, setRecipePreset] = useState<'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom'>('veo_video');
-  const [recipeProvider, setRecipeProvider] = useState<string>('google_veo');
-  const [recipeModel, setRecipeModel] = useState<string>('gemini-omni-1.2-flash');
-  const [recipeWorkflow, setRecipeWorkflow] = useState<string>('viral-reels');
-  const [recipePrompt, setRecipePrompt] = useState<string>('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
+  const [recipePreset, setRecipePreset] = useState<'gemini_photo' | 'higgsfield_motion' | 'higgsfield_object_swap' | 'smart_canvas' | 'custom'>('gemini_photo');
+  const [recipeProvider, setRecipeProvider] = useState<string>('gemini');
+  const [recipeModel, setRecipeModel] = useState<string>('gemini-3.1-flash-lite-image');
+  const [recipeWorkflow, setRecipeWorkflow] = useState<string>('PHOTO_GENERATION');
+  const [recipePrompt, setRecipePrompt] = useState<string>('Hyper-realistic commercial studio portrait, 8k resolution, photorealistic skin textures, dramatic softbox lighting, perfect face identity mapping, authentic color grading.');
   const [recipeDrivingVideoUrl, setRecipeDrivingVideoUrl] = useState<string>('');
   const [recipeDrivingVideoPreview, setRecipeDrivingVideoPreview] = useState<string>('');
 
@@ -541,33 +554,57 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     setTimeout(() => setFeedback(null), 3000);
   };
 
-  // Preset Selection Helper
-  const applyRecipePreset = (preset: 'veo_video' | 'gemini_photo' | 'higgsfield_motion' | 'custom') => {
+  // One-Time Reusable Automatic Presets hydrated from MODEL_REGISTRY (Omni excluded from customer presets)
+  const applyRecipePreset = (preset: 'gemini_photo' | 'higgsfield_motion' | 'higgsfield_object_swap' | 'smart_canvas' | 'custom') => {
     setRecipePreset(preset);
-    if (preset === 'veo_video') {
-      setRecipeProvider('google_veo');
-      setRecipeModel('gemini-omni-1.2-flash');
-      setRecipeWorkflow('viral-reels');
-      setRecipePrompt('Cinematic slow-motion 60FPS video reel, hyperrealistic lighting, 8k resolution, color-graded aesthetic.');
-      setTplCostUsd(0.25);
-      setTplDetectedType('video');
-      setTplInputType('IMAGE_OR_VIDEO');
-    } else if (preset === 'gemini_photo') {
-      setRecipeProvider('gemini');
-      setRecipeModel('gemini-2.5-flash-image');
-      setRecipeWorkflow('neural-portrait-studio');
-      setRecipePrompt('Studio editorial magazine portrait, Hasselblad medium-format clarity, studio rim lights, magazine cover aesthetic.');
-      setTplCostUsd(0.08);
+    if (preset === 'gemini_photo') {
+      const reg = getRegisteredModelEntry('gemini-3.1-flash-lite-image');
+      setTplEngine('AI_GENERATION');
+      setRecipeProvider(reg?.provider || 'gemini');
+      setRecipeModel(reg?.modelId || 'gemini-3.1-flash-lite-image');
+      setRecipeWorkflow(reg?.workflow || 'PHOTO_GENERATION');
+      setRecipePrompt(DEFAULT_PHOTO_RECIPE_PROMPT);
+      setTplCostUsd(reg?.publishedPerImageUsd || 0.045);
       setTplDetectedType('photo');
       setTplInputType('IMAGE_ONLY');
+      setTplResolutionLabel(reg?.appDefaultResolution || '1080p');
+      setTplDurationSeconds(undefined);
     } else if (preset === 'higgsfield_motion') {
-      setRecipeProvider('higgsfield');
-      setRecipeModel('higgsfield/genjutsu/motion-transfer/v1.0');
-      setRecipeWorkflow('motion-transfer');
-      setRecipePrompt('Preserve face identity, transfer full body dance dynamics and camera angles smoothly, 480p motion transfer.');
-      setTplCostUsd(1.59);
+      const reg = getRegisteredModelEntry('hf_mult_motion_control_flash');
+      setTplEngine('AI_GENERATION');
+      setRecipeProvider(reg?.provider || 'higgsfield');
+      setRecipeModel(reg?.modelId || 'hf_mult_motion_control_flash');
+      setRecipeWorkflow(reg?.workflow || 'MOTION_TRANSFER');
+      setRecipePrompt(DEFAULT_MOTION_TRANSFER_RECIPE_PROMPT);
+      setTplCostUsd(0.25);
       setTplDetectedType('video');
       setTplInputType('IMAGE_ONLY');
+      setTplResolutionLabel(reg?.appDefaultResolution || '480p');
+      setTplDurationSeconds(reg?.appDefaultDurationSeconds || 4);
+    } else if (preset === 'higgsfield_object_swap') {
+      const reg = getRegisteredModelEntry('hf_mult_replace_object_flash');
+      setTplEngine('AI_GENERATION');
+      setRecipeProvider(reg?.provider || 'higgsfield');
+      setRecipeModel(reg?.modelId || 'hf_mult_replace_object_flash');
+      setRecipeWorkflow(reg?.workflow || 'OBJECT_SWAP');
+      setRecipePrompt('Seamless AI object/character replacement matching scene lighting, reflections, shadows, and natural depth of field.');
+      setTplCostUsd(0.40);
+      setTplDetectedType('video');
+      setTplInputType('IMAGE_ONLY');
+      setTplResolutionLabel(reg?.appDefaultResolution || '720p');
+      setTplDurationSeconds(reg?.appDefaultDurationSeconds || 4);
+    } else if (preset === 'smart_canvas') {
+      const reg = getRegisteredModelEntry('smart_canvas_ffmpeg');
+      setTplEngine('SMART_TEMPLATE');
+      setRecipeProvider(reg?.provider || 'smart_template');
+      setRecipeModel(reg?.modelId || 'smart_canvas_ffmpeg');
+      setRecipeWorkflow('retro-polaroid-warm');
+      setRecipePrompt('Deterministic local Smart Canvas frame rendering via Resvg & FFmpeg with subtle color tone styling.');
+      setTplCostUsd(0.0);
+      setTplDetectedType('photo');
+      setTplInputType('IMAGE_ONLY');
+      setTplResolutionLabel('1080p');
+      setTplDurationSeconds(undefined);
     }
   };
 
@@ -982,18 +1019,62 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
     setImportNotice(null);
 
-    if (tpl.recipe) {
-      setRecipeProvider(tpl.recipe.provider || (tpl.type === 'video' ? 'google_veo' : 'gemini'));
-      setRecipeModel(tpl.recipe.model || (tpl.type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'));
-      setRecipeWorkflow(tpl.recipe.workflow || tpl.workflow);
-      setRecipePrompt(tpl.recipe.prompt?.trim() ? tpl.recipe.prompt : (tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT));
-      setRecipeDrivingVideoUrl(tpl.recipe.drivingVideoUrl || tpl.drivingVideoUrl || '');
+    const restoredEngine: TemplateEngine =
+      tpl.engine === 'SMART_TEMPLATE' || tpl.recipe?.engine === 'SMART_TEMPLATE'
+        ? 'SMART_TEMPLATE'
+        : 'AI_GENERATION';
+    const restoredProvider = (
+      tpl.provider ||
+      tpl.recipe?.provider ||
+      (restoredEngine === 'SMART_TEMPLATE'
+        ? 'smart_template'
+        : tpl.type === 'video'
+        ? 'higgsfield'
+        : 'gemini')
+    ).toString();
+    const restoredModel = (
+      tpl.model ||
+      tpl.recipe?.model ||
+      (restoredEngine === 'SMART_TEMPLATE'
+        ? 'smart_canvas_ffmpeg'
+        : tpl.type === 'video'
+        ? 'hf_mult_motion_control_flash'
+        : 'gemini-3.1-flash-lite-image')
+    ).toString();
+    const restoredWorkflow = (tpl.recipe?.workflow || tpl.workflow || 'PHOTO_GENERATION').toString();
+
+    setTplEngine(restoredEngine);
+    setRecipeProvider(restoredProvider);
+    setRecipeModel(restoredModel);
+    setRecipeWorkflow(restoredWorkflow);
+    setRecipePrompt(
+      tpl.recipe?.prompt?.trim()
+        ? tpl.recipe.prompt
+        : tpl.type === 'video'
+        ? DEFAULT_VIDEO_RECIPE_PROMPT
+        : DEFAULT_PHOTO_RECIPE_PROMPT
+    );
+    setRecipeDrivingVideoUrl(tpl.recipe?.drivingVideoUrl || tpl.drivingVideoUrl || '');
+    setTplResolutionLabel(
+      tpl.resolutionLabel === '480p' || tpl.resolutionLabel === '720p' || tpl.resolutionLabel === '1080p'
+        ? tpl.resolutionLabel
+        : tpl.type === 'video'
+        ? (restoredModel.includes('replace_object') || restoredEngine === 'SMART_TEMPLATE' ? '720p' : '480p')
+        : '1080p'
+    );
+    setTplDurationSeconds(
+      tpl.durationSeconds || tpl.recipe?.duration || (tpl.type === 'video' ? (restoredEngine === 'SMART_TEMPLATE' ? 5 : 4) : undefined)
+    );
+    if (restoredEngine === 'SMART_TEMPLATE' || restoredProvider === 'smart_template') {
+      setRecipePreset('smart_canvas');
+    } else if (restoredModel === 'hf_mult_replace_object_flash') {
+      setRecipePreset('higgsfield_object_swap');
+    } else if (restoredProvider === 'higgsfield' || restoredModel === 'hf_mult_motion_control_flash') {
+      setRecipePreset('higgsfield_motion');
+    } else if (restoredProvider === 'gemini' && !restoredModel.includes('omni')) {
+      setRecipePreset('gemini_photo');
     } else {
-      setRecipeProvider(tpl.type === 'video' ? 'google_veo' : 'gemini');
-      setRecipeModel(tpl.model || (tpl.type === 'video' ? 'gemini-omni-1.2-flash' : 'gemini-3.1-flash-image'));
-      setRecipeWorkflow(tpl.workflow);
-      setRecipePrompt(tpl.type === 'video' ? DEFAULT_VIDEO_RECIPE_PROMPT : DEFAULT_PHOTO_RECIPE_PROMPT);
-      setRecipeDrivingVideoUrl(tpl.drivingVideoUrl || '');
+      setRecipePreset('custom');
     }
 
     setRecipeDrivingVideoPreview('');
@@ -1013,16 +1094,31 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       .map((t) => t.trim())
       .filter(Boolean);
 
+    const resolvedAdapter =
+      tplEngine === 'SMART_TEMPLATE' || recipeProvider === 'smart_template'
+        ? 'smartCanvas'
+        : recipeProvider === 'higgsfield'
+        ? 'faceSwapAdapter'
+        : recipeProvider === 'google_omni' || recipeProvider === 'google_veo' || recipeModel.includes('omni')
+        ? 'videoProviderAdapter'
+        : 'geminiAdapter';
+
+    const resolvedDuration =
+      tplDetectedType === 'video'
+        ? (tplDurationSeconds || (tplEngine === 'SMART_TEMPLATE' ? 5 : 4))
+        : undefined;
+
     const recipePayload = {
       version: '1.0',
       inputType: tplInputType,
       provider: recipeProvider,
+      adapter: resolvedAdapter,
       model: recipeModel,
-      engine: 'AI_GENERATION',
+      engine: tplEngine,
       prompt: recipePrompt.trim(),
       workflow: recipeWorkflow,
       aspectRatio: tplAspectRatio,
-      duration: tplDetectedType === 'video' ? 5 : undefined,
+      duration: resolvedDuration,
       drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
       sampleFaceThumbnail: tplSampleFaceThumbnail || undefined,
       sampleBefore: tplSampleBefore || undefined,
@@ -1044,9 +1140,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           tags,
           type: tplDetectedType,
           inputType: tplInputType,
+          provider: recipeProvider,
+          adapter: resolvedAdapter,
           workflow: recipeWorkflow,
           model: recipeModel,
-          engine: 'AI_GENERATION',
+          engine: tplEngine,
+          resolutionLabel: tplResolutionLabel,
+          durationSeconds: resolvedDuration,
           recipe: recipePayload,
           requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
           providerCostUsd: Number(tplCostUsd) || 0.25
@@ -1182,9 +1282,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
             sampleResult: !tplSampleResultPreview.startsWith('data:') && tplSampleResultPreview ? tplSampleResultPreview : undefined,
             drivingVideoUrl: recipeDrivingVideoUrl.trim() || undefined,
             drivingVideoBase64: recipeDrivingVideoPreview.startsWith('data:') ? recipeDrivingVideoPreview : undefined,
+            provider: recipeProvider,
+            adapter: resolvedAdapter,
             workflow: recipeWorkflow,
             model: recipeModel,
-            engine: 'AI_GENERATION',
+            engine: tplEngine,
+            resolutionLabel: tplResolutionLabel,
+            durationSeconds: resolvedDuration,
             recipe: recipePayload,
             requiredInputs: tplRequiredInputs.length > 0 ? tplRequiredInputs : undefined,
             providerCostUsd: Number(tplCostUsd) || 0.25
@@ -2877,7 +2981,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         setTplSampleResultPreview('');
                         setTplSampleBefore('');
                         setTplSampleFaceThumbnail('');
-                        setRecipePrompt(tplDetectedType === 'photo' ? DEFAULT_PHOTO_RECIPE_PROMPT : DEFAULT_VIDEO_RECIPE_PROMPT);
+                        setRecipeDrivingVideoUrl('');
+                        setRecipeDrivingVideoPreview('');
+                        applyRecipePreset('gemini_photo');
                         setSubTab('add');
                       }}
                       className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 active:scale-95 transition-all cursor-pointer"
@@ -3804,26 +3910,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     </div>
                   </div>
 
-                  {/* 1-Tap Presets */}
-                  <div>
-                    <label className="text-[11px] font-bold text-stone-300 block mb-1">Quick Recipe Presets</label>
+                  {/* 1-Tap Reusable Presets (Customer-Active Providers Only; Omni Guarded as Evaluation-Only) */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-stone-300">Quick Recipe Presets (1-Click)</label>
+                      <span className="text-[9.5px] text-amber-300/90 font-semibold">Omni 1.2 = Evaluation-Only</span>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => applyRecipePreset('veo_video')}
-                        className={`p-2 rounded-xl border text-left text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
-                          recipePreset === 'veo_video'
-                            ? 'bg-[#ff9f00]/20 border-[#ff9f00] text-white'
-                            : 'bg-black/30 border-white/10 text-stone-400 hover:text-white'
-                        }`}
-                      >
-                        <Film className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        <div className="truncate">
-                          <span>Google Veo 3.1</span>
-                          <span className="text-[9px] text-stone-400 block font-normal truncate">Video Generation</span>
-                        </div>
-                      </button>
-
                       <button
                         type="button"
                         onClick={() => applyRecipePreset('gemini_photo')}
@@ -3835,8 +3928,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       >
                         <ImageIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                         <div className="truncate">
-                          <span>Gemini 2.5 Photo</span>
-                          <span className="text-[9px] text-stone-400 block font-normal truncate">Portrait Studio</span>
+                          <span>Gemini Photo</span>
+                          <span className="text-[9px] text-stone-400 block font-normal truncate">3.1 Flash Lite Image</span>
                         </div>
                       </button>
 
@@ -3852,43 +3945,83 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         <Zap className="w-3.5 h-3.5 text-pink-400 shrink-0" />
                         <div className="truncate">
                           <span>Higgsfield Motion</span>
-                          <span className="text-[9px] text-stone-400 block font-normal truncate">Motion Transfer</span>
+                          <span className="text-[9px] text-stone-400 block font-normal truncate">480p · 4s · Motion</span>
                         </div>
                       </button>
 
                       <button
                         type="button"
-                        onClick={() => applyRecipePreset('custom')}
+                        onClick={() => applyRecipePreset('higgsfield_object_swap')}
                         className={`p-2 rounded-xl border text-left text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
-                          recipePreset === 'custom'
+                          recipePreset === 'higgsfield_object_swap'
                             ? 'bg-[#ff9f00]/20 border-[#ff9f00] text-white'
                             : 'bg-black/30 border-white/10 text-stone-400 hover:text-white'
                         }`}
                       >
-                        <Sliders className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <Wand2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                         <div className="truncate">
-                          <span>Custom Recipe</span>
-                          <span className="text-[9px] text-stone-400 block font-normal truncate">Custom Config</span>
+                          <span>Higgsfield Object Swap</span>
+                          <span className="text-[9px] text-stone-400 block font-normal truncate">720p · 4s · Replace</span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => applyRecipePreset('smart_canvas')}
+                        className={`p-2 rounded-xl border text-left text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                          recipePreset === 'smart_canvas'
+                            ? 'bg-[#ff9f00]/20 border-[#ff9f00] text-white'
+                            : 'bg-black/30 border-white/10 text-stone-400 hover:text-white'
+                        }`}
+                      >
+                        <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                        <div className="truncate">
+                          <span>Smart Canvas</span>
+                          <span className="text-[9px] text-stone-400 block font-normal truncate">Local Resvg + FFmpeg</span>
                         </div>
                       </button>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => applyRecipePreset('custom')}
+                      className={`w-full p-2 rounded-xl border text-left text-xs font-bold flex items-center justify-between gap-2 transition-all cursor-pointer ${
+                        recipePreset === 'custom'
+                          ? 'bg-[#ff9f00]/20 border-[#ff9f00] text-white'
+                          : 'bg-black/30 border-white/10 text-stone-400 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Sliders className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <span>Custom Override (Preserve Existing Config)</span>
+                      </div>
+                      <span className="text-[9px] text-stone-400 font-normal">Advanced</span>
+                    </button>
                   </div>
 
-                  {/* Provider & Model */}
+                  {/* Provider, Engine & Model */}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-[11px] font-bold text-stone-300">AI Provider</label>
+                      <label className="text-[11px] font-bold text-stone-300">AI / Render Provider</label>
                       <select
                         value={recipeProvider}
                         onChange={(e) => {
-                          setRecipeProvider(e.target.value);
+                          const nextProvider = e.target.value;
+                          setRecipeProvider(nextProvider);
+                          if (nextProvider === 'smart_template') {
+                            setTplEngine('SMART_TEMPLATE');
+                            setRecipeModel('smart_canvas_ffmpeg');
+                          } else {
+                            setTplEngine('AI_GENERATION');
+                          }
                           setRecipePreset('custom');
                         }}
                         className="w-full mt-1 px-3 py-2 rounded-xl bg-black border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       >
-                        <option value="google_veo">Google Veo (Video)</option>
                         <option value="gemini">Google Gemini (Photo)</option>
-                        <option value="higgsfield">Higgsfield Genjutsu (Motion Transfer)</option>
+                        <option value="higgsfield">Higgsfield Genjutsu Light (Video)</option>
+                        <option value="smart_template">Smart Canvas (Local Resvg/FFmpeg)</option>
+                        <option value="google_omni">Google Gemini Omni 1.2 (Evaluation-Only)</option>
                       </select>
                     </div>
 
@@ -3898,11 +4031,49 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         type="text"
                         value={recipeModel}
                         onChange={(e) => setRecipeModel(e.target.value)}
-                        placeholder="e.g. gemini-omni-1.2-flash"
+                        placeholder="e.g. gemini-3.1-flash-lite-image"
                         className="w-full mt-1 px-3 py-2 rounded-xl bg-black border border-white/10 text-white text-xs focus:border-[#ff9f00] focus:outline-none"
                       />
                     </div>
                   </div>
+
+                  {/* Smart Canvas 7-Workflow Selector */}
+                  {(tplEngine === 'SMART_TEMPLATE' || recipeProvider === 'smart_template') && (
+                    <div>
+                      <label className="text-[11px] font-bold text-sky-300 block mb-1">
+                        Smart Canvas Workflow (All 7 Native Workflows)
+                      </label>
+                      <select
+                        value={recipeWorkflow}
+                        onChange={(e) => {
+                          const wf = e.target.value;
+                          setRecipeWorkflow(wf);
+                          const matched = SMART_CANVAS_WORKFLOW_OPTIONS.find((w) => w.value === wf);
+                          if (matched) {
+                            setTplDetectedType(matched.type);
+                            setTplDurationSeconds(matched.type === 'video' ? 5 : undefined);
+                            setTplResolutionLabel(matched.type === 'video' ? '720p' : '1080p');
+                          }
+                        }}
+                        className="w-full px-3 py-2 rounded-xl bg-black border border-sky-500/40 text-white text-xs focus:border-sky-400 focus:outline-none"
+                      >
+                        {SMART_CANVAS_WORKFLOW_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {recipeModel.includes('omni') && (
+                    <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10.5px] text-amber-200 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Evaluation-Only Notice:</strong> <code>gemini-omni-1.2-flash</code> is Owner evaluation-only and blocked for regular customer runs. Choose Gemini Photo, Higgsfield Motion/Object Swap, or Smart Canvas for live customer templates.
+                      </span>
+                    </div>
+                  )}
 
                   {/* Master AI Prompt */}
                   <div>

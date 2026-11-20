@@ -126,7 +126,8 @@ export function validateTemplateReadiness(
   const hasValidEngine = engine === 'AI_GENERATION' || engine === 'SMART_TEMPLATE';
   const resolvedProvider = (
     tpl.recipe?.provider ||
-    (engine === 'SMART_TEMPLATE' ? 'smart_template' : tpl.type === 'video' ? 'google_veo' : 'gemini')
+    (tpl as any).provider ||
+    (engine === 'SMART_TEMPLATE' ? 'smart_template' : tpl.type === 'video' ? 'higgsfield' : 'gemini')
   )
     .toString()
     .trim()

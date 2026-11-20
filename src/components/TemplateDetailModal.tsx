@@ -438,6 +438,10 @@ export const TemplateDetailModal: React.FC = () => {
     type: tpl.type,
     resolution: (selectedResolution === '480p' || selectedResolution === '720p' || selectedResolution === '1080p') ? selectedResolution : undefined,
     durationSeconds: selectedDuration || tpl.durationSeconds,
+    sourceVideoDurationSeconds:
+      modelEntry?.provider === 'higgsfield' || canonicalModel.startsWith('hf_')
+        ? Math.min(15, tpl.durationSeconds || selectedDuration || 4)
+        : undefined,
     engine: tpl.engine,
     creditCost: tpl.creditCost,
     providerCostUsd: tpl.providerCostUsd,
@@ -544,8 +548,8 @@ export const TemplateDetailModal: React.FC = () => {
         }
       ];
     }
-    // Default fallback: if template is face swap or photo, expect image
-    if (tpl.isFaceSwap || tpl.type === 'photo') {
+    // Default fallback: if template is face swap, has drivingVideoUrl, or is photo, expect customer face photo
+    if (tpl.isFaceSwap || tpl.drivingVideoUrl || tpl.recipe?.drivingVideoUrl || tpl.type === 'photo') {
       return [
         {
           id: 'slot_1',

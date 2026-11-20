@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   Template,
   UserProfile,
@@ -15,7 +15,22 @@ import {
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
 import { isAuthorizedAdminEmail } from '../config/adminConfig';
+import { AUTH_POLICY } from '../config/authConfig';
 import { mediaPlaybackCoordinator } from '../services/media/mediaPlaybackManager';
+import {
+  auth,
+  getRedirectResult,
+  onAuthStateChanged,
+  signOut,
+  ensureAuthLocalPersistence
+} from '../services/firebase/firebaseClient';
+import {
+  exchangeFirebaseSessionWithRetry,
+  PENDING_AUTH_ACTION_STORAGE_KEY,
+  REDIRECT_AUTH_IN_PROGRESS_KEY,
+  readAndClearPendingAuthActionFromStorage,
+  savePendingAuthActionToStorage
+} from '../utils/authSession';
 
 export type PendingAction =
   | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
@@ -296,7 +311,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // High-Intent Action & Auth Modal
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [pendingAction, setPendingActionState] = useState<PendingAction | null>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? sessionStorage.getItem(PENDING_AUTH_ACTION_STORAGE_KEY) : null;
+      return saved ? (JSON.parse(saved) as PendingAction) : null;
+    } catch {
+      return null;
+    }
+  });
+  const setPendingAction = useCallback((action: PendingAction | null) => {
+    setPendingActionState(action);
+    if (action) {
+      savePendingAuthActionToStorage(action);
+    } else {
+      try {
+        sessionStorage.removeItem(PENDING_AUTH_ACTION_STORAGE_KEY);
+      } catch {}
+    }
+  }, []);
+  const explicitLogoutRef = useRef(false);
+  const sessionRecoveryInFlightRef = useRef(false);
+  const sessionRecoveryAttemptedForUidRef = useRef<string | null>(null);
 
   // Other Modals
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -545,8 +580,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401
       if (res.status === 401) {
-        console.warn('[AppContext] Server explicitly confirmed session invalid/expired (HTTP 401). Clearing token.');
+        console.warn('[AppContext] Server confirmed backend token invalid/expired (HTTP 401).');
         localStorage.removeItem('lumina_session_token');
+
+        // Auto-recovery if Firebase SDK still holds a valid signed-in user in browserLocalPersistence
+        const fbUser = auth.currentUser;
+        if (
+          fbUser &&
+          !explicitLogoutRef.current &&
+          !sessionRecoveryInFlightRef.current &&
+          sessionRecoveryAttemptedForUidRef.current !== fbUser.uid
+        ) {
+          sessionRecoveryInFlightRef.current = true;
+          sessionRecoveryAttemptedForUidRef.current = fbUser.uid;
+          try {
+            const freshIdToken = await fbUser.getIdToken(true);
+            const recovered = await exchangeFirebaseSessionWithRetry({
+              idToken: freshIdToken,
+              firebaseUid: fbUser.uid,
+              email: fbUser.email,
+              name: fbUser.displayName,
+              avatar: fbUser.photoURL,
+              authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
+            });
+            if (recovered.ok && recovered.data?.success && recovered.data?.cloudPersisted === true) {
+              localStorage.setItem('lumina_session_token', recovered.data.token);
+              setUser(recovered.data.user);
+              sessionRecoveryInFlightRef.current = false;
+              res = await fetch('/api/auth/me', {
+                headers: { Authorization: `Bearer ${recovered.data.token}` }
+              });
+              if (res.ok) {
+                const parsedRecovered = await safeParseJsonResponse<any>(res);
+                if (parsedRecovered.ok && parsedRecovered.data?.user) {
+                  setUser(parsedRecovered.data.user);
+                  if (parsedRecovered.data.wallet) setWallet(parsedRecovered.data.wallet);
+                  setActiveSubscription(parsedRecovered.data.activeSubscription || null);
+                  if (parsedRecovered.data.likedTemplates) setLikedTemplates(parsedRecovered.data.likedTemplates);
+                  if (typeof parsedRecovered.data.isIntroEligible === 'boolean') {
+                    setIsIntroEligible(parsedRecovered.data.isIntroEligible);
+                  }
+                  return;
+                }
+              }
+            }
+          } catch (recoverErr) {
+            console.warn('[AppContext] Firebase silent session auto-recovery failed:', recoverErr);
+          } finally {
+            sessionRecoveryInFlightRef.current = false;
+          }
+        }
+
         setUser(null);
         setIsAdmin(false);
         setServerAdminVerified(false);
@@ -649,6 +733,92 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     refreshUserData();
   }, [refreshUserData]);
 
+  // Complete mobile/PWA Google redirect sign-in and auto-recover persistent Firebase Auth sessions
+  useEffect(() => {
+    let isMounted = true;
+
+    const completeRedirectAndMonitorAuth = async () => {
+      try {
+        await ensureAuthLocalPersistence();
+        const redirectResult = await getRedirectResult(auth);
+        try {
+          sessionStorage.removeItem(REDIRECT_AUTH_IN_PROGRESS_KEY);
+        } catch {}
+
+        if (isMounted && redirectResult?.user) {
+          explicitLogoutRef.current = false;
+          sessionRecoveryInFlightRef.current = true;
+          try {
+            const idToken = await redirectResult.user.getIdToken();
+            const sessionRes = await exchangeFirebaseSessionWithRetry({
+              idToken,
+              firebaseUid: redirectResult.user.uid,
+              email: redirectResult.user.email,
+              name: redirectResult.user.displayName,
+              avatar: redirectResult.user.photoURL,
+              authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
+            });
+            if (isMounted && sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
+              localStorage.setItem('lumina_session_token', sessionRes.data.token);
+              setUser(sessionRes.data.user);
+              setAuthModalOpen(false);
+              await refreshUserData();
+              await refreshGenerations();
+            }
+          } finally {
+            sessionRecoveryInFlightRef.current = false;
+          }
+        }
+      } catch (err: any) {
+        try {
+          sessionStorage.removeItem(REDIRECT_AUTH_IN_PROGRESS_KEY);
+        } catch {}
+        console.warn('[AppContext] getRedirectResult notice:', err?.code || err?.message);
+      }
+    };
+
+    completeRedirectAndMonitorAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!isMounted) return;
+      if (!firebaseUser) return;
+      explicitLogoutRef.current = false;
+
+      const existingToken = localStorage.getItem('lumina_session_token');
+      if (existingToken) return;
+      if (sessionRecoveryInFlightRef.current) return;
+      if (sessionRecoveryAttemptedForUidRef.current === firebaseUser.uid) return;
+
+      sessionRecoveryInFlightRef.current = true;
+      sessionRecoveryAttemptedForUidRef.current = firebaseUser.uid;
+      try {
+        const idToken = await firebaseUser.getIdToken();
+        const sessionRes = await exchangeFirebaseSessionWithRetry({
+          idToken,
+          firebaseUid: firebaseUser.uid,
+          email: firebaseUser.email,
+          name: firebaseUser.displayName,
+          avatar: firebaseUser.photoURL,
+          authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
+        });
+        if (isMounted && sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
+          localStorage.setItem('lumina_session_token', sessionRes.data.token);
+          setUser(sessionRes.data.user);
+          await refreshUserData();
+        }
+      } catch (err: any) {
+        console.warn('[AppContext] onAuthStateChanged session recovery notice:', err?.message);
+      } finally {
+        sessionRecoveryInFlightRef.current = false;
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [refreshUserData, refreshGenerations]);
+
   useEffect(() => {
     if (user) {
       refreshGenerations();
@@ -708,6 +878,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Called after successful Firebase authentication
   const onAuthSuccess = async (authenticatedUser: UserProfile, token: string) => {
+    explicitLogoutRef.current = false;
+    sessionRecoveryAttemptedForUidRef.current = null;
     localStorage.setItem('lumina_session_token', token);
     setUser(authenticatedUser);
     setAuthModalOpen(false);
@@ -733,26 +905,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await refreshUserData();
     await refreshGenerations();
 
-    // Automatically resume the high-intent action without user having to repeat steps!
-    if (pendingAction) {
-      const action = pendingAction;
+    // Automatically resume the high-intent action (including across full-page mobile redirect reloads)
+    const activePendingAction = pendingAction || readAndClearPendingAuthActionFromStorage();
+    if (activePendingAction) {
       setPendingAction(null);
 
-      if (action.type === 'generate') {
-        // Automatically trigger generation with the selected template & uploaded media!
-        const tpl = templates.find((t) => t.id === action.templateId);
+      if (activePendingAction.type === 'generate') {
+        const tpl = templates.find((t) => t.id === activePendingAction.templateId);
         if (tpl) {
           setSelectedTemplate(tpl);
-          createGeneration(action.templateId, action.inputMediaUrl, action.customPrompt);
+          if (activePendingAction.inputMediaUrl) {
+            createGeneration(activePendingAction.templateId, activePendingAction.inputMediaUrl, activePendingAction.customPrompt);
+          }
         }
-      } else if (action.type === 'buy_plan') {
+      } else if (activePendingAction.type === 'buy_plan') {
         setPlansModalOpen(true);
-      } else if (action.type === 'faceswap') {
+      } else if (activePendingAction.type === 'faceswap') {
         setFaceSwapModalOpen(true);
-        generateFaceSwapVideo(action.payloadOrSceneId, action.legacyFacePhotoUrl);
-      } else if (action.type === 'navigate_creations') {
+        generateFaceSwapVideo(activePendingAction.payloadOrSceneId, activePendingAction.legacyFacePhotoUrl);
+      } else if (activePendingAction.type === 'navigate_creations') {
         setActiveTab('creations');
-      } else if (action.type === 'navigate_profile') {
+      } else if (activePendingAction.type === 'navigate_profile') {
         setActiveTab('profile');
       }
     }
@@ -790,7 +963,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: getAuthHeaders()
       });
       if (res.ok) {
+        explicitLogoutRef.current = true;
+        setPendingAction(null);
         localStorage.removeItem('lumina_session_token');
+        try {
+          await signOut(auth);
+        } catch {}
         setUser(null);
         setIsAdmin(false);
         setServerAdminVerified(false);
@@ -808,6 +986,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Logout
   const logout = async () => {
+    explicitLogoutRef.current = true;
+    setPendingAction(null);
     try {
       await fetch('/api/auth/logout', {
         method: 'POST',
@@ -815,6 +995,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     } catch {}
     localStorage.removeItem('lumina_session_token');
+    try {
+      await signOut(auth);
+    } catch {}
     setUser(null);
     setIsAdmin(false);
     setServerAdminVerified(false);
