@@ -16,9 +16,10 @@ import {
   googleProvider,
   signInWithPopup,
   signInWithRedirect,
-  ensureAuthLocalPersistence
+  ensureAuthBestPersistence
 } from '../services/firebase/firebaseClient';
 import {
+  clearStoredSessionToken,
   exchangeFirebaseSessionWithRetry,
   isMobileOrStandaloneBrowser,
   isRunningInsideIframe,
@@ -56,6 +57,8 @@ export const AuthModal: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [persistenceNotice, setPersistenceNotice] = useState('');
+  const [persistenceMode, setPersistenceMode] = useState<'local' | 'session' | 'none'>('local');
   const [showRedirectFallbackButton, setShowRedirectFallbackButton] = useState(false);
   const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
   const [copiedDomain, setCopiedDomain] = useState(false);
@@ -64,6 +67,8 @@ export const AuthModal: React.FC = () => {
     if (!authModalOpen) {
       setStep('ready');
       setErrorMessage('');
+      setPersistenceNotice('');
+      setPersistenceMode('local');
       setUnauthorizedDomain(null);
       setCopiedDomain(false);
       setLoading(false);
@@ -78,15 +83,39 @@ export const AuthModal: React.FC = () => {
     setLoading(true);
     setRedirecting(true);
     setErrorMessage('');
+    setPersistenceNotice('');
     try {
-      const persistRes = await ensureAuthLocalPersistence();
-      if (!persistRes.persisted) {
+      const persistRes = await ensureAuthBestPersistence();
+      if (persistRes.mode === 'none' || !persistRes.persisted) {
+        clearStoredSessionToken();
+        setPersistenceMode('none');
+        setLoading(false);
+        setRedirecting(false);
+        setErrorMessage(
+          'Persistent and session browser storage are both blocked. Durable login is unavailable—please enable cookies/site storage in browser settings and try again.'
+        );
         reportAuthFailure(
           'SESSION_PERSISTENCE_FAILURE',
-          `Browser local persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
-          'google_signin_persistence',
-          'AUTH_PERSISTENCE_UNAVAILABLE'
+          `Both local and session persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
+          'google_signin_persistence_blocked',
+          'AUTH_STORAGE_COMPLETELY_BLOCKED'
         );
+        return;
+      }
+      if (persistRes.mode === 'session') {
+        setPersistenceMode('session');
+        setPersistenceNotice(
+          persistRes.warning ||
+            'Session-only login: persistent storage is blocked in this browser. Your login will last until this tab/browser closes.'
+        );
+        reportAuthFailure(
+          'SESSION_PERSISTENCE_FAILURE',
+          `Browser local persistence unavailable (${persistRes.error || 'unknown'}); fell back to browserSessionPersistence on ${window.location.hostname}`,
+          'google_signin_session_fallback',
+          'AUTH_SESSION_PERSISTENCE_FALLBACK'
+        );
+      } else {
+        setPersistenceMode('local');
       }
       if (pendingAction) {
         savePendingAuthActionToStorage(pendingAction);
@@ -126,23 +155,47 @@ export const AuthModal: React.FC = () => {
   };
 
   // Real Firebase Google Sign-In (Sole customer authentication method when PHONE_AUTH_ENABLED=false)
-  // Uses browserLocalPersistence + Popup primary + automatic Redirect fallback for mobile Chrome / strict popups
+  // Primary: browserLocalPersistence -> Fallback: browserSessionPersistence (with notice) -> Fail-honest if both unavailable
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setErrorMessage('');
+    setPersistenceNotice('');
     setUnauthorizedDomain(null);
     setShowRedirectFallbackButton(false);
 
     try {
-      const persistRes = await ensureAuthLocalPersistence();
-      if (!persistRes.persisted) {
+      const persistRes = await ensureAuthBestPersistence();
+      if (persistRes.mode === 'none' || !persistRes.persisted) {
+        clearStoredSessionToken();
+        setPersistenceMode('none');
+        setLoading(false);
+        setErrorMessage(
+          'Persistent and session browser storage are both blocked. Durable login is unavailable—please enable cookies/site storage in browser settings and retry.'
+        );
         reportAuthFailure(
           'SESSION_PERSISTENCE_FAILURE',
-          `Browser local persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
-          'google_signin_persistence',
-          'AUTH_PERSISTENCE_UNAVAILABLE'
+          `Both local and session persistence unavailable (${persistRes.error || 'unknown'}) on host ${window.location.hostname}`,
+          'google_signin_persistence_blocked',
+          'AUTH_STORAGE_COMPLETELY_BLOCKED'
+        );
+        return;
+      }
+
+      const activeMode: 'local' | 'session' = persistRes.mode === 'session' ? 'session' : 'local';
+      setPersistenceMode(activeMode);
+      if (activeMode === 'session') {
+        setPersistenceNotice(
+          persistRes.warning ||
+            'Session-only login: persistent storage is blocked in this browser. Your login will stay active for this session only.'
+        );
+        reportAuthFailure(
+          'SESSION_PERSISTENCE_FAILURE',
+          `Browser local persistence unavailable (${persistRes.error || 'unknown'}); fell back to browserSessionPersistence on ${window.location.hostname}`,
+          'google_signin_session_fallback',
+          'AUTH_SESSION_PERSISTENCE_FALLBACK'
         );
       }
+
       const result = await signInWithPopup(auth, googleProvider);
       const idToken = await result.user.getIdToken();
 
@@ -161,7 +214,7 @@ export const AuthModal: React.FC = () => {
       if (sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
         setStep('authenticated');
         setTimeout(() => {
-          onAuthSuccess(sessionRes.data.user, sessionRes.data.token);
+          onAuthSuccess(sessionRes.data.user, sessionRes.data.token, activeMode);
         }, 1200);
       } else {
         const errMsg = sessionRes.error || 'Google authentication mapping failed.';
@@ -326,6 +379,13 @@ export const AuthModal: React.FC = () => {
           </div>
         )}
 
+        {/* Session-only Login Notice */}
+        {persistenceNotice && (
+          <div className="mb-4 p-3 rounded-2xl bg-amber-500/15 border border-amber-500/35 text-amber-200 text-xs font-medium text-center">
+            {persistenceNotice}
+          </div>
+        )}
+
         {/* Error message (when not unauthorized domain) */}
         {errorMessage && !unauthorizedDomain && (
           <div className="mb-4 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold text-center">
@@ -344,9 +404,13 @@ export const AuthModal: React.FC = () => {
               <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center shadow-[0_0_24px_rgba(16,185,129,0.4)]">
                 <CheckCircle2 className="w-8 h-8 text-emerald-400 stroke-[3]" />
               </div>
-              <h4 className="text-xl font-black text-white">Authenticated!</h4>
+              <h4 className="text-xl font-black text-white">
+                {persistenceMode === 'session' ? 'Signed In (Session-Only)' : 'Authenticated!'}
+              </h4>
               <p className="text-xs text-stone-300">
-                Resuming your creative studio session...
+                {persistenceMode === 'session'
+                  ? 'Active for this browser session only (persistent local storage was blocked).'
+                  : 'Resuming your creative studio session...'}
               </p>
             </motion.div>
           ) : (

@@ -3824,6 +3824,299 @@ async function runSystemVerification() {
     '46.5 CORS preflight exposes Byte-Range/CORP headers and reportHtmlVideoError ignores benign aborts while surfacing HEVC/decode telemetry'
   );
 
+  // --- SUITE 47: PRE-PRODUCTION HARDENING (FIRESTORE POLL LEASE, AUTH PERSISTENCE HONESTY & R2-COMPATIBLE SSRF DEFENSE) ---
+  console.log('\n--- SUITE 47: HIGGSFIELD POLL LEASE RECOVERY, TIERED AUTH PERSISTENCE & R2/SSRF VIDEO SECURITY ---');
+
+  // 47.1 Request-Based Billing Durable Higgsfield Job + Firestore Transaction Atomic Poll Lease + Non-5m Expiry + Exact-Once Refund
+  const serverSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  const faceSwapAdapterSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/ai/faceSwapAdapter.ts'), 'utf8');
+  const dbSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+
+  const testUser47 = prodDb.getOrCreateUser({
+    firebaseUid: `fb_suite47_${Date.now()}`,
+    email: 'suite47@test.local',
+    name: 'Suite 47 Recovery User',
+    skipBackgroundSync: true
+  });
+  await prodDb.creditWallet(testUser47.user.id, 500, 'topup', 'Suite 47 test topup');
+  const balanceBeforeReserve47 = prodDb.getWallet(testUser47.user.id).balance;
+  const oldGenId47 = `gen_fsv_recovery_${Date.now()}`;
+  const reserveOk47 = await prodDb.reserveCredits(testUser47.user.id, 100, 'Suite 47 FaceSwap reserve', oldGenId47);
+  assert(reserveOk47 === true, '47.1a Reserved 100 credits for recovery job test');
+
+  const oldCreatedIso47 = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 minutes ago (>5m!)
+  prodDb.addGeneration({
+    id: oldGenId47,
+    userId: testUser47.user.id,
+    templateId: 'fsv_monaco_racer',
+    templateTitle: 'Monaco GP (4s)',
+    templateType: 'video',
+    aspectRatio: '9:16',
+    status: 'processing',
+    inputMediaUrl: '/api/media/face.jpg',
+    creditCost: 100,
+    engine: 'AI_GENERATION',
+    model: 'hf_mult_motion_control_flash',
+    workflow: 'MOTION_TRANSFER',
+    createdAt: oldCreatedIso47,
+    providerRequestId: 'hf_req_47_durable',
+    providerStatusUrl: 'https://api.higgsfield.ai/requests/hf_req_47_durable/status',
+    providerSubmittedAt: oldCreatedIso47,
+    providerStatus: 'in_progress',
+    isAiGenerated: true
+  });
+
+  // Simulate cold Cloud Run container (clear local cache, force Firestore/mock read)
+  prodDb.raw.generations = prodDb.raw.generations.filter(g => g.id !== oldGenId47);
+  const recoveredList47 = await prodDb.getUserGenerationsAuthoritative(testUser47.user.id);
+  const recoveredJob47 = recoveredList47.find(g => g.id === oldGenId47);
+  assert(
+    Boolean(recoveredJob47) && recoveredJob47?.status === 'processing' && recoveredJob47?.providerRequestId === 'hf_req_47_durable',
+    '47.1b Cold Cloud Run instance recovers active >5m provider job from Firestore without premature failure'
+  );
+
+  // Firestore transaction atomic poll lease contention test
+  const leaseA47 = await prodDb.claimGenerationPollLease(oldGenId47, 'instance_A', 15000, 3500);
+  const leaseB47 = await prodDb.claimGenerationPollLease(oldGenId47, 'instance_B', 15000, 3500);
+  assert(
+    leaseA47.acquired === true && leaseB47.acquired === false && leaseB47.reason === 'lease_active',
+    '47.1c Firestore Transaction Atomic Poll Lease blocks concurrent duplicate polling across instances'
+  );
+
+  await prodDb.releaseGenerationPollLease(oldGenId47, 'instance_A', { providerStatus: 'in_progress' });
+  const throttledPoll47 = await prodDb.claimGenerationPollLease(oldGenId47, 'instance_B', 15000, 3500);
+  assert(
+    throttledPoll47.acquired === false && throttledPoll47.reason === 'throttled',
+    '47.1d Released poll lease still respects minPollIntervalMs throttle against upstream spam'
+  );
+
+  // Check checkFaceSwapJobStatus: transient 503 stays pending; 404 expiry returns terminal failure; Exact-Once Refund
+  const { faceSwapAdapter: adapter47 } = await import('../src/services/ai/faceSwapAdapter.ts');
+  const prevHfKey47 = process.env.HIGGSFIELD_API_KEY;
+  process.env.HIGGSFIELD_API_KEY = 'hf_test_key_47';
+  let transientCheck47: any;
+  let expiredCheck47: any;
+  try {
+    transientCheck47 = await adapter47.checkFaceSwapJobStatus(
+      { requestId: 'hf_req_47_durable', statusUrl: 'https://api.higgsfield.ai/requests/hf_req_47_durable/status' },
+      (async () => new Response('Upstream busy', { status: 503 })) as any
+    );
+    expiredCheck47 = await adapter47.checkFaceSwapJobStatus(
+      { requestId: 'hf_req_47_durable', statusUrl: 'https://api.higgsfield.ai/requests/hf_req_47_durable/status' },
+      (async () => new Response('Not found', { status: 404 })) as any
+    );
+  } finally {
+    if (prevHfKey47 !== undefined) process.env.HIGGSFIELD_API_KEY = prevHfKey47;
+    else delete process.env.HIGGSFIELD_API_KEY;
+  }
+
+  assert(
+    transientCheck47.state === 'pending' && expiredCheck47.state === 'failed' && expiredCheck47.isTerminal === true,
+    '47.1e Transient provider HTTP 503 remains pending while verified 404 job expiry returns terminal failure'
+  );
+
+  await prodDb.releaseGenerationPollLease(oldGenId47, 'instance_A', { status: 'failed', error: expiredCheck47.error });
+  await prodDb.refundCredits(testUser47.user.id, 100, 'Suite 47 Exact-Once Refund 1', oldGenId47);
+  await prodDb.refundCredits(testUser47.user.id, 100, 'Suite 47 Exact-Once Refund Duplicate', oldGenId47);
+  const balanceAfterRefund47 = prodDb.getWallet(testUser47.user.id).balance;
+  assert(
+    balanceAfterRefund47 === balanceBeforeReserve47 &&
+      serverSrc47.includes('faceSwapAdapter.submitFaceSwapJob') &&
+      serverSrc47.includes('claimGenerationPollLease') &&
+      !serverSrc47.includes('await faceSwapAdapter.generateFaceSwapVideo(') &&
+      dbSrc47.includes('getUserGenerationsAuthoritative') &&
+      faceSwapAdapterSrc47.includes('submitFaceSwapJob'),
+    '47.1f Exact-Once Refund restores exact reserved credits once even under duplicate calls, and /api/faceswap/generate uses Request-Based Billing polling'
+  );
+
+  // 47.2 Tiered Google Auth Persistence Honesty (local -> session -> none)
+  const { ensureAuthBestPersistence: ensureBest47 } = await import('../src/services/firebase/firebaseClient.ts');
+  const authModalSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/AuthModal.tsx'), 'utf8');
+  const authSessionSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/utils/authSession.ts'), 'utf8');
+  const appCtxSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
+
+  const localPass47 = await ensureBest47({
+    applyLocal: async () => {},
+    applySession: async () => {
+      throw new Error('Should not run when local succeeds');
+    }
+  });
+  const sessionFallback47 = await ensureBest47({
+    applyLocal: async () => {
+      throw new Error('IndexedDB blocked');
+    },
+    applySession: async () => {}
+  });
+  const bothBlocked47 = await ensureBest47({
+    applyLocal: async () => {
+      throw new Error('IndexedDB blocked');
+    },
+    applySession: async () => {
+      throw new Error('SessionStorage blocked');
+    }
+  });
+
+  assert(
+    localPass47.mode === 'local' &&
+      localPass47.durable === true &&
+      sessionFallback47.mode === 'session' &&
+      sessionFallback47.persisted === true &&
+      sessionFallback47.durable === false &&
+      Boolean(sessionFallback47.warning?.includes('Session-only login')) &&
+      bothBlocked47.mode === 'none' &&
+      bothBlocked47.persisted === false &&
+      bothBlocked47.durable === false &&
+      authModalSrc47.includes("persistRes.mode === 'none'") &&
+      authModalSrc47.includes('Signed In (Session-Only)') &&
+      authSessionSrc47.includes('setStoredSessionToken') &&
+      appCtxSrc47.includes('hasProcessingGenerations'),
+    '47.2 Google Auth tiered persistence handles local -> session (explicit notice) -> none (blocks false durable login) and My Creations polls active jobs'
+  );
+
+  // 47.3 R2 Compatibility Without R2_PUBLIC_BASE_URL + Strict SSRF / Redirect / DNS / 150MB Hardening
+  const {
+    isPrivateOrReservedIp: isPrivIp47,
+    validateRemoteVideoUrl: validateRemote47,
+    safeFetchAllowedVideoBuffer: safeFetch47,
+    videoTrimmer: trimmer47
+  } = await import('../src/services/video/videoTrimmer.ts');
+
+  assert(
+    isPrivIp47('127.0.0.1') &&
+      isPrivIp47('10.12.0.5') &&
+      isPrivIp47('172.16.5.4') &&
+      isPrivIp47('192.168.1.50') &&
+      isPrivIp47('169.254.169.254') &&
+      isPrivIp47('100.64.0.1') &&
+      isPrivIp47('::1') &&
+      isPrivIp47('fd12:3456::1') &&
+      isPrivIp47('fe80::1') &&
+      isPrivIp47('::ffff:127.0.0.1') &&
+      !isPrivIp47('93.184.216.34'),
+    '47.3a isPrivateOrReservedIp blocks loopback, RFC1918, CGNAT, GCP metadata, and private/mapped IPv6 while allowing public IPv4'
+  );
+
+  const prevR2Pub47 = process.env.R2_PUBLIC_BASE_URL;
+  const prevR2Acc47 = process.env.R2_ACCOUNT_ID;
+  const prevR2Bucket47 = process.env.R2_BUCKET_NAME;
+  let r2UnsetExternalBlocked47: any;
+  let r2UnsetOwnS3Allowed47: any;
+  let spoofedApiMediaBlocked47: any;
+  let dnsRebindBlocked47: any;
+  let httpBlocked47: any;
+  let r2PubAllowed47: any;
+  let redirectThrew47 = false;
+  let htmlMimeThrew47 = false;
+  let oversizedStreamThrew47 = false;
+
+  try {
+    delete process.env.R2_PUBLIC_BASE_URL;
+    process.env.R2_ACCOUNT_ID = 'acct47test';
+    process.env.R2_BUCKET_NAME = 'lumina-prime-ai-media';
+    const publicDns = async () => [{ address: '104.18.0.1' }];
+
+    r2UnsetExternalBlocked47 = await validateRemote47('https://evil.example.com/video.mp4', {
+      strictR2Only: true,
+      dnsLookup: publicDns
+    });
+    spoofedApiMediaBlocked47 = await validateRemote47('https://evil.example.com/api/media/secret.mp4', {
+      strictR2Only: true,
+      dnsLookup: publicDns
+    });
+    httpBlocked47 = await validateRemote47('http://169.254.169.254/latest/meta-data', {
+      strictR2Only: true,
+      dnsLookup: publicDns
+    });
+    r2UnsetOwnS3Allowed47 = await validateRemote47(
+      'https://acct47test.r2.cloudflarestorage.com/lumina-prime-ai-media/media/public/template.mp4',
+      { strictR2Only: true, dnsLookup: publicDns }
+    );
+
+    process.env.R2_PUBLIC_BASE_URL = 'https://cdn.example-r2.dev';
+    dnsRebindBlocked47 = await validateRemote47('https://cdn.example-r2.dev/media/public/rebind.mp4', {
+      strictR2Only: true,
+      dnsLookup: async () => [{ address: '169.254.169.254' }]
+    });
+    r2PubAllowed47 = await validateRemote47('https://cdn.example-r2.dev/media/public/clip.mp4', {
+      strictR2Only: true,
+      dnsLookup: publicDns
+    });
+
+    try {
+      await safeFetch47('https://cdn.example-r2.dev/media/public/clip.mp4', {
+        strictR2Only: true,
+        dnsLookup: publicDns,
+        fetchImpl: (async () => new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:3000/' } })) as any
+      });
+    } catch (e: any) {
+      redirectThrew47 = String(e?.message || '').includes('SECURITY_BLOCKED_REDIRECT');
+    }
+
+    try {
+      await safeFetch47('https://cdn.example-r2.dev/media/public/clip.mp4', {
+        strictR2Only: true,
+        dnsLookup: publicDns,
+        fetchImpl: (async () =>
+          new Response('<html>not a video</html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html' }
+          })) as any
+      });
+    } catch (e: any) {
+      htmlMimeThrew47 = String(e?.message || '').includes('SECURITY_INVALID_MIME');
+    }
+
+    try {
+      const { Readable } = await import('stream');
+      const chunkedBody = Readable.from([Buffer.alloc(700), Buffer.alloc(700)]); // 1400 > 1024 cap (no content-length header)
+      await safeFetch47('https://cdn.example-r2.dev/media/public/clip.mp4', {
+        strictR2Only: true,
+        maxBytes: 1024,
+        dnsLookup: publicDns,
+        fetchImpl: (async () =>
+          ({
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'video/mp4' }),
+            body: chunkedBody
+          }) as any) as any
+      });
+    } catch (e: any) {
+      oversizedStreamThrew47 = String(e?.message || '').includes('exceeds maximum supported size');
+    }
+  } finally {
+    if (prevR2Pub47 !== undefined) process.env.R2_PUBLIC_BASE_URL = prevR2Pub47;
+    else delete process.env.R2_PUBLIC_BASE_URL;
+    if (prevR2Acc47 !== undefined) process.env.R2_ACCOUNT_ID = prevR2Acc47;
+    else delete process.env.R2_ACCOUNT_ID;
+    if (prevR2Bucket47 !== undefined) process.env.R2_BUCKET_NAME = prevR2Bucket47;
+    else delete process.env.R2_BUCKET_NAME;
+  }
+
+  // Verify internal /api/media/* continues to work seamlessly when R2_PUBLIC_BASE_URL is unset
+  const trimmerSrc47 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/video/videoTrimmer.ts'), 'utf8');
+  let internalErr47 = '';
+  try {
+    await trimmer47.probeDuration('/api/media/nonexistent_test_file_47.mp4');
+  } catch (e: any) {
+    internalErr47 = String(e?.message || '');
+  }
+
+  assert(
+    !r2UnsetExternalBlocked47.allowed &&
+      !spoofedApiMediaBlocked47.allowed &&
+      !httpBlocked47.allowed &&
+      r2UnsetOwnS3Allowed47.allowed &&
+      !dnsRebindBlocked47.allowed &&
+      r2PubAllowed47.allowed &&
+      redirectThrew47 &&
+      htmlMimeThrew47 &&
+      oversizedStreamThrew47 &&
+      trimmerSrc47.includes('isTrustedStudioOrigin') &&
+      internalErr47.includes('Media file not found'),
+    '47.3b videoTrimmer blocks external SSRF, spoofed /api/media, DNS rebinding, redirects, HTML MIME, and >maxBytes streams while preserving internal /api/media/* and own R2 assets without R2_PUBLIC_BASE_URL'
+  );
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

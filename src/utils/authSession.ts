@@ -3,6 +3,82 @@ import { safeParseJsonResponse } from '../context/AppContext';
 export const PENDING_AUTH_ACTION_STORAGE_KEY = 'lumina_pending_auth_action';
 export const REDIRECT_AUTH_IN_PROGRESS_KEY = 'lumina_auth_redirect_pending';
 export const REDIRECT_ATTEMPT_TS_KEY = 'lumina_auth_redirect_ts';
+export const SESSION_TOKEN_STORAGE_KEY = 'lumina_session_token';
+export const AUTH_PERSISTENCE_MODE_KEY = 'lumina_auth_persistence_mode';
+
+let inMemorySessionToken: string | null = null;
+
+export function getStoredPersistenceMode(): 'local' | 'session' | 'none' {
+  if (typeof window === 'undefined') return 'local';
+  try {
+    const mode = sessionStorage.getItem(AUTH_PERSISTENCE_MODE_KEY);
+    if (mode === 'session' || mode === 'none' || mode === 'local') return mode;
+  } catch {}
+  return 'local';
+}
+
+export function setStoredSessionToken(
+  token: string,
+  mode: 'local' | 'session' | 'none' = 'local'
+): void {
+  inMemorySessionToken = token || null;
+  if (typeof window === 'undefined' || !token) return;
+  try {
+    sessionStorage.setItem(AUTH_PERSISTENCE_MODE_KEY, mode);
+  } catch {}
+
+  if (mode === 'local') {
+    try {
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+      try {
+        sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+      } catch {}
+      return;
+    } catch {
+      // Fall through to sessionStorage only if localStorage throws unexpectedly
+    }
+  }
+
+  try {
+    localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {}
+
+  if (mode === 'session') {
+    try {
+      sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+    } catch {}
+  } else {
+    // 'none': never persist into localStorage or sessionStorage (avoid false durability)
+    try {
+      sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    } catch {}
+  }
+}
+
+export function getStoredSessionToken(): string | null {
+  if (typeof window === 'undefined') return inMemorySessionToken;
+  try {
+    const localVal = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+    if (localVal) return localVal;
+  } catch {}
+  try {
+    const sessionVal = sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+    if (sessionVal) return sessionVal;
+  } catch {}
+  return inMemorySessionToken;
+}
+
+export function clearStoredSessionToken(): void {
+  inMemorySessionToken = null;
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {}
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(AUTH_PERSISTENCE_MODE_KEY);
+  } catch {}
+}
 
 /**
  * Shared Firebase -> Backend Session Exchange helper with bounded retries for Cloud Run

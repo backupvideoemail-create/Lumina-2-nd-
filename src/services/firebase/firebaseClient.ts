@@ -7,6 +7,7 @@ import {
   getRedirectResult,
   setPersistence,
   browserLocalPersistence,
+  browserSessionPersistence,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser
@@ -82,33 +83,85 @@ export function getCanonicalDb() {
 export const auth = getAuth(app);
 export interface AuthPersistenceStatus {
   persisted: boolean;
-  mode: 'local' | 'failed';
+  durable?: boolean;
+  mode: 'local' | 'session' | 'none' | 'failed';
+  warning?: string;
   error?: string;
 }
 
 export const authPersistencePromise: Promise<AuthPersistenceStatus> =
   typeof window !== 'undefined'
     ? setPersistence(auth, browserLocalPersistence)
-        .then(() => ({ persisted: true, mode: 'local' as const }))
+        .then(() => ({ persisted: true, durable: true, mode: 'local' as const }))
         .catch((err: any) => {
           const msg = err?.message || String(err || 'setPersistence failed');
           console.warn('[Firebase Auth] browserLocalPersistence fallback note:', msg);
-          return { persisted: false, mode: 'failed' as const, error: msg };
+          return { persisted: false, durable: false, mode: 'failed' as const, error: msg };
         })
-    : Promise.resolve({ persisted: true, mode: 'local' as const });
+    : Promise.resolve({ persisted: true, durable: true, mode: 'local' as const });
 
 export async function ensureAuthLocalPersistence(): Promise<AuthPersistenceStatus> {
   if (typeof window === 'undefined') {
-    return { persisted: true, mode: 'local' };
+    return { persisted: true, durable: true, mode: 'local' };
   }
   try {
     await authPersistencePromise;
     await setPersistence(auth, browserLocalPersistence);
-    return { persisted: true, mode: 'local' };
+    return { persisted: true, durable: true, mode: 'local' };
   } catch (err: any) {
     const msg = err?.message || String(err || 'setPersistence failed');
     console.warn('[Firebase Auth] ensureAuthLocalPersistence notice:', msg);
-    return { persisted: false, mode: 'failed', error: msg };
+    return { persisted: false, durable: false, mode: 'failed', error: msg };
+  }
+}
+
+/**
+ * Tiered Firebase Auth persistence resolver:
+ * 1. Primary: browserLocalPersistence (durable across browser restarts)
+ * 2. Fallback: browserSessionPersistence ONLY when local persistence fails (session-only notice required)
+ * 3. Fail-honest: 'none' if both fail (never claim durable login)
+ */
+export async function ensureAuthBestPersistence(hooks?: {
+  applyLocal?: () => Promise<void>;
+  applySession?: () => Promise<void>;
+}): Promise<AuthPersistenceStatus> {
+  if (typeof window === 'undefined' && !hooks) {
+    return { persisted: true, durable: true, mode: 'local' };
+  }
+  const applyLocal = hooks?.applyLocal || (async () => {
+    await authPersistencePromise;
+    await setPersistence(auth, browserLocalPersistence);
+  });
+  const applySession = hooks?.applySession || (async () => {
+    await setPersistence(auth, browserSessionPersistence);
+  });
+
+  try {
+    await applyLocal();
+    return { persisted: true, durable: true, mode: 'local' };
+  } catch (localErr: any) {
+    const localMsg = localErr?.message || String(localErr || 'browserLocalPersistence unavailable');
+    console.warn('[Firebase Auth] Local persistence unavailable, trying browserSessionPersistence:', localMsg);
+    try {
+      await applySession();
+      return {
+        persisted: true,
+        durable: false,
+        mode: 'session',
+        warning:
+          'Session-only login: persistent browser storage is blocked. You will remain signed in only until you close this tab or browser.',
+        error: localMsg
+      };
+    } catch (sessionErr: any) {
+      const sessionMsg = sessionErr?.message || String(sessionErr || 'browserSessionPersistence unavailable');
+      console.warn('[Firebase Auth] Both local and session persistence unavailable:', sessionMsg);
+      return {
+        persisted: false,
+        durable: false,
+        mode: 'none',
+        error: `Local (${localMsg}) and session (${sessionMsg}) persistence both unavailable.`
+      };
+    }
   }
 }
 
@@ -243,6 +296,7 @@ export {
   getRedirectResult,
   setPersistence,
   browserLocalPersistence,
+  browserSessionPersistence,
   signOut,
   onAuthStateChanged
 };

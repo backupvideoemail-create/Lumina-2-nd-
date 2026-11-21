@@ -22,14 +22,19 @@ import {
   getRedirectResult,
   onAuthStateChanged,
   signOut,
-  ensureAuthLocalPersistence
+  ensureAuthLocalPersistence,
+  ensureAuthBestPersistence
 } from '../services/firebase/firebaseClient';
 import {
+  clearStoredSessionToken,
   exchangeFirebaseSessionWithRetry,
+  getStoredPersistenceMode,
+  getStoredSessionToken,
   PENDING_AUTH_ACTION_STORAGE_KEY,
   REDIRECT_AUTH_IN_PROGRESS_KEY,
   readAndClearPendingAuthActionFromStorage,
-  savePendingAuthActionToStorage
+  savePendingAuthActionToStorage,
+  setStoredSessionToken
 } from '../utils/authSession';
 
 export type PendingAction =
@@ -133,7 +138,7 @@ interface AppContextType {
   pendingAction: PendingAction | null;
   setPendingAction: (action: PendingAction | null) => void;
   triggerHighIntentAction: (action: PendingAction) => boolean;
-  onAuthSuccess: (authenticatedUser: UserProfile, token: string) => Promise<void>;
+  onAuthSuccess: (authenticatedUser: UserProfile, token: string, persistenceMode?: 'local' | 'session' | 'none') => Promise<void>;
 
   // Modals & Sheets
   drawerOpen: boolean;
@@ -398,7 +403,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Auth Header Helper
   const getAuthHeaders = (): Record<string, string> => {
-    const token = localStorage.getItem('lumina_session_token');
+    const token = getStoredSessionToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
@@ -504,7 +509,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sessionStorage.setItem('lumina_visit_nonce', visitNonce);
       }
       sessionStorage.setItem(sentKey, '1');
-      const token = localStorage.getItem('lumina_session_token');
+      const token = getStoredSessionToken();
       fetch('/api/activity/visit', {
         method: 'POST',
         headers: {
@@ -584,7 +589,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
       });
       if (recovered.ok && recovered.data?.success && recovered.data?.cloudPersisted === true) {
-        localStorage.setItem('lumina_session_token', recovered.data.token);
+        const persistStatus = await ensureAuthBestPersistence();
+        const activeMode = persistStatus.mode === 'none' ? 'none' : persistStatus.mode === 'session' ? 'session' : getStoredPersistenceMode();
+        if (activeMode !== 'none') {
+          setStoredSessionToken(recovered.data.token, activeMode);
+        } else {
+          setStoredSessionToken(recovered.data.token, 'none');
+        }
         setUser(recovered.data.user);
         return recovered.data.token;
       }
@@ -610,7 +621,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Fetch User & Wallet (Only if session token exists)
   const refreshUserData = useCallback(async () => {
-    const token = localStorage.getItem('lumina_session_token');
+    const token = getStoredSessionToken();
     if (!token) {
       setUser(null);
       setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() });
@@ -631,7 +642,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const handleConfirmedUnauthorizedMe = async (stage: string): Promise<Response | null> => {
         console.warn(`[AppContext] Server confirmed backend token invalid/expired (HTTP 401 at ${stage}).`);
-        localStorage.removeItem('lumina_session_token');
+        clearStoredSessionToken();
         const recoveredToken = await attemptFirebaseSessionRecovery(stage);
         if (recoveredToken) {
           activeToken = recoveredToken;
@@ -651,7 +662,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!retriedRes) return;
         res = retriedRes;
         if (res.status === 401) {
-          localStorage.removeItem('lumina_session_token');
+          clearStoredSessionToken();
           setUser(null);
           setIsAdmin(false);
           setServerAdminVerified(false);
@@ -670,7 +681,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!retriedResAfterTransient) return;
           res = retriedResAfterTransient;
           if (res.status === 401) {
-            localStorage.removeItem('lumina_session_token');
+            clearStoredSessionToken();
             setUser(null);
             setIsAdmin(false);
             setServerAdminVerified(false);
@@ -734,7 +745,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Fetch Generations for Authenticated User
   const refreshGenerations = useCallback(async () => {
-    const token = localStorage.getItem('lumina_session_token');
+    const token = getStoredSessionToken();
     if (!token) {
       setGenerations([]);
       return;
@@ -747,7 +758,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       const parsed = await safeParseJsonResponse<any>(res);
       if (parsed.ok && parsed.data?.generations) {
-        setGenerations(parsed.data.generations);
+        const nextList: Generation[] = parsed.data.generations;
+        setGenerations(nextList);
+        setActiveGeneration((prev) => {
+          if (!prev) return prev;
+          const updated = nextList.find((g) => g.id === prev.id);
+          return updated || prev;
+        });
       }
     } catch {
       // Keep existing
@@ -766,9 +783,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const completeRedirectAndMonitorAuth = async () => {
       try {
-        const persistStatus = await ensureAuthLocalPersistence();
-        if (!persistStatus.persisted) {
-          console.warn('[AppContext] Auth local persistence unavailable:', persistStatus.error);
+        const persistStatus = await ensureAuthBestPersistence();
+        if (!persistStatus.persisted || persistStatus.mode !== 'local') {
+          console.warn('[AppContext] Auth persistence mode:', persistStatus.mode, persistStatus.error);
         }
         const redirectResult = await getRedirectResult(auth);
         try {
@@ -776,6 +793,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch {}
 
         if (isMounted && redirectResult?.user) {
+          if (persistStatus.mode === 'none') {
+            clearStoredSessionToken();
+            return;
+          }
           explicitLogoutRef.current = false;
           sessionRecoveryInFlightRef.current = true;
           try {
@@ -789,7 +810,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               authPolicy: AUTH_POLICY.googleOnly ? 'google_only' : 'multi'
             });
             if (isMounted && sessionRes.ok && sessionRes.data?.success && sessionRes.data?.cloudPersisted === true) {
-              localStorage.setItem('lumina_session_token', sessionRes.data.token);
+              const resolvedMode: 'local' | 'session' = persistStatus.mode === 'session' ? 'session' : 'local';
+              setStoredSessionToken(sessionRes.data.token, resolvedMode);
               setUser(sessionRes.data.user);
               setAuthModalOpen(false);
               await refreshUserData();
@@ -811,7 +833,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const triggerRecoveryIfSignedInWithoutToken = async (source: string) => {
       if (!isMounted || explicitLogoutRef.current) return;
-      if (localStorage.getItem('lumina_session_token')) return;
+      if (getStoredSessionToken()) return;
       if (!auth.currentUser) return;
       const recovered = await attemptFirebaseSessionRecovery(source);
       if (isMounted && recovered) {
@@ -844,6 +866,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshGenerations();
     }
   }, [user, refreshGenerations]);
+
+  // Background recovery polling for My Creations when user returns after closing browser mid-generation
+  const hasProcessingGenerations = generations.some(
+    (g) => g.status === 'processing' && !g.resultMediaUrl
+  );
+  useEffect(() => {
+    if (!user || !hasProcessingGenerations) return;
+    const interval = setInterval(() => {
+      refreshGenerations();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [user, hasProcessingGenerations, refreshGenerations]);
 
   // Real Interactive Like Toggle on Templates
   const toggleLikeTemplate = async (templateId: string) => {
@@ -897,10 +931,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Called after successful Firebase authentication
-  const onAuthSuccess = async (authenticatedUser: UserProfile, token: string) => {
+  const onAuthSuccess = async (
+    authenticatedUser: UserProfile,
+    token: string,
+    persistenceMode: 'local' | 'session' | 'none' = 'local'
+  ) => {
     explicitLogoutRef.current = false;
     sessionRecoveryAttemptedForUidRef.current = null;
-    localStorage.setItem('lumina_session_token', token);
+    setStoredSessionToken(token, persistenceMode);
     setUser(authenticatedUser);
     setAuthModalOpen(false);
 
@@ -985,7 +1023,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.ok) {
         explicitLogoutRef.current = true;
         setPendingAction(null);
-        localStorage.removeItem('lumina_session_token');
+        clearStoredSessionToken();
         try {
           await signOut(auth);
         } catch {}
@@ -1014,7 +1052,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         headers: getAuthHeaders()
       });
     } catch {}
-    localStorage.removeItem('lumina_session_token');
+    clearStoredSessionToken();
     try {
       await signOut(auth);
     } catch {}

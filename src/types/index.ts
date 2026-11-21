@@ -235,6 +235,14 @@ export interface Generation {
   actualCostStatus?: 'UNMEASURED' | 'MEASURED_RECEIPT' | 'ESTIMATED_TARIFF';
   reconciliationStatus?: 'PENDING' | 'RECONCILED' | 'UNMEASURED_NO_POST_DEBIT';
   actualProviderCostUsd?: number;
+  providerRequestId?: string;
+  providerStatusUrl?: string;
+  providerEndpoint?: string;
+  providerSubmittedAt?: string;
+  providerLastPolledAt?: string;
+  providerStatus?: string;
+  pollLeaseUntil?: string;
+  pollLeaseOwner?: string;
 }
 
 export type SubscriptionStatus =

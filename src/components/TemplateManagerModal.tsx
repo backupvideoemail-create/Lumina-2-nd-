@@ -49,6 +49,7 @@ import {
 import { isVideoMedia } from '../utils/mediaUtils';
 import { DEFAULT_CATEGORY_PROMPTS } from '../config/categoryPromptsConfig';
 import { CATEGORIES } from '../data/templatesData';
+import { getStoredSessionToken } from '../utils/authSession';
 import {
   FACE_SWAP_COMPATIBLE_COMBINATIONS,
   getRegisteredModelEntry,
@@ -465,7 +466,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const checkAdminAuth = async (): Promise<boolean> => {
     setIsVerifyingKey(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
       };
@@ -488,7 +489,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   };
 
   const getAdminHeaders = () => {
-    const token = localStorage.getItem('lumina_session_token') || '';
+    const token = getStoredSessionToken() || '';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };

@@ -29,6 +29,7 @@ import { getQueueStats, QueueStats } from '../services/media/hdDownloadQueue';
 import { AUTHORIZED_ADMIN_EMAILS } from '../config/adminConfig';
 import { normalizeAlertTo12Fields } from '../services/monitoring/cloudMonitoring';
 import { AUTH_POLICY } from '../config/authConfig';
+import { getStoredSessionToken } from '../utils/authSession';
 
 interface AdminDashboardModalProps {
   isOpen: boolean;
@@ -353,7 +354,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({ isOpen
   const pageSize = 15;
 
   const getHeaders = useCallback((): Record<string, string> => {
-    const token = localStorage.getItem('lumina_session_token');
+    const token = getStoredSessionToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   }, []);
 

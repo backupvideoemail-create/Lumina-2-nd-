@@ -6123,6 +6123,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   }
 
   const genId = `gen_fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const sanitizedInstructions = customInstructions ? String(customInstructions).trim().slice(0, 300) : undefined;
 
   // 5. Atomic Credit Reservation
   const reserved = prodDb.reserveCredits(
@@ -6135,7 +6136,101 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     return res.status(402).json({ error: 'Failed to reserve credits' });
   }
 
-  // 6. Record Generation State with actual configured scene model/workflow & exact dual-duration fields
+  // 6. Submit to Higgsfield synchronously inside active HTTP request (Request-Based Billing safe; no unawaited 5-min loop)
+  let submittedJob: Awaited<ReturnType<typeof faceSwapAdapter.submitFaceSwapJob>>;
+  try {
+    const providerVideoUrl = await mediaStorage.generateProviderSignedUrl(trimmedVideoUrl, 3600);
+    const providerReferenceUrls = await Promise.all(
+      allReferenceUrls.map((url) => mediaStorage.generateProviderSignedUrl(url, 3600))
+    );
+
+    submittedJob = await faceSwapAdapter.submitFaceSwapJob({
+      videoUrl: providerVideoUrl,
+      imageUrls: providerReferenceUrls,
+      masterRecipePrompt: selectedScene?.masterRecipePrompt,
+      customInstructions: sanitizedInstructions,
+      provider: sceneProvider,
+      adapter: sceneAdapter,
+      model: sceneModel,
+      workflow: sceneWorkflow,
+      resolution: sceneResolution,
+      durationSeconds: billableOutputDuration,
+      ownerUserId: user.id
+    });
+  } catch (submitErr: any) {
+    console.error('[Higgsfield Motion Transfer Submit Failed]:', submitErr?.message || submitErr);
+    const errMsg = String(submitErr?.message || 'Unknown error');
+    const derivedCode = errMsg.includes('HIGGSFIELD_API_KEY')
+      ? 'MISSING_HIGGSFIELD_API_KEY'
+      : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
+      ? 'PROVIDER_ROUTING_MISMATCH'
+      : 'FACESWAP_PROVIDER_SUBMIT_ERROR';
+    try {
+      emitCloudMonitoringEvent(
+        'FACESWAP_PIPELINE_FAILURE',
+        'ERROR',
+        sanitizeMonitoringString(`FaceSwap submit failed for scene ${selectedScene?.id || 'custom'}: ${errMsg}`),
+        {
+          source: 'generation_failure',
+          templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+          templateTitle: selectedScene?.title || 'Custom Face Swap',
+          provider: sceneProvider,
+          adapter: sceneAdapter,
+          model: sceneModel,
+          generationId: genId,
+          errorCode: derivedCode,
+          errorStage: 'faceswap_submit',
+          correlationId: genId,
+          endpoint: '/api/faceswap/generate',
+          rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
+          recommendedAction:
+            derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
+              ? 'Configure valid HIGGSFIELD_API_KEY in server environment.'
+              : 'Inspect FaceSwap scene provider/model/workflow settings and provider response.'
+        }
+      );
+    } catch {}
+
+    const failedGen: Generation = {
+      id: genId,
+      userId: user.id,
+      templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+      templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableOutputDuration}s)` : `Face Swap Video (${billableOutputDuration}s)`,
+      templateType: 'video',
+      aspectRatio: '9:16',
+      status: 'failed',
+      error: errMsg,
+      inputMediaUrl: allReferenceUrls[0],
+      creditCost: requiredCredits,
+      engine: 'AI_GENERATION',
+      model: sceneModel,
+      workflow: sceneWorkflow,
+      resolution: sceneResolution,
+      durationSeconds: billableOutputDuration,
+      requestedOutputDurationSeconds: billableOutputDuration,
+      sourceVideoDurationSeconds: clampedSourceDuration,
+      createdAt: new Date().toISOString(),
+      isAiGenerated: true
+    };
+    prodDb.addGeneration(failedGen);
+    await prodDb.refundCredits(
+      user.id,
+      requiredCredits,
+      `Refund: Failed Face Video Submission (${totalBillableDuration}s)`,
+      genId
+    );
+    return res.status(derivedCode === 'MISSING_HIGGSFIELD_API_KEY' ? 503 : 502).json({
+      error: errMsg,
+      code: derivedCode,
+      stage: 'provider_submit',
+      refunded: true,
+      generationId: genId,
+      remainingCredits: prodDb.getWallet(user.id).balance
+    });
+  }
+
+  // 7. Record Durable Generation State with persisted provider job tracking in Firestore (default)
+  const nowIso = new Date().toISOString();
   const generation: Generation = {
     id: genId,
     userId: user.id,
@@ -6153,160 +6248,243 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     durationSeconds: billableOutputDuration,
     requestedOutputDurationSeconds: billableOutputDuration,
     sourceVideoDurationSeconds: clampedSourceDuration,
-    createdAt: new Date().toISOString(),
+    providerRequestId: submittedJob.requestId,
+    providerStatusUrl: submittedJob.statusUrl,
+    providerEndpoint: submittedJob.endpoint,
+    providerSubmittedAt: nowIso,
+    providerStatus: submittedJob.providerStatus,
+    createdAt: nowIso,
     isAiGenerated: true
   };
   prodDb.addGeneration(generation);
 
-  res.json({
-    generation,
+  let finalGeneration = generation;
+  if (submittedJob.immediateVideoUrl) {
+    try {
+      finalGeneration = (await finalizeFaceSwapGeneration(generation, submittedJob.immediateVideoUrl)) || generation;
+    } catch (immErr: any) {
+      console.warn('[FaceSwap Immediate Finalize Note]: Will finalize cleanly on status poll:', immErr?.message || immErr);
+    }
+  }
+
+  return res.json({
+    generation: finalGeneration,
     requiredCredits,
     durationSeconds: billableOutputDuration,
     sourceVideoDurationSeconds: clampedSourceDuration,
     billableDurationSeconds: totalBillableDuration,
     remainingCredits: prodDb.getWallet(user.id).balance
   });
-
-  // 7. Execute Real Higgsfield Genjutsu Light Generation Asynchronously with Provider Signed URLs
-  (async () => {
-    try {
-      const sanitizedInstructions = customInstructions ? String(customInstructions).trim().slice(0, 300) : undefined;
-
-      // Generate temporary authorized signed URLs for provider download without exposing private customer media
-      // Privacy safeguard: NEVER log signed URLs or private customer data into server logs
-      const providerVideoUrl = await mediaStorage.generateProviderSignedUrl(trimmedVideoUrl, 3600);
-      const providerReferenceUrls = await Promise.all(
-        allReferenceUrls.map((url) => mediaStorage.generateProviderSignedUrl(url, 3600))
-      );
-
-      const result = await faceSwapAdapter.generateFaceSwapVideo({
-        videoUrl: providerVideoUrl,
-        imageUrls: providerReferenceUrls, // ALL reference images sent
-        masterRecipePrompt: selectedScene?.masterRecipePrompt,
-        customInstructions: sanitizedInstructions,
-        provider: sceneProvider,
-        adapter: sceneAdapter,
-        model: sceneModel,
-        workflow: sceneWorkflow,
-        resolution: sceneResolution,
-        durationSeconds: billableOutputDuration,
-        ownerUserId: user.id
-      });
-
-      // Terminal State & Race Condition Guard: If face swap already timed out and refunded, do NOT mark completed
-      const currentGen = prodDb.getGeneration(genId);
-      if (currentGen && currentGen.status === 'failed') {
-        console.warn(`[Generation Guard] Face swap generation ${genId} was already marked failed/timed out. Skipping late completion.`);
-        return;
-      }
-
-      if (!result || !result.resultUrl) {
-        throw new Error('Face swap provider returned empty result video URL');
-      }
-
-      // Probe actual output video duration & reconcile exact dual-duration billing
-      let actualOutputDuration: number | undefined;
-      try {
-        actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl, { ownerUserId: user.id });
-      } catch (probeErr: any) {
-        console.warn('[FaceSwap Duration Probe Note]:', probeErr?.message || probeErr);
-      }
-
-      const measuredOutputRounded = actualOutputDuration !== undefined ? Math.ceil(actualOutputDuration) : billableOutputDuration;
-      const actualBillableSeconds = Number((clampedSourceDuration + measuredOutputRounded).toFixed(2));
-      const costMeasurement = measureActualProviderCostUsd({
-        modelId: sceneModel,
-        resolution: sceneResolution,
-        actualBillableDurationSeconds: actualBillableSeconds
-      });
-      const reconciliation = reconcileCostOnCompletion({
-        reservedCredits: requiredCredits,
-        actualProviderCostUsd: costMeasurement.costUsd,
-        isFailed: false,
-        hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
-      });
-      if (reconciliation.refundCredits > 0) {
-        prodDb.refundCredits(
-          user.id,
-          reconciliation.refundCredits,
-          `Reconciliation Refund: FaceSwap duration adjustment (${actualBillableSeconds}s)`,
-          genId
-        );
-      }
-
-      prodDb.updateGeneration(genId, {
-        status: 'completed',
-        resultMediaUrl: result.resultUrl,
-        actualOutputDurationSeconds: actualOutputDuration,
-        actualBillableDurationSeconds: actualBillableSeconds,
-        actualCostStatus: costMeasurement.isExactTransactionCost ? 'MEASURED_RECEIPT' : 'UNMEASURED',
-        reconciliationStatus: costMeasurement.isExactTransactionCost ? 'RECONCILED' : 'UNMEASURED_NO_POST_DEBIT',
-        actualProviderCostUsd: costMeasurement.costUsd,
-        reconciledCostCredits: reconciliation.finalChargeCredits,
-        completedAt: new Date().toISOString()
-      });
-    } catch (err: any) {
-      console.error('[Higgsfield Motion Transfer Failed]:', err.message);
-      const errMsg = String(err?.message || 'Unknown error');
-      const derivedCode = errMsg.includes('HIGGSFIELD_API_KEY')
-        ? 'MISSING_HIGGSFIELD_API_KEY'
-        : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
-        ? 'PROVIDER_ROUTING_MISMATCH'
-        : 'FACESWAP_PROVIDER_ERROR';
-      try {
-        emitCloudMonitoringEvent(
-          'FACESWAP_PIPELINE_FAILURE',
-          'ERROR',
-          sanitizeMonitoringString(`FaceSwap failed for scene ${selectedScene?.id || 'custom'}: ${errMsg}`),
-          {
-            source: 'generation_failure',
-            templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
-            templateTitle: selectedScene?.title || 'Custom Face Swap',
-            provider: sceneProvider,
-            adapter: sceneAdapter,
-            model: sceneModel,
-            generationId: genId,
-            errorCode: derivedCode,
-            errorStage: 'faceswap_pipeline',
-            correlationId: genId,
-            endpoint: '/api/faceswap/generate',
-            rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
-            recommendedAction:
-              derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
-                ? 'Configure valid HIGGSFIELD_API_KEY (and optional HIGGSFIELD_API_SECRET) in server environment.'
-                : 'Inspect FaceSwap scene provider/model/workflow settings in Template Manager.'
-          }
-        );
-      } catch {}
-      prodDb.updateGeneration(genId, {
-        status: 'failed',
-        error: err.message || 'Face swap generation failed'
-      });
-      // 100% Exact Automatic Credit Refund on Failure
-      prodDb.refundCredits(
-        user.id,
-        requiredCredits,
-        `Refund: Failed Face Video Generation (${totalBillableDuration}s)`,
-        genId
-      );
-    }
-  })();
 });
 
-// User Generations History
-app.get('/api/generations', requireAuth, (req, res) => {
+async function finalizeFaceSwapGeneration(
+  gen: Generation,
+  resultVideoUrl: string,
+  leaseOwner?: string
+): Promise<Generation | null> {
+  // Terminal State Guard: never complete a job already marked failed/refunded
+  const currentGen = (await prodDb.getGenerationAuthoritative(gen.id)) || gen;
+  if (currentGen.status === 'failed') {
+    console.warn(`[Generation Guard] Face swap generation ${gen.id} was already marked failed. Skipping late completion.`);
+    if (leaseOwner) {
+      await prodDb.releaseGenerationPollLease(gen.id, leaseOwner);
+    }
+    return currentGen;
+  }
+  if (currentGen.status === 'completed' && currentGen.resultMediaUrl) {
+    if (leaseOwner) {
+      await prodDb.releaseGenerationPollLease(gen.id, leaseOwner);
+    }
+    return currentGen;
+  }
+
+  const stored = await faceSwapAdapter.downloadAndSaveFaceSwapResult({
+    resultVideoUrl,
+    ownerUserId: currentGen.userId
+  });
+
+  // Probe actual output video duration & reconcile exact dual-duration billing
+  let actualOutputDuration: number | undefined;
+  try {
+    actualOutputDuration = await videoTrimmer.probeDuration(stored.publicUrl, { ownerUserId: currentGen.userId });
+  } catch (probeErr: any) {
+    console.warn('[FaceSwap Duration Probe Note]:', probeErr?.message || probeErr);
+  }
+
+  const clampedSourceDuration = currentGen.sourceVideoDurationSeconds || 4;
+  const requestedOutput = currentGen.requestedOutputDurationSeconds || currentGen.durationSeconds || 4;
+  const measuredOutputRounded = actualOutputDuration !== undefined ? Math.ceil(actualOutputDuration) : requestedOutput;
+  const actualBillableSeconds = Number((clampedSourceDuration + measuredOutputRounded).toFixed(2));
+  const sceneResolution = (currentGen.resolution || '480p') as '480p' | '720p' | '1080p';
+  const costMeasurement = measureActualProviderCostUsd({
+    modelId: currentGen.model,
+    resolution: sceneResolution,
+    actualBillableDurationSeconds: actualBillableSeconds
+  });
+  const reconciliation = reconcileCostOnCompletion({
+    reservedCredits: currentGen.creditCost,
+    actualProviderCostUsd: costMeasurement.costUsd,
+    isFailed: false,
+    hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
+  });
+  if (reconciliation.refundCredits > 0) {
+    await prodDb.refundCredits(
+      currentGen.userId,
+      reconciliation.refundCredits,
+      `Reconciliation Refund: FaceSwap duration adjustment (${actualBillableSeconds}s)`,
+      currentGen.id
+    );
+  }
+
+  const updates: Partial<Generation> = {
+    status: 'completed',
+    providerStatus: 'completed',
+    resultMediaUrl: stored.publicUrl,
+    actualOutputDurationSeconds: actualOutputDuration,
+    actualBillableDurationSeconds: actualBillableSeconds,
+    actualCostStatus: costMeasurement.isExactTransactionCost ? 'MEASURED_RECEIPT' : 'UNMEASURED',
+    reconciliationStatus: costMeasurement.isExactTransactionCost ? 'RECONCILED' : 'UNMEASURED_NO_POST_DEBIT',
+    actualProviderCostUsd: costMeasurement.costUsd,
+    reconciledCostCredits: reconciliation.finalChargeCredits,
+    completedAt: new Date().toISOString()
+  };
+
+  if (leaseOwner) {
+    return await prodDb.releaseGenerationPollLease(currentGen.id, leaseOwner, updates);
+  }
+  prodDb.updateGeneration(currentGen.id, updates);
+  return await prodDb.getGenerationAuthoritative(currentGen.id);
+}
+
+/**
+ * Advances an active Higgsfield provider generation safely under Cloud Run Request-Based Billing:
+ * - Acquires a Firestore transaction Atomic Poll Lease across multi-instance deployments.
+ * - NEVER fails or refunds an active provider job just because 5 minutes elapsed.
+ * - Triggers Exact-Once Refund ONLY on verified provider terminal failure or verified expiry (404/410).
+ */
+async function advanceGenerationIfNeeded(
+  genId: string,
+  options?: { minPollIntervalMs?: number }
+): Promise<Generation | null> {
+  const gen = await prodDb.getGenerationAuthoritative(genId);
+  if (!gen) return null;
+  if (gen.status !== 'processing' || Boolean(gen.resultMediaUrl)) {
+    return gen;
+  }
+
+  const hasProviderJob = Boolean(gen.providerRequestId || gen.providerStatusUrl);
+  if (hasProviderJob) {
+    const leaseOwner = `cr_${process.pid}_${crypto.randomBytes(4).toString('hex')}`;
+    const lease = await prodDb.claimGenerationPollLease(
+      genId,
+      leaseOwner,
+      15000,
+      options?.minPollIntervalMs ?? 3500
+    );
+
+    if (!lease.acquired) {
+      return (await prodDb.getGenerationAuthoritative(genId)) || lease.generation || gen;
+    }
+
+    const leasedGen = lease.generation || gen;
+    try {
+      const check = await faceSwapAdapter.checkFaceSwapJobStatus({
+        requestId: leasedGen.providerRequestId,
+        statusUrl: leasedGen.providerStatusUrl
+      });
+
+      if (check.state === 'completed' && check.resultVideoUrl) {
+        return await finalizeFaceSwapGeneration(leasedGen, check.resultVideoUrl, leaseOwner);
+      }
+
+      if (check.state === 'failed' && check.isTerminal) {
+        const errText = check.error || `Higgsfield job terminated (${check.providerStatus})`;
+        const updatedFailed = await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
+          status: 'failed',
+          providerStatus: check.providerStatus,
+          error: errText
+        });
+        if (leasedGen.creditCost > 0) {
+          await prodDb.refundCredits(
+            leasedGen.userId,
+            leasedGen.creditCost,
+            `Refund: Provider terminated Face Video (${check.providerStatus})`,
+            genId
+          );
+        }
+        return updatedFailed || (await prodDb.getGenerationAuthoritative(genId));
+      }
+
+      // Still pending/queued/in_progress on provider: keep processing cleanly, NEVER timeout at 5m!
+      return await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
+        providerStatus: check.providerStatus
+      });
+    } catch (advanceErr: any) {
+      const msg = String(advanceErr?.message || 'Poll advance error');
+      console.warn(`[Generation Advance Note] (${genId}):`, msg);
+      if (msg.startsWith('SECURITY_')) {
+        await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
+          status: 'failed',
+          error: msg
+        });
+        if (leasedGen.creditCost > 0) {
+          await prodDb.refundCredits(
+            leasedGen.userId,
+            leasedGen.creditCost,
+            `Refund: Unsafe provider media output rejected (${leasedGen.templateTitle})`,
+            genId
+          );
+        }
+      } else {
+        await prodDb.releaseGenerationPollLease(genId, leaseOwner);
+      }
+      return await prodDb.getGenerationAuthoritative(genId);
+    }
+  }
+
+  // Non-provider / orphan job without any providerRequestId/providerStatusUrl: recover if stuck > 5 minutes
+  const elapsedMs = Date.now() - new Date(gen.createdAt).getTime();
+  if (elapsedMs > 5 * 60 * 1000) {
+    const freshGen = await prodDb.getGenerationAuthoritative(genId);
+    if (freshGen && freshGen.status === 'processing' && !freshGen.resultMediaUrl && !freshGen.providerRequestId && !freshGen.providerStatusUrl) {
+      console.warn(`[Generation Timeout] Orphan generation ${genId} stuck > 5m without provider job handle. Marking failed with Exact-Once Refund.`);
+      prodDb.updateGeneration(genId, {
+        status: 'failed',
+        error: 'The generation timed out before reaching the provider queue. Credits have been automatically refunded.'
+      });
+      if (freshGen.creditCost > 0) {
+        await prodDb.refundCredits(freshGen.userId, freshGen.creditCost, `Refund: Timed out generation (${freshGen.templateTitle})`, genId);
+      }
+    }
+  }
+  return await prodDb.getGenerationAuthoritative(genId);
+}
+
+// User Generations History (My Creations) with Firestore Recovery & Active Provider Polling
+app.get('/api/generations', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const results = prodDb.getUserGenerations(user.id);
+  const userGens = await prodDb.getUserGenerationsAuthoritative(user.id);
+  const activeProviderGens = userGens
+    .filter((g) => g.status === 'processing' && !g.resultMediaUrl && (g.providerRequestId || g.providerStatusUrl))
+    .slice(0, 5);
+
+  if (activeProviderGens.length > 0) {
+    await Promise.all(
+      activeProviderGens.map((g) => advanceGenerationIfNeeded(g.id, { minPollIntervalMs: 3500 }).catch(() => null))
+    );
+  }
+
+  const results = await prodDb.getUserGenerationsAuthoritative(user.id);
   res.json({ generations: results });
 });
 
-// Single Generation Status with User Isolation and Stale Job Recovery
-const handleGetGenerationStatus = (req: express.Request, res: express.Response) => {
+// Single Generation Status with User Isolation, Firestore Poll Lease Advancement & Exact-Once Refund Safety
+const handleGetGenerationStatus = async (req: express.Request, res: express.Response) => {
   const user = (req as any).user as UserProfile;
   const { id } = req.params;
 
   const isAuthorizedAdmin = isServerVerifiedAdmin(user);
-  const gen = prodDb.getGenerations().find((g) => g.id === id);
+  const gen = await prodDb.getGenerationAuthoritative(id);
 
   if (!gen) {
     return res.status(404).json({ error: 'Generation record not found' });
@@ -6317,26 +6495,7 @@ const handleGetGenerationStatus = (req: express.Request, res: express.Response) 
     return res.status(403).json({ error: 'Access denied to this generation record' });
   }
 
-  // Stale Processing Job Recovery: If stuck in 'processing' for > 5 minutes AND has no result, mark failed and refund
-  if (gen.status === 'processing' && !gen.resultMediaUrl) {
-    const elapsedMs = Date.now() - new Date(gen.createdAt).getTime();
-    if (elapsedMs > 5 * 60 * 1000) {
-      // Re-query database to ensure job was not completed while processing
-      const freshGen = prodDb.getGeneration(id);
-      if (freshGen && freshGen.status === 'processing' && !freshGen.resultMediaUrl) {
-        console.warn(`[Generation Timeout] Generation ${id} stuck in processing for > 5m without result. Marking failed with automatic credit refund.`);
-        prodDb.updateGeneration(id, {
-          status: 'failed',
-          error: 'The generation timed out during neural synthesis. Credits have been automatically refunded.'
-        });
-        if (freshGen.creditCost > 0 && !isAuthorizedAdmin) {
-          prodDb.refundCredits(freshGen.userId, freshGen.creditCost, `Refund: Timed out generation (${freshGen.templateTitle})`, id);
-        }
-      }
-    }
-  }
-
-  const updatedGen = prodDb.getGenerations().find((g) => g.id === id) || gen;
+  const updatedGen = (await advanceGenerationIfNeeded(id)) || gen;
   const elapsedSeconds = Math.round((Date.now() - new Date(updatedGen.createdAt).getTime()) / 1000);
 
   return res.json({

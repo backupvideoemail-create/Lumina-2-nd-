@@ -31,6 +31,7 @@ import { mediaCacheStorage, MediaCacheTelemetry } from '../services/media/mediaC
 import { normalizeAlertTo12Fields } from '../services/monitoring/cloudMonitoring';
 import { AUTH_POLICY } from '../config/authConfig';
 import { FxRateStatus, OwnerOmniTestRecord, PerTemplateReadinessItem } from '../types';
+import { getStoredSessionToken } from '../utils/authSession';
 
 export interface DiagnosticTestDetail {
   id: string;
@@ -130,7 +131,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const fetchReadinessMatrix = async () => {
     setLoadingReadiness(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/readiness/matrix', {
         headers: {
           'Content-Type': 'application/json',
@@ -155,7 +156,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const handleRefreshLiveFx = async () => {
     setRefreshingFx(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/pricing/fx/refresh', {
         method: 'POST',
         headers: {
@@ -177,7 +178,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
     setOmniQuoting(true);
     setOmniTestError(null);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/omni-test/quote', {
         method: 'POST',
         headers: {
@@ -205,7 +206,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
     setOmniTestError(null);
     setOmniTestResult(null);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/omni-test/run', {
         method: 'POST',
         headers: {
@@ -276,7 +277,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const runDiagnostics = async () => {
     setRunning(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/diagnostics', {
         method: 'POST',
         headers: {
@@ -310,7 +311,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const fetchHistory = async () => {
     setLoadingHistory(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/diagnostics/history', {
         headers: {
           'Content-Type': 'application/json',
@@ -333,7 +334,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const fetchAlerts = async () => {
     setLoadingAlerts(true);
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       const res = await fetch('/api/admin/monitoring/alerts', {
         headers: {
           'Content-Type': 'application/json',
@@ -357,7 +358,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
 
   const handleResolveAlert = async (alertId: string) => {
     try {
-      const token = localStorage.getItem('lumina_session_token') || '';
+      const token = getStoredSessionToken() || '';
       await fetch('/api/admin/monitoring/resolve', {
         method: 'POST',
         headers: {

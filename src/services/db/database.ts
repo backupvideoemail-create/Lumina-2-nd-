@@ -2362,6 +2362,189 @@ export class ProductionDatabase {
     return this.db.generations.filter(g => g.userId === userId);
   }
 
+  public async getUserGenerationsAuthoritative(userId: string): Promise<Generation[]> {
+    if (adminFirestoreDb) {
+      try {
+        const snap = await adminFirestoreDb
+          .collection('generations')
+          .where('userId', '==', userId)
+          .get();
+        if (snap && !snap.empty) {
+          const docs = snap.docs || [];
+          for (const d of docs) {
+            const remoteGen = d.data() as Generation;
+            if (!remoteGen?.id) continue;
+            const localIdx = this.db.generations.findIndex(g => g.id === remoteGen.id);
+            if (localIdx === -1) {
+              this.db.generations.push(remoteGen);
+            } else {
+              const localGen = this.db.generations[localIdx];
+              const localTerminal = localGen.status === 'completed' || localGen.status === 'failed';
+              const remoteTerminal = remoteGen.status === 'completed' || remoteGen.status === 'failed';
+              if (!localTerminal || remoteTerminal) {
+                this.db.generations[localIdx] = { ...localGen, ...remoteGen };
+              }
+            }
+          }
+          this.db.generations.sort(
+            (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+          );
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getUserGenerationsAuthoritative note:', err?.message || err);
+      }
+    }
+    return this.db.generations
+      .filter(g => g.userId === userId)
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  }
+
+  public async claimGenerationPollLease(
+    genId: string,
+    leaseOwner: string,
+    leaseDurationMs: number = 15000,
+    minPollIntervalMs: number = 3500
+  ): Promise<{
+    acquired: boolean;
+    reason?: 'not_found' | 'not_processing' | 'no_provider_job' | 'lease_active' | 'throttled';
+    generation: Generation | null;
+  }> {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const leaseUntilIso = new Date(nowMs + Math.max(3000, leaseDurationMs)).toISOString();
+
+    if (adminFirestoreDb && typeof adminFirestoreDb.runTransaction === 'function') {
+      try {
+        const result = await adminFirestoreDb.runTransaction(async (t: any) => {
+          const genRef = adminFirestoreDb.collection('generations').doc(genId);
+          const snap = await t.get(genRef);
+          const localFallback = this.db.generations.find(g => g.id === genId) || null;
+          const genData = snap.exists ? (snap.data() as Generation) : localFallback;
+
+          if (!genData) {
+            return { acquired: false, reason: 'not_found' as const, generation: null };
+          }
+          if (genData.status !== 'processing' || Boolean(genData.resultMediaUrl)) {
+            return { acquired: false, reason: 'not_processing' as const, generation: genData };
+          }
+          if (!genData.providerRequestId && !genData.providerStatusUrl) {
+            return { acquired: false, reason: 'no_provider_job' as const, generation: genData };
+          }
+
+          const existingLeaseUntilMs = genData.pollLeaseUntil ? new Date(genData.pollLeaseUntil).getTime() : 0;
+          if (existingLeaseUntilMs > nowMs && genData.pollLeaseOwner && genData.pollLeaseOwner !== leaseOwner) {
+            return { acquired: false, reason: 'lease_active' as const, generation: genData };
+          }
+
+          const lastPolledMs = genData.providerLastPolledAt ? new Date(genData.providerLastPolledAt).getTime() : 0;
+          if (lastPolledMs > 0 && nowMs - lastPolledMs < minPollIntervalMs) {
+            return { acquired: false, reason: 'throttled' as const, generation: genData };
+          }
+
+          const updated: Generation = {
+            ...genData,
+            pollLeaseOwner: leaseOwner,
+            pollLeaseUntil: leaseUntilIso,
+            providerLastPolledAt: nowIso
+          };
+          t.set(genRef, JSON.parse(JSON.stringify(updated)), { merge: true });
+
+          const idx = this.db.generations.findIndex(g => g.id === genId);
+          if (idx >= 0) this.db.generations[idx] = updated;
+          else this.db.generations.unshift(updated);
+          this.save();
+
+          return { acquired: true, generation: updated };
+        });
+        return result;
+      } catch (err: any) {
+        console.warn('[Firestore] claimGenerationPollLease transaction note:', err?.message || err);
+        if (process.env.NODE_ENV === 'production' && !isIsolatedTestEnv) {
+          const current = await this.getGenerationAuthoritative(genId);
+          return { acquired: false, reason: 'lease_active', generation: current };
+        }
+      }
+    }
+
+    // Non-production / local fallback atomic check
+    const gen = this.db.generations.find(g => g.id === genId) || null;
+    if (!gen) return { acquired: false, reason: 'not_found', generation: null };
+    if (gen.status !== 'processing' || Boolean(gen.resultMediaUrl)) {
+      return { acquired: false, reason: 'not_processing', generation: gen };
+    }
+    if (!gen.providerRequestId && !gen.providerStatusUrl) {
+      return { acquired: false, reason: 'no_provider_job', generation: gen };
+    }
+    const existingLeaseUntilMs = gen.pollLeaseUntil ? new Date(gen.pollLeaseUntil).getTime() : 0;
+    if (existingLeaseUntilMs > nowMs && gen.pollLeaseOwner && gen.pollLeaseOwner !== leaseOwner) {
+      return { acquired: false, reason: 'lease_active', generation: gen };
+    }
+    const lastPolledMs = gen.providerLastPolledAt ? new Date(gen.providerLastPolledAt).getTime() : 0;
+    if (lastPolledMs > 0 && nowMs - lastPolledMs < minPollIntervalMs) {
+      return { acquired: false, reason: 'throttled', generation: gen };
+    }
+    gen.pollLeaseOwner = leaseOwner;
+    gen.pollLeaseUntil = leaseUntilIso;
+    gen.providerLastPolledAt = nowIso;
+    this.save();
+    return { acquired: true, generation: { ...gen } };
+  }
+
+  public async releaseGenerationPollLease(
+    genId: string,
+    leaseOwner: string,
+    extraUpdates?: Partial<Generation>
+  ): Promise<Generation | null> {
+    if (adminFirestoreDb && typeof adminFirestoreDb.runTransaction === 'function') {
+      try {
+        return await adminFirestoreDb.runTransaction(async (t: any) => {
+          const genRef = adminFirestoreDb.collection('generations').doc(genId);
+          const snap = await t.get(genRef);
+          const localFallback = this.db.generations.find(g => g.id === genId) || null;
+          const genData = snap.exists ? (snap.data() as Generation) : localFallback;
+          if (!genData) return null;
+
+          // Respect terminal state guards
+          if (genData.status === 'failed' && extraUpdates?.status === 'completed') {
+            return genData;
+          }
+          if (genData.status === 'completed' && extraUpdates?.status === 'failed') {
+            return genData;
+          }
+          if (extraUpdates?.status === 'completed' && !extraUpdates.resultMediaUrl && !genData.resultMediaUrl) {
+            return genData;
+          }
+
+          const shouldClearLease = !genData.pollLeaseOwner || genData.pollLeaseOwner === leaseOwner;
+          const merged: Generation = {
+            ...genData,
+            ...(extraUpdates || {}),
+            ...(shouldClearLease ? { pollLeaseOwner: '', pollLeaseUntil: '' } : {})
+          };
+
+          t.set(genRef, JSON.parse(JSON.stringify(merged)), { merge: true });
+          const idx = this.db.generations.findIndex(g => g.id === genId);
+          if (idx >= 0) this.db.generations[idx] = merged;
+          else this.db.generations.unshift(merged);
+          this.save();
+          return merged;
+        });
+      } catch (err: any) {
+        console.warn('[Firestore] releaseGenerationPollLease note:', err?.message || err);
+      }
+    }
+
+    const gen = this.db.generations.find(g => g.id === genId) || null;
+    if (!gen) return null;
+    this.updateGeneration(genId, {
+      ...(extraUpdates || {}),
+      ...(!gen.pollLeaseOwner || gen.pollLeaseOwner === leaseOwner
+        ? { pollLeaseOwner: '', pollLeaseUntil: '' }
+        : {})
+    });
+    return this.getGeneration(genId);
+  }
+
   public addGeneration(gen: Generation): void {
     const stored = { ...gen };
     this.db.generations.unshift(stored);

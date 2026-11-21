@@ -13,6 +13,7 @@ import { useApp } from '../context/AppContext';
 import officialStudioLogo from '../assets/images/ai_prime_studio_logo_1791382901426.jpg';
 
 import { isPlayStoreTWA } from '../utils/twaDetection.ts';
+import { getStoredSessionToken } from '../utils/authSession';
 
 export const TopUpModal: React.FC = () => {
   const {
@@ -79,7 +80,7 @@ export const TopUpModal: React.FC = () => {
     setIsProcessing(true);
 
     try {
-      const token = localStorage.getItem('lumina_session_token');
+      const token = getStoredSessionToken();
       const orderRes = await fetch('/api/payments/checkout/order', {
         method: 'POST',
         headers: {

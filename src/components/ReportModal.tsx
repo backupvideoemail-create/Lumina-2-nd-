@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { X, Flag, CheckCircle2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { getStoredSessionToken } from '../utils/authSession';
 
 export const ReportModal: React.FC = () => {
   const { reportModalGenId, setReportModalGenId } = useApp();
@@ -18,7 +19,7 @@ export const ReportModal: React.FC = () => {
     setSubmitting(true);
     setErrorMessage(null);
     try {
-      const token = localStorage.getItem('lumina_session_token');
+      const token = getStoredSessionToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 

@@ -16,6 +16,7 @@ import { useApp } from '../context/AppContext';
 import { Generation, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { reportMediaPlaybackIssue } from '../services/media/mediaPlaybackManager';
+import { getStoredSessionToken } from '../utils/authSession';
 
 interface GenerationViewerContentProps {
   gen: Generation;
@@ -64,7 +65,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
     let isMounted = true;
     const pollStatus = async () => {
       try {
-        const token = localStorage.getItem('lumina_session_token');
+        const token = getStoredSessionToken();
         const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
         const res = await fetch(`/api/generations/${gen.id}/status`, {
           headers,
