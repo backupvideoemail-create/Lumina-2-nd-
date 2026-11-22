@@ -1042,8 +1042,8 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     }
 
     const isUserAdmin = isServerVerifiedAdmin(user);
-    const wallet = prodDb.getWallet(user.id);
-    const subscription = prodDb.getSubscription(user.id);
+    const wallet = await prodDb.getWalletAuthoritative(user.id);
+    const subscription = await prodDb.getSubscriptionAuthoritative(user.id);
 
     return res.json({
       success: true,
@@ -1128,8 +1128,8 @@ app.get('/api/auth/me', async (req, res) => {
   }
 
   const isAdmin = isServerVerifiedAdmin(user);
-  const wallet = prodDb.getWallet(user.id);
-  const activeSubscription = prodDb.getSubscription(user.id);
+  const wallet = await prodDb.getWalletAuthoritative(user.id);
+  const activeSubscription = await prodDb.getSubscriptionAuthoritative(user.id);
   const likedTemplates = prodDb.getUserLikedTemplates(user.id);
   const isCancelledOrExpired = Boolean(
     activeSubscription && (activeSubscription.status === 'cancelled' || activeSubscription.status === 'expired')
@@ -1169,7 +1169,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
 
   // 1. Owner AutoPay Preservation Policy: DO NOT cancel active AutoPay mandate on Razorpay
   // Recurring billing schedule and restricted billing records are preserved for webhook reconciliation
-  const existingSub = prodDb.getSubscription(user.id);
+  const existingSub = await prodDb.getSubscriptionAuthoritative(user.id);
   const mandateId = existingSub?.mandateId || existingSub?.id;
   if (mandateId) {
     console.log(`[Account Deletion] Preserving active AutoPay mandate ${mandateId} for user ${user.id} in restricted records (no cancellation).`);
@@ -3581,7 +3581,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   // TOP-UP FINAL BUSINESS RULE:
   // User MUST have activated a valid plan first (e.g. ₹1 intro plan or active subscription).
   if (isTopUp) {
-    const sub = prodDb.getSubscription(user.id);
+    const sub = await prodDb.getSubscriptionAuthoritative(user.id);
     const isCancelledOrExpired = Boolean(
       sub && (sub.status === 'cancelled' || sub.status === 'expired' || sub.status === 'payment_failed')
     );
@@ -3766,22 +3766,22 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(400).json({ error: 'Missing orderId for verification' });
   }
 
-  // Look up stored server-side order with multi-index fallback (orderId, subscriptionId, paymentId)
-  let payRec = prodDb.getPayment(orderId);
-  if (!payRec && req.body.subscriptionId) {
-    payRec = prodDb.getPayment(req.body.subscriptionId);
-  }
-  if (!payRec && paymentId) {
-    payRec = prodDb.getPaymentByPaymentId(paymentId);
-  }
-  if (!payRec) {
-    payRec = await prodDb.getPaymentAuthoritative(orderId);
-  }
+  // Look up stored server-side order authoritatively first (so cross-Cloud-Run captures are never masked by stale RAM)
+  let payRec = await prodDb.getPaymentAuthoritative(orderId);
   if (!payRec && req.body.subscriptionId) {
     payRec = await prodDb.getPaymentAuthoritative(req.body.subscriptionId);
   }
   if (!payRec && paymentId) {
     payRec = await prodDb.getPaymentAuthoritative(paymentId);
+  }
+  if (!payRec) {
+    payRec = prodDb.getPayment(orderId);
+  }
+  if (!payRec && req.body.subscriptionId) {
+    payRec = prodDb.getPayment(req.body.subscriptionId);
+  }
+  if (!payRec && paymentId) {
+    payRec = prodDb.getPaymentByPaymentId(paymentId);
   }
 
   // Live Razorpay Gateway Re-query: If server restarted or orderId is dynamic from Razorpay checkout
@@ -3871,8 +3871,8 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.json({
       success: true,
       message: 'Payment already processed and credits added',
-      wallet: prodDb.getWallet(user.id),
-      subscription: prodDb.getSubscription(user.id)
+      wallet: await prodDb.getWalletAuthoritative(user.id),
+      subscription: await prodDb.getSubscriptionAuthoritative(user.id)
     });
   }
 
@@ -3915,8 +3915,8 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.json({
       success: true,
       creditsAdded: pack.credits,
-      wallet: prodDb.getWallet(user.id),
-      subscription: prodDb.getSubscription(user.id),
+      wallet: await prodDb.getWalletAuthoritative(user.id),
+      subscription: await prodDb.getSubscriptionAuthoritative(user.id),
       message: `Top-Up successful! ${pack.credits} credits added to your wallet.`
     });
   }
@@ -4041,7 +4041,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   res.json({
     success: true,
     creditsAdded: plan.includedCredits,
-    wallet: prodDb.getWallet(user.id),
+    wallet: await prodDb.getWalletAuthoritative(user.id),
     subscription: newSubscription,
     message: 'Payment and AutoPay mandate verified successfully'
   });
@@ -4092,9 +4092,9 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
     }
 
     // Verify Customer Ownership: Stored order or notes must match authenticated user
-    const storedRec = (paymentId ? prodDb.getPaymentByPaymentId(paymentId) : null) ||
-      (effectiveSubId ? prodDb.getPayment(effectiveSubId) : null) ||
-      (rzpPay?.order_id ? prodDb.getPayment(rzpPay.order_id) : null);
+    const storedRec = (paymentId ? await prodDb.getPaymentAuthoritative(paymentId) : null) ||
+      (effectiveSubId ? await prodDb.getPaymentAuthoritative(effectiveSubId) : null) ||
+      (rzpPay?.order_id ? await prodDb.getPaymentAuthoritative(rzpPay.order_id) : null);
 
     if (storedRec && storedRec.userId !== user.id) {
       return res.status(403).json({
@@ -4125,8 +4125,8 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
       return res.json({
         success: true,
         message: 'Payment was already reconciled and credits were granted.',
-        wallet: prodDb.getWallet(user.id),
-        subscription: prodDb.getSubscription(user.id)
+        wallet: await prodDb.getWalletAuthoritative(user.id),
+        subscription: await prodDb.getSubscriptionAuthoritative(user.id)
       });
     }
 
@@ -4174,7 +4174,7 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
     return res.json({
       success: true,
       creditsAdded: creditsToGrant,
-      wallet: prodDb.getWallet(user.id),
+      wallet: await prodDb.getWalletAuthoritative(user.id),
       subscription: newSubscription,
       message: `Reconciliation successful! ${creditsToGrant} credits and your subscription plan have been activated.`
     });
@@ -4274,7 +4274,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
   const verificationPromise = (async (): Promise<{ status: number; body: any }> => {
     // Check if this specific orderId was already verified and credited for this billing cycle
     if (orderId) {
-      const existingOrder = prodDb.getPayment(orderId) || prodDb.getPaymentByPaymentId(orderId);
+      const existingOrder = (await prodDb.getPaymentAuthoritative(orderId)) || prodDb.getPayment(orderId) || prodDb.getPaymentByPaymentId(orderId);
       if (existingOrder) {
         if (existingOrder.userId !== user.id) {
           return { status: 403, body: { error: 'This purchase order has already been claimed by another account' } };
@@ -4284,8 +4284,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
           body: {
             success: true,
             message: 'This billing cycle order was already verified and credited',
-            wallet: prodDb.getWallet(user.id),
-            subscription: prodDb.getSubscription(user.id)
+            wallet: await prodDb.getWalletAuthoritative(user.id),
+            subscription: await prodDb.getSubscriptionAuthoritative(user.id)
           }
         };
       }
@@ -4293,7 +4293,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
 
     // For one-time top-ups, check if purchase token was already credited
     if (!isSubscription) {
-      const existingPayment = prodDb.getPaymentByPaymentId(purchaseToken);
+      const existingPayment = (await prodDb.getPaymentAuthoritative(purchaseToken)) || prodDb.getPaymentByPaymentId(purchaseToken);
       if (existingPayment) {
         if (existingPayment.userId !== user.id) {
           return { status: 403, body: { error: 'This purchase token has already been claimed by another account' } };
@@ -4303,8 +4303,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
           body: {
             success: true,
             message: 'Top-up purchase already verified and credited to your account',
-            wallet: prodDb.getWallet(user.id),
-            subscription: prodDb.getSubscription(user.id)
+            wallet: await prodDb.getWalletAuthoritative(user.id),
+            subscription: await prodDb.getSubscriptionAuthoritative(user.id)
           }
         };
       }
@@ -4320,8 +4320,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
         body: {
           success: true,
           message: 'Purchase already processed and credited',
-          wallet: prodDb.getWallet(user.id),
-          subscription: prodDb.getSubscription(user.id)
+          wallet: await prodDb.getWalletAuthoritative(user.id),
+          subscription: await prodDb.getSubscriptionAuthoritative(user.id)
         }
       };
     }
@@ -4365,7 +4365,7 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
 
     const effectiveOrderId = playVerification.orderId || orderId || `gplay_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-    const existingEffective = prodDb.getPayment(effectiveOrderId);
+    const existingEffective = await prodDb.getPaymentAuthoritative(effectiveOrderId);
     const alreadyCredited = await prodDb.hasTransactionForReference(effectiveOrderId);
     if (existingEffective || alreadyCredited) {
       if (existingEffective && existingEffective.userId !== user.id) {
@@ -4376,8 +4376,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
         body: {
           success: true,
           message: 'This billing cycle order was already verified and credited to your account',
-          wallet: prodDb.getWallet(user.id),
-          subscription: prodDb.getSubscription(user.id)
+          wallet: await prodDb.getWalletAuthoritative(user.id),
+          subscription: await prodDb.getSubscriptionAuthoritative(user.id)
         }
       };
     }
@@ -4442,8 +4442,8 @@ app.post('/api/billing/googleplay/verify', requireAuth, rateLimit(60000, 30), as
         success: true,
         message: `Google Play purchase verified! Added ${creditsToAdd} credits.`,
         creditsAdded: creditsToAdd,
-        wallet: prodDb.getWallet(user.id),
-        subscription: newSub || prodDb.getSubscription(user.id),
+        wallet: await prodDb.getWalletAuthoritative(user.id),
+        subscription: newSub || (await prodDb.getSubscriptionAuthoritative(user.id)),
         profile: prodDb.getUser(user.id),
         developerApiVerified: playVerification.verified,
         serverAcknowledged: Boolean(playVerification.serverAcknowledged),
@@ -4507,15 +4507,15 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
     if (voidedPurchaseNotification) {
       const { purchaseToken, orderId } = voidedPurchaseNotification;
       const voidedPayment =
-        (orderId ? prodDb.getPayment(orderId) : null) ||
-        (purchaseToken ? prodDb.getPaymentByPaymentId(purchaseToken) : null);
+        (orderId ? await prodDb.getPaymentAuthoritative(orderId) : null) ||
+        (purchaseToken ? await prodDb.getPaymentAuthoritative(purchaseToken) : null);
       if (voidedPayment) {
         voidedPayment.status = 'refunded';
         voidedPayment.verificationStatus = 'voided';
         voidedPayment.updatedAt = new Date().toISOString();
         await prodDb.recordPayment(voidedPayment);
       }
-      const sub = purchaseToken ? prodDb.getSubscriptionByMandateOrId(purchaseToken) : null;
+      const sub = purchaseToken ? await prodDb.getSubscriptionByMandateOrIdAuthoritative(purchaseToken) : null;
       if (sub) {
         sub.status = 'revoked' as any;
         sub.cancelledAt = new Date().toISOString();
@@ -4536,7 +4536,7 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
       const { notificationType: otpType, purchaseToken, sku } = oneTimeProductNotification;
       if (otpType === 2 && purchaseToken) {
         // ONE_TIME_PRODUCT_CANCELED
-        const canceledPayment = prodDb.getPaymentByPaymentId(purchaseToken);
+        const canceledPayment = await prodDb.getPaymentAuthoritative(purchaseToken);
         if (canceledPayment) {
           canceledPayment.status = 'failed';
           canceledPayment.verificationStatus = 'canceled_rtdn';
@@ -4557,7 +4557,7 @@ app.post('/api/billing/googleplay/rtdn', async (req, res) => {
     const parsedEventMillis = Number(eventTimeMillis || 0);
     console.log(`[Google Play RTDN] Event notificationType: ${notificationType} for ${subscriptionId}`);
 
-    const sub = prodDb.getSubscriptionByMandateOrId(purchaseToken);
+    const sub = await prodDb.getSubscriptionByMandateOrIdAuthoritative(purchaseToken);
     if (sub) {
       const userId = sub.userId;
       const lastEventMillis = Number((sub as any).lastRtdnEventTimeMillis || 0);
@@ -4902,7 +4902,7 @@ app.post('/api/payments/webhook', handleRazorpayWebhook);
 // Subscription Cancellation Endpoint (Strict: do NOT mark cancelled if Razorpay fails)
 app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const sub = prodDb.getSubscription(user.id);
+  const sub = await prodDb.getSubscriptionAuthoritative(user.id);
 
   if (!sub || sub.status === 'cancelled') {
     return res.status(400).json({ error: 'No active subscription found to cancel' });
@@ -4987,6 +4987,78 @@ app.post('/api/reports', requireAuth, rateLimit(60000, 30), async (req, res) => 
    6. AI GENERATION PIPELINE (ATOMIC RESERVE & 100% FAILURE REFUND)
 ========================================================================= */
 
+async function attemptDurableGenerationRefund(params: {
+  genId: string;
+  userId: string;
+  creditCost: number;
+  reason: string;
+  errorMsg: string;
+  providerStatus?: string;
+  shouldRefund: boolean;
+}): Promise<{ refunded: boolean; refundStatus: 'none' | 'refund_pending' | 'refunded'; generation: Generation | null }> {
+  const { genId, userId, creditCost, reason, errorMsg, providerStatus, shouldRefund } = params;
+  const needsRefund = Boolean(shouldRefund && creditCost > 0);
+  const failedUpdate: Partial<Generation> = {
+    status: 'failed',
+    error: errorMsg,
+    refundStatus: needsRefund ? 'refund_pending' : 'none',
+    ...(providerStatus ? { providerStatus } : {})
+  };
+  let updatedGen = await prodDb.updateGenerationAsync(genId, failedUpdate).catch(() => null);
+  if (!needsRefund) {
+    return {
+      refunded: false,
+      refundStatus: 'none',
+      generation: updatedGen || (await prodDb.getGenerationAuthoritative(genId))
+    };
+  }
+
+  try {
+    await prodDb.refundCredits(userId, creditCost, reason, genId);
+    updatedGen =
+      (await prodDb.updateGenerationAsync(genId, {
+        status: 'failed',
+        refundStatus: 'refunded',
+        refundError: ''
+      }).catch(() => null)) || updatedGen;
+    return {
+      refunded: true,
+      refundStatus: 'refunded',
+      generation: updatedGen || (await prodDb.getGenerationAuthoritative(genId))
+    };
+  } catch (refundErr: any) {
+    const refundErrMsg = String(refundErr?.message || 'Durable credit refund failed');
+    console.error(`[Refund Critical] Failed durable refund for generation ${genId}:`, refundErrMsg);
+    updatedGen =
+      (await prodDb.updateGenerationAsync(genId, {
+        status: 'failed',
+        refundStatus: 'refund_pending',
+        refundError: refundErrMsg
+      }).catch(() => null)) || updatedGen;
+    try {
+      emitCloudMonitoringEvent(
+        'LEDGER_MISMATCH',
+        'CRITICAL',
+        sanitizeMonitoringString(`Credit refund pending retry for generation ${genId}: ${refundErrMsg}`),
+        {
+          source: 'generation_failure',
+          generationId: genId,
+          errorCode: 'REFUND_PENDING_RECOVERY',
+          errorStage: 'credit_refund',
+          correlationId: genId,
+          rootCause: sanitizeMonitoringString(refundErrMsg.slice(0, 200)),
+          recommendedAction: 'Automatic recovery runs on generation status/history read; verify Firestore wallet write health.'
+        }
+      );
+    } catch {}
+    return {
+      refunded: false,
+      refundStatus: 'refund_pending',
+      generation: updatedGen || (await prodDb.getGenerationAuthoritative(genId))
+    };
+  }
+}
+
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource } = req.body;
@@ -4997,14 +5069,15 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     : undefined;
 
   if (idempotencyKey) {
-    const existingDuplicate = prodDb.raw.generations.find(
+    const userGensForIdem = await prodDb.getUserGenerationsAuthoritative(user.id);
+    const existingDuplicate = userGensForIdem.find(
       (g: any) => g.userId === user.id && g.templateId === templateId && g.idempotencyKey === idempotencyKey && g.status !== 'failed'
     );
     if (existingDuplicate) {
       return res.json({
         generation: existingDuplicate,
         deduplicated: true,
-        remainingCredits: prodDb.getWallet(user.id).balance
+        remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
       });
     }
   }
@@ -5550,7 +5623,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
     requiredCredits = customerQuote.credits;
   }
-  const wallet = prodDb.getWallet(user.id);
+  const wallet = await prodDb.getWalletAuthoritative(user.id);
 
   if (!isAuthorizedAdmin && wallet.balance < requiredCredits) {
     return res.status(402).json({
@@ -5562,11 +5635,27 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
 
   const genId = `gen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 
-  // 1. Credit reservation (Bypassed strictly for server-verified admin in live test mode)
+  // 1. Authoritative Credit Reservation (Awaited — ZERO AI provider calls if reservation fails or throws)
   if (!isAuthorizedAdmin) {
-    const reserved = prodDb.reserveCredits(user.id, requiredCredits, `Created: ${template.title}`, genId);
+    let reserved = false;
+    try {
+      reserved = await prodDb.reserveCredits(user.id, requiredCredits, `Created: ${template.title}`, genId);
+    } catch (reserveErr: any) {
+      console.error('[Credit Reservation Error]:', reserveErr?.message || reserveErr);
+      return res.status(503).json({
+        error: 'Failed to reserve credits in authoritative database. Zero AI provider calls were made.',
+        code: 'CREDIT_RESERVATION_FAILED',
+        stage: 'credit_reservation'
+      });
+    }
     if (!reserved) {
-      return res.status(402).json({ error: 'Failed to reserve credits' });
+      return res.status(402).json({
+        error: 'Failed to reserve credits',
+        code: 'INSUFFICIENT_CREDITS',
+        stage: 'credit_reservation',
+        requiredCredits,
+        currentBalance: (await prodDb.getWalletAuthoritative(user.id)).balance
+      });
     }
   } else {
     console.log(`[Admin Test Generation] Authorized Admin '${user.email}' executing zero-credit test for template '${template.title}' (genId: ${genId}). Actual API costs logged.`);
@@ -5580,7 +5669,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
-  // 2. Record generation record with four-tier duration tracking fields (measured values, never assumed)
+  // 2. Durably persist initial generation record in Firestore BEFORE invoking any AI provider (fail closed)
   const generation: Generation & { idempotencyKey?: string } = {
     id: genId,
     userId: user.id,
@@ -5590,6 +5679,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     aspectRatio: template.aspectRatio,
     status: 'processing',
     creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
+    refundStatus: 'none',
     inputMediaUrl,
     engine: isSmartTemplate ? 'SMART_TEMPLATE' : (template.engine || 'AI_GENERATION'),
     model: effectiveModel,
@@ -5604,164 +5694,231 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     ...(idempotencyKey ? { idempotencyKey } : {})
   };
 
-  prodDb.addGeneration(generation);
-
-  res.json({
-    generation,
-    remainingCredits: prodDb.getWallet(user.id).balance
-  });
-
-  // 3. Asynchronous execution with 100% exact refund on any failure
-  (async () => {
-    try {
-      // 1. Resolve designated AFTER sample reference image (authoritative target for scene, styling, and composition)
-      const resolvedRefImage =
-        template.sampleResult ||
-        template.sampleAfter ||
-        template.referenceImageUrl ||
-        (template.recipe as any)?.sampleResult ||
-        (template.recipe as any)?.referenceImageUrl ||
-        template.recipe?.referenceAssets?.[0] ||
-        (template.type === 'photo' ? template.cover : undefined);
-
-      if (template.type === 'photo' && !resolvedRefImage) {
-        throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
-      }
-
-      // 2. Authoritative Prompt Construction (Prompt Standard v1.1 & v1.2 Modality Hierarchy)
-      // GLOBAL_TEMPLATE_INTERPRETATION_PROMPT + CATEGORY_PROMPT + TEMPLATE_MASTER_RECIPE + USER_CUSTOM_INSTRUCTIONS
-      const categoryPrompt = prodDb.getCategoryPrompt(template.category);
-      const recipePrompt = template.recipe?.prompt?.trim();
-      const isCoupleValid = Boolean(
-        isCoupleTemplate &&
-        hasConfiguredCoupleSlots &&
-        sanitizedStructuredMedia.some(m => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1') &&
-        sanitizedStructuredMedia.some(m => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2')
-      );
-
-      const effectivePrompt = buildUnifiedGenerationPrompt({
-        categoryPrompt,
-        templateRecipePrompt: recipePrompt,
-        userCustomInstructions: sanitizedCustomPrompt,
-        templateTitle: template.title,
-        templateCategory: template.category,
-        hasAfterReference: Boolean(resolvedRefImage),
-        hasBeforeReference: Boolean(template.sampleBefore),
-        outputType: template.type,
-        workflow: template.workflow,
-        isCouple: isCoupleValid,
-        hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
-        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any,
-        wardrobeSourceA: req.body.wardrobeSourceA,
-        wardrobeSourceB: req.body.wardrobeSourceB
-      });
-
-      const effectiveRecipe = template.recipe ? {
-        ...template.recipe,
-        provider: templateConfiguredProvider,
-        adapter: templateConfiguredAdapter || template.recipe.adapter,
-        prompt: effectivePrompt,
-        model: effectiveModel,
-        resolution: requestedResolution,
-        duration: requestedDuration,
-        referenceImageUrl: resolvedRefImage,
-        sampleBefore: template.sampleBefore,
-        sampleResult: resolvedRefImage
-      } : {
-        version: '1.0',
-        inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
-        provider: templateConfiguredProvider || (template.type === 'photo' ? 'gemini' : 'higgsfield'),
-        adapter: templateConfiguredAdapter || undefined,
-        model: effectiveModel,
-        engine: template.engine || 'AI_GENERATION',
-        prompt: effectivePrompt,
-        workflow: template.workflow,
-        aspectRatio: template.aspectRatio,
-        referenceImageUrl: resolvedRefImage,
-        sampleBefore: template.sampleBefore,
-        sampleResult: resolvedRefImage
-      };
-
-      const result = await processTemplate({
-        templateId: template.id,
-        templateTitle: template.title,
-        templateType: template.type,
-        engine: template.engine,
-        provider: templateConfiguredProvider,
-        adapter: templateConfiguredAdapter || undefined,
-        workflow: template.workflow,
-        inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
-        inputMediaUrls: mediaList,
-        inputMedia: sanitizedStructuredMedia,
-        referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
-        sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
-        sampleResultUrl: resolvedRefImage,
-        sampleFaceThumbnailUrl: template.sampleFaceThumbnail, // Strictly display-only example asset
-        aspectRatio: template.aspectRatio,
-        customPrompt: sanitizedCustomPrompt,
-        ownerUserId: user.id,
-        recipe: effectiveRecipe,
-        detectedInputType,
-        drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl,
-        model: effectiveModel,
-        resolution: requestedResolution as any,
-        durationSeconds: requestedDuration,
-        isCouple: isCoupleValid,
-        wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
-      });
-
-      // Terminal State & Race Condition Guard: If generation already timed out and refunded, do NOT mark completed
-      const currentGen = prodDb.getGeneration(genId);
-      if (currentGen && currentGen.status === 'failed') {
-        console.warn(`[Generation Guard] Generation ${genId} was already marked failed/timed out. Skipping late completion.`);
-        return;
-      }
-
-      if (!result || !result.resultUrl) {
-        throw new Error('AI provider returned empty result media URL');
-      }
-
-      // Duration probing & four-tier duration tracking
-      let actualOutputDuration: number | undefined;
-      let actualBillableDuration: number | undefined;
+  try {
+    await prodDb.addGenerationAsync(generation);
+  } catch (persistErr: any) {
+    const persistMsg = String(persistErr?.message || 'Generation persistence failed');
+    console.error('[Generation Persistence Failed Before Provider Call]:', persistMsg);
+    let refunded = false;
+    if (!isAuthorizedAdmin) {
       try {
-        if (template.type === 'video' || isVideoMedia(result.resultUrl)) {
-          actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl);
+        refunded = await prodDb.refundCredits(user.id, requiredCredits, `Refund: Generation record save failed (${template.title})`, genId);
+      } catch (refundErr: any) {
+        console.error('[Generation Persistence Refund Error]:', refundErr?.message || refundErr);
+      }
+    }
+    return res.status(503).json({
+      error: 'Database persistence unavailable before starting generation. Zero AI provider calls were made.',
+      code: 'GENERATION_PERSISTENCE_FAILED',
+      stage: 'persistence',
+      refunded,
+      refundStatus: refunded ? 'refunded' : (isAuthorizedAdmin ? 'none' : 'refund_pending'),
+      generationId: genId,
+      remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
+    });
+  }
+
+  // 3. Execute synchronously inside active HTTP request (Cloud Run Request-Based Billing safe; zero post-response background throttling)
+  try {
+    // 1. Resolve designated AFTER sample reference image (authoritative target for scene, styling, and composition)
+    const resolvedRefImage =
+      template.sampleResult ||
+      template.sampleAfter ||
+      template.referenceImageUrl ||
+      (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.referenceImageUrl ||
+      template.recipe?.referenceAssets?.[0] ||
+      (template.type === 'photo' ? template.cover : undefined);
+
+    if (template.type === 'photo' && !resolvedRefImage) {
+      throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
+    }
+
+    // 2. Authoritative Prompt Construction (Prompt Standard v1.1 & v1.2 Modality Hierarchy)
+    const categoryPrompt = prodDb.getCategoryPrompt(template.category);
+    const recipePrompt = template.recipe?.prompt?.trim();
+    const isCoupleValid = Boolean(
+      isCoupleTemplate &&
+      hasConfiguredCoupleSlots &&
+      sanitizedStructuredMedia.some(m => m.role === 'person_a' || m.slotId === 'partner_1' || m.slotId === 'slot_1') &&
+      sanitizedStructuredMedia.some(m => m.role === 'person_b' || m.slotId === 'partner_2' || m.slotId === 'slot_2')
+    );
+
+    const effectivePrompt = buildUnifiedGenerationPrompt({
+      categoryPrompt,
+      templateRecipePrompt: recipePrompt,
+      userCustomInstructions: sanitizedCustomPrompt,
+      templateTitle: template.title,
+      templateCategory: template.category,
+      hasAfterReference: Boolean(resolvedRefImage),
+      hasBeforeReference: Boolean(template.sampleBefore),
+      outputType: template.type,
+      workflow: template.workflow,
+      isCouple: isCoupleValid,
+      hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
+      wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any,
+      wardrobeSourceA: req.body.wardrobeSourceA,
+      wardrobeSourceB: req.body.wardrobeSourceB
+    });
+
+    const effectiveRecipe = template.recipe ? {
+      ...template.recipe,
+      provider: templateConfiguredProvider,
+      adapter: templateConfiguredAdapter || template.recipe.adapter,
+      prompt: effectivePrompt,
+      model: effectiveModel,
+      resolution: requestedResolution,
+      duration: requestedDuration,
+      referenceImageUrl: resolvedRefImage,
+      sampleBefore: template.sampleBefore,
+      sampleResult: resolvedRefImage
+    } : {
+      version: '1.0',
+      inputType: (template.type === 'photo' ? 'IMAGE_ONLY' : 'IMAGE_OR_VIDEO') as TemplateInputType,
+      provider: templateConfiguredProvider || (template.type === 'photo' ? 'gemini' : 'higgsfield'),
+      adapter: templateConfiguredAdapter || undefined,
+      model: effectiveModel,
+      engine: template.engine || 'AI_GENERATION',
+      prompt: effectivePrompt,
+      workflow: template.workflow,
+      aspectRatio: template.aspectRatio,
+      referenceImageUrl: resolvedRefImage,
+      sampleBefore: template.sampleBefore,
+      sampleResult: resolvedRefImage
+    };
+
+    // Higgsfield templates submit synchronously inside HTTP request & advance via Firestore Poll Lease (no background loop after response)
+    if (templateConfiguredProvider === 'higgsfield' || templateConfiguredAdapter === 'faceSwapAdapter') {
+      const rawDrivingVideo = template.drivingVideoUrl || template.recipe?.drivingVideoUrl || persistentMediaList[0];
+      if (!rawDrivingVideo) {
+        throw new Error('Higgsfield video template is missing drivingVideoUrl or source video.');
+      }
+      const providerVideoUrl = rawDrivingVideo.includes('/api/media/')
+        ? await mediaStorage.generateProviderSignedUrl(rawDrivingVideo, 3600)
+        : rawDrivingVideo;
+      const submittedJob = await faceSwapAdapter.submitFaceSwapJob({
+        videoUrl: providerVideoUrl,
+        imageUrls: persistentMediaList,
+        masterRecipePrompt: effectivePrompt,
+        customInstructions: sanitizedCustomPrompt,
+        provider: templateConfiguredProvider,
+        adapter: templateConfiguredAdapter || 'faceSwapAdapter',
+        model: effectiveModel,
+        workflow: template.workflow || 'MOTION_TRANSFER',
+        resolution: requestedResolution as '480p' | '720p' | '1080p',
+        durationSeconds: requestedDuration,
+        ownerUserId: user.id,
+        isCouple: isCoupleValid
+      });
+
+      const submittedGen =
+        (await prodDb.updateGenerationAsync(genId, {
+          providerRequestId: submittedJob.requestId,
+          providerStatusUrl: submittedJob.statusUrl,
+          providerEndpoint: submittedJob.endpoint,
+          providerSubmittedAt: new Date().toISOString(),
+          providerStatus: submittedJob.providerStatus
+        })) || generation;
+
+      let finalGen = submittedGen;
+      if (submittedJob.immediateVideoUrl) {
+        try {
+          finalGen = (await finalizeFaceSwapGeneration(submittedGen, submittedJob.immediateVideoUrl)) || submittedGen;
+        } catch (immErr: any) {
+          console.warn('[Template FaceSwap Immediate Finalize Note]:', immErr?.message || immErr);
         }
-      } catch (probeErr) {
-        console.warn('[Duration Probe] Failed to probe video duration:', probeErr);
       }
 
-      // Determine billable duration strictly according to verified provider dual-duration rules:
-      // min(source, 15s) + ceil(output)
-      if (modelEntry?.billsSourceVideo === true && measuredSourceVideoDuration !== undefined && actualOutputDuration !== undefined) {
-        actualBillableDuration = Math.min(15, measuredSourceVideoDuration) + Math.ceil(actualOutputDuration);
-      } else if (modelEntry?.billsSourceVideo === false && actualOutputDuration !== undefined) {
-        actualBillableDuration = Math.ceil(actualOutputDuration);
-      } else {
-        // When billsSourceVideo is UNKNOWN, do not falsely label output duration as billable
-        actualBillableDuration = undefined;
-      }
-
-      const costMeasurement = measureActualProviderCostUsd({
-        modelId: effectiveModel,
-        resolution: requestedResolution as any,
-        actualBillableDurationSeconds: actualBillableDuration
+      return res.json({
+        generation: finalGen,
+        remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
       });
+    }
 
-      const reconciliation = reconcileCostOnCompletion({
-        reservedCredits: requiredCredits,
-        actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
-        isFailed: false,
-        hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
+    const result = await processTemplate({
+      templateId: template.id,
+      templateTitle: template.title,
+      templateType: template.type,
+      engine: template.engine,
+      provider: templateConfiguredProvider,
+      adapter: templateConfiguredAdapter || undefined,
+      workflow: template.workflow,
+      inputMediaUrl, // Authoritative CUSTOMER_SOURCE_PHOTO (Real customer photo)
+      inputMediaUrls: mediaList,
+      inputMedia: sanitizedStructuredMedia,
+      referenceImageUrl: resolvedRefImage, // Authoritative TEMPLATE_AFTER_REFERENCE
+      sampleBeforeUrl: template.sampleBefore, // Optional TEMPLATE_BEFORE_REFERENCE
+      sampleResultUrl: resolvedRefImage,
+      sampleFaceThumbnailUrl: template.sampleFaceThumbnail, // Strictly display-only example asset
+      aspectRatio: template.aspectRatio,
+      customPrompt: sanitizedCustomPrompt,
+      ownerUserId: user.id,
+      recipe: effectiveRecipe,
+      detectedInputType,
+      drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl,
+      model: effectiveModel,
+      resolution: requestedResolution as any,
+      durationSeconds: requestedDuration,
+      isCouple: isCoupleValid,
+      wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
+    });
+
+    // Terminal State & Race Condition Guard: If generation already marked failed, do NOT overwrite to completed
+    const currentGen = await prodDb.getGenerationAuthoritative(genId);
+    if (currentGen && currentGen.status === 'failed') {
+      console.warn(`[Generation Guard] Generation ${genId} was already marked failed. Skipping completion.`);
+      return res.status(409).json({
+        error: currentGen.error || 'Generation was already marked failed.',
+        code: 'GENERATION_ALREADY_FAILED',
+        generation: currentGen,
+        refunded: currentGen.refundStatus === 'refunded',
+        refundStatus: currentGen.refundStatus || 'none',
+        remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
       });
+    }
 
-      // If bounded reconciliation found a refund difference, refund customer
-      if (!isAuthorizedAdmin && reconciliation.refundCredits > 0) {
-        prodDb.refundCredits(user.id, reconciliation.refundCredits, `Reconciliation Refund: Duration adjustment (${template.title})`, genId);
+    if (!result || !result.resultUrl) {
+      throw new Error('AI provider returned empty result media URL');
+    }
+
+    // Duration probing & four-tier duration tracking
+    let actualOutputDuration: number | undefined;
+    let actualBillableDuration: number | undefined;
+    try {
+      if (template.type === 'video' || isVideoMedia(result.resultUrl)) {
+        actualOutputDuration = await videoTrimmer.probeDuration(result.resultUrl);
       }
+    } catch (probeErr) {
+      console.warn('[Duration Probe] Failed to probe video duration:', probeErr);
+    }
 
-      prodDb.updateGeneration(genId, {
+    if (modelEntry?.billsSourceVideo === true && measuredSourceVideoDuration !== undefined && actualOutputDuration !== undefined) {
+      actualBillableDuration = Math.min(15, measuredSourceVideoDuration) + Math.ceil(actualOutputDuration);
+    } else if (modelEntry?.billsSourceVideo === false && actualOutputDuration !== undefined) {
+      actualBillableDuration = Math.ceil(actualOutputDuration);
+    } else {
+      actualBillableDuration = undefined;
+    }
+
+    const costMeasurement = measureActualProviderCostUsd({
+      modelId: effectiveModel,
+      resolution: requestedResolution as any,
+      actualBillableDurationSeconds: actualBillableDuration
+    });
+
+    const reconciliation = reconcileCostOnCompletion({
+      reservedCredits: requiredCredits,
+      actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
+      isFailed: false,
+      hasExactTransactionReceipt: costMeasurement.isExactTransactionCost
+    });
+
+    if (!isAuthorizedAdmin && reconciliation.refundCredits > 0) {
+      await prodDb.refundCredits(user.id, reconciliation.refundCredits, `Reconciliation Refund: Duration adjustment (${template.title})`, genId);
+    }
+
+    const completedGen =
+      (await prodDb.updateGenerationAsync(genId, {
         status: 'completed',
         resultMediaUrl: result.resultUrl,
         actualOutputDurationSeconds: actualOutputDuration,
@@ -5771,56 +5928,74 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
         reconciledCostCredits: isAuthorizedAdmin ? 0 : reconciliation.finalChargeCredits,
         completedAt: new Date().toISOString()
-      });
-    } catch (err: any) {
-      console.error('[Generation Pipeline Failed]:', err.message);
-      const errMsg = String(err?.message || 'Unknown error');
-      const derivedCode = errMsg.includes('GEMINI_API_KEY')
-        ? 'MISSING_GEMINI_API_KEY'
-        : errMsg.includes('HIGGSFIELD_API_KEY')
-        ? 'MISSING_HIGGSFIELD_API_KEY'
-        : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
-        ? 'PROVIDER_ROUTING_MISMATCH'
-        : errMsg.includes('MODEL_EVALUATION_ONLY')
-        ? 'MODEL_EVALUATION_ONLY'
-        : 'GENERATION_ERROR';
-      try {
-        emitCloudMonitoringEvent(
-          derivedCode === 'PROVIDER_ROUTING_MISMATCH' ? 'PROVIDER_ROUTING_MISMATCH' : 'GENERATION_PIPELINE_FAILURE',
-          'ERROR',
-          sanitizeMonitoringString(`Generation failed for template ${template.id} (${template.title}): ${errMsg}`),
-          {
-            source: 'generation_failure',
-            templateId: template.id,
-            templateTitle: template.title,
-            provider: templateConfiguredProvider,
-            adapter: templateConfiguredAdapter || modelEntry?.adapterId,
-            model: effectiveModel,
-            generationId: genId,
-            errorCode: derivedCode,
-            errorStage: 'generation_pipeline',
-            correlationId: genId,
-            endpoint: '/api/generations/create',
-            rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
-            recommendedAction:
-              derivedCode === 'MISSING_GEMINI_API_KEY'
-                ? 'Configure valid GEMINI_API_KEY secret in server environment / Cloud Run.'
-                : derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
-                ? 'Configure valid HIGGSFIELD_API_KEY secret in server environment / Cloud Run.'
-                : 'Inspect template provider/adapter/model assignment and Diagnostics readiness matrix.'
-          }
-        );
-      } catch {}
-      prodDb.updateGeneration(genId, {
-        status: 'failed',
-        error: err.message || 'Generation failed'
-      });
-      // 100% Exact Automatic Credit Refund for customers (bypassed for zero-credit admin testing)
-      if (!isAuthorizedAdmin) {
-        prodDb.refundCredits(user.id, requiredCredits, `Refund: Failed generation (${template.title})`, genId);
-      }
-    }
-  })();
+      })) || (await prodDb.getGenerationAuthoritative(genId)) || generation;
+
+    return res.json({
+      generation: completedGen,
+      remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
+    });
+  } catch (err: any) {
+    console.error('[Generation Pipeline Failed]:', err.message);
+    const errMsg = String(err?.message || 'Unknown error');
+    const derivedCode = errMsg.includes('GEMINI_API_KEY')
+      ? 'MISSING_GEMINI_API_KEY'
+      : errMsg.includes('HIGGSFIELD_API_KEY')
+      ? 'MISSING_HIGGSFIELD_API_KEY'
+      : errMsg.includes('PROVIDER_ROUTING_MISMATCH')
+      ? 'PROVIDER_ROUTING_MISMATCH'
+      : errMsg.includes('MODEL_EVALUATION_ONLY')
+      ? 'MODEL_EVALUATION_ONLY'
+      : 'GENERATION_ERROR';
+    try {
+      emitCloudMonitoringEvent(
+        derivedCode === 'PROVIDER_ROUTING_MISMATCH' ? 'PROVIDER_ROUTING_MISMATCH' : 'GENERATION_PIPELINE_FAILURE',
+        'ERROR',
+        sanitizeMonitoringString(`Generation failed for template ${template.id} (${template.title}): ${errMsg}`),
+        {
+          source: 'generation_failure',
+          templateId: template.id,
+          templateTitle: template.title,
+          provider: templateConfiguredProvider,
+          adapter: templateConfiguredAdapter || modelEntry?.adapterId,
+          model: effectiveModel,
+          generationId: genId,
+          errorCode: derivedCode,
+          errorStage: 'generation_pipeline',
+          correlationId: genId,
+          endpoint: '/api/generations/create',
+          rootCause: sanitizeMonitoringString(errMsg.slice(0, 200)),
+          recommendedAction:
+            derivedCode === 'MISSING_GEMINI_API_KEY'
+              ? 'Configure valid GEMINI_API_KEY secret in server environment / Cloud Run.'
+              : derivedCode === 'MISSING_HIGGSFIELD_API_KEY'
+              ? 'Configure valid HIGGSFIELD_API_KEY secret in server environment / Cloud Run.'
+              : 'Inspect template provider/adapter/model assignment and Diagnostics readiness matrix.'
+        }
+      );
+    } catch {}
+
+    const refundOutcome = await attemptDurableGenerationRefund({
+      genId,
+      userId: user.id,
+      creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
+      reason: `Refund: Failed generation (${template.title})`,
+      errorMsg: errMsg,
+      shouldRefund: !isAuthorizedAdmin
+    });
+
+    const latestWallet = await prodDb.getWalletAuthoritative(user.id);
+    const httpStatus = derivedCode.startsWith('MISSING_') ? 503 : 502;
+    return res.status(httpStatus).json({
+      error: errMsg,
+      code: derivedCode,
+      stage: 'generation_pipeline',
+      refunded: refundOutcome.refunded,
+      refundStatus: refundOutcome.refundStatus,
+      generationId: genId,
+      generation: refundOutcome.generation,
+      remainingCredits: latestWallet.balance
+    });
+  }
 });
 
 // Calculate Face Swap Credits Authoritatively based on source + output duration, model, resolution, and Live USD/INR FX
@@ -6123,7 +6298,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
 
   const requiredCredits = faceSwapQuote.credits;
 
-  const wallet = prodDb.getWallet(user.id);
+  const wallet = await prodDb.getWalletAuthoritative(user.id);
   if (wallet.balance < requiredCredits) {
     return res.status(402).json({
       error: 'Insufficient credits for Face/Character Video',
@@ -6138,18 +6313,84 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
   const genId = `gen_fsv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const sanitizedInstructions = customInstructions ? String(customInstructions).trim().slice(0, 300) : undefined;
 
-  // 5. Atomic Credit Reservation
-  const reserved = prodDb.reserveCredits(
-    user.id,
-    requiredCredits,
-    `Face Swap Video (${clampedSourceDuration}s src + ${billableOutputDuration}s out @ ${sceneResolution})`,
-    genId
-  );
+  // 5. Authoritative Awaited Credit Reservation (ZERO provider calls if reservation fails or throws)
+  let reserved = false;
+  try {
+    reserved = await prodDb.reserveCredits(
+      user.id,
+      requiredCredits,
+      `Face Swap Video (${clampedSourceDuration}s src + ${billableOutputDuration}s out @ ${sceneResolution})`,
+      genId
+    );
+  } catch (reserveErr: any) {
+    console.error('[FaceSwap Credit Reservation Error]:', reserveErr?.message || reserveErr);
+    return res.status(503).json({
+      error: 'Failed to reserve credits in authoritative database. Zero Higgsfield API calls were made.',
+      code: 'CREDIT_RESERVATION_FAILED',
+      stage: 'credit_reservation'
+    });
+  }
   if (!reserved) {
-    return res.status(402).json({ error: 'Failed to reserve credits' });
+    return res.status(402).json({
+      error: 'Failed to reserve credits',
+      code: 'INSUFFICIENT_CREDITS',
+      stage: 'credit_reservation',
+      requiredCredits,
+      currentBalance: (await prodDb.getWalletAuthoritative(user.id)).balance
+    });
   }
 
-  // 6. Submit to Higgsfield synchronously inside active HTTP request (Request-Based Billing safe; no unawaited 5-min loop)
+  // 6. Persist initial durable generation record BEFORE provider submission (fail closed)
+  const nowIso = new Date().toISOString();
+  const initialGeneration: Generation = {
+    id: genId,
+    userId: user.id,
+    templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
+    templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableOutputDuration}s)` : `Face Swap Video (${billableOutputDuration}s)`,
+    templateType: 'video',
+    aspectRatio: '9:16',
+    status: 'processing',
+    refundStatus: 'none',
+    inputMediaUrl: allReferenceUrls[0],
+    creditCost: requiredCredits,
+    engine: 'AI_GENERATION',
+    model: sceneModel,
+    workflow: sceneWorkflow,
+    resolution: sceneResolution,
+    durationSeconds: billableOutputDuration,
+    requestedOutputDurationSeconds: billableOutputDuration,
+    sourceVideoDurationSeconds: clampedSourceDuration,
+    createdAt: nowIso,
+    isAiGenerated: true
+  };
+
+  try {
+    await prodDb.addGenerationAsync(initialGeneration);
+  } catch (persistErr: any) {
+    console.error('[FaceSwap Persistence Failed Before Provider Submit]:', persistErr?.message || persistErr);
+    let refunded = false;
+    try {
+      refunded = await prodDb.refundCredits(
+        user.id,
+        requiredCredits,
+        `Refund: FaceSwap generation record save failed (${totalBillableDuration}s)`,
+        genId
+      );
+    } catch (refundErr: any) {
+      console.error('[FaceSwap Persistence Refund Error]:', refundErr?.message || refundErr);
+    }
+    return res.status(503).json({
+      error: 'Database persistence unavailable before starting FaceSwap generation. Zero Higgsfield API calls were made.',
+      code: 'GENERATION_PERSISTENCE_FAILED',
+      stage: 'persistence',
+      refunded,
+      refundStatus: refunded ? 'refunded' : 'refund_pending',
+      generationId: genId,
+      remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
+    });
+  }
+
+  // 7. Submit to Higgsfield synchronously inside active HTTP request (Request-Based Billing safe; no unawaited background loop)
   let submittedJob: Awaited<ReturnType<typeof faceSwapAdapter.submitFaceSwapJob>>;
   try {
     const providerVideoUrl = await mediaStorage.generateProviderSignedUrl(trimmedVideoUrl, 3600);
@@ -6204,72 +6445,36 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
       );
     } catch {}
 
-    const failedGen: Generation = {
-      id: genId,
+    const refundOutcome = await attemptDurableGenerationRefund({
+      genId,
       userId: user.id,
-      templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
-      templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableOutputDuration}s)` : `Face Swap Video (${billableOutputDuration}s)`,
-      templateType: 'video',
-      aspectRatio: '9:16',
-      status: 'failed',
-      error: errMsg,
-      inputMediaUrl: allReferenceUrls[0],
       creditCost: requiredCredits,
-      engine: 'AI_GENERATION',
-      model: sceneModel,
-      workflow: sceneWorkflow,
-      resolution: sceneResolution,
-      durationSeconds: billableOutputDuration,
-      requestedOutputDurationSeconds: billableOutputDuration,
-      sourceVideoDurationSeconds: clampedSourceDuration,
-      createdAt: new Date().toISOString(),
-      isAiGenerated: true
-    };
-    prodDb.addGeneration(failedGen);
-    await prodDb.refundCredits(
-      user.id,
-      requiredCredits,
-      `Refund: Failed Face Video Submission (${totalBillableDuration}s)`,
-      genId
-    );
+      reason: `Refund: Failed Face Video Submission (${totalBillableDuration}s)`,
+      errorMsg: errMsg,
+      shouldRefund: true
+    });
+
     return res.status(derivedCode === 'MISSING_HIGGSFIELD_API_KEY' ? 503 : 502).json({
       error: errMsg,
       code: derivedCode,
       stage: 'provider_submit',
-      refunded: true,
+      refunded: refundOutcome.refunded,
+      refundStatus: refundOutcome.refundStatus,
       generationId: genId,
-      remainingCredits: prodDb.getWallet(user.id).balance
+      generation: refundOutcome.generation,
+      remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
     });
   }
 
-  // 7. Record Durable Generation State with persisted provider job tracking in Firestore (default)
-  const nowIso = new Date().toISOString();
-  const generation: Generation = {
-    id: genId,
-    userId: user.id,
-    templateId: selectedScene?.id || 'tpl_face_swap_genjutsu',
-    templateTitle: selectedScene?.title ? `${selectedScene.title} (${billableOutputDuration}s)` : `Face Swap Video (${billableOutputDuration}s)`,
-    templateType: 'video',
-    aspectRatio: '9:16',
-    status: 'processing',
-    inputMediaUrl: allReferenceUrls[0],
-    creditCost: requiredCredits,
-    engine: 'AI_GENERATION',
-    model: sceneModel,
-    workflow: sceneWorkflow,
-    resolution: sceneResolution,
-    durationSeconds: billableOutputDuration,
-    requestedOutputDurationSeconds: billableOutputDuration,
-    sourceVideoDurationSeconds: clampedSourceDuration,
-    providerRequestId: submittedJob.requestId,
-    providerStatusUrl: submittedJob.statusUrl,
-    providerEndpoint: submittedJob.endpoint,
-    providerSubmittedAt: nowIso,
-    providerStatus: submittedJob.providerStatus,
-    createdAt: nowIso,
-    isAiGenerated: true
-  };
-  prodDb.addGeneration(generation);
+  // 8. Persist provider job tracking durably in Firestore (default)
+  const generation =
+    (await prodDb.updateGenerationAsync(genId, {
+      providerRequestId: submittedJob.requestId,
+      providerStatusUrl: submittedJob.statusUrl,
+      providerEndpoint: submittedJob.endpoint,
+      providerSubmittedAt: nowIso,
+      providerStatus: submittedJob.providerStatus
+    }).catch(() => null)) || initialGeneration;
 
   let finalGeneration = generation;
   if (submittedJob.immediateVideoUrl) {
@@ -6286,7 +6491,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     durationSeconds: billableOutputDuration,
     sourceVideoDurationSeconds: clampedSourceDuration,
     billableDurationSeconds: totalBillableDuration,
-    remainingCredits: prodDb.getWallet(user.id).balance
+    remainingCredits: (await prodDb.getWalletAuthoritative(user.id)).balance
   });
 });
 
@@ -6365,8 +6570,7 @@ async function finalizeFaceSwapGeneration(
   if (leaseOwner) {
     return await prodDb.releaseGenerationPollLease(currentGen.id, leaseOwner, updates);
   }
-  prodDb.updateGeneration(currentGen.id, updates);
-  return await prodDb.getGenerationAuthoritative(currentGen.id);
+  return (await prodDb.updateGenerationAsync(currentGen.id, updates)) || (await prodDb.getGenerationAuthoritative(currentGen.id));
 }
 
 /**
@@ -6381,6 +6585,28 @@ async function advanceGenerationIfNeeded(
 ): Promise<Generation | null> {
   const gen = await prodDb.getGenerationAuthoritative(genId);
   if (!gen) return null;
+
+  // Automatic durable recovery if an earlier transient Firestore failure left a failed generation with refund_pending
+  if (gen.status === 'failed' && gen.refundStatus === 'refund_pending' && gen.creditCost > 0) {
+    try {
+      await prodDb.refundCredits(
+        gen.userId,
+        gen.creditCost,
+        `Recovery Refund: Failed generation (${gen.templateTitle})`,
+        gen.id
+      );
+      return (
+        (await prodDb.updateGenerationAsync(gen.id, {
+          refundStatus: 'refunded',
+          refundError: ''
+        })) || (await prodDb.getGenerationAuthoritative(gen.id))
+      );
+    } catch (recoveryErr: any) {
+      console.warn(`[Refund Recovery Note] (${gen.id}):`, recoveryErr?.message || recoveryErr);
+      return gen;
+    }
+  }
+
   if (gen.status !== 'processing' || Boolean(gen.resultMediaUrl)) {
     return gen;
   }
@@ -6412,20 +6638,22 @@ async function advanceGenerationIfNeeded(
 
       if (check.state === 'failed' && check.isTerminal) {
         const errText = check.error || `Higgsfield job terminated (${check.providerStatus})`;
-        const updatedFailed = await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
+        await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
           status: 'failed',
           providerStatus: check.providerStatus,
-          error: errText
+          error: errText,
+          refundStatus: leasedGen.creditCost > 0 ? 'refund_pending' : 'none'
         });
-        if (leasedGen.creditCost > 0) {
-          await prodDb.refundCredits(
-            leasedGen.userId,
-            leasedGen.creditCost,
-            `Refund: Provider terminated Face Video (${check.providerStatus})`,
-            genId
-          );
-        }
-        return updatedFailed || (await prodDb.getGenerationAuthoritative(genId));
+        const refundOutcome = await attemptDurableGenerationRefund({
+          genId,
+          userId: leasedGen.userId,
+          creditCost: leasedGen.creditCost,
+          reason: `Refund: Provider terminated Face Video (${check.providerStatus})`,
+          errorMsg: errText,
+          providerStatus: check.providerStatus,
+          shouldRefund: leasedGen.creditCost > 0
+        });
+        return refundOutcome.generation || (await prodDb.getGenerationAuthoritative(genId));
       }
 
       // Still pending/queued/in_progress on provider: keep processing cleanly, NEVER timeout at 5m!
@@ -6438,16 +6666,17 @@ async function advanceGenerationIfNeeded(
       if (msg.startsWith('SECURITY_')) {
         await prodDb.releaseGenerationPollLease(genId, leaseOwner, {
           status: 'failed',
-          error: msg
+          error: msg,
+          refundStatus: leasedGen.creditCost > 0 ? 'refund_pending' : 'none'
         });
-        if (leasedGen.creditCost > 0) {
-          await prodDb.refundCredits(
-            leasedGen.userId,
-            leasedGen.creditCost,
-            `Refund: Unsafe provider media output rejected (${leasedGen.templateTitle})`,
-            genId
-          );
-        }
+        await attemptDurableGenerationRefund({
+          genId,
+          userId: leasedGen.userId,
+          creditCost: leasedGen.creditCost,
+          reason: `Refund: Unsafe provider media output rejected (${leasedGen.templateTitle})`,
+          errorMsg: msg,
+          shouldRefund: leasedGen.creditCost > 0
+        });
       } else {
         await prodDb.releaseGenerationPollLease(genId, leaseOwner);
       }
@@ -6461,13 +6690,15 @@ async function advanceGenerationIfNeeded(
     const freshGen = await prodDb.getGenerationAuthoritative(genId);
     if (freshGen && freshGen.status === 'processing' && !freshGen.resultMediaUrl && !freshGen.providerRequestId && !freshGen.providerStatusUrl) {
       console.warn(`[Generation Timeout] Orphan generation ${genId} stuck > 5m without provider job handle. Marking failed with Exact-Once Refund.`);
-      prodDb.updateGeneration(genId, {
-        status: 'failed',
-        error: 'The generation timed out before reaching the provider queue. Credits have been automatically refunded.'
+      const timeoutMsg = 'The generation timed out before reaching the provider queue. Credits have been automatically refunded.';
+      await attemptDurableGenerationRefund({
+        genId,
+        userId: freshGen.userId,
+        creditCost: freshGen.creditCost,
+        reason: `Refund: Timed out generation (${freshGen.templateTitle})`,
+        errorMsg: timeoutMsg,
+        shouldRefund: freshGen.creditCost > 0
       });
-      if (freshGen.creditCost > 0) {
-        await prodDb.refundCredits(freshGen.userId, freshGen.creditCost, `Refund: Timed out generation (${freshGen.templateTitle})`, genId);
-      }
     }
   }
   return await prodDb.getGenerationAuthoritative(genId);

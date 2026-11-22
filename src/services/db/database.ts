@@ -1318,7 +1318,8 @@ export class ProductionDatabase {
     const sanitized = JSON.parse(JSON.stringify(data));
     const isCritical = ['auth_identities', 'users', 'wallets', 'templates'].includes(collectionName);
     const maxAttempts = isCritical ? 3 : 1;
-    const effectiveMaxAttempts = collectionName === 'media_metadata' ? 2 : maxAttempts;
+    const isDurableLedger = ['generations', 'payments', 'subscriptions'].includes(collectionName);
+    const effectiveMaxAttempts = collectionName === 'media_metadata' ? 2 : (isDurableLedger ? 3 : maxAttempts);
 
     for (let attempt = 1; attempt <= effectiveMaxAttempts; attempt++) {
       try {
@@ -1978,7 +1979,7 @@ export class ProductionDatabase {
     return true;
   }
 
-  public async refundCredits(userId: string, amount: number, description: string, refId: string): Promise<void> {
+  public async refundCredits(userId: string, amount: number, description: string, refId: string): Promise<boolean> {
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
@@ -2049,7 +2050,7 @@ export class ProductionDatabase {
           this.db.wallets[userId] = walletData;
           this.save();
         });
-        return;
+        return true;
       } catch (err: any) {
         console.error('[Database] FAIL-CLOSED: Atomic Firestore refundCredits failed:', err.message);
         // Fail-closed: Never fall back to local/in-memory processing on Firestore transaction failure
@@ -2071,7 +2072,7 @@ export class ProductionDatabase {
       );
       if (existingTx) {
         console.warn(`[Local Refund Guard] Duplicate refund prevented for referenceId: ${refId}`);
-        return;
+        return true;
       }
     }
 
@@ -2110,6 +2111,7 @@ export class ProductionDatabase {
     await this.syncToFirestore('transactions', tx.id, tx);
 
     this.getWallet(userId);
+    return true;
   }
 
   public async creditWallet(
@@ -2382,10 +2384,29 @@ export class ProductionDatabase {
   }
 
   public async getGenerationAuthoritative(id: string): Promise<Generation | null> {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const docSnap = await fsDb.collection('generations').doc(id).get();
+        if (docSnap.exists) {
+          const remoteGen = docSnap.data() as Generation;
+          const idx = this.db.generations.findIndex(g => g.id === remoteGen.id);
+          if (idx === -1) {
+            this.db.generations.unshift(remoteGen);
+          } else {
+            this.db.generations[idx] = remoteGen;
+          }
+          return remoteGen;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getGenerationAuthoritative lookup note:', err.message);
+      }
+    }
+
     const local = this.getGeneration(id);
     if (local) return local;
 
-    if (fs.existsSync(this.dbFilePath)) {
+    if (this.persistToDisk && fs.existsSync(this.dbFilePath)) {
       try {
         const diskDb = JSON.parse(fs.readFileSync(this.dbFilePath, 'utf-8'));
         const diskGen = (diskDb.generations || []).find((g: any) => g.id === id);
@@ -2397,21 +2418,6 @@ export class ProductionDatabase {
         }
       } catch {}
     }
-
-    if (adminFirestoreDb) {
-      try {
-        const docSnap = await adminFirestoreDb.collection('generations').doc(id).get();
-        if (docSnap.exists) {
-          const gen = docSnap.data() as Generation;
-          if (!this.db.generations.some(g => g.id === gen.id)) {
-            this.db.generations.unshift(gen);
-          }
-          return gen;
-        }
-      } catch (err: any) {
-        console.warn('[Firestore] getGenerationAuthoritative lookup note:', err.message);
-      }
-    }
     return null;
   }
 
@@ -2420,9 +2426,10 @@ export class ProductionDatabase {
   }
 
   public async getUserGenerationsAuthoritative(userId: string): Promise<Generation[]> {
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const snap = await adminFirestoreDb
+        const snap = await fsDb
           .collection('generations')
           .where('userId', '==', userId)
           .get();
@@ -2470,10 +2477,11 @@ export class ProductionDatabase {
     const nowIso = new Date(nowMs).toISOString();
     const leaseUntilIso = new Date(nowMs + Math.max(3000, leaseDurationMs)).toISOString();
 
-    if (adminFirestoreDb && typeof adminFirestoreDb.runTransaction === 'function') {
+    const fsDb = this.firestoreDb;
+    if (fsDb && typeof fsDb.runTransaction === 'function') {
       try {
-        const result = await adminFirestoreDb.runTransaction(async (t: any) => {
-          const genRef = adminFirestoreDb.collection('generations').doc(genId);
+        const result = await fsDb.runTransaction(async (t: any) => {
+          const genRef = fsDb.collection('generations').doc(genId);
           const snap = await t.get(genRef);
           const localFallback = this.db.generations.find(g => g.id === genId) || null;
           const genData = snap.exists ? (snap.data() as Generation) : localFallback;
@@ -2552,10 +2560,11 @@ export class ProductionDatabase {
     leaseOwner: string,
     extraUpdates?: Partial<Generation>
   ): Promise<Generation | null> {
-    if (adminFirestoreDb && typeof adminFirestoreDb.runTransaction === 'function') {
+    const fsDb = this.firestoreDb;
+    if (fsDb && typeof fsDb.runTransaction === 'function') {
       try {
-        return await adminFirestoreDb.runTransaction(async (t: any) => {
-          const genRef = adminFirestoreDb.collection('generations').doc(genId);
+        return await fsDb.runTransaction(async (t: any) => {
+          const genRef = fsDb.collection('generations').doc(genId);
           const snap = await t.get(genRef);
           const localFallback = this.db.generations.find(g => g.id === genId) || null;
           const genData = snap.exists ? (snap.data() as Generation) : localFallback;
@@ -2612,6 +2621,35 @@ export class ProductionDatabase {
     this.syncToFirestore('generations', stored.id, stored);
   }
 
+  public async addGenerationAsync(gen: Generation): Promise<Generation> {
+    const stored = { ...gen };
+    const existingIdx = this.db.generations.findIndex(g => g.id === stored.id);
+    if (existingIdx >= 0) {
+      this.db.generations[existingIdx] = stored;
+    } else {
+      this.db.generations.unshift(stored);
+      if (this.db.users[stored.userId]) {
+        this.db.users[stored.userId].generationCount = (this.db.users[stored.userId].generationCount || 0) + 1;
+      }
+    }
+    this.save();
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      const syncRes = await this.syncToFirestore('generations', stored.id, stored);
+      if (!syncRes.cloudPersisted) {
+        this.db.generations = this.db.generations.filter(g => g.id !== stored.id);
+        this.save();
+        throw new Error(`Authoritative Firestore persistence failed for generation '${stored.id}': ${syncRes.error || 'write_failed'}`);
+      }
+    } else if (process.env.NODE_ENV === 'production' && !isIsolatedTestEnv) {
+      this.db.generations = this.db.generations.filter(g => g.id !== stored.id);
+      this.save();
+      throw new Error(`Authoritative Firestore database is unavailable to persist generation '${stored.id}'.`);
+    }
+    return stored;
+  }
+
   public updateGeneration(genId: string, updates: Partial<Generation>): void {
     const gen = this.db.generations.find(g => g.id === genId);
     if (gen) {
@@ -2636,6 +2674,32 @@ export class ProductionDatabase {
       this.save();
       this.syncToFirestore('generations', genId, gen);
     }
+  }
+
+  public async updateGenerationAsync(genId: string, updates: Partial<Generation>): Promise<Generation | null> {
+    let gen = this.db.generations.find(g => g.id === genId) || null;
+    if (!gen) {
+      gen = await this.getGenerationAuthoritative(genId);
+    }
+    if (!gen) return null;
+
+    if (gen.status === 'failed' && updates.status === 'completed') {
+      console.warn(`[Generation Guard] Attempted to mark failed/refunded generation ${genId} as completed. Blocked to prevent inconsistent state.`);
+      return gen;
+    }
+    if (gen.status === 'completed' && updates.status === 'failed') {
+      console.warn(`[Generation Guard] Attempted to mark completed generation ${genId} as failed. Blocked to prevent duplicate refund.`);
+      return gen;
+    }
+    if (updates.status === 'completed' && !updates.resultMediaUrl && !gen.resultMediaUrl) {
+      console.error(`[Generation Guard] Cannot mark generation ${genId} completed without verified resultMediaUrl.`);
+      return gen;
+    }
+
+    Object.assign(gen, updates);
+    this.save();
+    await this.syncToFirestore('generations', genId, gen);
+    return gen;
   }
 
   /* =========================================================================
@@ -3797,13 +3861,10 @@ export class ProductionDatabase {
   }
 
   public async getPaymentAuthoritative(identifier: string): Promise<PaymentRecord | null> {
-    const local = this.getPayment(identifier);
-    if (local) return local;
-
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
-        // Try direct doc
+        // Query Firestore directly so cross-Cloud-Run status transitions (e.g. pending -> captured) are never masked by stale RAM
         const directDoc = await fsDb.collection('payments').doc(identifier).get();
         if (directDoc.exists) {
           const rec = directDoc.data() as PaymentRecord;
@@ -3824,7 +3885,7 @@ export class ProductionDatabase {
         console.warn('[Firestore] getPaymentAuthoritative lookup note:', err.message);
       }
     }
-    return null;
+    return this.getPayment(identifier);
   }
 
   public async setSubscription(sub: UserSubscription): Promise<void> {
@@ -3839,12 +3900,10 @@ export class ProductionDatabase {
 
   public async getSubscriptionAuthoritative(userId: string): Promise<UserSubscription | null> {
     if (!userId) return null;
-    const local = this.getSubscription(userId);
-    if (local) return local;
-
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
+        // Query Firestore directly so cross-Cloud-Run subscription updates (active/cancelled/renewed) override stale RAM
         const docSnap = await fsDb.collection('subscriptions').doc(userId).get();
         if (docSnap.exists) {
           const sub = docSnap.data() as UserSubscription;
@@ -3855,7 +3914,7 @@ export class ProductionDatabase {
         console.warn('[Firestore] getSubscriptionAuthoritative lookup note:', err?.message || err);
       }
     }
-    return null;
+    return this.getSubscription(userId);
   }
 
   public async isWebhookProcessed(eventId: string): Promise<boolean> {

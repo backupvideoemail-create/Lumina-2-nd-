@@ -1125,11 +1125,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           timestamp: data.generation.createdAt
         };
       } else {
+        if (data.generation) {
+          setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
+        }
+        if (data.remainingCredits !== undefined && wallet) {
+          setWallet({ ...wallet, balance: data.remainingCredits });
+        }
+        if (data.refunded || data.generation) {
+          await refreshUserData();
+        }
         if (res.status === 402) {
           setInsufficientCreditsModal({
             open: true,
             requiredCredits: data.requiredCredits || 30,
-            availableCredits: wallet?.balance ?? 0
+            availableCredits: data.currentBalance ?? data.remainingCredits ?? wallet?.balance ?? 0
           });
         }
         return {
@@ -1201,11 +1210,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           timestamp: data.generation.createdAt
         };
       } else {
+        if (data.generation) {
+          setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
+        }
+        if (data.remainingCredits !== undefined && wallet) {
+          setWallet({ ...wallet, balance: data.remainingCredits });
+        }
+        if (data.refunded || data.generation) {
+          await refreshUserData();
+        }
         if (res.status === 402) {
           setInsufficientCreditsModal({
             open: true,
             requiredCredits: data.requiredCredits || 214,
-            availableCredits: wallet?.balance ?? 0
+            availableCredits: data.currentBalance ?? data.remainingCredits ?? wallet?.balance ?? 0
           });
         }
         return {

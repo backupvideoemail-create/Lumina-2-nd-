@@ -243,6 +243,8 @@ export interface Generation {
   providerStatus?: string;
   pollLeaseUntil?: string;
   pollLeaseOwner?: string;
+  refundStatus?: 'none' | 'refund_pending' | 'refunded';
+  refundError?: string;
 }
 
 export type SubscriptionStatus =

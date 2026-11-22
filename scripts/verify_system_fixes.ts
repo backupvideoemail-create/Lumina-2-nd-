@@ -4327,6 +4327,261 @@ async function runSystemVerification() {
     if (fs.existsSync(legacyCloudRunDbFile48)) fs.unlinkSync(legacyCloudRunDbFile48);
   }
 
+  // =========================================================================
+  // SUITE 49: 4 P0 BACKEND FIXES, REFUND RECOVERY & CROSS-CLOUD-RUN CACHE
+  // =========================================================================
+  console.log('\n--- Suite 49: 4 P0 Backend Fixes, Idempotent Refund Recovery & Cross-Cloud-Run Cache Elimination ---');
+  const serverSrc49 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  const dbSrc49 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/db/database.ts'), 'utf8');
+
+  // 49.1 Both generation endpoints await prodDb.reserveCredits & check authoritative wallet before any provider call
+  const createGenSection49 = serverSrc49.slice(
+    serverSrc49.indexOf("app.post('/api/generations/create'"),
+    serverSrc49.indexOf("app.post('/api/faceswap/calculate-cost'")
+  );
+  const faceSwapSection49 = serverSrc49.slice(
+    serverSrc49.indexOf("app.post('/api/faceswap/generate'"),
+    serverSrc49.indexOf('async function finalizeFaceSwapGeneration')
+  );
+  const unawaitedReserve49 = /(?:^|[^a-zA-Z0-9_])reserved\s*=\s*prodDb\.reserveCredits\(/m.test(serverSrc49);
+  const hasBackgroundIIFEAfterRes49 =
+    createGenSection49.includes('res.json({\n    generation,\n    remainingCredits:') &&
+    createGenSection49.includes('(async () => {');
+
+  assert(
+    !unawaitedReserve49 &&
+      createGenSection49.includes('await prodDb.reserveCredits(') &&
+      createGenSection49.includes('await prodDb.getWalletAuthoritative(user.id)') &&
+      createGenSection49.includes('await prodDb.addGenerationAsync(generation)') &&
+      faceSwapSection49.includes('await prodDb.reserveCredits(') &&
+      faceSwapSection49.includes('await prodDb.getWalletAuthoritative(user.id)') &&
+      faceSwapSection49.includes('await prodDb.addGenerationAsync(initialGeneration)') &&
+      !hasBackgroundIIFEAfterRes49 &&
+      createGenSection49.includes('const result = await processTemplate(') &&
+      serverSrc49.includes("gen.status === 'failed' && gen.refundStatus === 'refund_pending'"),
+    '49.1 Both generation endpoints await reserveCredits(), persist via addGenerationAsync() before provider calls, run inline inside Cloud Run HTTP request, and support refund_pending recovery'
+  );
+
+  // 49.2 Runtime test: addGenerationAsync fail-closed when Firestore write fails + rolls back RAM + zero credits lost
+  const dbFile49A = pathUtil.join(process.cwd(), '.data', `suite49_a_${Date.now()}.json`);
+  const dbFile49B = pathUtil.join(process.cwd(), '.data', `suite49_b_${Date.now()}.json`);
+  const db49A = new ProductionDatabase(dbFile49A);
+  const db49B = new ProductionDatabase(dbFile49B);
+
+  try {
+    const user49 = await db49A.getOrCreateUserAsync({
+      firebaseUid: `fb_suite49_${Date.now()}`,
+      email: 'suite49.p0@test.local',
+      name: 'Suite 49 Tester'
+    });
+    await db49A.creditWallet(user49.user.id, 100, 'Suite 49 Seed Credits', `seed_49_${Date.now()}`, 'purchase');
+
+    // Reserve awaited returns false when insufficient -> 0 balance drift
+    const overReserve49 = await db49A.reserveCredits(user49.user.id, 250, 'Too expensive', `gen_over_${Date.now()}`);
+    const afterOverBalance49 = (await db49A.getWalletAuthoritative(user49.user.id)).balance;
+    assert(
+      overReserve49 === false && afterOverBalance49 === 100,
+      `49.2a Awaited reserveCredits rejects insufficient balance (${overReserve49}) with zero balance change (${afterOverBalance49} === 100)`
+    );
+
+    // Simulate Firestore rejection on generation write inside addGenerationAsync
+    const originalGenDoc = (adminFirestoreDb as any).collection('generations').doc.bind((adminFirestoreDb as any).collection('generations'));
+    const failGenId49 = `gen_fail_persist_${Date.now()}`;
+    const collRef49 = (adminFirestoreDb as any).collection('generations');
+    const origCollFn = (adminFirestoreDb as any).collection.bind(adminFirestoreDb);
+    let persistThrew49 = false;
+    (adminFirestoreDb as any).collection = (name: string) => {
+      const col = origCollFn(name);
+      if (name !== 'generations') return col;
+      return {
+        ...col,
+        doc: (docId: string) => {
+          if (docId !== failGenId49) return col.doc(docId);
+          return {
+            get: () => col.doc(docId).get(),
+            delete: () => col.doc(docId).delete(),
+            set: async () => {
+              throw new Error('SIMULATED_FIRESTORE_UNAVAILABLE');
+            }
+          };
+        }
+      };
+    };
+    try {
+      await db49A.addGenerationAsync({
+        id: failGenId49,
+        userId: user49.user.id,
+        templateId: 'tpl_full_swag_1',
+        templateTitle: 'Full Swag',
+        templateType: 'photo',
+        aspectRatio: '9:16',
+        status: 'processing',
+        creditCost: 10,
+        inputMediaUrl: 'https://example.com/input.jpg',
+        engine: 'AI_GENERATION',
+        model: 'gemini-2.5-flash-image',
+        workflow: 'PHOTO_GENERATION',
+        createdAt: new Date().toISOString(),
+        isAiGenerated: true
+      });
+    } catch {
+      persistThrew49 = true;
+    } finally {
+      (adminFirestoreDb as any).collection = origCollFn;
+    }
+    const rolledBackLocal49 = db49A.getGeneration(failGenId49);
+    assert(
+      persistThrew49 === true && rolledBackLocal49 === null,
+      '49.2b addGenerationAsync fails closed when Firestore persistence fails and rolls back local cache cleanly'
+    );
+
+    // 49.3 Idempotent refund + refund_pending -> refunded recovery simulation
+    const refundGenId49 = `gen_refund_49_${Date.now()}`;
+    const reservedForRefund49 = await db49A.reserveCredits(user49.user.id, 30, 'Suite 49 Refund Gen', refundGenId49);
+    await db49A.addGenerationAsync({
+      id: refundGenId49,
+      userId: user49.user.id,
+      templateId: 'tpl_full_swag_1',
+      templateTitle: 'Full Swag',
+      templateType: 'photo',
+      aspectRatio: '9:16',
+      status: 'processing',
+      refundStatus: 'none',
+      creditCost: 30,
+      inputMediaUrl: 'https://example.com/input.jpg',
+      engine: 'AI_GENERATION',
+      model: 'gemini-2.5-flash-image',
+      workflow: 'PHOTO_GENERATION',
+      createdAt: new Date().toISOString(),
+      isAiGenerated: true
+    });
+
+    // Simulate generation failure + transient refund_pending state -> automatic recovery -> duplicate refund guard
+    await db49A.updateGenerationAsync(refundGenId49, {
+      status: 'failed',
+      error: 'SIMULATED_GEMINI_ERROR',
+      refundStatus: 'refund_pending',
+      refundError: 'SIMULATED_TRANSIENT_WALLET_TX_ERROR'
+    });
+    const balanceBeforeRecovery49 = (await db49A.getWalletAuthoritative(user49.user.id)).balance;
+    // Simulate advanceGenerationIfNeeded recovery on Instance B
+    const pendingGenOnB49 = await db49B.getGenerationAuthoritative(refundGenId49);
+    let recoveredOk49 = false;
+    if (pendingGenOnB49?.status === 'failed' && pendingGenOnB49?.refundStatus === 'refund_pending') {
+      recoveredOk49 = await db49B.refundCredits(
+        pendingGenOnB49.userId,
+        pendingGenOnB49.creditCost,
+        `Recovery Refund: ${pendingGenOnB49.templateTitle}`,
+        pendingGenOnB49.id
+      );
+      await db49B.updateGenerationAsync(pendingGenOnB49.id, { refundStatus: 'refunded', refundError: '' });
+    }
+    // Duplicate refund call on Instance A must be strict idempotent no-op
+    await db49A.refundCredits(user49.user.id, 30, 'Duplicate refund attempt', refundGenId49);
+    const balanceAfterRecovery49 = (await db49A.getWalletAuthoritative(user49.user.id)).balance;
+    const recoveredGenA49 = await db49A.getGenerationAuthoritative(refundGenId49);
+
+    assert(
+      reservedForRefund49 === true &&
+        balanceBeforeRecovery49 === 70 &&
+        recoveredOk49 === true &&
+        balanceAfterRecovery49 === 100 &&
+        recoveredGenA49?.status === 'failed' &&
+        recoveredGenA49?.refundStatus === 'refunded',
+      `49.3 Idempotent refund & refund_pending -> refunded recovery restores exact balance once (${balanceBeforeRecovery49} -> ${balanceAfterRecovery49})`
+    );
+
+    // 49.4 Cross-Cloud-Run stale cache elimination: Container B updates Subscription, Payment & Wallet in Firestore; Container A reads fresh Firestore truth instead of stale RAM
+    const sub49Id = `sub_cross_cache_${Date.now()}`;
+    const order49Id = `order_cross_cache_${Date.now()}`;
+    await db49A.setSubscription({
+      id: sub49Id,
+      userId: user49.user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer',
+      provider: 'razorpay',
+      mandateId: sub49Id,
+      status: 'trial',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 86400000).toISOString(),
+      renewalAmount: 499
+    });
+    await db49A.recordPayment({
+      id: `pay_rec_49_${Date.now()}`,
+      orderId: order49Id,
+      paymentId: '',
+      userId: user49.user.id,
+      provider: 'razorpay',
+      amount: 199,
+      currency: 'INR',
+      type: 'one_time',
+      status: 'pending',
+      isAutoPay: false,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    // Container B mutates subscription to 'cancelled', payment to 'captured', wallet +50 in shared Firestore
+    await db49B.setSubscription({
+      id: sub49Id,
+      userId: user49.user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer',
+      provider: 'razorpay',
+      mandateId: sub49Id,
+      status: 'cancelled',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 86400000).toISOString(),
+      cancelledAt: new Date().toISOString(),
+      renewalAmount: 499
+    });
+    await db49B.recordPayment({
+      id: `pay_rec_49_${Date.now()}`,
+      orderId: order49Id,
+      paymentId: `pay_captured_49_${Date.now()}`,
+      userId: user49.user.id,
+      provider: 'razorpay',
+      amount: 199,
+      currency: 'INR',
+      type: 'one_time',
+      status: 'captured',
+      isAutoPay: false,
+      verificationStatus: 'verified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    await db49B.creditWallet(user49.user.id, 50, 'Container B Top-Up', `topup_49_${Date.now()}`, 'topup');
+
+    // Container A still has stale RAM ('trial', 'pending', 100) — authoritative getters MUST bypass stale RAM and read Firestore
+    const freshSubA49 = await db49A.getSubscriptionAuthoritative(user49.user.id);
+    const freshPayA49 = await db49A.getPaymentAuthoritative(order49Id);
+    const freshWalA49 = await db49A.getWalletAuthoritative(user49.user.id);
+    assert(
+      freshSubA49?.status === 'cancelled' &&
+        freshPayA49?.status === 'captured' &&
+        freshWalA49.balance === 150 &&
+        serverSrc49.includes('const wallet = await prodDb.getWalletAuthoritative(user.id);\n    const subscription = await prodDb.getSubscriptionAuthoritative(user.id);') &&
+        serverSrc49.includes('const wallet = await prodDb.getWalletAuthoritative(user.id);\n  const activeSubscription = await prodDb.getSubscriptionAuthoritative(user.id);'),
+      `49.4 Cross-Cloud-Run stale cache eliminated: Container A sees fresh Firestore status (sub=${freshSubA49?.status}, pay=${freshPayA49?.status}, wallet=${freshWalA49.balance})`
+    );
+
+    // 49.5 Auth, Admin allowlist, Firebase (default) & Android package isolation regression check
+    const adminCfg49 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/config/adminConfig.ts'), 'utf8');
+    const fbCfg49 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+    assert(
+      adminCfg49.includes('backupvideoemail@gmail.com') &&
+        adminCfg49.includes('ai.prime.studio.pro@gmail.com') &&
+        fbCfg49.projectId === 'ai-prime-studio' &&
+        fbCfg49.firestoreDatabaseId === '(default)' &&
+        dbSrc49.includes('public async updateGenerationAsync('),
+      '49.5 Regression intact: Dual Admin emails, Firebase ai-prime-studio/(default) lock, and durable DB updates preserved'
+    );
+  } finally {
+    if (fs.existsSync(dbFile49A)) fs.unlinkSync(dbFile49A);
+    if (fs.existsSync(dbFile49B)) fs.unlinkSync(dbFile49B);
+  }
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');
