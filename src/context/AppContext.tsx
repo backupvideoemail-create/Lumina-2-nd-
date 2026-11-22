@@ -10,7 +10,9 @@ import {
   TopUpOption,
   FaceSwapScene,
   FaceSwapGenerateRequest,
-  GenerationResult
+  GenerationResult,
+  IntroOfferStatus,
+  PendingIntroPaymentSummary
 } from '../types';
 import { SEED_FACE_SWAP_SCENES } from '../data/faceSwapData';
 import { SEED_TEMPLATES, INITIAL_PLANS, INITIAL_TOP_UPS } from '../data/templatesData';
@@ -126,8 +128,10 @@ interface AppContextType {
   topUps: TopUpOption[];
   hasActivePlan: boolean;
   isIntroEligible: boolean;
+  introOfferState: IntroOfferStatus;
+  pendingIntroPayment: PendingIntroPaymentSummary | null;
   isPaying: boolean;
-  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay', phone?: string) => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }>;
+  initiateCheckout: (type: 'plan' | 'topup', itemId: string, provider?: 'cashfree' | 'razorpay', phone?: string) => Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; alreadyReconciled?: boolean; code?: string; pendingPayment?: PendingIntroPaymentSummary; error?: string }>;
   verifyPayment: (orderId: string, type: 'plan' | 'topup', itemId: string, provider?: string, paymentId?: string, signature?: string, subscriptionId?: string) => Promise<{ success: boolean; error?: string }>;
   reconcilePayment: (paymentId?: string, subscriptionId?: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   cancelSubscription: () => Promise<boolean>;
@@ -351,6 +355,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
   const [adminDashboardOpen, setAdminDashboardOpen] = useState(false);
   const [isIntroEligible, setIsIntroEligible] = useState<boolean>(true);
+  const [introOfferState, setIntroOfferState] = useState<IntroOfferStatus>('eligible');
+  const [pendingIntroPayment, setPendingIntroPayment] = useState<PendingIntroPaymentSummary | null>(null);
 
   useEffect(() => {
     mediaPlaybackCoordinator.setActiveScreen(activeTab);
@@ -706,6 +712,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (typeof data.isIntroEligible === 'boolean') {
           setIsIntroEligible(data.isIntroEligible);
         }
+        if (data.introOfferState === 'eligible' || data.introOfferState === 'pending_reconciliation' || data.introOfferState === 'claimed') {
+          setIntroOfferState(data.introOfferState);
+        }
+        setPendingIntroPayment(data.pendingIntroPayment || null);
 
         // Server-side cryptographic admin verification:
         // Keep "/api/admin/verify" as the SOLE source of "serverAdminVerified = true".
@@ -1296,7 +1306,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     itemId: string,
     provider: 'razorpay' | 'cashfree' = 'razorpay',
     phone?: string
-  ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; orderId?: string; subscriptionId?: string; customerId?: string; shortUrl?: string; isAutoPay?: boolean; alreadyReconciled?: boolean; code?: string; pendingPayment?: PendingIntroPaymentSummary; error?: string }> => {
     if (!user) {
       setPendingAction({ type: 'buy_plan', planId: itemId });
       setAuthModalOpen(true);
@@ -1319,9 +1329,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customerId?: string;
         shortUrl?: string;
         isAutoPay?: boolean;
+        alreadyReconciled?: boolean;
+        code?: string;
+        pendingPayment?: PendingIntroPaymentSummary;
         error?: string;
       }>(res);
       setIsPaying(false);
+
+      if (parsed.ok && parsed.data?.alreadyReconciled) {
+        await refreshUserData();
+        return {
+          success: true,
+          alreadyReconciled: true
+        };
+      }
 
       if (parsed.ok && parsed.data && (parsed.data.orderId || parsed.data.subscriptionId)) {
         return {
@@ -1333,7 +1354,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           isAutoPay: Boolean(parsed.data.isAutoPay || parsed.data.subscriptionId)
         };
       } else {
-        return { success: false, error: parsed.error || 'Failed to create payment order or mandate' };
+        if (parsed.data?.code === 'INTRO_PAYMENT_PENDING_RECONCILIATION' || parsed.data?.code === 'INTRO_OFFER_ALREADY_USED') {
+          await refreshUserData();
+        }
+        return {
+          success: false,
+          code: parsed.data?.code,
+          pendingPayment: parsed.data?.pendingPayment,
+          error: parsed.error || 'Failed to create payment order or mandate'
+        };
       }
     } catch (err: any) {
       setIsPaying(false);
@@ -1521,6 +1550,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         topUps,
         hasActivePlan,
         isIntroEligible,
+        introOfferState,
+        pendingIntroPayment,
         isPaying,
         initiateCheckout,
         verifyPayment,

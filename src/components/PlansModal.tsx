@@ -25,12 +25,15 @@ export const PlansModal: React.FC = () => {
     setPlansModalOpen,
     initiateCheckout,
     verifyPayment,
+    reconcilePayment,
     isPaying,
     activeSubscription,
     refreshUserData,
     user,
     triggerHighIntentAction,
-    isIntroEligible
+    isIntroEligible,
+    introOfferState,
+    pendingIntroPayment
   } = useApp();
 
   // Default selection: If eligible for intro offer, default to 'plan_intro_daily'
@@ -42,6 +45,8 @@ export const PlansModal: React.FC = () => {
   const [phoneInput, setPhoneInput] = useState<string>(user?.phone || '');
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [isReconciling, setIsReconciling] = useState<boolean>(false);
 
   const [pricingBanner, setPricingBanner] = useState<{
     mediaUrl: string;
@@ -90,10 +95,16 @@ export const PlansModal: React.FC = () => {
 
   const proceedWithRazorpayCheckout = async (phoneToUse: string) => {
     setErrorMessage(null);
+    setStatusMessage(null);
     setPhoneError(null);
 
     // 1. Request real order or subscription mandate from server with phone
     const res = await initiateCheckout('plan', currentPlan.id, 'razorpay', phoneToUse);
+    if (res.alreadyReconciled) {
+      await refreshUserData();
+      setPlansModalOpen(false);
+      return;
+    }
     if (!res.success || (!res.orderId && !res.subscriptionId)) {
       setErrorMessage(res.error || 'Failed to initiate checkout order with payment server. Please try again.');
       return;
@@ -258,6 +269,28 @@ export const PlansModal: React.FC = () => {
     }
     setShowPhoneStep(false);
     await proceedWithRazorpayCheckout(clean.slice(-10));
+  };
+
+  const handleVerifyPendingIntro = async () => {
+    setErrorMessage(null);
+    setStatusMessage(null);
+    setIsReconciling(true);
+    try {
+      const result = await reconcilePayment(
+        pendingIntroPayment?.paymentId,
+        pendingIntroPayment?.subscriptionId
+      );
+      if (result.success) {
+        setStatusMessage(result.message || '₹1 payment verified! 40 credits added.');
+        await refreshUserData();
+        setPlansModalOpen(false);
+      } else {
+        setErrorMessage(result.error || 'Payment is still awaiting confirmation from Razorpay.');
+        await refreshUserData();
+      }
+    } finally {
+      setIsReconciling(false);
+    }
   };
 
 
@@ -555,6 +588,35 @@ export const PlansModal: React.FC = () => {
               })}
             </div>
 
+            {/* Pending ₹1 Reconciliation Banner (Shown when intro payment is pending confirmation; prevents duplicate ₹1 charges) */}
+            {introOfferState === 'pending_reconciliation' && (
+              <div className="mx-3.5 mt-3 p-3.5 rounded-2xl bg-amber-500/15 border border-amber-400/40 space-y-2.5">
+                <div className="flex items-start gap-2.5">
+                  <Clock className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                  <div className="text-xs text-amber-100 space-y-1">
+                    <p className="font-bold text-amber-300">Pending ₹1 Payment Verification</p>
+                    <p className="text-[11px] text-stone-300 leading-relaxed">
+                      A previous ₹1 intro attempt is waiting for Razorpay confirmation. Tap below to verify and unlock your 40 credits without paying twice.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleVerifyPendingIntro}
+                  disabled={isReconciling || isPaying}
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-black text-xs font-black transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isReconciling ? 'Checking Razorpay Status...' : 'Verify Pending ₹1 Payment'}
+                </button>
+              </div>
+            )}
+
+            {statusMessage && (
+              <div className="mx-3.5 mt-3 p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold">
+                {statusMessage}
+              </div>
+            )}
+
             {/* Error notification if checkout fails */}
             {errorMessage && (
               <div className="mx-3.5 mt-3 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center gap-2 text-rose-300 text-xs font-semibold">
@@ -575,14 +637,22 @@ export const PlansModal: React.FC = () => {
                 <>
                   <motion.button
                     whileTap={{ scale: 0.98 }}
-                    onClick={handleStartRealPayment}
-                    disabled={isPaying}
+                    onClick={
+                      introOfferState === 'pending_reconciliation' && selectedPlanId === 'plan_intro_daily'
+                        ? handleVerifyPendingIntro
+                        : handleStartRealPayment
+                    }
+                    disabled={isPaying || isReconciling}
                     className="w-full py-3.5 sm:py-4 px-6 rounded-2xl bg-gradient-to-r from-[#fca311] via-[#ea580c] to-[#2563eb] hover:opacity-95 text-black text-base sm:text-lg font-black flex items-center justify-center gap-2 shadow-[0_12px_40px_rgba(234,88,12,0.5),0_12px_40px_rgba(37,99,235,0.45)] transition-all cursor-pointer disabled:opacity-50 tracking-tight relative overflow-hidden"
                   >
                     <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full animate-[shimmer_2.5s_infinite]" />
                     <span className="relative z-10">
-                      {isPaying
+                      {isReconciling
+                        ? 'Checking Razorpay...'
+                        : isPaying
                         ? 'Connecting to Razorpay...'
+                        : introOfferState === 'pending_reconciliation' && selectedPlanId === 'plan_intro_daily'
+                        ? 'Verify Pending ₹1 Payment'
                         : selectedPlanId === 'plan_intro_daily'
                         ? 'Continue & Pay ₹1'
                         : `Continue & Pay ₹${currentPlan.price}`}

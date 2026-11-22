@@ -284,6 +284,7 @@ export interface PaymentRecord {
   paymentId: string;
   subscriptionId?: string;
   mandateId?: string;
+  planId?: string;
   userId: string;
   provider: 'razorpay' | 'cashfree' | 'google_play';
   amount: number; // in INR
@@ -292,9 +293,29 @@ export interface PaymentRecord {
   status: 'pending' | 'authorized' | 'captured' | 'failed' | 'refunded';
   isAutoPay: boolean;
   verificationStatus: 'verified' | 'unverified' | 'failed' | 'voided' | 'canceled_rtdn' | 'revoked_rtdn';
+  failureReason?: string;
   signature?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type IntroOfferStatus = 'eligible' | 'pending_reconciliation' | 'claimed';
+
+export interface PendingIntroPaymentSummary {
+  orderId: string;
+  paymentId?: string;
+  subscriptionId?: string;
+  status: PaymentRecord['status'];
+  verificationStatus: PaymentRecord['verificationStatus'];
+  amount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntroOfferState {
+  eligible: boolean;
+  status: IntroOfferStatus;
+  pendingPayment: PendingIntroPaymentSummary | null;
 }
 
 export interface PricingPlan {

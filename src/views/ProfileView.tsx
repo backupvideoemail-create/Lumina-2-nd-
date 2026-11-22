@@ -38,6 +38,8 @@ export const ProfileView: React.FC = () => {
     setAuthModalOpen,
     setTopUpModalOpen,
     hasActivePlan,
+    isIntroEligible,
+    introOfferState,
     updateProfile,
     templates,
     likedTemplates,
@@ -94,7 +96,13 @@ export const ProfileView: React.FC = () => {
               className="px-3 py-1.5 rounded-full gold-button text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Unlock Pro (₹1)</span>
+              <span>
+                {introOfferState === 'pending_reconciliation'
+                  ? 'Verify ₹1 Payment'
+                  : isIntroEligible
+                  ? 'Unlock Pro (₹1)'
+                  : 'View Pro Plans'}
+              </span>
             </button>
           )}
         </div>
@@ -200,7 +208,13 @@ export const ProfileView: React.FC = () => {
                 onClick={() => setPlansModalOpen(true)}
                 className="py-2 px-4 gold-button rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
               >
-                <span>Activate Plan (₹1)</span>
+                <span>
+                  {introOfferState === 'pending_reconciliation'
+                    ? 'Verify ₹1 Payment'
+                    : isIntroEligible
+                    ? 'Activate Plan (₹1)'
+                    : 'Choose Pro Plan'}
+                </span>
               </button>
             )}
           </div>
@@ -328,14 +342,26 @@ export const ProfileView: React.FC = () => {
           ) : (
             <div className="flex items-center justify-between pt-1">
               <div>
-                <p className="text-xs text-stone-300 font-medium">Free Tier</p>
-                <p className="text-[11px] text-stone-400">Unlock Pro Pass for ₹1 intro payment (40 credits / 24h, then ₹499/week for 400 credits)</p>
+                <p className="text-xs text-stone-300 font-medium">
+                  {introOfferState === 'pending_reconciliation' ? 'Pending Verification' : 'Free Tier'}
+                </p>
+                <p className="text-[11px] text-stone-400">
+                  {introOfferState === 'pending_reconciliation'
+                    ? 'Your ₹1 intro payment is awaiting Razorpay confirmation. Tap to verify and claim 40 credits.'
+                    : isIntroEligible
+                    ? 'Unlock Pro Pass for ₹1 intro payment (40 credits / 24h, then ₹499/week for 400 credits)'
+                    : 'Subscribe to Creator Weekly (₹199) or Creator Monthly (₹998) to generate AI creations.'}
+                </p>
               </div>
               <button
                 onClick={() => setPlansModalOpen(true)}
                 className="px-3 py-1.5 rounded-xl gold-button text-xs font-semibold"
               >
-                Unlock Pro (₹1)
+                {introOfferState === 'pending_reconciliation'
+                  ? 'Verify ₹1'
+                  : isIntroEligible
+                  ? 'Unlock Pro (₹1)'
+                  : 'View Plans'}
               </button>
             </div>
           )}

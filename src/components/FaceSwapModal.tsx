@@ -38,7 +38,9 @@ export const FaceSwapModal: React.FC = () => {
     setInsufficientCreditsModal,
     setPlansModalOpen,
     setTopUpModalOpen,
-    hasActivePlan
+    hasActivePlan,
+    isIntroEligible,
+    introOfferState
   } = useApp();
 
   const activeScene = selectedFaceSwapScene || faceSwapScenes[0];
@@ -635,7 +637,15 @@ export const FaceSwapModal: React.FC = () => {
                 }}
                 className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-[#d4af37] text-black text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
               >
-                <span>{hasActivePlan ? 'Buy More Credits (Top-Up)' : 'Unlock Credits · Pro Pass (₹1)'}</span>
+                <span>
+                  {hasActivePlan
+                    ? 'Buy More Credits (Top-Up)'
+                    : introOfferState === 'pending_reconciliation'
+                    ? 'Verify Pending ₹1 Payment'
+                    : isIntroEligible
+                    ? 'Unlock Credits · Pro Pass (₹1)'
+                    : 'Unlock Credits · Pro Plans'}
+                </span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>

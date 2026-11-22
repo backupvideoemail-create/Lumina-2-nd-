@@ -25,6 +25,8 @@ export const TopUpModal: React.FC = () => {
     refreshUserData,
     verifyPayment,
     hasActivePlan,
+    isIntroEligible,
+    introOfferState,
     setPlansModalOpen
   } = useApp();
 
@@ -50,7 +52,11 @@ export const TopUpModal: React.FC = () => {
           <h3 className="text-xl font-bold font-display text-white">Plan Activation Required</h3>
           <p className="text-xs text-stone-300 leading-relaxed">
             Top-up credit packs are exclusively available to creators with an active subscription plan.
-            Activate the ₹1 Pro Pass intro plan to unlock instant top-up packs anytime!
+            {introOfferState === 'pending_reconciliation'
+              ? ' Verify your pending ₹1 payment to unlock instant top-up packs!'
+              : isIntroEligible
+              ? ' Activate the ₹1 Pro Pass intro plan to unlock instant top-up packs anytime!'
+              : ' Activate a Creator Weekly or Monthly plan to unlock instant top-up packs anytime!'}
           </p>
           <button
             onClick={() => {
@@ -59,7 +65,11 @@ export const TopUpModal: React.FC = () => {
             }}
             className="w-full py-3.5 px-4 gold-button rounded-xl text-xs font-bold"
           >
-            Activate Pro Pass (₹1)
+            {introOfferState === 'pending_reconciliation'
+              ? 'Verify Pending ₹1 Payment'
+              : isIntroEligible
+              ? 'Activate Pro Pass (₹1)'
+              : 'View Pro Plans'}
           </button>
           <button
             onClick={() => setTopUpModalOpen(false)}

@@ -26,6 +26,8 @@ import type {
   Generation,
   UserSubscription,
   PaymentRecord,
+  IntroOfferState,
+  PendingIntroPaymentSummary,
   FaceSwapScene,
   OwnerOmniTestRecord
 } from '../../types/index.ts';
@@ -2350,26 +2352,140 @@ export class ProductionDatabase {
     return this.db.transactions.filter(t => t.userId === userId).slice(0, 50);
   }
 
-  public isIntroEligible(userId: string): boolean {
-    if (!userId) return true;
-    // 1. Subscription check: user already has/had intro plan
-    const userSub = this.getSubscription(userId);
-    if (userSub && (userSub.planId === 'plan_intro_daily' || userSub.planId === 'sub_intro_daily')) {
+  private isIntroPaymentRecord(p: PaymentRecord): boolean {
+    return (
+      p.type === 'intro_mandate' ||
+      p.planId === 'plan_intro_daily' ||
+      p.planId === 'sub_intro_daily' ||
+      p.amount === 1 ||
+      Boolean(p.subscriptionId?.includes('intro'))
+    );
+  }
+
+  private isVerifiedSuccessfulIntroPayment(p: PaymentRecord): boolean {
+    return (
+      this.isIntroPaymentRecord(p) &&
+      p.status === 'captured' &&
+      p.verificationStatus === 'verified'
+    );
+  }
+
+  private isPendingIntroPayment(p: PaymentRecord): boolean {
+    if (!this.isIntroPaymentRecord(p)) return false;
+    if (p.status === 'failed' || p.status === 'refunded' || p.verificationStatus === 'failed' || p.verificationStatus === 'voided' || p.verificationStatus === 'revoked_rtdn' || p.verificationStatus === 'canceled_rtdn') {
       return false;
     }
-    // 2. Payments check: user previously paid for intro plan
-    const userPayments = Object.values(this.db.payments).filter(p => p.userId === userId);
-    const hasIntroPayment = userPayments.some(
-      p => p.type === 'intro_mandate' || p.amount === 1 || p.subscriptionId?.includes('intro') || (p.status === 'captured' && p.amount === 1)
+    if (p.status === 'captured' && p.verificationStatus === 'verified') {
+      return false;
+    }
+    return p.status === 'pending' || p.status === 'authorized' || p.verificationStatus === 'unverified';
+  }
+
+  public getIntroOfferState(userId: string): IntroOfferState {
+    if (!userId) {
+      return { eligible: true, status: 'eligible', pendingPayment: null };
+    }
+
+    // 1. Subscription check: user has a verified/active/trial/past-active intro subscription (never count payment_failed)
+    const userSub = this.getSubscription(userId);
+    const hasClaimedIntroSub = Boolean(
+      userSub &&
+      (userSub.planId === 'plan_intro_daily' || userSub.planId === 'sub_intro_daily') &&
+      userSub.status !== 'payment_failed'
     );
-    if (hasIntroPayment) return false;
 
-    // 3. Credit grants check: user was previously granted intro credits
+    // 2. Payments check: deduplicate records (recordPayment indexes by orderId, subscriptionId, paymentId)
+    const uniquePaymentsMap = new Map<string, PaymentRecord>();
+    for (const p of Object.values(this.db.payments)) {
+      if (p && p.userId === userId) {
+        const key = p.id || `${p.orderId}_${p.subscriptionId || ''}`;
+        const existing = uniquePaymentsMap.get(key);
+        if (!existing || new Date(p.updatedAt || p.createdAt).getTime() >= new Date(existing.updatedAt || existing.createdAt).getTime()) {
+          uniquePaymentsMap.set(key, p);
+        }
+      }
+    }
+    const userPayments = Array.from(uniquePaymentsMap.values());
+    const hasVerifiedIntroPayment = userPayments.some((p) => this.isVerifiedSuccessfulIntroPayment(p));
+
+    // 3. Credit grants check: user was previously granted verified intro credits
     const grants = this.getUserGrants(userId);
-    const hasIntroGrant = grants.some(g => g.source === 'intro' && g.planId === 'plan_intro_daily');
-    if (hasIntroGrant) return false;
+    const hasIntroGrant = grants.some(
+      (g) => g.source === 'intro' && (g.planId === 'plan_intro_daily' || g.planId === 'sub_intro_daily' || g.creditsGranted === 40) && g.creditsGranted > 0
+    );
 
-    return true;
+    if (hasClaimedIntroSub || hasVerifiedIntroPayment || hasIntroGrant) {
+      return { eligible: false, status: 'claimed', pendingPayment: null };
+    }
+
+    // 4. Pending/unverified intro payment check: surface reconciliation state WITHOUT marking offer as claimed
+    const pendingIntroPayments = userPayments
+      .filter((p) => this.isPendingIntroPayment(p))
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+
+    if (pendingIntroPayments.length > 0) {
+      const latestPending = pendingIntroPayments[0];
+      const summary: PendingIntroPaymentSummary = {
+        orderId: latestPending.orderId,
+        paymentId: latestPending.paymentId && latestPending.paymentId !== latestPending.subscriptionId ? latestPending.paymentId : undefined,
+        subscriptionId: latestPending.subscriptionId,
+        status: latestPending.status,
+        verificationStatus: latestPending.verificationStatus,
+        amount: latestPending.amount,
+        createdAt: latestPending.createdAt,
+        updatedAt: latestPending.updatedAt
+      };
+      return {
+        eligible: true,
+        status: 'pending_reconciliation',
+        pendingPayment: summary
+      };
+    }
+
+    return { eligible: true, status: 'eligible', pendingPayment: null };
+  }
+
+  public async getIntroOfferStateAuthoritative(userId: string): Promise<IntroOfferState> {
+    if (!userId) {
+      return { eligible: true, status: 'eligible', pendingPayment: null };
+    }
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        await this.getSubscriptionAuthoritative(userId);
+        const paySnap = await fsDb.collection('payments').where('userId', '==', userId).get();
+        if (paySnap && !paySnap.empty) {
+          paySnap.forEach((d: any) => {
+            const rec = d.data() as PaymentRecord;
+            if (rec?.orderId) {
+              this.db.payments[rec.orderId] = rec;
+            }
+            if (rec?.subscriptionId && rec.subscriptionId !== rec.orderId) {
+              this.db.payments[rec.subscriptionId] = rec;
+            }
+            if (rec?.paymentId && rec.paymentId !== rec.orderId) {
+              this.db.payments[rec.paymentId] = rec;
+            }
+          });
+        }
+        const grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
+        if (grantsSnap && !grantsSnap.empty) {
+          const remoteGrants: CreditGrant[] = [];
+          grantsSnap.forEach((d: any) => remoteGrants.push(d.data() as CreditGrant));
+          this.db.creditGrants = [
+            ...remoteGrants,
+            ...(this.db.creditGrants || []).filter((g) => g.userId !== userId)
+          ];
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getIntroOfferStateAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    return this.getIntroOfferState(userId);
+  }
+
+  public isIntroEligible(userId: string): boolean {
+    return this.getIntroOfferState(userId).eligible;
   }
 
   /* =========================================================================
@@ -3843,6 +3959,9 @@ export class ProductionDatabase {
     if (record.subscriptionId && record.subscriptionId !== record.orderId) {
       await this.syncToFirestore('payments', record.subscriptionId, record);
     }
+    if (record.paymentId && record.paymentId.startsWith('pay_') && record.paymentId !== record.orderId && record.paymentId !== record.subscriptionId) {
+      await this.syncToFirestore('payments', record.paymentId, record);
+    }
   }
 
   public getPayment(identifier: string): PaymentRecord | null {
@@ -3886,6 +4005,64 @@ export class ProductionDatabase {
       }
     }
     return this.getPayment(identifier);
+  }
+
+  public async getUserPaymentsAuthoritative(userId: string): Promise<PaymentRecord[]> {
+    if (!userId) return [];
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const snap = await fsDb.collection('payments').where('userId', '==', userId).get();
+        if (snap && !snap.empty) {
+          snap.forEach((d: any) => {
+            const rec = d.data() as PaymentRecord;
+            if (rec?.orderId) this.db.payments[rec.orderId] = rec;
+            if (rec?.subscriptionId && rec.subscriptionId !== rec.orderId) this.db.payments[rec.subscriptionId] = rec;
+            if (rec?.paymentId && rec.paymentId !== rec.orderId) this.db.payments[rec.paymentId] = rec;
+          });
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getUserPaymentsAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    const dedup = new Map<string, PaymentRecord>();
+    for (const p of Object.values(this.db.payments)) {
+      if (p && p.userId === userId) {
+        const key = p.id || `${p.orderId}_${p.subscriptionId || ''}`;
+        const prev = dedup.get(key);
+        if (!prev || new Date(p.updatedAt || p.createdAt).getTime() >= new Date(prev.updatedAt || prev.createdAt).getTime()) {
+          dedup.set(key, p);
+        }
+      }
+    }
+    return Array.from(dedup.values()).sort(
+      (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+    );
+  }
+
+  public async getUserByEmailAuthoritative(email: string): Promise<UserProfile | null> {
+    const normalized = (email || '').trim().toLowerCase();
+    if (!normalized) return null;
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const snap = await fsDb.collection('users').where('email', '==', normalized).limit(1).get();
+        if (!snap.empty) {
+          const u = snap.docs[0].data() as UserProfile;
+          if (u?.id) this.db.users[u.id] = u;
+          return u;
+        }
+        const origSnap = await fsDb.collection('users').where('email', '==', email.trim()).limit(1).get();
+        if (!origSnap.empty) {
+          const u = origSnap.docs[0].data() as UserProfile;
+          if (u?.id) this.db.users[u.id] = u;
+          return u;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getUserByEmailAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    return Object.values(this.db.users).find((u) => (u.email || '').trim().toLowerCase() === normalized) || null;
   }
 
   public async setSubscription(sub: UserSubscription): Promise<void> {

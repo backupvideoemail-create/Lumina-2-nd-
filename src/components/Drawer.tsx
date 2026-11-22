@@ -32,6 +32,8 @@ export const Drawer: React.FC = () => {
     setPlansModalOpen,
     setTopUpModalOpen,
     hasActivePlan,
+    isIntroEligible,
+    introOfferState,
     setSupportModalOpen,
     setLegalModal,
     setAuthModalOpen,
@@ -150,7 +152,13 @@ export const Drawer: React.FC = () => {
                     className="mt-3 w-full py-2.5 px-3 rounded-xl gold-button text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <CreditCard className="w-3.5 h-3.5" />
-                    <span>Unlock Pro Pass (₹1)</span>
+                    <span>
+                      {introOfferState === 'pending_reconciliation'
+                        ? 'Verify Pending ₹1 Payment'
+                        : isIntroEligible
+                        ? 'Unlock Pro Pass (₹1)'
+                        : 'Unlock Pro Plans'}
+                    </span>
                   </button>
                 )}
               </div>
@@ -229,7 +237,7 @@ export const Drawer: React.FC = () => {
                     <span>Credits & Plans</span>
                   </div>
                   <span className="text-[11px] font-semibold text-[#d4af37] px-2 py-0.5 rounded bg-[#d4af37]/10">
-                    From ₹1
+                    {isIntroEligible ? 'From ₹1' : 'From ₹199'}
                   </span>
                 </button>
 

@@ -10,7 +10,9 @@ export const InsufficientCreditsModal: React.FC = () => {
     setInsufficientCreditsModal,
     setPlansModalOpen,
     setTopUpModalOpen,
-    hasActivePlan
+    hasActivePlan,
+    isIntroEligible,
+    introOfferState
   } = useApp();
 
   if (!insufficientCreditsModal?.open) return null;
@@ -108,7 +110,13 @@ export const InsufficientCreditsModal: React.FC = () => {
                   onClick={handleAction}
                   className="w-full py-3.5 px-4 gold-button rounded-xl text-sm font-semibold flex items-center justify-center gap-2 group cursor-pointer"
                 >
-                  <span>Get Credits · Unlock Pro Pass (₹1)</span>
+                  <span>
+                    {introOfferState === 'pending_reconciliation'
+                      ? 'Verify Pending ₹1 Payment'
+                      : isIntroEligible
+                      ? 'Get Credits · Unlock Pro Pass (₹1)'
+                      : 'Get Credits · Choose Pro Plan'}
+                  </span>
                   <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
                 </button>
               )}

@@ -4210,13 +4210,19 @@ async function runSystemVerification() {
     // Cold Legacy Cloud Run instance (zero RAM entries for this user or order) resolves both authoritatively
     const resolvedOrderOnLegacy48 = await legacyCloudRunDb48.getPaymentAuthoritative(crossOrderId48);
     const resolvedUserOnLegacy48 = await legacyCloudRunDb48.getUserAuthoritative(crossUser48.user.id);
+    const webhookSvcSrc48 = fs.readFileSync(
+      pathUtil.resolve(process.cwd(), 'src/services/payments/razorpayWebhookService.ts'),
+      'utf8'
+    );
     assert(
       Boolean(resolvedOrderOnLegacy48) &&
         resolvedOrderOnLegacy48?.orderId === crossOrderId48 &&
         Boolean(resolvedUserOnLegacy48) &&
         resolvedUserOnLegacy48?.id === crossUser48.user.id &&
-        serverSrc48.includes('await prodDb.getPaymentAuthoritative(orderId)') &&
-        serverSrc48.includes('await prodDb.getUserAuthoritative(userId)'),
+        (serverSrc48.includes('await prodDb.getPaymentAuthoritative(orderId)') ||
+          webhookSvcSrc48.includes('await db.getPaymentAuthoritative(orderId)')) &&
+        (serverSrc48.includes('await prodDb.getUserAuthoritative(userId)') ||
+          webhookSvcSrc48.includes('await db.getUserAuthoritative(userId)')),
       '48.3a Cross-Cloud-Run Razorpay webhook resolves order & user authoritatively from shared Firestore even on cold alternate service'
     );
 
@@ -4580,6 +4586,462 @@ async function runSystemVerification() {
   } finally {
     if (fs.existsSync(dbFile49A)) fs.unlinkSync(dbFile49A);
     if (fs.existsSync(dbFile49B)) fs.unlinkSync(dbFile49B);
+  }
+
+  // 50. Razorpay ₹1 Intro Eligibility, subscription.authenticated Webhook, Replay & Reconciliation
+  console.log('\n--- SUITE 50: Razorpay ₹1 Intro Eligibility, Webhook, Replay & Reconciliation ---');
+  const expressMod50 = (await import('express')).default;
+  const httpMod50 = await import('http');
+  const cryptoMod50 = await import('crypto');
+  const fs50 = await import('fs');
+  const path50 = await import('path');
+  const webhookSvc50 = await import('../src/services/payments/razorpayWebhookService.ts');
+
+  const dbFile50 = path50.resolve(process.cwd(), '.data', `test_db_50_${Date.now()}.json`);
+  const db50 = new ProductionDatabase(dbFile50);
+  const webhookSecret50 = 'rzp_wh_test_secret_50_unit';
+
+  const app50 = expressMod50();
+  app50.use(
+    expressMod50.json({
+      verify: (req: any, _res: any, buf: Buffer) => {
+        req.rawBody = buf;
+      }
+    })
+  );
+  app50.post('/api/razorpay/webhook', async (req: any, res: any) => {
+    const outcome = await webhookSvc50.processRazorpayWebhookEvent({
+      db: db50,
+      rawBody: req.rawBody || Buffer.from(JSON.stringify(req.body || {})),
+      signature: String(req.headers['x-razorpay-signature'] || ''),
+      event: req.body,
+      headerEventId: String(req.headers['x-razorpay-event-id'] || ''),
+      webhookSecret: webhookSecret50
+    });
+    return res.status(outcome.httpStatus).json(outcome.body);
+  });
+
+  const server50 = httpMod50.createServer(app50);
+  await new Promise<void>((resolve) => server50.listen(0, '127.0.0.1', () => resolve()));
+  const port50 = (server50.address() as any).port;
+  const webhookUrl50 = `http://127.0.0.1:${port50}/api/razorpay/webhook`;
+
+  async function postSignedWebhook50(payload: Record<string, any>, headers: Record<string, string> = {}, overrideSig?: string) {
+    const rawStr = JSON.stringify(payload);
+    const sig =
+      overrideSig ??
+      cryptoMod50.createHmac('sha256', webhookSecret50).update(Buffer.from(rawStr, 'utf-8')).digest('hex');
+    const resp = await fetch(webhookUrl50, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': sig,
+        ...headers
+      },
+      body: rawStr
+    });
+    const json = await resp.json();
+    return { status: resp.status, body: json };
+  }
+
+  try {
+    // 50.1 Pending ₹1 checkout MUST NOT consume intro eligibility + blocks duplicate ₹1 checkout
+    const u50Pending = await db50.getOrCreateUserAsync({
+      firebaseUid: `uid_50_pend_${Date.now()}`,
+      email: `pending50_${Date.now()}@example.com`,
+      name: 'Pending Intro Customer'
+    });
+    const sub50PendingId = `sub_50_pend_${Date.now()}`;
+    await db50.recordPayment({
+      id: `pay_rec_50_pend_${Date.now()}`,
+      orderId: sub50PendingId,
+      paymentId: '',
+      subscriptionId: sub50PendingId,
+      mandateId: sub50PendingId,
+      planId: 'plan_intro_daily',
+      userId: u50Pending.user.id,
+      provider: 'razorpay',
+      amount: 1,
+      currency: 'INR',
+      type: 'intro_mandate',
+      status: 'pending',
+      isAutoPay: true,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    const pendingState50 = await db50.getIntroOfferStateAuthoritative(u50Pending.user.id);
+    const preCheckout50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+      db: db50,
+      userId: u50Pending.user.id,
+      gateway: {
+        getPayment: async () => ({ status: 'created' }),
+        getSubscription: async () => ({ id: sub50PendingId, status: 'created', notes: { userId: u50Pending.user.id } }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    const plansModalSrc50 = fs50.readFileSync(path50.resolve(process.cwd(), 'src/components/PlansModal.tsx'), 'utf8');
+    assert(
+      db50.isIntroEligible(u50Pending.user.id) === true &&
+        pendingState50.eligible === true &&
+        pendingState50.status === 'pending_reconciliation' &&
+        pendingState50.pendingPayment?.subscriptionId === sub50PendingId &&
+        preCheckout50.action === 'block_pending' &&
+        plansModalSrc50.includes("introOfferState === 'pending_reconciliation'") &&
+        plansModalSrc50.includes('Verify Pending ₹1 Payment'),
+      '50.1 Pending ₹1 payment keeps intro offer visible/eligible, enters pending_reconciliation, and blocks duplicate ₹1 checkout'
+    );
+
+    // 50.2 Authorized-only & Failed payments grant ZERO credits; failed allows clean ₹1 retry
+    const authOnlyRes50 = await webhookSvc50.reconcileCustomerRazorpayPayment({
+      db: db50,
+      userId: u50Pending.user.id,
+      subscriptionId: sub50PendingId,
+      gateway: {
+        getPayment: async () => ({
+          id: 'pay_50_auth_only',
+          status: 'authorized',
+          amount: 100,
+          currency: 'INR',
+          subscription_id: sub50PendingId,
+          notes: { userId: u50Pending.user.id }
+        }),
+        getSubscription: async () => ({ id: sub50PendingId, status: 'created', notes: { userId: u50Pending.user.id } }),
+        getSubscriptionInvoices: async () => [{ payment_id: 'pay_50_auth_only', status: 'issued', created_at: 1000 }]
+      }
+    });
+    const walAfterAuthOnly50 = await db50.getWalletAuthoritative(u50Pending.user.id);
+    const subAfterAuthOnly50 = await db50.getSubscriptionAuthoritative(u50Pending.user.id);
+
+    const failWebhookRes50 = await postSignedWebhook50(
+      {
+        event: 'payment.failed',
+        payload: {
+          payment: {
+            entity: {
+              id: 'pay_50_failed_1',
+              subscription_id: sub50PendingId,
+              amount: 100,
+              currency: 'INR',
+              status: 'failed',
+              error_description: 'UPI mandate declined by bank'
+            }
+          }
+        }
+      },
+      { 'x-razorpay-event-id': `evt_50_fail_${Date.now()}` }
+    );
+    const stateAfterFail50 = await db50.getIntroOfferStateAuthoritative(u50Pending.user.id);
+    const preCheckoutAfterFail50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+      db: db50,
+      userId: u50Pending.user.id
+    });
+    assert(
+      authOnlyRes50.httpStatus === 400 &&
+        authOnlyRes50.body.code === 'PAYMENT_ONLY_AUTHORIZED' &&
+        walAfterAuthOnly50.balance === 0 &&
+        !subAfterAuthOnly50 &&
+        failWebhookRes50.status === 200 &&
+        failWebhookRes50.body.status === 'recorded_payment_failure' &&
+        (await db50.getWalletAuthoritative(u50Pending.user.id)).balance === 0 &&
+        stateAfterFail50.status === 'eligible' &&
+        db50.isIntroEligible(u50Pending.user.id) === true &&
+        preCheckoutAfterFail50.action === 'allow_checkout',
+      '50.2 Authorized-only & payment.failed grant ZERO credits, and failed payment leaves ₹1 intro offer retry-eligible'
+    );
+
+    // 50.3 Real HTTP subscription.authenticated webhook (with header-only x-razorpay-event-id) grants 40 credits ONCE & consumes intro
+    const u50Auth = await db50.getOrCreateUserAsync({
+      firebaseUid: `uid_50_auth_${Date.now()}`,
+      email: `auth50_${Date.now()}@example.com`,
+      name: 'Auth Intro Customer'
+    });
+    const sub50AuthId = `sub_50_auth_${Date.now()}`;
+    const pay50AuthId = `pay_50_auth_${Date.now()}`;
+    const evt50AuthHdrId = `evt_50_hdr_auth_${Date.now()}`;
+    await db50.recordPayment({
+      id: `pay_rec_50_auth_${Date.now()}`,
+      orderId: sub50AuthId,
+      paymentId: '',
+      subscriptionId: sub50AuthId,
+      mandateId: sub50AuthId,
+      planId: 'plan_intro_daily',
+      userId: u50Auth.user.id,
+      provider: 'razorpay',
+      amount: 1,
+      currency: 'INR',
+      type: 'intro_mandate',
+      status: 'pending',
+      isAutoPay: true,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    const authWebhookRes50 = await postSignedWebhook50(
+      {
+        event: 'subscription.authenticated',
+        payload: {
+          subscription: {
+            entity: {
+              id: sub50AuthId,
+              status: 'authenticated',
+              start_at: Math.floor(Date.now() / 1000) + 86400,
+              notes: { userId: u50Auth.user.id, planId: 'plan_intro_daily' }
+            }
+          },
+          payment: {
+            entity: {
+              id: pay50AuthId,
+              order_id: 'order_rzp_internal_auth_50',
+              subscription_id: sub50AuthId,
+              amount: 100,
+              currency: 'INR',
+              status: 'captured',
+              notes: { userId: u50Auth.user.id, planId: 'plan_intro_daily' }
+            }
+          }
+        }
+      },
+      { 'x-razorpay-event-id': evt50AuthHdrId }
+    );
+    const wal50Auth = await db50.getWalletAuthoritative(u50Auth.user.id);
+    const sub50Auth = await db50.getSubscriptionAuthoritative(u50Auth.user.id);
+    const introState50Auth = await db50.getIntroOfferStateAuthoritative(u50Auth.user.id);
+    assert(
+      authWebhookRes50.status === 200 &&
+        authWebhookRes50.body.status === 'processed' &&
+        authWebhookRes50.body.creditsAdded === 40 &&
+        wal50Auth.balance === 40 &&
+        sub50Auth?.status === 'trial' &&
+        sub50Auth?.planId === 'plan_intro_daily' &&
+        sub50Auth?.introPaymentId === pay50AuthId &&
+        db50.isIntroEligible(u50Auth.user.id) === false &&
+        introState50Auth.status === 'claimed',
+      '50.3 Verified subscription.authenticated webhook (header event-id) activates trial + 40 intro credits and claims ₹1 offer'
+    );
+
+    // 50.4 Duplicate webhook / callback replay & reconcile yield ZERO duplicate credits
+    const dupSameEvent50 = await postSignedWebhook50(
+      {
+        event: 'subscription.authenticated',
+        payload: {
+          subscription: { entity: { id: sub50AuthId, status: 'authenticated' } },
+          payment: { entity: { id: pay50AuthId, subscription_id: sub50AuthId, amount: 100, currency: 'INR', status: 'captured' } }
+        }
+      },
+      { 'x-razorpay-event-id': evt50AuthHdrId }
+    );
+    const dupCapEvent50 = await postSignedWebhook50(
+      {
+        event: 'payment.captured',
+        event_id: `evt_50_cap_dup_${Date.now()}`,
+        payload: {
+          payment: {
+            entity: {
+              id: pay50AuthId,
+              order_id: 'order_rzp_internal_auth_50',
+              subscription_id: sub50AuthId,
+              amount: 100,
+              currency: 'INR',
+              status: 'captured',
+              notes: { userId: u50Auth.user.id, planId: 'plan_intro_daily' }
+            }
+          }
+        }
+      }
+    );
+    const dupReconcile50 = await webhookSvc50.reconcileCustomerRazorpayPayment({
+      db: db50,
+      userId: u50Auth.user.id,
+      paymentId: pay50AuthId,
+      subscriptionId: sub50AuthId,
+      gateway: {
+        getPayment: async () => ({ id: pay50AuthId, status: 'captured', amount: 100, currency: 'INR', subscription_id: sub50AuthId }),
+        getSubscription: async () => ({ id: sub50AuthId, status: 'authenticated' }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    assert(
+      dupSameEvent50.body.status === 'ignored_duplicate' &&
+        dupCapEvent50.body.status === 'already_processed' &&
+        dupReconcile50.body.alreadyProcessed === true &&
+        (await db50.getWalletAuthoritative(u50Auth.user.id)).balance === 40,
+      '50.4 Duplicate event replay, payment.captured overlap, and reconcile replay grant ZERO duplicate credits (balance=40)'
+    );
+
+    // 50.5 Direct payment.captured with body event_id + checkout auto-reconcile
+    const u50Cap = await db50.getOrCreateUserAsync({
+      firebaseUid: `uid_50_cap_${Date.now()}`,
+      email: `cap50_${Date.now()}@example.com`,
+      name: 'Captured Customer'
+    });
+    const sub50CapId = `sub_50_cap_${Date.now()}`;
+    const pay50CapId = `pay_50_cap_${Date.now()}`;
+    await db50.recordPayment({
+      id: `pay_rec_50_cap_${Date.now()}`,
+      orderId: sub50CapId,
+      paymentId: '',
+      subscriptionId: sub50CapId,
+      mandateId: sub50CapId,
+      planId: 'plan_intro_daily',
+      userId: u50Cap.user.id,
+      provider: 'razorpay',
+      amount: 1,
+      currency: 'INR',
+      type: 'intro_mandate',
+      status: 'pending',
+      isAutoPay: true,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const capRes50 = await postSignedWebhook50({
+      event: 'payment.captured',
+      event_id: `evt_50_cap_first_${Date.now()}`,
+      payload: {
+        payment: {
+          entity: {
+            id: pay50CapId,
+            order_id: 'order_rzp_invoice_50_cap',
+            subscription_id: sub50CapId,
+            amount: 100,
+            currency: 'INR',
+            status: 'captured',
+            notes: { userId: u50Cap.user.id, planId: 'plan_intro_daily' }
+          }
+        }
+      }
+    });
+    const u50Recon = await db50.getOrCreateUserAsync({
+      firebaseUid: `uid_50_rec_${Date.now()}`,
+      email: `rec50_${Date.now()}@example.com`,
+      name: 'Auto Reconcile Customer'
+    });
+    const sub50RecId = `sub_50_rec_${Date.now()}`;
+    await db50.recordPayment({
+      id: `pay_rec_50_rec_${Date.now()}`,
+      orderId: sub50RecId,
+      paymentId: '',
+      subscriptionId: sub50RecId,
+      mandateId: sub50RecId,
+      planId: 'plan_intro_daily',
+      userId: u50Recon.user.id,
+      provider: 'razorpay',
+      amount: 1,
+      currency: 'INR',
+      type: 'intro_mandate',
+      status: 'pending',
+      isAutoPay: true,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const autoReconRes50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+      db: db50,
+      userId: u50Recon.user.id,
+      gateway: {
+        getPayment: async () => ({
+          id: `pay_50_rec_${Date.now()}`,
+          status: 'captured',
+          amount: 100,
+          currency: 'INR',
+          subscription_id: sub50RecId,
+          notes: { userId: u50Recon.user.id }
+        }),
+        getSubscription: async () => ({ id: sub50RecId, status: 'authenticated', notes: { userId: u50Recon.user.id } }),
+        getSubscriptionInvoices: async () => [{ payment_id: `pay_50_rec_${Date.now()}`, status: 'paid', created_at: 2000 }]
+      }
+    });
+    assert(
+      capRes50.status === 200 &&
+        capRes50.body.creditsAdded === 40 &&
+        (await db50.getWalletAuthoritative(u50Cap.user.id)).balance === 40 &&
+        (await db50.getSubscriptionAuthoritative(u50Cap.user.id))?.status === 'trial' &&
+        autoReconRes50.action === 'reconciled' &&
+        (await db50.getWalletAuthoritative(u50Recon.user.id)).balance === 40 &&
+        db50.isIntroEligible(u50Recon.user.id) === false,
+      '50.5 Direct ₹1 payment.captured & pre-checkout auto-reconciliation grant 40 credits ONCE and activate trial'
+    );
+
+    // 50.6 ₹1 subscription.charged MUST NOT grant 400 renewal credits; ₹499 subscription.charged grants 400 credits cleanly
+    const oneRupeeRenewal50 = await postSignedWebhook50(
+      {
+        event: 'subscription.charged',
+        payload: {
+          subscription: { entity: { id: sub50AuthId, status: 'active', notes: { userId: u50Auth.user.id } } },
+          payment: { entity: { id: `pay_50_sneak1_${Date.now()}`, subscription_id: sub50AuthId, amount: 100, currency: 'INR', status: 'captured' } }
+        }
+      },
+      { 'x-razorpay-event-id': `evt_50_sneak1_${Date.now()}` }
+    );
+    const validRenewal50 = await postSignedWebhook50(
+      {
+        event: 'subscription.charged',
+        payload: {
+          subscription: {
+            entity: {
+              id: sub50AuthId,
+              status: 'active',
+              charge_at: Math.floor(Date.now() / 1000) + 7 * 86400,
+              notes: { userId: u50Auth.user.id }
+            }
+          },
+          payment: {
+            entity: {
+              id: `pay_50_ren499_${Date.now()}`,
+              order_id: 'order_ren_50_499',
+              subscription_id: sub50AuthId,
+              amount: 49900,
+              currency: 'INR',
+              status: 'captured',
+              notes: { userId: u50Auth.user.id }
+            }
+          }
+        }
+      },
+      { 'x-razorpay-event-id': `evt_50_ren499_${Date.now()}` }
+    );
+    const walAfterRenewal50 = await db50.getWalletAuthoritative(u50Auth.user.id);
+    const subAfterRenewal50 = await db50.getSubscriptionAuthoritative(u50Auth.user.id);
+    assert(
+      oneRupeeRenewal50.status === 200 &&
+        oneRupeeRenewal50.body.status === 'rejected_payment_mismatch' &&
+        validRenewal50.status === 200 &&
+        validRenewal50.body.creditsAdded === 400 &&
+        walAfterRenewal50.balance === 440 &&
+        subAfterRenewal50?.status === 'active',
+      '50.6 ₹1 subscription.charged blocked from granting 400 credits; ₹499 subscription.charged grants 400 renewal credits (40 -> 440)'
+    );
+
+    // 50.7 Unknown webhook events MUST NOT be marked processed + invalid HMAC rejected
+    const unknownEvtId50 = `evt_50_unknown_${Date.now()}`;
+    const unknownRes50 = await postSignedWebhook50(
+      {
+        event: 'subscription.paused_unhandled_custom',
+        payload: {}
+      },
+      { 'x-razorpay-event-id': unknownEvtId50 }
+    );
+    const badHmacRes50 = await postSignedWebhook50(
+      {
+        event: 'subscription.authenticated',
+        payload: {}
+      },
+      { 'x-razorpay-event-id': `evt_50_badhmac_${Date.now()}` },
+      '0000000000000000000000000000000000000000000000000000000000000000'
+    );
+    assert(
+      unknownRes50.status === 200 &&
+        unknownRes50.body.status === 'ignored_unhandled_event' &&
+        (await db50.isWebhookProcessed(unknownEvtId50)) === false &&
+        badHmacRes50.status === 400,
+      '50.7 Unknown webhook events are NOT marked processed and invalid HMAC signatures return HTTP 400'
+    );
+  } finally {
+    await new Promise<void>((resolve) => server50.close(() => resolve()));
+    if (fs50.existsSync(dbFile50)) fs50.unlinkSync(dbFile50);
   }
 
   console.log('\n====================================================');
