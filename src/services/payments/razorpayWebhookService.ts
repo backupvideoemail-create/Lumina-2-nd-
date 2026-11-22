@@ -152,6 +152,60 @@ export interface WebhookProcessResult {
   body: Record<string, any>;
 }
 
+function extractProviderTimestampSec(event: any, payment?: any): number | undefined {
+  const candidates = [event?.created_at, payment?.created_at];
+  for (const val of candidates) {
+    if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+      return val;
+    }
+  }
+  return undefined;
+}
+
+function computePaidThroughAtIso(params: {
+  isIntro: boolean;
+  validityDays?: number;
+  validityHours?: number;
+  currentEndUnix?: number;
+  startAtUnix?: number;
+  nowMs?: number;
+}): string {
+  const nowMs = params.nowMs ?? Date.now();
+  if (typeof params.currentEndUnix === 'number' && Number.isFinite(params.currentEndUnix) && params.currentEndUnix > 0) {
+    return new Date(params.currentEndUnix * 1000).toISOString();
+  }
+  if (params.isIntro) {
+    if (typeof params.startAtUnix === 'number' && Number.isFinite(params.startAtUnix) && params.startAtUnix * 1000 > nowMs) {
+      return new Date(params.startAtUnix * 1000).toISOString();
+    }
+    return new Date(nowMs + (params.validityHours || 24) * 3600000).toISOString();
+  }
+  return new Date(nowMs + (params.validityDays || 7) * 86400000).toISOString();
+}
+
+function hasFuturePaidThrough(sub: UserSubscription | null | undefined, nowMs: number = Date.now()): boolean {
+  if (!sub?.paidThroughAt) return false;
+  const parsed = Date.parse(sub.paidThroughAt);
+  return !Number.isNaN(parsed) && parsed > nowMs;
+}
+
+function isStaleEventForSubscription(
+  sub: UserSubscription | null | undefined,
+  eventCreatedAtSec?: number
+): boolean {
+  if (!sub || !eventCreatedAtSec) return false;
+  if (sub.lastCapturedAt) {
+    const lastCapMs = Date.parse(sub.lastCapturedAt);
+    if (!Number.isNaN(lastCapMs) && eventCreatedAtSec < Math.floor(lastCapMs / 1000)) {
+      return true;
+    }
+  }
+  if (typeof sub.lastWebhookEventAt === 'number' && eventCreatedAtSec < sub.lastWebhookEventAt) {
+    return true;
+  }
+  return false;
+}
+
 export async function processRazorpayWebhookEvent(params: {
   db: ProductionDatabase;
   rawBody: Buffer;
@@ -440,6 +494,15 @@ export async function processRazorpayWebhookEvent(params: {
         ? nextCalDay.isoString
         : new Date(Date.now() + (resolvedPlan.validityDays || 7) * 86400000).toISOString();
 
+    const eventCreatedAtSec = extractProviderTimestampSec(event, payment);
+    const paidThroughAt = computePaidThroughAtIso({
+      isIntro: Boolean(resolvedPlan.isIntro),
+      validityDays: resolvedPlan.validityDays,
+      validityHours: resolvedPlan.validityHours,
+      currentEndUnix: subEntity?.current_end,
+      startAtUnix: subEntity?.start_at,
+      nowMs: Date.now()
+    });
     const newSub: UserSubscription = {
       id: subscriptionId,
       userId: user.id,
@@ -452,6 +515,12 @@ export async function processRazorpayWebhookEvent(params: {
       status: resolvedPlan.isIntro ? 'trial' : 'active',
       startAt: existingSub?.startAt || nowIso,
       nextChargeAt,
+      paidThroughAt,
+      lastCapturedPaymentId: paymentId,
+      lastCapturedAt: nowIso,
+      lastWebhookEventAt: eventCreatedAtSec ?? existingSub?.lastWebhookEventAt,
+      renewalFailedAt: undefined,
+      renewalFailureReason: undefined,
       renewalAmount: resolvedPlan.renewalPrice,
       createdAt: existingSub?.createdAt || nowIso,
       updatedAt: nowIso
@@ -614,7 +683,21 @@ export async function processRazorpayWebhookEvent(params: {
     // Activate subscription if this was an AutoPay initial charge captured via payment.captured
     if (!isTopUp && effectiveSubId && resolvedPlanObj) {
       const currentSub = await db.getSubscriptionAuthoritative(user.id);
-      if (!currentSub || currentSub.status === 'payment_failed' || currentSub.mandateId !== effectiveSubId) {
+      const capEventTs = extractProviderTimestampSec(event, payment);
+      const paidThroughAt = computePaidThroughAtIso({
+        isIntro: Boolean(resolvedPlanObj.isIntro),
+        validityDays: resolvedPlanObj.validityDays,
+        validityHours: resolvedPlanObj.validityHours,
+        nowMs: Date.now()
+      });
+      if (
+        !currentSub ||
+        currentSub.status === 'payment_failed' ||
+        currentSub.status === 'past_due' ||
+        currentSub.status === 'on_hold' ||
+        currentSub.mandateId !== effectiveSubId ||
+        !currentSub.paidThroughAt
+      ) {
         const nextCalDay = calculateNextCalendarDayStartDate();
         await db.setSubscription({
           id: effectiveSubId,
@@ -626,12 +709,18 @@ export async function processRazorpayWebhookEvent(params: {
           subscriptionId: effectiveSubId,
           introPaymentId: resolvedPlanObj.isIntro ? paymentId : currentSub?.introPaymentId,
           status: resolvedPlanObj.isIntro ? 'trial' : 'active',
-          startAt: nowIso,
+          startAt: currentSub?.startAt || nowIso,
           nextChargeAt: resolvedPlanObj.isIntro
             ? nextCalDay.isoString
             : new Date(Date.now() + (resolvedPlanObj.validityDays || 7) * 86400000).toISOString(),
+          paidThroughAt,
+          lastCapturedPaymentId: paymentId,
+          lastCapturedAt: nowIso,
+          lastWebhookEventAt: capEventTs ?? currentSub?.lastWebhookEventAt,
+          renewalFailedAt: undefined,
+          renewalFailureReason: undefined,
           renewalAmount: resolvedPlanObj.renewalPrice,
-          createdAt: nowIso,
+          createdAt: currentSub?.createdAt || nowIso,
           updatedAt: nowIso
         });
       }
@@ -731,14 +820,27 @@ export async function processRazorpayWebhookEvent(params: {
     });
 
     if (sub) {
+      const renEventTs = extractProviderTimestampSec(event, payment);
       sub.status = 'active';
+      sub.cancelledAt = undefined;
+      sub.renewalFailedAt = undefined;
+      sub.renewalFailureReason = undefined;
       if (subEntity?.charge_at) {
         sub.nextChargeAt = new Date(subEntity.charge_at * 1000).toISOString();
       } else if (subEntity?.current_end) {
         sub.nextChargeAt = new Date(subEntity.current_end * 1000).toISOString();
       } else {
-        sub.nextChargeAt = new Date(Date.now() + 7 * 86400000).toISOString();
+        sub.nextChargeAt = new Date(Date.now() + (plan?.validityDays || 7) * 86400000).toISOString();
       }
+      sub.paidThroughAt = computePaidThroughAtIso({
+        isIntro: false,
+        validityDays: plan?.validityDays || 7,
+        currentEndUnix: subEntity?.current_end || subEntity?.charge_at,
+        nowMs: Date.now()
+      });
+      sub.lastCapturedPaymentId = paymentId || eventId;
+      sub.lastCapturedAt = nowIso;
+      if (renEventTs) sub.lastWebhookEventAt = renEventTs;
       sub.updatedAt = nowIso;
       await db.setSubscription(sub);
     }
@@ -756,47 +858,215 @@ export async function processRazorpayWebhookEvent(params: {
     };
   }
 
-  // 4. subscription.cancelled
-  if (eventType === 'subscription.cancelled') {
+  // 4. Official Razorpay Status-Only Lifecycle Events (STRICTLY ZERO CREDITS + Idempotent + Out-of-Order Protected)
+  const STATUS_ONLY_SUBSCRIPTION_EVENTS: Record<string, UserSubscription['status']> = {
+    'subscription.activated': 'active',
+    'subscription.resumed': 'active',
+    'subscription.pending': 'past_due',
+    'subscription.halted': 'on_hold',
+    'subscription.paused': 'paused',
+    'subscription.completed': 'expired',
+    'subscription.cancelled': 'cancelled'
+  };
+
+  if (Object.prototype.hasOwnProperty.call(STATUS_ONLY_SUBSCRIPTION_EVENTS, eventType)) {
+    const targetStatus = STATUS_ONLY_SUBSCRIPTION_EVENTS[eventType];
     const subEntity = event.payload?.subscription?.entity;
-    const subscriptionId = subEntity?.id;
-    const userId = subEntity?.notes?.userId;
-    const sub = subscriptionId
-      ? await db.getSubscriptionByMandateOrIdAuthoritative(subscriptionId)
-      : userId
-      ? await db.getSubscriptionAuthoritative(userId)
-      : null;
-    if (sub) {
-      sub.status = 'cancelled';
-      sub.cancelledAt = new Date().toISOString();
-      sub.updatedAt = sub.cancelledAt;
-      await db.setSubscription(sub);
+    const subscriptionId = typeof subEntity?.id === 'string' ? subEntity.id.trim() : '';
+    const notesUserId = typeof subEntity?.notes?.userId === 'string' ? subEntity.notes.userId.trim() : '';
+
+    if (!subscriptionId || !subscriptionId.startsWith('sub_')) {
+      return {
+        httpStatus: 400,
+        body: { error: `Malformed ${eventType} webhook: missing valid subscription ID` }
+      };
     }
+
+    const sub =
+      (await db.getSubscriptionByMandateOrIdAuthoritative(subscriptionId)) ||
+      (notesUserId ? await db.getSubscriptionAuthoritative(notesUserId) : null);
+
+    if (sub && notesUserId && sub.userId !== notesUserId) {
+      return {
+        httpStatus: 400,
+        body: { error: `Subscription ownership mismatch in ${eventType}` }
+      };
+    }
+
+    if (!sub) {
+      await db.markWebhookProcessed(eventId);
+      return {
+        httpStatus: 200,
+        body: {
+          status: 'ignored_subscription_not_found',
+          eventId,
+          eventType,
+          subscriptionId,
+          creditsAdded: 0
+        }
+      };
+    }
+
+    const eventCreatedAtSec = extractProviderTimestampSec(event);
+    const isDowngradeOrInactive = targetStatus !== 'active';
+    if (isDowngradeOrInactive && isStaleEventForSubscription(sub, eventCreatedAtSec)) {
+      await db.markWebhookProcessed(eventId);
+      return {
+        httpStatus: 200,
+        body: {
+          status: 'ignored_stale_event',
+          eventId,
+          eventType,
+          subscriptionId,
+          preservedStatus: sub.status,
+          creditsAdded: 0
+        }
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    sub.status = targetStatus;
+    if (targetStatus === 'cancelled') {
+      sub.cancelledAt = sub.cancelledAt || nowIso;
+    } else if (targetStatus === 'active') {
+      sub.cancelledAt = undefined;
+      sub.renewalFailedAt = undefined;
+      sub.renewalFailureReason = undefined;
+      // Sync extended current_end ONLY if this subscription already has a verified captured payment
+      if (
+        (sub.introPaymentId || sub.lastCapturedPaymentId) &&
+        typeof subEntity?.current_end === 'number' &&
+        subEntity.current_end > 0
+      ) {
+        const providerEndIso = new Date(subEntity.current_end * 1000).toISOString();
+        const currentPaidMs = sub.paidThroughAt ? Date.parse(sub.paidThroughAt) : 0;
+        if (Number.isNaN(currentPaidMs) || subEntity.current_end * 1000 > currentPaidMs) {
+          sub.paidThroughAt = providerEndIso;
+        }
+      }
+    }
+    if (eventCreatedAtSec) {
+      sub.lastWebhookEventAt = eventCreatedAtSec;
+    }
+    sub.updatedAt = nowIso;
+    await db.setSubscription(sub);
     await db.markWebhookProcessed(eventId);
-    return { httpStatus: 200, body: { status: 'processed', eventId, eventType } };
+
+    return {
+      httpStatus: 200,
+      body: {
+        status: 'processed',
+        eventId,
+        eventType,
+        subscriptionId,
+        subscriptionStatus: sub.status,
+        paidThroughPreserved: hasFuturePaidThrough(sub),
+        creditsAdded: 0
+      }
+    };
   }
 
-  // 5. payment.failed (Safe status recording — ZERO credits, never marks intro claimed)
+  // 5. payment.failed (Zero credits + protects newer captures & paidThroughAt + prevents falsely active unpaid subscriptions)
   if (eventType === 'payment.failed') {
     const payment = event.payload?.payment?.entity;
-    const paymentId = payment?.id;
-    const orderId = payment?.order_id;
-    const subId = payment?.subscription_id;
-    const storedPayment =
-      (orderId ? await db.getPaymentAuthoritative(orderId) : null) ||
-      (subId ? await db.getPaymentAuthoritative(subId) : null) ||
-      (paymentId ? await db.getPaymentAuthoritative(paymentId) : null);
+    const paymentId = typeof payment?.id === 'string' ? payment.id.trim() : '';
+    const orderId = typeof payment?.order_id === 'string' ? payment.order_id.trim() : '';
+    const subId = typeof payment?.subscription_id === 'string' && payment.subscription_id.startsWith('sub_')
+      ? payment.subscription_id.trim()
+      : '';
+    const failureReason = payment?.error_description || payment?.error_reason || 'payment_failed';
+    const eventCreatedAtSec = extractProviderTimestampSec(event, payment);
+    const nowIso = new Date().toISOString();
 
-    if (storedPayment && storedPayment.status !== 'captured') {
+    const storedPayment =
+      (paymentId ? await db.getPaymentAuthoritative(paymentId) : null) ||
+      (orderId ? await db.getPaymentAuthoritative(orderId) : null) ||
+      (subId ? await db.getPaymentAuthoritative(subId) : null);
+
+    // Protect already-captured payments and newer payments from being overwritten by delayed payment.failed events
+    const isSamePaymentOrPending = Boolean(
+      storedPayment &&
+        storedPayment.status !== 'captured' &&
+        storedPayment.verificationStatus !== 'verified' &&
+        (!paymentId || !storedPayment.paymentId || storedPayment.paymentId === paymentId)
+    );
+
+    if (storedPayment && isSamePaymentOrPending) {
       storedPayment.paymentId = paymentId || storedPayment.paymentId;
       storedPayment.status = 'failed';
       storedPayment.verificationStatus = 'failed';
-      storedPayment.failureReason = payment?.error_description || payment?.error_reason || 'payment_failed';
-      storedPayment.updatedAt = new Date().toISOString();
+      storedPayment.failureReason = failureReason;
+      storedPayment.updatedAt = nowIso;
       await db.recordPayment(storedPayment);
     }
+
+    const effectiveSubId = subId || storedPayment?.subscriptionId || '';
+    const isSubscriptionLinkedFailure = Boolean(
+      effectiveSubId ||
+        storedPayment?.type === 'intro_mandate' ||
+        storedPayment?.type === 'recurring_renewal' ||
+        storedPayment?.type === 'subscription'
+    );
+
+    const sub = isSubscriptionLinkedFailure
+      ? effectiveSubId
+        ? await db.getSubscriptionByMandateOrIdAuthoritative(effectiveSubId)
+        : storedPayment?.userId
+        ? await db.getSubscriptionAuthoritative(storedPayment.userId)
+        : null
+      : null;
+
+    if (sub) {
+      const paymentAlreadyCaptured = Boolean(
+        paymentId &&
+          (sub.lastCapturedPaymentId === paymentId ||
+            sub.introPaymentId === paymentId ||
+            (await db.isPaymentProcessed(paymentId)))
+      );
+      const staleAgainstCapture = isStaleEventForSubscription(sub, eventCreatedAtSec);
+
+      if (paymentAlreadyCaptured || staleAgainstCapture) {
+        await db.markWebhookProcessed(eventId);
+        return {
+          httpStatus: 200,
+          body: {
+            status: 'ignored_stale_payment_failed',
+            eventId,
+            eventType,
+            subscriptionId: sub.subscriptionId || sub.mandateId || sub.id,
+            preservedStatus: sub.status,
+            creditsAdded: 0
+          }
+        };
+      }
+
+      sub.renewalFailedAt = nowIso;
+      sub.renewalFailureReason = failureReason;
+      if (eventCreatedAtSec) {
+        sub.lastWebhookEventAt = eventCreatedAtSec;
+      }
+      // Paid-through protection: never cut off remaining access of a previously captured cycle
+      if (hasFuturePaidThrough(sub)) {
+        if (sub.status !== 'cancelled') {
+          sub.status = 'past_due';
+        }
+      } else if (sub.status !== 'cancelled') {
+        sub.status = 'payment_failed';
+      }
+      sub.updatedAt = nowIso;
+      await db.setSubscription(sub);
+    }
+
     await db.markWebhookProcessed(eventId);
-    return { httpStatus: 200, body: { status: 'recorded_payment_failure', eventId, eventType } };
+    return {
+      httpStatus: 200,
+      body: {
+        status: 'recorded_payment_failure',
+        eventId,
+        eventType,
+        creditsAdded: 0
+      }
+    };
   }
 
   // 6. Unknown / Unhandled event types: NEVER mark unknown webhook events processed
@@ -1047,6 +1317,14 @@ export async function reconcileCustomerRazorpayPayment(params: {
       : new Date(Date.now() + (plan.validityDays || 7) * 86400000).toISOString();
 
   const existingSub = await db.getSubscriptionAuthoritative(params.userId);
+  const paidThroughAt = computePaidThroughAtIso({
+    isIntro: subStatus === 'trial',
+    validityDays: plan.validityDays,
+    validityHours: plan.validityHours,
+    currentEndUnix: rzpSub?.current_end,
+    startAtUnix: rzpSub?.start_at,
+    nowMs: Date.now()
+  });
   const newSubscription: UserSubscription = {
     id: effectiveSubId || referenceId,
     userId: params.userId,
@@ -1059,6 +1337,11 @@ export async function reconcileCustomerRazorpayPayment(params: {
     status: subStatus,
     startAt: existingSub?.startAt || nowIso,
     nextChargeAt,
+    paidThroughAt,
+    lastCapturedPaymentId: cyclePaymentId || referenceId,
+    lastCapturedAt: nowIso,
+    renewalFailedAt: undefined,
+    renewalFailureReason: undefined,
     renewalAmount: plan.renewalPrice,
     createdAt: existingSub?.createdAt || nowIso,
     updatedAt: nowIso

@@ -139,7 +139,7 @@ export const PlansModal: React.FC = () => {
         name: 'AI Prime Studio',
         description:
           currentPlan.id === 'plan_intro_daily'
-            ? 'Trail Offer · ₹1 Intro (24h) + ₹499 Weekly AutoPay'
+            ? '₹1 for 24 hours, then ₹499 every 7 days until cancellation'
             : `${currentPlan.name} AutoPay`,
         image: logoUrl,
         handler: async (response: any) => {

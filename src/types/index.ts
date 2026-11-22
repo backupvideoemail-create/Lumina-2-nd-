@@ -276,6 +276,12 @@ export interface UserSubscription {
   cancelledAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  paidThroughAt?: string;
+  lastCapturedPaymentId?: string;
+  lastCapturedAt?: string;
+  lastWebhookEventAt?: number;
+  renewalFailedAt?: string;
+  renewalFailureReason?: string;
 }
 
 export interface PaymentRecord {

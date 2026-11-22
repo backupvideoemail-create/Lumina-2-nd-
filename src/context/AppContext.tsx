@@ -383,17 +383,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     templateManagerOpen
   ]);
 
-  // Active Plan Check: strictly require active or trial subscription (cancelled or expired do NOT count)
-  const isCancelledOrExpired = Boolean(
-    activeSubscription &&
-      (activeSubscription.status === 'cancelled' ||
-        activeSubscription.status === 'expired' ||
-        activeSubscription.status === 'payment_failed')
-  );
+  // Active Plan Check: align with server isSubscriptionEntitled (preserve paidThroughAt until cycle end; exclude revoked/paused/expired)
+  const paidThroughMs = activeSubscription?.paidThroughAt ? Date.parse(activeSubscription.paidThroughAt) : NaN;
+  const hasFuturePaidPeriod = Boolean(!Number.isNaN(paidThroughMs) && paidThroughMs > Date.now());
   const hasActivePlan = Boolean(
     activeSubscription &&
-      !isCancelledOrExpired &&
-      (activeSubscription.status === 'active' || activeSubscription.status === 'trial')
+      activeSubscription.status !== 'revoked' &&
+      activeSubscription.status !== 'paused' &&
+      activeSubscription.status !== 'expired' &&
+      (activeSubscription.status === 'active' ||
+        activeSubscription.status === 'trial' ||
+        (hasFuturePaidPeriod &&
+          (activeSubscription.status === 'cancelled' ||
+            activeSubscription.status === 'past_due' ||
+            activeSubscription.status === 'on_hold' ||
+            activeSubscription.status === 'grace_period' ||
+            activeSubscription.status === 'payment_failed')))
   );
 
   // Sync Plans and Top-Up packs from Central Server Configuration

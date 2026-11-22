@@ -57,6 +57,7 @@ import {
   getDatabaseGuardState,
   enforceRuntimeDatabaseLock,
   refreshRuntimeGcpMetadata,
+  isSubscriptionEntitled,
   CANONICAL_PROJECT_NAME,
   CANONICAL_PROJECT_NUMBER
 } from './src/services/db/database.ts';
@@ -1138,14 +1139,7 @@ app.get('/api/auth/me', async (req, res) => {
   const wallet = await prodDb.getWalletAuthoritative(user.id);
   const activeSubscription = await prodDb.getSubscriptionAuthoritative(user.id);
   const likedTemplates = prodDb.getUserLikedTemplates(user.id);
-  const isCancelledOrExpired = Boolean(
-    activeSubscription && (activeSubscription.status === 'cancelled' || activeSubscription.status === 'expired')
-  );
-  const hasActivePlan = Boolean(
-    activeSubscription &&
-    !isCancelledOrExpired &&
-    (activeSubscription.status === 'active' || activeSubscription.status === 'trial')
-  );
+  const hasActivePlan = isSubscriptionEntitled(activeSubscription);
   const introOfferState = await prodDb.getIntroOfferStateAuthoritative(user.id);
   const isIntroEligible = introOfferState.eligible;
 
@@ -1428,6 +1422,11 @@ app.get('/api/admin/health-check', requireAdmin, async (req, res) => {
       missingEnvVars: storageStatus.missingEnvVars || [],
       requiredVarsPresent: platformReport.r2Telemetry.requiredVarsPresent,
       objectCountAndUsage: platformReport.r2Telemetry.objectCountAndUsage
+    },
+    paymentsSecrets: {
+      razorpayKeyIdPresent: Boolean(process.env.RAZORPAY_KEY_ID?.trim()),
+      razorpayKeySecretPresent: Boolean(process.env.RAZORPAY_KEY_SECRET?.trim()),
+      razorpayWebhookSecretPresent: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET?.trim())
     },
     catalogBreakdown: platformReport.catalogBreakdown,
     androidBuild: platformReport.androidBuild,
@@ -3736,12 +3735,7 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   // User MUST have activated a valid plan first (e.g. ₹1 intro plan or active subscription).
   if (isTopUp) {
     const sub = await prodDb.getSubscriptionAuthoritative(user.id);
-    const isCancelledOrExpired = Boolean(
-      sub && (sub.status === 'cancelled' || sub.status === 'expired' || sub.status === 'payment_failed')
-    );
-    const hasActivePlan = Boolean(
-      sub && !isCancelledOrExpired && (sub.status === 'active' || sub.status === 'trial')
-    );
+    const hasActivePlan = isSubscriptionEntitled(sub);
 
     if (!hasActivePlan) {
       return res.status(403).json({
@@ -4209,11 +4203,15 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
   await prodDb.recordPayment(payRec);
 
   // Activate Mandate Subscription using real Razorpay Subscription ID
+  const nowIso = new Date().toISOString();
   const nextCalDay = calculateNextCalendarDayStartDate();
   const nextChargeAt =
     plan.isIntro
       ? nextCalDay.isoString
       : new Date(Date.now() + (plan.validityDays || 7) * 86400000).toISOString();
+  const paidThroughAt = plan.isIntro
+    ? new Date(Math.max(nextCalDay.unixSeconds * 1000, Date.now() + (plan.validityHours || 24) * 3600000)).toISOString()
+    : new Date(Date.now() + (plan.validityDays || 7) * 86400000).toISOString();
 
   const newSubscription: UserSubscription = {
     id: targetSubId || payRec.orderId,
@@ -4225,8 +4223,13 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     subscriptionId: targetSubId || undefined,
     introPaymentId: plan.isIntro ? (paymentId || payRec.paymentId) : undefined,
     status: plan.isIntro ? 'trial' : 'active',
-    startAt: new Date().toISOString(),
+    startAt: nowIso,
     nextChargeAt,
+    paidThroughAt,
+    lastCapturedPaymentId: paymentId || payRec.paymentId || undefined,
+    lastCapturedAt: nowIso,
+    renewalFailedAt: undefined,
+    renewalFailureReason: undefined,
     renewalAmount: plan.renewalPrice
   };
   await prodDb.setSubscription(newSubscription);
@@ -6942,18 +6945,20 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
       severity: 'CRITICAL',
       testType: 'INTEGRATION_CHECK',
       endpointOrProvider: 'POST /api/payments/checkout/order · Razorpay Gateway',
-      expectedResult: 'Configured RAZORPAY_KEY_ID & KEY_SECRET; architecture supports ₹1 intro mandate and plan orders without live financial side effects',
+      expectedResult: 'Configured RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET & RAZORPAY_WEBHOOK_SECRET booleans; architecture supports ₹1 intro mandate and plan orders without live financial side effects',
       execute: async () => {
         const keyId = process.env.RAZORPAY_KEY_ID?.trim();
         const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+        const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+        const presenceSummary = `RAZORPAY_KEY_ID=${keyId ? 'configured' : 'missing'}, RAZORPAY_KEY_SECRET=${keySecret ? 'configured' : 'missing'}, RAZORPAY_WEBHOOK_SECRET=${webhookSecret ? 'configured' : 'missing'}`;
 
-        if (!keyId || !keySecret) {
+        if (!keyId || !keySecret || !webhookSecret) {
           return {
             status: 'blocked',
-            actualResult: `RAZORPAY_KEY_ID=${keyId ? 'configured' : 'missing'}, RAZORPAY_KEY_SECRET=${keySecret ? 'configured' : 'missing'}`,
-            failureReason: 'Razorpay API credentials missing in environment variables',
+            actualResult: presenceSummary,
+            failureReason: 'One or more required Razorpay server credentials/webhook secrets are missing in environment variables',
             rootCauseHypothesis: 'Credentials not injected in Cloud Run environment or local .env',
-            recommendedAction: 'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Cloud Run secrets'
+            recommendedAction: 'Attach RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_WEBHOOK_SECRET in Cloud Run secrets'
           };
         }
 
@@ -6961,7 +6966,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         if (!isKeyFormatValid) {
           return {
             status: 'warning',
-            actualResult: `Unusual Key ID prefix: ${keyId.slice(0, 8)}...`,
+            actualResult: `Unusual Key ID prefix: ${keyId.slice(0, 8)}... (${presenceSummary})`,
             failureReason: 'Key ID does not begin with rzp_test_ or rzp_live_',
             rootCauseHypothesis: 'Key ID value might contain whitespace or invalid identifier',
             recommendedAction: 'Check Razorpay Dashboard API Keys section'
@@ -6970,7 +6975,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
 
         return {
           status: 'passed',
-          actualResult: `Razorpay credentials active (${keyId.startsWith('rzp_live_') ? 'Live Production' : 'Test Mode'}); Zero unwanted live orders triggered`
+          actualResult: `Razorpay credentials active (${keyId.startsWith('rzp_live_') ? 'Live Production' : 'Test Mode'}); ${presenceSummary}; Zero unwanted live orders triggered`
         };
       }
     },

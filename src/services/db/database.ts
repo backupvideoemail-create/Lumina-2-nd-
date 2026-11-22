@@ -53,6 +53,35 @@ export const CANONICAL_PROJECT_NUMBER = '855598524398';
 export const CANONICAL_PROJECT_NAME = 'AI Prime Studio';
 export const CANONICAL_DATABASE_ID = '(default)';
 
+/**
+ * Authoritative entitlement check preserving already-paid billing cycles (`paidThroughAt` / `current_end`).
+ * Never grants access for `revoked`, `paused`, or `expired` subscriptions, nor for `cancelled`/`past_due`/`on_hold`/`payment_failed`
+ * once `paidThroughAt` is absent or expired.
+ */
+export function isSubscriptionEntitled(sub: UserSubscription | null | undefined, nowMs: number = Date.now()): boolean {
+  if (!sub) return false;
+  if (sub.status === 'revoked' || sub.status === 'paused' || sub.status === 'expired') {
+    return false;
+  }
+  if (sub.status === 'active' || sub.status === 'trial') {
+    return true;
+  }
+  if (
+    sub.paidThroughAt &&
+    (sub.status === 'cancelled' ||
+      sub.status === 'past_due' ||
+      sub.status === 'on_hold' ||
+      sub.status === 'grace_period' ||
+      sub.status === 'payment_failed')
+  ) {
+    const paidThroughMs = Date.parse(sub.paidThroughAt);
+    if (!Number.isNaN(paidThroughMs) && paidThroughMs > nowMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface DatabaseGuardState {
   expectedProjectId: string;
   expectedDatabaseId: string;
@@ -2386,12 +2415,14 @@ export class ProductionDatabase {
       return { eligible: true, status: 'eligible', pendingPayment: null };
     }
 
-    // 1. Subscription check: user has a verified/active/trial/past-active intro subscription (never count payment_failed)
+    // 1. Subscription check: user has a verified/active/trial or captured intro subscription (never count unpaid failed/halted/pending/cancelled)
     const userSub = this.getSubscription(userId);
     const hasClaimedIntroSub = Boolean(
       userSub &&
       (userSub.planId === 'plan_intro_daily' || userSub.planId === 'sub_intro_daily') &&
-      userSub.status !== 'payment_failed'
+      (userSub.status === 'trial' ||
+        userSub.status === 'active' ||
+        Boolean(userSub.introPaymentId || userSub.lastCapturedPaymentId))
     );
 
     // 2. Payments check: deduplicate records (recordPayment indexes by orderId, subscriptionId, paymentId)
