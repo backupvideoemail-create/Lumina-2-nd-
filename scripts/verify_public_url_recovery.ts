@@ -1,25 +1,33 @@
 /**
- * AI Prime Studio — Read-Only Public URL & Cloud Run Recovery Verifier
+ * AI Prime Studio — Read-Only Live Public URL & Multi-Service Parity Verifier
  *
- * Strictly non-destructive diagnostic utility.
- * Verifies:
- *  1. DNS A-record parity between the existing .ai.studio URL and the Cloud Run .run.app URL
- *  2. TLS certificate validity for ai-prime-studio-photo-video.ai.studio
- *  3. Live Homepage HTML & primary JS asset availability (HTTP 200)
- *  4. /api/version parity between .ai.studio and .run.app (revision, region, Firestore authoritative mode)
- *  5. Live /api/banners and /api/templates responses
+ * Strictly non-destructive diagnostic utility (zero paid AI calls, zero payments, zero DB writes).
+ * Verifies on https://ai-prime-studio.ai.studio (and compares against legacy backend when requested):
+ *  1. DNS A-records & TLS certificate validity for ai-prime-studio.ai.studio
+ *  2. Live Homepage HTML, JS bundle, and SEO canonical/sitemap readiness
+ *  3. /api/version authoritative Firestore (default) lock on ai-prime-studio
+ *  4. Live /api/banners and /api/templates responses
+ *  5. Live Cloudflare R2 /api/media/* HTTP 200, Byte-Range, and CORP headers
+ *  6. Live CORS OPTIONS preflight for Origin: https://ai-prime-studio.ai.studio
+ *  7. Legacy Cloud Run (gen-lang-client-0525281130) reachability & shared Firestore parity
  *
  * Usage:
  *   npx tsx scripts/verify_public_url_recovery.ts
- *   TARGET_URL=https://... npx tsx scripts/verify_public_url_recovery.ts
+ *   TARGET_URL=https://ai-prime-studio.ai.studio npx tsx scripts/verify_public_url_recovery.ts
  */
 
 import dns from 'dns/promises';
 import tls from 'tls';
 
-const PUBLIC_URL = (process.env.TARGET_URL || 'https://ai-prime-studio-photo-video.ai.studio').replace(/\/$/, '');
-const CLOUD_RUN_URL = (
-  process.env.CLOUD_RUN_URL || 'https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app'
+const PUBLIC_URL = (
+  process.env.TARGET_URL ||
+  process.env.PUBLIC_APP_URL ||
+  'https://ai-prime-studio.ai.studio'
+).replace(/\/$/, '');
+
+const LEGACY_CLOUD_RUN_URL = (
+  process.env.LEGACY_CLOUD_RUN_URL ||
+  'https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app'
 ).replace(/\/$/, '');
 
 interface CheckResult {
@@ -36,12 +44,16 @@ function record(id: string, name: string, status: 'PASS' | 'WARN' | 'FAIL', deta
   console.log(`[${status}] ${id} ${name}: ${details}`);
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = 25000): Promise<{ res: Response; elapsedMs: number }> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 25000
+): Promise<{ res: Response; elapsedMs: number }> {
   const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    const res = await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' });
     return { res, elapsedMs: Date.now() - start };
   } finally {
     clearTimeout(timer);
@@ -91,34 +103,25 @@ async function inspectTls(hostname: string): Promise<{
 
 async function main() {
   console.log('================================================================');
-  console.log('AI PRIME STUDIO — READ-ONLY PUBLIC URL RECOVERY VERIFICATION');
-  console.log(`Public URL   : ${PUBLIC_URL}`);
-  console.log(`Cloud Run URL: ${CLOUD_RUN_URL}`);
-  console.log(`Timestamp    : ${new Date().toISOString()}`);
+  console.log('AI PRIME STUDIO — READ-ONLY LIVE NEW URL VERIFICATION');
+  console.log(`Primary Public URL : ${PUBLIC_URL}`);
+  console.log(`Legacy Backend URL : ${LEGACY_CLOUD_RUN_URL}`);
+  console.log(`Timestamp          : ${new Date().toISOString()}`);
   console.log('================================================================\n');
 
   const publicHost = new URL(PUBLIC_URL).hostname;
-  const runHost = new URL(CLOUD_RUN_URL).hostname;
 
-  // 1. DNS A-Record Parity
+  // 1. DNS Resolution
   try {
-    const [pubIps, runIps] = await Promise.all([dns.resolve4(publicHost), dns.resolve4(runHost)]);
-    const pubSorted = [...pubIps].sort();
-    const runSorted = [...runIps].sort();
-    const identical =
-      pubSorted.length > 0 &&
-      pubSorted.length === runSorted.length &&
-      pubSorted.every((ip, idx) => ip === runSorted[idx]);
+    const pubIps = (await dns.resolve4(publicHost)).sort();
     record(
       'CHECK-1',
-      'DNS Routing Parity (.ai.studio vs .run.app)',
-      identical ? 'PASS' : 'WARN',
-      identical
-        ? `Identical ${pubSorted.length} Cloud Run frontend IPs (${pubSorted[0]}..${pubSorted[pubSorted.length - 1]})`
-        : `Public IPs=[${pubSorted.join(', ')}] vs Run IPs=[${runSorted.join(', ')}]`
+      'DNS A-Records (.ai.studio)',
+      pubIps.length > 0 ? 'PASS' : 'FAIL',
+      `Resolved ${pubIps.length} Google Frontend IPs (${pubIps[0]}..${pubIps[pubIps.length - 1]})`
     );
   } catch (err: any) {
-    record('CHECK-1', 'DNS Routing Parity', 'FAIL', err?.message || String(err));
+    record('CHECK-1', 'DNS A-Records', 'FAIL', err?.message || String(err));
   }
 
   // 2. TLS Certificate Validity
@@ -134,76 +137,74 @@ async function main() {
     record('CHECK-2', 'TLS Certificate Validity', 'FAIL', tlsInfo.error || 'Certificate invalid or expired');
   }
 
-  // 3. Homepage HTML + JS Bundle
+  // 3. Homepage HTML, JS Bundle & Canonical SEO Tag
   try {
-    const { res: homeRes, elapsedMs } = await fetchWithTimeout(`${PUBLIC_URL}/`, 30000);
+    const { res: homeRes, elapsedMs } = await fetchWithTimeout(`${PUBLIC_URL}/`, {}, 30000);
     const html = await homeRes.text();
     const hasTitle = html.includes('AI Prime Studio');
+    const hasCanonical = html.includes('rel="canonical"') && html.includes('https://ai-prime-studio.ai.studio/');
     const assetMatch = html.match(/\/assets\/[^"'\s]+\.js/);
     const assetPath = assetMatch ? assetMatch[0] : '';
     let assetOk = false;
     let assetStatus = 0;
     if (assetPath) {
-      const { res: assetRes } = await fetchWithTimeout(`${PUBLIC_URL}${assetPath}`, 20000);
+      const { res: assetRes } = await fetchWithTimeout(`${PUBLIC_URL}${assetPath}`, { method: 'HEAD' }, 20000);
       assetStatus = assetRes.status;
       assetOk = assetRes.ok;
     }
     record(
-      'CHECK-3',
+      'CHECK-3a',
       'Homepage HTML & JS Bundle',
       homeRes.ok && hasTitle && assetOk ? 'PASS' : 'FAIL',
       `GET / -> HTTP ${homeRes.status} (${elapsedMs}ms, ${html.length} bytes, title=${hasTitle}); JS ${assetPath || 'missing'} -> HTTP ${assetStatus}`
+    );
+    record(
+      'CHECK-3b',
+      'SEO Canonical & Sitemap Freshness',
+      hasCanonical ? 'PASS' : 'WARN',
+      hasCanonical
+        ? 'Live HTML contains canonical https://ai-prime-studio.ai.studio/'
+        : 'Live revision predates today canonical/sitemap commit (will activate once republished)'
     );
   } catch (err: any) {
     record('CHECK-3', 'Homepage HTML & JS Bundle', 'FAIL', err?.message || String(err));
   }
 
-  // 4. /api/version Parity (.ai.studio vs .run.app)
+  // 4. /api/version Authoritative Database & Service Identity
+  let firstBannerMediaPath = '';
   try {
-    const [pubVer, runVer] = await Promise.all([
-      fetchWithTimeout(`${PUBLIC_URL}/api/version`, 25000),
-      fetchWithTimeout(`${CLOUD_RUN_URL}/api/version`, 25000)
-    ]);
-    const pubJson: any = await pubVer.res.json();
-    const runJson: any = await runVer.res.json();
-
-    const sameRevision =
-      Boolean(pubJson?.cloudRunRevision) &&
-      pubJson.cloudRunRevision === runJson?.cloudRunRevision &&
-      pubJson.cloudRunRegion === runJson?.cloudRunRegion;
-    const dbAuthoritative =
-      pubJson?.databaseMode === 'firestore_authoritative' && pubJson?.databaseGuardBlocked === false;
-    const hasModernGuardFields = Boolean(pubJson?.sanitizedGuard && pubJson?.verifiedGithubBaselineSha);
+    const { res: pubVer } = await fetchWithTimeout(`${PUBLIC_URL}/api/version`, {}, 25000);
+    const pubJson: any = await pubVer.json();
+    const dbOk =
+      pubJson?.databaseMode === 'firestore_authoritative' &&
+      pubJson?.databaseGuardBlocked === false &&
+      pubJson?.sanitizedGuard?.expectedProjectId === 'ai-prime-studio' &&
+      pubJson?.sanitizedGuard?.effectiveDatabaseId === '(default)' &&
+      pubJson?.sanitizedGuard?.serviceAccountProjectMatch === 'MATCH';
 
     record(
-      'CHECK-4a',
-      '/api/version Revision & Hosting Parity',
-      pubVer.res.ok && runVer.res.ok && sameRevision && dbAuthoritative ? 'PASS' : 'FAIL',
-      `revision=${pubJson?.cloudRunRevision} (matches .run.app=${sameRevision}), region=${pubJson?.cloudRunRegion}, db=${pubJson?.databaseMode}, guardBlocked=${pubJson?.databaseGuardBlocked}, templates=${pubJson?.templateCount}, scenes=${pubJson?.faceswapSceneCount}`
-    );
-
-    record(
-      'CHECK-4b',
-      'Deployed Code Freshness Check',
-      hasModernGuardFields ? 'PASS' : 'WARN',
-      hasModernGuardFields
-        ? `Running updated build with sanitizedGuard & baseline ${pubJson?.verifiedGithubBaselineSha}`
-        : `Live revision (${pubJson?.cloudRunRevision}) is running an older pre-hardening build (missing sanitizedGuard / verifiedGithubBaselineSha); pending safe recovery deploy once approved`
+      'CHECK-4',
+      '/api/version Authoritative Firestore & Cloud Run Identity',
+      pubVer.ok && dbOk ? 'PASS' : 'FAIL',
+      `revision=${pubJson?.cloudRunRevision}, region=${pubJson?.cloudRunRegion}, db=${pubJson?.databaseMode}, saMatch=${pubJson?.sanitizedGuard?.serviceAccountProjectMatch}, templates=${pubJson?.templateCount}, scenes=${pubJson?.faceswapSceneCount}`
     );
   } catch (err: any) {
-    record('CHECK-4', '/api/version Parity', 'FAIL', err?.message || String(err));
+    record('CHECK-4', '/api/version', 'FAIL', err?.message || String(err));
   }
 
   // 5. Live Customer Catalogue APIs (/api/banners & /api/templates)
   try {
     const [banResp, tplResp] = await Promise.all([
-      fetchWithTimeout(`${PUBLIC_URL}/api/banners`, 20000),
-      fetchWithTimeout(`${PUBLIC_URL}/api/templates`, 20000)
+      fetchWithTimeout(`${PUBLIC_URL}/api/banners`, {}, 20000),
+      fetchWithTimeout(`${PUBLIC_URL}/api/templates`, {}, 20000)
     ]);
     const banJson: any = await banResp.res.json();
     const tplJson: any = await tplResp.res.json();
     const bannerCount = Array.isArray(banJson?.banners) ? banJson.banners.length : 0;
     const tplCount = Array.isArray(tplJson?.templates) ? tplJson.templates.length : 0;
+    if (bannerCount > 0 && typeof banJson.banners[0]?.image === 'string') {
+      firstBannerMediaPath = banJson.banners[0].image;
+    }
 
     record(
       'CHECK-5',
@@ -215,12 +216,80 @@ async function main() {
     record('CHECK-5', 'Live Customer Catalogue Endpoints', 'FAIL', err?.message || String(err));
   }
 
+  // 6. Live Cloudflare R2 Media Streaming (HEAD + Byte-Range + CORP)
+  try {
+    if (firstBannerMediaPath && firstBannerMediaPath.startsWith('/api/media/')) {
+      const { res: mediaRes } = await fetchWithTimeout(
+        `${PUBLIC_URL}${firstBannerMediaPath}`,
+        { method: 'HEAD' },
+        20000
+      );
+      const acceptRanges = mediaRes.headers.get('accept-ranges') || '';
+      const corp = mediaRes.headers.get('cross-origin-resource-policy') || '';
+      const contentType = mediaRes.headers.get('content-type') || '';
+      const contentLength = mediaRes.headers.get('content-length') || '';
+      record(
+        'CHECK-6',
+        'Live Cloudflare R2 Media Stream & Headers',
+        mediaRes.ok && acceptRanges.includes('bytes') && corp === 'cross-origin' ? 'PASS' : 'FAIL',
+        `HEAD ${firstBannerMediaPath} -> HTTP ${mediaRes.status} (${contentType}, ${contentLength} bytes, accept-ranges=${acceptRanges}, corp=${corp})`
+      );
+    } else {
+      record('CHECK-6', 'Live Cloudflare R2 Media Stream', 'WARN', 'No /api/media/* banner path returned to probe');
+    }
+  } catch (err: any) {
+    record('CHECK-6', 'Live Cloudflare R2 Media Stream', 'FAIL', err?.message || String(err));
+  }
+
+  // 7. Live CORS Preflight for Origin: https://ai-prime-studio.ai.studio
+  try {
+    const { res: corsRes } = await fetchWithTimeout(
+      `${PUBLIC_URL}/api/templates`,
+      {
+        method: 'OPTIONS',
+        headers: {
+          Origin: PUBLIC_URL,
+          'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'Authorization, Range'
+        }
+      },
+      15000
+    );
+    const acao = corsRes.headers.get('access-control-allow-origin') || '';
+    const acah = corsRes.headers.get('access-control-allow-headers') || '';
+    const aceh = corsRes.headers.get('access-control-expose-headers') || '';
+    const ok = corsRes.ok && Boolean(acao) && acah.includes('Authorization') && acah.includes('Range');
+    record(
+      'CHECK-7',
+      'Live CORS & Byte-Range Preflight',
+      ok ? 'PASS' : 'FAIL',
+      `OPTIONS /api/templates -> HTTP ${corsRes.status} (ACAO=${acao}, Expose=${aceh})`
+    );
+  } catch (err: any) {
+    record('CHECK-7', 'Live CORS Preflight', 'FAIL', err?.message || String(err));
+  }
+
+  // 8. Legacy Cloud Run Backend (gen-lang-client-0525281130) Parallel Health & Shared Firestore Parity
+  try {
+    const { res: legVer } = await fetchWithTimeout(`${LEGACY_CLOUD_RUN_URL}/api/version`, {}, 20000);
+    const legJson: any = await legVer.json();
+    const ok = legVer.ok && legJson?.databaseMode === 'firestore_authoritative' && legJson?.databaseGuardBlocked === false;
+    record(
+      'CHECK-8',
+      'Legacy Cloud Run Backend Parity (Android/Webhook Safety)',
+      ok ? 'PASS' : 'WARN',
+      `legacy revision=${legJson?.cloudRunRevision}, region=${legJson?.cloudRunRegion}, db=${legJson?.databaseMode}, templates=${legJson?.templateCount}`
+    );
+  } catch (err: any) {
+    record('CHECK-8', 'Legacy Cloud Run Backend Parity', 'WARN', err?.message || String(err));
+  }
+
   const fails = results.filter((r) => r.status === 'FAIL').length;
   const warns = results.filter((r) => r.status === 'WARN').length;
   const passes = results.filter((r) => r.status === 'PASS').length;
 
   console.log('\n================================================================');
-  console.log(`URL RECOVERY CHECK SUMMARY: ${passes} PASS, ${warns} WARN, ${fails} FAIL`);
+  console.log(`LIVE NEW URL VERIFICATION SUMMARY: ${passes} PASS, ${warns} WARN, ${fails} FAIL`);
   console.log('================================================================');
   if (fails > 0) {
     process.exit(1);

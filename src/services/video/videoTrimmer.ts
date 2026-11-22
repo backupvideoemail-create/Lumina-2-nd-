@@ -80,8 +80,11 @@ export function isPrivateOrReservedIp(ipRaw: string): boolean {
 }
 
 function getTrustedStudioAppHosts(extraHosts?: string[]): Set<string> {
-  const hosts = new Set<string>(['ai-prime-studio-photo-video.ai.studio']);
-  for (const envUrl of [process.env.APP_URL, process.env.PROD_SERVER_URL]) {
+  const hosts = new Set<string>([
+    'ai-prime-studio.ai.studio',
+    'ai-prime-studio-photo-video.ai.studio'
+  ]);
+  for (const envUrl of [process.env.PUBLIC_APP_URL, process.env.APP_URL, process.env.PROD_SERVER_URL]) {
     if (envUrl && envUrl.trim()) {
       try {
         hosts.add(new URL(envUrl.trim()).hostname.toLowerCase());

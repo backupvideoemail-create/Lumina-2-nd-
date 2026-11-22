@@ -753,7 +753,13 @@ export class MediaStorageService {
 
     // 2. Generate secure HMAC-signed proxy token for local disk storage
     const token = createSignedMediaToken(safeName, expiresInSeconds);
-    const hostBase = (process.env.PROD_SERVER_URL || process.env.APP_URL || serverBaseUrl || '').replace(/\/$/, '');
+    const hostBase = (
+      process.env.PROD_SERVER_URL ||
+      process.env.PUBLIC_APP_URL ||
+      process.env.APP_URL ||
+      serverBaseUrl ||
+      ''
+    ).replace(/\/$/, '');
     return hostBase ? `${hostBase}/api/media/signed/${token}` : `/api/media/signed/${token}`;
   }
 

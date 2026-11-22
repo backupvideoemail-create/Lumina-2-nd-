@@ -252,8 +252,8 @@ export class InMemoryFirestoreMock {
       }
     });
 
-    const buildQuery = (filters: Array<{ field: string; val: any }>, sortField?: string, sortDir: 'asc' | 'desc' = 'asc', limitNum?: number): any => ({
-      where: (f: string, _op: string, v: any) => buildQuery([...filters, { field: f, val: v }], sortField, sortDir, limitNum),
+    const buildQuery = (filters: Array<{ field: string; op: string; val: any }>, sortField?: string, sortDir: 'asc' | 'desc' = 'asc', limitNum?: number): any => ({
+      where: (f: string, op: string, v: any) => buildQuery([...filters, { field: f, op, val: v }], sortField, sortDir, limitNum),
       orderBy: (f: string, dir: 'asc' | 'desc' = 'asc') => buildQuery(filters, f, dir, limitNum),
       limit: (n: number) => buildQuery(filters, sortField, sortDir, n),
       offset: (skip: number) => ({
@@ -277,7 +277,13 @@ export class InMemoryFirestoreMock {
           data: () => JSON.parse(JSON.stringify(val))
         }));
         for (const filter of filters) {
-          matching = matching.filter(doc => doc.data()[filter.field] === filter.val);
+          matching = matching.filter(doc => {
+            const fieldVal = doc.data()[filter.field];
+            if (filter.op === 'array-contains') {
+              return Array.isArray(fieldVal) && fieldVal.includes(filter.val);
+            }
+            return fieldVal === filter.val;
+          });
         }
         if (sortField) {
           matching.sort((a, b) => {
@@ -300,7 +306,7 @@ export class InMemoryFirestoreMock {
 
     return {
       doc: makeDocRef,
-      where: (f: string, _op: string, v: any) => buildQuery([{ field: f, val: v }]),
+      where: (f: string, op: string, v: any) => buildQuery([{ field: f, op, val: v }]),
       orderBy: (f: string, dir: 'asc' | 'desc' = 'asc') => buildQuery([], f, dir),
       limit: (n: number) => buildQuery([], undefined, 'asc', n),
       count: () => ({
@@ -1348,6 +1354,27 @@ export class ProductionDatabase {
     return this.db.users[userId] || null;
   }
 
+  public async getUserAuthoritative(userId: string): Promise<UserProfile | null> {
+    if (!userId) return null;
+    const local = this.getUser(userId);
+    if (local) return local;
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const docSnap = await fsDb.collection('users').doc(userId).get();
+        if (docSnap.exists) {
+          const user = docSnap.data() as UserProfile;
+          this.db.users[userId] = user;
+          return user;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getUserAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    return null;
+  }
+
   public getUserByFirebaseUid(firebaseUid: string): UserProfile | null {
     for (const [userId, identity] of Object.entries(this.db.authIdentities)) {
       if (identity.firebaseUid === firebaseUid) {
@@ -1785,13 +1812,14 @@ export class ProductionDatabase {
 
   public async reserveCredits(userId: string, amount: number, description: string, refId: string): Promise<boolean> {
     // If Firestore Admin is available, execute inside a strict ACID Transaction
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const success = await adminFirestoreDb.runTransaction(async (t: any) => {
+        const success = await fsDb.runTransaction(async (t: any) => {
           // 1. Idempotency check: if a transaction with refId already exists, it was already reserved
           if (refId) {
             const existingTxSnap = await t.get(
-              adminFirestoreDb.collection('transactions').where('referenceId', '==', refId).limit(1)
+              fsDb.collection('transactions').where('referenceId', '==', refId).limit(1)
             );
             if (!existingTxSnap.empty) {
               return true; // Idempotently succeed
@@ -1799,7 +1827,7 @@ export class ProductionDatabase {
           }
 
           // 2. Fetch wallet
-          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletRef = fsDb.collection('wallets').doc(userId);
           const walletDoc = await t.get(walletRef);
           let walletData: CreditWallet = walletDoc.exists
             ? (walletDoc.data() as CreditWallet)
@@ -1816,7 +1844,7 @@ export class ProductionDatabase {
 
           // 3. Query active grants
           const grantsSnap = await t.get(
-            adminFirestoreDb
+            fsDb
               .collection('credit_grants')
               .where('userId', '==', userId)
           );
@@ -1852,7 +1880,7 @@ export class ProductionDatabase {
             const take = Math.min(grant.creditsRemaining, needed);
             grant.creditsRemaining -= take;
             needed -= take;
-            const gRef = adminFirestoreDb.collection('credit_grants').doc(grant.id);
+            const gRef = fsDb.collection('credit_grants').doc(grant.id);
             t.update(gRef, { creditsRemaining: grant.creditsRemaining });
 
             // In-memory update
@@ -1874,7 +1902,7 @@ export class ProductionDatabase {
             referenceId: refId,
             createdAt: new Date().toISOString()
           };
-          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+          const txRef = fsDb.collection('transactions').doc(tx.id);
           t.set(txRef, tx);
 
           // Update memory
@@ -1951,13 +1979,14 @@ export class ProductionDatabase {
   }
 
   public async refundCredits(userId: string, amount: number, description: string, refId: string): Promise<void> {
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        await adminFirestoreDb.runTransaction(async (t: any) => {
+        await fsDb.runTransaction(async (t: any) => {
           // Idempotency check: don't refund the same refId twice
           if (refId) {
             const existingRefSnap = await t.get(
-              adminFirestoreDb
+              fsDb
                 .collection('transactions')
                 .where('referenceId', '==', refId)
                 .where('type', '==', 'refund')
@@ -1968,7 +1997,7 @@ export class ProductionDatabase {
             }
           }
 
-          const walletRef = adminFirestoreDb.collection('wallets').doc(userId);
+          const walletRef = fsDb.collection('wallets').doc(userId);
           const walletDoc = await t.get(walletRef);
           let walletData: CreditWallet = walletDoc.exists
             ? (walletDoc.data() as CreditWallet)
@@ -1983,6 +2012,7 @@ export class ProductionDatabase {
                 updatedAt: new Date().toISOString()
               };
 
+          walletData.balance = (walletData.balance || 0) + amount;
           walletData.spentCredits = Math.max(0, (walletData.spentCredits || 0) - amount);
           walletData.updatedAt = new Date().toISOString();
           t.set(walletRef, walletData, { merge: true });
@@ -1997,7 +2027,7 @@ export class ProductionDatabase {
             expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
             referenceId: refId
           };
-          const grantRef = adminFirestoreDb.collection('credit_grants').doc(refundGrant.id);
+          const grantRef = fsDb.collection('credit_grants').doc(refundGrant.id);
           t.set(grantRef, refundGrant);
 
           const tx: CreditTransaction = {
@@ -2009,7 +2039,7 @@ export class ProductionDatabase {
             referenceId: refId,
             createdAt: new Date().toISOString()
           };
-          const txRef = adminFirestoreDb.collection('transactions').doc(tx.id);
+          const txRef = fsDb.collection('transactions').doc(tx.id);
           t.set(txRef, tx);
 
           // Update in-memory
@@ -2250,11 +2280,12 @@ export class ProductionDatabase {
     const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
     if (byPayment || byTx) return true;
 
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const paySnap = await adminFirestoreDb.collection('payments').where('paymentId', '==', paymentId).where('status', '==', 'captured').limit(1).get();
+        const paySnap = await fsDb.collection('payments').where('paymentId', '==', paymentId).where('status', '==', 'captured').limit(1).get();
         if (!paySnap.empty) return true;
-        const txSnap = await adminFirestoreDb.collection('transactions').where('referenceId', '==', paymentId).limit(1).get();
+        const txSnap = await fsDb.collection('transactions').where('referenceId', '==', paymentId).limit(1).get();
         if (!txSnap.empty) return true;
       } catch (err: any) {
         console.warn('[Firestore] isPaymentProcessed lookup note:', err.message);
@@ -2266,9 +2297,10 @@ export class ProductionDatabase {
   public async hasTransactionForReference(refId: string): Promise<boolean> {
     if (!refId) return false;
     if (this.db.transactions.some(t => t.referenceId === refId)) return true;
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
-        const snap = await adminFirestoreDb.collection('transactions').where('referenceId', '==', refId).limit(1).get();
+        const snap = await fsDb.collection('transactions').where('referenceId', '==', refId).limit(1).get();
         if (!snap.empty) return true;
       } catch {}
     }
@@ -2285,6 +2317,31 @@ export class ProductionDatabase {
         s => s.mandateId === subOrMandateId || (s as any).subscriptionId === subOrMandateId
       ) || null
     );
+  }
+
+  public async getSubscriptionByMandateOrIdAuthoritative(subOrMandateId: string): Promise<UserSubscription | null> {
+    if (!subOrMandateId) return null;
+    const local = this.getSubscriptionByMandateOrId(subOrMandateId);
+    if (local) return local;
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        for (const field of ['mandateId', 'subscriptionId']) {
+          const snap = await fsDb.collection('subscriptions').where(field, '==', subOrMandateId).limit(1).get();
+          if (!snap.empty) {
+            const sub = snap.docs[0].data() as UserSubscription;
+            if (sub?.userId) {
+              this.db.subscriptions[sub.userId] = sub;
+            }
+            return sub;
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getSubscriptionByMandateOrIdAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    return null;
   }
 
   public getUserTransactions(userId: string): CreditTransaction[] {
@@ -3743,10 +3800,11 @@ export class ProductionDatabase {
     const local = this.getPayment(identifier);
     if (local) return local;
 
-    if (adminFirestoreDb) {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
       try {
         // Try direct doc
-        const directDoc = await adminFirestoreDb.collection('payments').doc(identifier).get();
+        const directDoc = await fsDb.collection('payments').doc(identifier).get();
         if (directDoc.exists) {
           const rec = directDoc.data() as PaymentRecord;
           this.db.payments[rec.orderId] = rec;
@@ -3755,7 +3813,7 @@ export class ProductionDatabase {
 
         // Try where queries
         for (const field of ['orderId', 'subscriptionId', 'paymentId']) {
-          const snap = await adminFirestoreDb.collection('payments').where(field, '==', identifier).limit(1).get();
+          const snap = await fsDb.collection('payments').where(field, '==', identifier).limit(1).get();
           if (!snap.empty) {
             const rec = snap.docs[0].data() as PaymentRecord;
             this.db.payments[rec.orderId] = rec;
@@ -3777,6 +3835,27 @@ export class ProductionDatabase {
 
   public getSubscription(userId: string): UserSubscription | null {
     return this.db.subscriptions[userId] || null;
+  }
+
+  public async getSubscriptionAuthoritative(userId: string): Promise<UserSubscription | null> {
+    if (!userId) return null;
+    const local = this.getSubscription(userId);
+    if (local) return local;
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const docSnap = await fsDb.collection('subscriptions').doc(userId).get();
+        if (docSnap.exists) {
+          const sub = docSnap.data() as UserSubscription;
+          this.db.subscriptions[userId] = sub;
+          return sub;
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getSubscriptionAuthoritative lookup note:', err?.message || err);
+      }
+    }
+    return null;
   }
 
   public async isWebhookProcessed(eventId: string): Promise<boolean> {

@@ -4117,6 +4117,216 @@ async function runSystemVerification() {
     '47.3b videoTrimmer blocks external SSRF, spoofed /api/media, DNS rebinding, redirects, HTML MIME, and >maxBytes streams while preserving internal /api/media/* and own R2 assets without R2_PUBLIC_BASE_URL'
   );
 
+  // --- SUITE 48: NEW PRIMARY DOMAIN (ai-prime-studio.ai.studio), GEMINI ...rsOw HONESTY, DUAL-CLOUD-RUN RAZORPAY COMPATIBILITY & INTEGRATION FLOWS ---
+  console.log('\n--- SUITE 48: NEW PUBLIC URL MIGRATION, GEMINI ...rsOw DIAGNOSTICS, CROSS-CLOUD-RUN RAZORPAY & E2E INTEGRATION ---');
+
+  // 48.1 Primary URL Migration (PUBLIC_APP_URL + Canonical/Sitemap) while preserving Android run.app & Firebase (default)
+  const monSrc48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/monitoring/cloudMonitoring.ts'), 'utf8');
+  const trimmerSrc48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/video/videoTrimmer.ts'), 'utf8');
+  const mediaStorageSrc48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/services/storage/mediaStorage.ts'), 'utf8');
+  const indexHtml48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'index.html'), 'utf8');
+  const robotsTxt48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'public/robots.txt'), 'utf8');
+  const sitemapXml48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'public/sitemap.xml'), 'utf8');
+  const envExample48 = fs.readFileSync(pathUtil.resolve(process.cwd(), '.env.example'), 'utf8');
+  const androidGradle48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'android/app/build.gradle.kts'), 'utf8');
+  const fbCfg48 = JSON.parse(fs.readFileSync(pathUtil.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+
+  assert(
+    monSrc48.includes("AUTHORITATIVE_CUSTOM_DOMAIN = 'https://ai-prime-studio.ai.studio'") &&
+      trimmerSrc48.includes("'ai-prime-studio.ai.studio'") &&
+      trimmerSrc48.includes("'ai-prime-studio-photo-video.ai.studio'") &&
+      trimmerSrc48.includes('process.env.PUBLIC_APP_URL') &&
+      mediaStorageSrc48.includes('process.env.PUBLIC_APP_URL') &&
+      indexHtml48.includes('<link rel="canonical" href="https://ai-prime-studio.ai.studio/" />') &&
+      indexHtml48.includes('<meta property="og:url" content="https://ai-prime-studio.ai.studio/" />') &&
+      robotsTxt48.includes('https://ai-prime-studio.ai.studio/sitemap.xml') &&
+      sitemapXml48.includes('<loc>https://ai-prime-studio.ai.studio/</loc>') &&
+      envExample48.includes('PUBLIC_APP_URL=https://ai-prime-studio.ai.studio') &&
+      androidGradle48.includes('https://ai-prime-studio-photo-video-221269328833.asia-southeast1.run.app') &&
+      fbCfg48.projectId === 'ai-prime-studio' &&
+      fbCfg48.firestoreDatabaseId === '(default)',
+    '48.1 New primary domain https://ai-prime-studio.ai.studio migrated with legacy trust fallback, SEO canonical/sitemap, and untouched Android run.app + Firebase (default)'
+  );
+
+  // 48.2 Gemini ...rsOw diagnostic acceptance without falsely claiming runtime billing verification
+  const { getGeminiKeyDiagnosticStatus: getGemDiag48 } = await import('../src/services/monitoring/cloudMonitoring.ts');
+  const prevGemKey48 = process.env.GEMINI_API_KEY;
+  let rsOwDiag48: any;
+  try {
+    process.env.GEMINI_API_KEY = 'AIzaTestActivePaidKey_rsOw';
+    rsOwDiag48 = getGemDiag48();
+  } finally {
+    if (prevGemKey48 !== undefined) process.env.GEMINI_API_KEY = prevGemKey48;
+    else delete process.env.GEMINI_API_KEY;
+  }
+  const serverSrc48 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'server.ts'), 'utf8');
+  assert(
+    rsOwDiag48.present === true &&
+      rsOwDiag48.maskedSuffix === '...rsOw' &&
+      rsOwDiag48.isActivePaidRsOw === true &&
+      rsOwDiag48.isAcceptedPaidKey === true &&
+      rsOwDiag48.isLegacyAndroidU4sw === false &&
+      rsOwDiag48.authStatus === 'UNVERIFIED' &&
+      rsOwDiag48.runtimeBillingProjectVerified === false &&
+      serverSrc48.includes('runtimeBillingProjectVerified: geminiKeyDiag.runtimeBillingProjectVerified'),
+    '48.2 Gemini diagnostics recognize active paid key ...rsOw cleanly while keeping authStatus=UNVERIFIED and runtimeBillingProjectVerified=false'
+  );
+
+  // 48.3 Dual-Instance Cross-Cloud-Run Razorpay Compatibility (New Cloud Run 00001-hnn <-> Legacy Cloud Run 00036-h5r sharing Firestore)
+  const newCloudRunDbFile48 = pathUtil.join(process.cwd(), '.data', `suite48_new_cr_${Date.now()}.json`);
+  const legacyCloudRunDbFile48 = pathUtil.join(process.cwd(), '.data', `suite48_legacy_cr_${Date.now()}.json`);
+  const newCloudRunDb48 = new ProductionDatabase(newCloudRunDbFile48);
+  const legacyCloudRunDb48 = new ProductionDatabase(legacyCloudRunDbFile48);
+
+  try {
+    // 48.3a User registers & creates Razorpay Order on New Cloud Run -> Legacy Cloud Run receives webhook & resolves user+payment via Firestore
+    const crossUser48 = newCloudRunDb48.getOrCreateUser({
+      firebaseUid: `fb_cross_cr_${Date.now()}`,
+      email: 'cross.cloudrun@test.local',
+      name: 'Cross CloudRun Customer',
+      skipBackgroundSync: true
+    });
+    // Explicitly sync user to shared Firestore (simulate completed /api/auth/firebase-session)
+    await (adminFirestoreDb as any).collection('users').doc(crossUser48.user.id).set(crossUser48.user);
+    const crossOrderId48 = `order_cross_${Date.now()}`;
+    const crossPayId48 = `pay_cross_${Date.now()}`;
+    await newCloudRunDb48.recordPayment({
+      id: `pay_rec_${Date.now()}`,
+      paymentId: '',
+      orderId: crossOrderId48,
+      userId: crossUser48.user.id,
+      provider: 'razorpay',
+      amount: 99,
+      currency: 'INR',
+      type: 'one_time',
+      status: 'pending',
+      isAutoPay: false,
+      verificationStatus: 'unverified',
+      subscriptionId: 'topup_99',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    // Cold Legacy Cloud Run instance (zero RAM entries for this user or order) resolves both authoritatively
+    const resolvedOrderOnLegacy48 = await legacyCloudRunDb48.getPaymentAuthoritative(crossOrderId48);
+    const resolvedUserOnLegacy48 = await legacyCloudRunDb48.getUserAuthoritative(crossUser48.user.id);
+    assert(
+      Boolean(resolvedOrderOnLegacy48) &&
+        resolvedOrderOnLegacy48?.orderId === crossOrderId48 &&
+        Boolean(resolvedUserOnLegacy48) &&
+        resolvedUserOnLegacy48?.id === crossUser48.user.id &&
+        serverSrc48.includes('await prodDb.getPaymentAuthoritative(orderId)') &&
+        serverSrc48.includes('await prodDb.getUserAuthoritative(userId)'),
+      '48.3a Cross-Cloud-Run Razorpay webhook resolves order & user authoritatively from shared Firestore even on cold alternate service'
+    );
+
+    // 48.3b Credit on Legacy Cloud Run + duplicate webhook replay on New Cloud Run yields exact-once credits
+    await legacyCloudRunDb48.creditWallet(crossUser48.user.id, 75, 'Top-Up Webhook: Mini Pack', crossPayId48, 'topup', 'topup_99');
+    await legacyCloudRunDb48.markWebhookProcessed(`evt_cross_${crossPayId48}`);
+    const dupCheckOnNew48 = await newCloudRunDb48.isWebhookProcessed(`evt_cross_${crossPayId48}`);
+    const dupPayCheckOnNew48 = await newCloudRunDb48.isPaymentProcessed(crossPayId48);
+    await newCloudRunDb48.creditWallet(crossUser48.user.id, 75, 'Duplicate Replay Attempt', crossPayId48, 'topup', 'topup_99');
+
+    // Reserve on New Cloud Run & Refund on Legacy Cloud Run -> exact-once restoration
+    const crossRefGenId48 = `gen_cross_ref_${Date.now()}`;
+    const reservedCross48 = await newCloudRunDb48.reserveCredits(crossUser48.user.id, 25, 'Cross-service reserve', crossRefGenId48);
+    await legacyCloudRunDb48.refundCredits(crossUser48.user.id, 25, 'Cross-service refund', crossRefGenId48);
+    await newCloudRunDb48.refundCredits(crossUser48.user.id, 25, 'Duplicate cross-service refund', crossRefGenId48);
+    const walletDocAfter48 = await (adminFirestoreDb as any).collection('wallets').doc(crossUser48.user.id).get();
+    const finalCrossBalance48 = walletDocAfter48.data()?.balance;
+
+    assert(
+      dupCheckOnNew48 === true &&
+        dupPayCheckOnNew48 === true &&
+        reservedCross48 === true &&
+        finalCrossBalance48 === 75,
+      `48.3b Cross-Cloud-Run Razorpay credit, replay block, reservation, and exact-once refund preserve exact Firestore wallet balance (${finalCrossBalance48} === 75)`
+    );
+
+    // 48.3c AutoPay Subscription created on New Cloud Run resolved & cancelled via Mandate ID on Legacy Cloud Run
+    const crossMandateId48 = `sub_cross_mandate_${Date.now()}`;
+    await newCloudRunDb48.setSubscription({
+      id: `subrec_${Date.now()}`,
+      userId: crossUser48.user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer',
+      status: 'active',
+      billingCycle: 'weekly',
+      mandateId: crossMandateId48,
+      subscriptionId: crossMandateId48,
+      startedAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 7 * 86400000).toISOString()
+    } as any);
+    const resolvedSubOnLegacy48 = await legacyCloudRunDb48.getSubscriptionByMandateOrIdAuthoritative(crossMandateId48);
+    assert(
+      Boolean(resolvedSubOnLegacy48) &&
+        resolvedSubOnLegacy48?.userId === crossUser48.user.id &&
+        serverSrc48.includes('await prodDb.getSubscriptionByMandateOrIdAuthoritative(subscriptionId)'),
+      '48.3c Cross-Cloud-Run AutoPay subscription & mandate lookup resolves authoritatively from shared Firestore'
+    );
+
+    // 48.4 Integration Flow: Google Login -> Session Token Persistence & Reload Restore -> Upload -> Owner-Isolated Download -> My Creations Recovery
+    const googleLogin48 = await newCloudRunDb48.getOrCreateUserAsync({
+      firebaseUid: `fb_google_integ_${Date.now()}`,
+      email: 'google.integ48@test.local',
+      name: 'Google Integration Customer'
+    });
+    const restoredSessionUser48 = await legacyCloudRunDb48.getUserByTokenAsync(googleLogin48.token);
+
+    const { mediaStorage: ms48 } = await import('../src/services/storage/mediaStorage.ts');
+    const sampleUploadBuf48 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const savedUploadMeta48 = await ms48.saveMedia(
+      sampleUploadBuf48,
+      'suite48_upload',
+      'suite48_test.png',
+      googleLogin48.user.id,
+      false
+    );
+    const savedUploadUrl48 = savedUploadMeta48.publicUrl;
+    const ownerDownload48 = ms48.getAuthorizedFilePath(savedUploadMeta48.fileId, googleLogin48.user.id);
+    const intruderDownload48 = ms48.getAuthorizedFilePath(savedUploadMeta48.fileId, 'intruder_user_48');
+
+    const integGenId48 = `gen_integ_48_${Date.now()}`;
+    try {
+      newCloudRunDb48.addGeneration({
+        id: integGenId48,
+        userId: googleLogin48.user.id,
+        templateId: 'tpl_full_swag',
+        templateTitle: 'Full Swag',
+        templateType: 'photo',
+        aspectRatio: '9:16',
+        status: 'completed',
+        inputMediaUrl: savedUploadUrl48,
+        resultMediaUrl: savedUploadUrl48,
+        creditCost: 6,
+        engine: 'AI_GENERATION',
+        model: 'gemini-2.5-flash-image',
+        workflow: 'gemini-photo-style',
+        createdAt: new Date().toISOString(),
+        isAiGenerated: true
+      });
+      await new Promise((r) => setTimeout(r, 40));
+      const myCreationsRecovered48 = await legacyCloudRunDb48.getUserGenerationsAuthoritative(googleLogin48.user.id);
+      const foundIntegCreation48 = myCreationsRecovered48.find((g) => g.id === integGenId48);
+
+      assert(
+        googleLogin48.cloudPersisted === true &&
+          restoredSessionUser48?.id === googleLogin48.user.id &&
+          savedUploadUrl48.startsWith('/api/media/') &&
+          Boolean(ownerDownload48.filePath) &&
+          !intruderDownload48.filePath &&
+          Boolean(foundIntegCreation48) &&
+          foundIntegCreation48?.resultMediaUrl === savedUploadUrl48,
+        '48.4 Integration verified: Google Login session restore across instances, private upload, owner-isolated download (intruder blocked), and My Creations authoritative recovery'
+      );
+    } finally {
+      await ms48.deleteMedia(savedUploadMeta48.fileId);
+    }
+  } finally {
+    if (fs.existsSync(newCloudRunDbFile48)) fs.unlinkSync(newCloudRunDbFile48);
+    if (fs.existsSync(legacyCloudRunDbFile48)) fs.unlinkSync(legacyCloudRunDbFile48);
+  }
+
   console.log('\n====================================================');
   console.log(`SYSTEM VERIFICATION SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log('====================================================');

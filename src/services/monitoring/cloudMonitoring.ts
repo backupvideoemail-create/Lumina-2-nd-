@@ -111,7 +111,8 @@ const AUTHORITATIVE_GCP_PROJECT_ID = 'ai-prime-studio';
 const AUTHORITATIVE_GCP_PROJECT_NUMBER = '855598524398';
 const AUTHORITATIVE_CLOUD_RUN_SERVICE = 'ai-prime-studio-photo-video';
 const AUTHORITATIVE_REGION = 'asia-southeast1';
-const AUTHORITATIVE_CUSTOM_DOMAIN = 'https://ai-prime-studio-photo-video.ai.studio';
+const AUTHORITATIVE_CUSTOM_DOMAIN = 'https://ai-prime-studio.ai.studio';
+const LEGACY_CUSTOM_DOMAIN = 'https://ai-prime-studio-photo-video.ai.studio';
 const CANONICAL_DEFAULT_SERVICE = `${AUTHORITATIVE_GCP_PROJECT_ID} / (default) / ${AUTHORITATIVE_CLOUD_RUN_SERVICE}`;
 
 // In-Memory Ring Buffer for deduplicated alerts
@@ -195,15 +196,19 @@ function getEnvPresenceBoolean(name: string): boolean {
 }
 
 /**
- * Non-paid, zero-network diagnostic helper for Gemini API key presence & canonical suffix check.
- * Never logs or exposes full key material; checks only last-4 suffix parity (...CqZA vs legacy ...U4sw).
+ * Non-paid, zero-network diagnostic helper for Gemini API key presence & suffix check.
+ * Never logs or exposes full key material and NEVER claims runtime billing/spend-cap readiness
+ * from masked suffix alone. Recognizes active paid key ...rsOw alongside ...CqZA while flagging legacy ...U4sw.
  */
 export function getGeminiKeyDiagnosticStatus(): {
   present: boolean;
   maskedSuffix: string | null;
   authStatus: 'UNVERIFIED' | 'MISSING_SECRET' | 'LEGACY_KEY_MISMATCH';
   isCanonicalCqZA: boolean;
+  isActivePaidRsOw: boolean;
+  isAcceptedPaidKey: boolean;
   isLegacyAndroidU4sw: boolean;
+  runtimeBillingProjectVerified: boolean;
   canonicalProjectId: string;
 } {
   const rawKey = typeof process !== 'undefined' ? (process.env?.GEMINI_API_KEY || '').trim() : '';
@@ -213,19 +218,26 @@ export function getGeminiKeyDiagnosticStatus(): {
       maskedSuffix: null,
       authStatus: 'MISSING_SECRET',
       isCanonicalCqZA: false,
+      isActivePaidRsOw: false,
+      isAcceptedPaidKey: false,
       isLegacyAndroidU4sw: false,
+      runtimeBillingProjectVerified: false,
       canonicalProjectId: AUTHORITATIVE_GCP_PROJECT_ID
     };
   }
   const suffix = rawKey.length >= 4 ? rawKey.slice(-4) : rawKey;
   const isCanonicalCqZA = suffix === 'CqZA';
+  const isActivePaidRsOw = suffix === 'rsOw';
   const isLegacyAndroidU4sw = suffix === 'U4sw';
   return {
     present: true,
     maskedSuffix: `...${suffix}`,
     authStatus: isLegacyAndroidU4sw ? 'LEGACY_KEY_MISMATCH' : 'UNVERIFIED',
     isCanonicalCqZA,
+    isActivePaidRsOw,
+    isAcceptedPaidKey: isCanonicalCqZA || isActivePaidRsOw,
     isLegacyAndroidU4sw,
+    runtimeBillingProjectVerified: false,
     canonicalProjectId: AUTHORITATIVE_GCP_PROJECT_ID
   };
 }

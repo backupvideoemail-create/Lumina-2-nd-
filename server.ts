@@ -1682,13 +1682,17 @@ app.get('/api/admin/adapters/status', requireAdmin, (_req, res) => {
         : 'MISSING_SECRET',
       connectionStatus: hasGeminiKey ? 'CREDENTIALS_PRESENT_UNVERIFIED' : 'DISCONNECTED',
       keySuffixMasked: geminiKeyDiag.maskedSuffix,
-      isCanonicalProjectKey: geminiKeyDiag.isCanonicalCqZA,
+      isCanonicalProjectKey: geminiKeyDiag.isAcceptedPaidKey,
+      isCanonicalCqZA: geminiKeyDiag.isCanonicalCqZA,
+      isActivePaidRsOw: geminiKeyDiag.isActivePaidRsOw,
+      runtimeBillingProjectVerified: geminiKeyDiag.runtimeBillingProjectVerified,
       modelStatus: geminiLiteEntry?.endpointVerificationStatus === 'VERIFIED' ? 'MODEL_AVAILABLE' : 'PENDING_QUOTE',
       secretName: 'GEMINI_API_KEY',
       supportedResolutions: geminiLiteEntry ? Object.keys(geminiLiteEntry.resolutionTariffs) : ['1080p'],
       verificationStatus: geminiLiteEntry?.endpointVerificationStatus || 'PENDING_QUOTE',
       generationTestStatus: 'NOT_TESTED',
-      billingStatusNote: 'Gemini prepaid balance reported depleted by Owner — zero live Gemini API calls permitted.',
+      billingStatusNote:
+        'Masked suffix presence does not verify runtime billing project or spend-cap clearance. Verify active paid billing & spend cap in Google Cloud / AI Studio Console before claiming Generation Ready.',
       quoteStatus: geminiLiteEntry?.endpointVerificationStatus === 'VERIFIED' ? 'QUOTE_VERIFIED' : 'PENDING_QUOTE',
       pricingStatus: 'PUBLISHED_PER_IMAGE_TARIFF ($0.039–$0.067)'
     },
@@ -4756,10 +4760,10 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         return res.status(200).json({ status: 'already_processed', paymentId });
       }
 
-      // 3. User & Order Association
-      const storedPayment = orderId ? prodDb.getPayment(orderId) : null;
+      // 3. User & Order Association (Authoritative Firestore lookup for cross-Cloud-Run compatibility)
+      const storedPayment = orderId ? await prodDb.getPaymentAuthoritative(orderId) : null;
       const userId = payment.notes?.userId || storedPayment?.userId;
-      const user = userId ? prodDb.getUser(userId) : null;
+      const user = userId ? await prodDb.getUserAuthoritative(userId) : null;
       if (!user) {
         return res.status(400).json({ error: 'Payment user association not found or invalid' });
       }
@@ -4820,7 +4824,11 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         return res.status(200).json({ status: 'already_processed', paymentId });
       }
 
-      const sub = subscriptionId ? prodDb.getSubscriptionByMandateOrId(subscriptionId) : (userId ? prodDb.getSubscription(userId) : null);
+      const sub = subscriptionId
+        ? await prodDb.getSubscriptionByMandateOrIdAuthoritative(subscriptionId)
+        : userId
+        ? await prodDb.getSubscriptionAuthoritative(userId)
+        : null;
       const targetUserId = userId || sub?.userId;
 
       // Mandatory Provider Payment Verification: Verify status, currency, and renewal amount
@@ -4839,7 +4847,8 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
         });
       }
 
-      if (targetUserId && prodDb.getUser(targetUserId)) {
+      const targetUser = targetUserId ? await prodDb.getUserAuthoritative(targetUserId) : null;
+      if (targetUserId && targetUser) {
         // Recurring credit grant (₹499 charge verified) -> 400 credits with type 'subscription'
         const renewalCredits = sub ? (getSubscriptionPlanById(sub.planId)?.renewalCredits || 400) : 400;
         await prodDb.creditWallet(
@@ -4866,7 +4875,11 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
       const subEntity = event.payload?.subscription?.entity;
       const subscriptionId = subEntity?.id;
       const userId = subEntity?.notes?.userId;
-      const sub = subscriptionId ? prodDb.getSubscriptionByMandateOrId(subscriptionId) : (userId ? prodDb.getSubscription(userId) : null);
+      const sub = subscriptionId
+        ? await prodDb.getSubscriptionByMandateOrIdAuthoritative(subscriptionId)
+        : userId
+        ? await prodDb.getSubscriptionAuthoritative(userId)
+        : null;
       if (sub) {
         sub.status = 'cancelled';
         sub.cancelledAt = new Date().toISOString();
@@ -7058,7 +7071,7 @@ app.post('/api/admin/diagnostics', requireAdmin, async (_req, res) => {
         const r2Config = mediaStorage.getStatus();
 
         const geminiLabel = geminiDiag.present
-          ? `${geminiDiag.authStatus} (${geminiDiag.maskedSuffix}, canonicalCqZA=${geminiDiag.isCanonicalCqZA})`
+          ? `${geminiDiag.authStatus} (${geminiDiag.maskedSuffix}, acceptedPaidKey=${geminiDiag.isAcceptedPaidKey}, billingVerified=${geminiDiag.runtimeBillingProjectVerified})`
           : 'MISSING_SECRET';
         const hfLabel = `${hfDiag.authStatus} (Gate=${hfDiag.customerGateStatus})`;
 
@@ -7662,11 +7675,11 @@ app.get('/api/admin/readiness/matrix', requireAdmin, async (_req, res) => {
       recommendedSolution =
         provider === 'higgsfield'
           ? 'Set complete HIGGSFIELD_API_KEY (Authorization: Key <api-key>) in Builder / Cloud Run Secrets.'
-          : 'Set ai-prime-studio GEMINI_API_KEY (...CqZA) in Builder / Cloud Run Secrets with active prepaid balance.';
+          : 'Set active paid GEMINI_API_KEY (e.g. ...rsOw from non-cap-hit billing project) in Builder / Cloud Run Secrets and verify project spend cap.';
     } else if (provider === 'gemini' && geminiKeyDiag.isLegacyAndroidU4sw) {
       finalStatus = 'BLOCKED_CONFIG';
-      rootCause = 'Detected legacy Android key suffix (...U4sw) instead of canonical ai-prime-studio (...CqZA) key.';
-      recommendedSolution = 'Link ai-prime-studio GEMINI_API_KEY (...CqZA) in Builder / Cloud Run Secrets.';
+      rootCause = 'Detected legacy Android key suffix (...U4sw) instead of an active paid Gemini key (...rsOw / ...CqZA).';
+      recommendedSolution = 'Link active paid GEMINI_API_KEY (...rsOw from active paid billing project) in Builder / Cloud Run Secrets.';
     } else if (quoteRes.status === 'FX_EXPIRED') {
       finalStatus = 'BLOCKED_FX_EXPIRED';
       rootCause = quoteRes.reason || 'Live USD/INR FX cache expired (>12h) or unfetched.';
