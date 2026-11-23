@@ -47,6 +47,7 @@ export const firestoreClientLockError: Error | null = projectLockError || databa
 
 export const firestoreClientLockState = {
   blocked: Boolean(firestoreClientLockError),
+  configStatus: (firestoreClientLockError ? 'CRITICAL_BLOCKED' : 'LOCKED_DEFAULT') as 'LOCKED_DEFAULT' | 'CRITICAL_BLOCKED',
   reason: firestoreClientLockError?.message || null,
   expectedProjectId: CANONICAL_FIREBASE_PROJECT_ID,
   expectedDatabaseId: CANONICAL_FIRESTORE_DATABASE_ID,

@@ -7,14 +7,18 @@ import { spawn } from 'child_process';
 
 process.env.NODE_ENV = 'test';
 process.env.IS_ISOLATED_TEST = 'true';
+process.env.DISABLE_AUTO_START_SERVER = 'true';
 
 async function runFocusedRazorpayTests() {
   const {
     ProductionDatabase,
     AuthoritativeDatabaseError,
     InMemoryFirestoreMock,
-    isSubscriptionEntitled
+    isSubscriptionEntitled,
+    getDatabaseGuardState
   } = await import('../src/services/db/database.ts');
+  const { firestoreClientLockState } = await import('../src/services/firebase/firebaseClient.ts');
+  const { app: prodServerApp, __setServerTestDeps } = await import('../server.ts');
   const { isSubscriptionEntitled: clientIsSubscriptionEntitled } = await import('../src/utils/subscriptionEntitlement.ts');
   const {
     processRazorpayWebhookEvent,
@@ -588,18 +592,20 @@ async function runFocusedRazorpayTests() {
 
     // Boot real server.ts on ephemeral port in isolated test mode to verify HTTP responses on real routes
     const livePort = 3299;
+    const childEnv: Record<string, string | undefined> = {
+      ...process.env,
+      PORT: String(livePort),
+      NODE_ENV: 'test',
+      IS_ISOLATED_TEST: 'true',
+      DISABLE_AUTO_START_SERVER: 'false',
+      DISABLE_HMR: 'true',
+      RAZORPAY_KEY_ID: 'rzp_test_focused_123',
+      RAZORPAY_KEY_SECRET: 'rzp_key_sec_focused_123',
+      RAZORPAY_WEBHOOK_SECRET: webhookSecret
+    };
     const child = spawn('npx', ['tsx', 'server.ts'], {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-        PORT: String(livePort),
-        NODE_ENV: 'test',
-        IS_ISOLATED_TEST: 'true',
-        DISABLE_HMR: 'true',
-        RAZORPAY_KEY_ID: 'rzp_test_focused_123',
-        RAZORPAY_KEY_SECRET: 'rzp_key_sec_focused_123',
-        RAZORPAY_WEBHOOK_SECRET: webhookSecret
-      },
+      env: childEnv as NodeJS.ProcessEnv,
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -988,164 +994,136 @@ async function runFocusedRazorpayTests() {
       'Route /api/auth/me + Top-Up 403 enforce active/trial paidThroughAt cutoff, and client helper has zero server imports'
     );
 
-    console.log('\n--- TEST 8: Mandatory 7 Login Regression Tests (Session Persistence, Cross-Container, Outage Isolation) ---');
+    console.log('\n--- TEST 8: Mandatory Login & Session Regression Tests Against Real Production Routes (Test-Only DI) ---');
     const loginFs = new InMemoryFirestoreMock();
     const loginNodeA = new ProductionDatabase(undefined, { firestoreOverride: loginFs as any, persistToDisk: false });
     const loginNodeB = new ProductionDatabase(undefined, { firestoreOverride: loginFs as any, persistToDisk: false });
 
-    // Express router mirroring exact server.ts /api/auth/firebase-session + /api/auth/me + topup fail-closed behavior
-    const authTestApp = express();
-    authTestApp.use(express.json());
-    let activeLoginDb: any = loginNodeA;
+    let activeTargetDb: any = loginNodeA;
     let simulateBillingReadError = false;
+    let simulateTransientSessionLookupError = false;
 
-    const getWrappedDbForAuth = () => ({
-      async getWalletAuthoritative(uid: string) {
-        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
-        return activeLoginDb.getWalletAuthoritative(uid);
-      },
-      async getSubscriptionAuthoritative(uid: string) {
-        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
-        return activeLoginDb.getSubscriptionAuthoritative(uid);
-      },
-      async getIntroOfferStateAuthoritative(uid: string) {
-        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
-        return activeLoginDb.getIntroOfferStateAuthoritative(uid);
-      }
-    });
-
-    authTestApp.post('/api/auth/firebase-session', async (req, res) => {
-      const { firebaseUid, email, name } = req.body || {};
-      const { user, token, isNewUser, cloudPersisted } = await activeLoginDb.getOrCreateUserAsync({
-        firebaseUid,
-        email,
-        name
-      });
-      if (!cloudPersisted) {
-        return res.status(503).json({ success: false, code: 'SESSION_PERSISTENCE_FAILED' });
-      }
-      try {
-        const w = await getWrappedDbForAuth().getWalletAuthoritative(user.id);
-        const s = await getWrappedDbForAuth().getSubscriptionAuthoritative(user.id);
-        return res.json({
-          success: true,
-          user,
-          token,
-          cloudPersisted,
-          isNewUser,
-          wallet: w,
-          subscription: s,
-          billingUnavailable: false,
-          billingRetryable: false,
-          billingStatus: 'ready'
-        });
-      } catch {
-        return res.json({
-          success: true,
-          user,
-          token,
-          cloudPersisted,
-          isNewUser,
-          wallet: { userId: user.id, balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() },
-          subscription: null,
-          billingUnavailable: true,
-          billingRetryable: true,
-          billingStatus: 'unavailable_retryable'
-        });
-      }
-    });
-
-    authTestApp.get('/api/auth/me', async (req, res) => {
-      const authHdr = String(req.headers['authorization'] || '');
-      const tok = authHdr.startsWith('Bearer ') ? authHdr.slice(7).trim() : '';
-      const lookup = await activeLoginDb.getUserByTokenAsyncWithStatus(tok);
-      if (!lookup.user) {
-        if (tok && lookup.transientError) {
-          return res.status(503).json({ code: 'SESSION_SYNC_RETRYABLE', retryable: true });
+    const dbProxyForProdRoutes = new Proxy(
+      {},
+      {
+        get(_target, prop) {
+          if (prop === 'getWalletAuthoritative') {
+            return async (uid: string) => {
+              if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+              return activeTargetDb.getWalletAuthoritative(uid);
+            };
+          }
+          if (prop === 'getSubscriptionAuthoritative') {
+            return async (uid: string) => {
+              if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+              return activeTargetDb.getSubscriptionAuthoritative(uid);
+            };
+          }
+          if (prop === 'getIntroOfferStateAuthoritative') {
+            return async (uid: string) => {
+              if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+              return activeTargetDb.getIntroOfferStateAuthoritative(uid);
+            };
+          }
+          if (prop === 'getUserByTokenAsyncWithStatus') {
+            return async (tok: string) => {
+              if (simulateTransientSessionLookupError) {
+                return { user: null, transientError: true, error: 'Simulated transient Firestore session timeout' };
+              }
+              return activeTargetDb.getUserByTokenAsyncWithStatus(tok);
+            };
+          }
+          const val = (activeTargetDb as any)[prop];
+          return typeof val === 'function' ? val.bind(activeTargetDb) : val;
         }
-        return res.status(401).json({ code: 'AUTH_SESSION_INVALID' });
       }
-      const user = lookup.user;
-      try {
-        const w = await getWrappedDbForAuth().getWalletAuthoritative(user.id);
-        const s = await getWrappedDbForAuth().getSubscriptionAuthoritative(user.id);
-        const intro = await getWrappedDbForAuth().getIntroOfferStateAuthoritative(user.id);
-        const activePlan = isSubscriptionEntitled(s);
-        return res.json({
-          user,
-          wallet: w,
-          activeSubscription: s,
-          hasActivePlan: activePlan,
-          canTopUp: activePlan,
-          isIntroEligible: intro.eligible,
-          introOfferState: intro.status,
-          billingUnavailable: false,
-          billingRetryable: false,
-          billingStatus: 'ready'
-        });
-      } catch {
-        return res.json({
-          user,
-          wallet: { userId: user.id, balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() },
-          activeSubscription: null,
-          hasActivePlan: false,
-          canTopUp: false,
-          isIntroEligible: false,
-          introOfferState: 'unavailable_retryable',
-          billingUnavailable: true,
-          billingRetryable: true,
-          billingStatus: 'unavailable_retryable'
-        });
+    );
+
+    const validGoogleUid = `google_prod_route_${Date.now()}`;
+    const validGoogleEmail = 'newcreator@gmail.com';
+    const validGoogleToken = 'mock_google_id_token_valid';
+    const phoneOnlyToken = 'mock_phone_id_token_blocked';
+
+    __setServerTestDeps({
+      db: dbProxyForProdRoutes,
+      verifyFirebaseToken: async (idToken: string) => {
+        if (idToken === validGoogleToken) {
+          return {
+            uid: validGoogleUid,
+            email: validGoogleEmail,
+            emailVerified: true,
+            name: 'New Creator',
+            signInProvider: 'google.com'
+          };
+        }
+        if (idToken === phoneOnlyToken) {
+          return {
+            uid: `phone_only_${Date.now()}`,
+            phone: '+919999999999',
+            signInProvider: 'phone'
+          };
+        }
+        return null;
       }
     });
 
-    authTestApp.post('/api/payments/checkout/order', async (req, res) => {
-      const authHdr = String(req.headers['authorization'] || '');
-      const tok = authHdr.startsWith('Bearer ') ? authHdr.slice(7).trim() : '';
-      const lookup = await activeLoginDb.getUserByTokenAsyncWithStatus(tok);
-      if (!lookup.user) return res.status(401).json({ error: 'Unauthorized' });
-      try {
-        const sub = await getWrappedDbForAuth().getSubscriptionAuthoritative(lookup.user.id);
-        if (!isSubscriptionEntitled(sub)) return res.status(403).json({ error: 'Requires active plan' });
-        return res.json({ success: true });
-      } catch (e: any) {
-        if (e instanceof AuthoritativeDatabaseError) return res.status(503).json({ code: e.code, retryable: true });
-        return res.status(500).json({ error: 'Server error' });
-      }
-    });
-
-    const authSrv = http.createServer(authTestApp);
-    await new Promise<void>((resolve) => authSrv.listen(0, '127.0.0.1', () => resolve()));
-    const authPort = (authSrv.address() as any).port;
-    const authUrl = `http://127.0.0.1:${authPort}`;
+    const prodAuthSrv = http.createServer(prodServerApp);
+    await new Promise<void>((resolve) => prodAuthSrv.listen(0, '127.0.0.1', () => resolve()));
+    const prodAuthPort = (prodAuthSrv.address() as any).port;
+    const authUrl = `http://127.0.0.1:${prodAuthPort}`;
 
     try {
-      // Login Test 2: New Google user registration & login
-      const newGoogleUid = `google_new_${Date.now()}`;
+      // Security & token validation checks on REAL /api/auth/firebase-session
+      const missingTokRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const invalidJwtRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'forged_or_expired_firebase_jwt' })
+      });
+      const phoneBlockedRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: phoneOnlyToken })
+      });
+      assert(
+        missingTokRes.status === 401 && invalidJwtRes.status === 401 && phoneBlockedRes.status === 403,
+        'Real /api/auth/firebase-session rejects missing/invalid tokens with HTTP 401 and blocks Phone OTP with HTTP 403'
+      );
+
+      // Login Test 2: New Google user registration & login on REAL /api/auth/firebase-session (spoofed body email ignored)
       const regRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+        body: JSON.stringify({ idToken: validGoogleToken, email: 'attacker_spoof@example.com', name: 'New Creator' })
       });
       const regJson = await regRes.json();
       assert(
-        regRes.status === 200 && regJson.success === true && regJson.isNewUser === true && regJson.cloudPersisted === true && Boolean(regJson.token),
-        'Login Test 2: New Google user registers and logs in with cloudPersisted=true and valid session token'
+        regRes.status === 200 &&
+          regJson.success === true &&
+          regJson.isNewUser === true &&
+          regJson.cloudPersisted === true &&
+          regJson.user?.email === validGoogleEmail &&
+          Boolean(regJson.token),
+        'Login Test 2 (Real Route): New Google user registers via /api/auth/firebase-session with cloudPersisted=true and verified email'
       );
 
       // Login Test 1: Existing Google user login preserves same user account ID
       const existingLoginRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+        body: JSON.stringify({ idToken: validGoogleToken, name: 'New Creator' })
       });
       const existingLoginJson = await existingLoginRes.json();
       assert(
         existingLoginRes.status === 200 &&
           existingLoginJson.isNewUser === false &&
-          existingLoginJson.user.id === regJson.user.id &&
+          existingLoginJson.user?.id === regJson.user.id &&
           Boolean(existingLoginJson.token),
-        'Login Test 1: Existing Google user logs in cleanly resolving the same persistent account ID'
+        'Login Test 1 (Real Route): Existing Google user logs in via /api/auth/firebase-session resolving same account ID'
       );
 
       // Login Test 3: Firebase session persists in Firestore auth_identities
@@ -1154,18 +1132,18 @@ async function runFocusedRazorpayTests() {
         persistedIdentitySnap.exists &&
           Array.isArray(persistedIdentitySnap.data()?.sessionTokens) &&
           persistedIdentitySnap.data().sessionTokens.includes(existingLoginJson.token),
-        'Login Test 3: Session token persisted in Firestore auth_identities collection'
+        'Login Test 3 (Real Route): Session token persisted in Firestore auth_identities collection'
       );
 
       // Login Test 4 & Test 5: Refresh (/api/auth/me) + Cross-Cloud-Run instance session restore on Container B
-      activeLoginDb = loginNodeB; // Switch completely to cold Container B with empty RAM!
+      activeTargetDb = loginNodeB; // Switch completely to cold Container B with empty RAM!
       const crossMeRes = await fetch(`${authUrl}/api/auth/me`, {
         headers: { Authorization: `Bearer ${existingLoginJson.token}` }
       });
       const crossMeJson = await crossMeRes.json();
       assert(
         crossMeRes.status === 200 && crossMeJson.user?.id === regJson.user.id && crossMeJson.billingUnavailable === false,
-        'Login Test 4 & 5: /api/auth/me restores session after refresh across different Cloud Run instance (Container B)'
+        'Login Test 4 & 5 (Real Route): /api/auth/me restores session across cold Container B'
       );
 
       // Login Test 6: Temporary Firestore billing read failure preserves login & /api/auth/me session, disables financial actions safely, and AppContext never clears valid token on 500/503
@@ -1173,7 +1151,7 @@ async function runFocusedRazorpayTests() {
       const loginDuringOutage = await fetch(`${authUrl}/api/auth/firebase-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+        body: JSON.stringify({ idToken: validGoogleToken })
       });
       const loginDuringOutageJson = await loginDuringOutage.json();
       const meDuringOutage = await fetch(`${authUrl}/api/auth/me`, {
@@ -1188,11 +1166,28 @@ async function runFocusedRazorpayTests() {
       const invalidTokRes = await fetch(`${authUrl}/api/auth/me`, {
         headers: { Authorization: 'Bearer definitely_invalid_token_xyz' }
       });
+      simulateBillingReadError = false;
+
+      simulateTransientSessionLookupError = true;
+      const transientMeRes = await fetch(`${authUrl}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${existingLoginJson.token}` }
+      });
+      simulateTransientSessionLookupError = false;
+
+      // Also verify real production verifyFirebaseToken fallback (without test override) rejects forged JWT with HTTP 401
+      __setServerTestDeps({ verifyFirebaseToken: null });
+      const realVerifierBadJwtRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'not.a.valid_firebase_jwt' })
+      });
+
       assert(
         loginDuringOutage.status === 200 &&
           loginDuringOutageJson.success === true &&
           Boolean(loginDuringOutageJson.token) &&
           loginDuringOutageJson.billingUnavailable === true &&
+          loginDuringOutageJson.billingRetryable === true &&
           meDuringOutage.status === 200 &&
           meDuringOutageJson.user?.id === regJson.user.id &&
           meDuringOutageJson.hasActivePlan === false &&
@@ -1201,29 +1196,38 @@ async function runFocusedRazorpayTests() {
           meDuringOutageJson.billingRetryable === true &&
           topUpDuringOutage.status === 503 &&
           invalidTokRes.status === 401 &&
+          transientMeRes.status === 503 &&
+          realVerifierBadJwtRes.status === 401 &&
           appCtxSrc.includes('Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401') &&
           appCtxSrc.includes('Preserving session token for outage recovery'),
-        'Login Test 6: Temporary billing outage preserves login & /api/auth/me session with safe disabled financial state; 401 only on invalid token'
+        'Login Test 6 (Real Route): Billing outage preserves /api/auth/firebase-session & /api/auth/me with disabled financial flags; top-up 503; transient session 503; invalid token 401'
       );
-      simulateBillingReadError = false;
 
-      // Login Test 7: Firebase project ID, OAuth config & Google-only auth lock untouched
+      // Login Test 7: Firebase project ID, database (default) lock on BOTH client & backend guards, OAuth config & Google-only auth lock untouched
       const fbCfg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf-8'));
       const { PHONE_AUTH_ENABLED, AUTH_POLICY } = await import('../src/config/authConfig.ts');
       const fbClientSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf-8');
+      const backendGuard = getDatabaseGuardState();
       assert(
         fbCfg.projectId === 'ai-prime-studio' &&
+          fbCfg.firestoreDatabaseId === '(default)' &&
+          fbCfg.appId === '1:855598524398:web:9b76fc4b5bb396c0e990ff' &&
           fbCfg.authDomain === 'ai-prime-studio.firebaseapp.com' &&
           fbCfg.oAuthClientId === '855598524398-ljcakleqr4dgknkkhskp4kr9oph8o1a9.apps.googleusercontent.com' &&
+          firestoreClientLockState.configStatus === 'LOCKED_DEFAULT' &&
+          firestoreClientLockState.blocked === false &&
+          backendGuard.configStatus === 'LOCKED_DEFAULT' &&
+          backendGuard.blocked === false &&
           fbClientSrc.includes("CANONICAL_FIRESTORE_DATABASE_ID = '(default)'") &&
           PHONE_AUTH_ENABLED === false &&
           AUTH_POLICY.googleOnly === true &&
           serverSrc.includes("app.post('/api/auth/firebase-session'") &&
           serverSrc.includes('getUserByTokenAsyncWithStatus'),
-        'Login Test 7: Firebase project lock (ai-prime-studio), OAuth config, Google-only auth policy, and auth route handlers preserved'
+        'Login Test 7: Both client & backend database guards report configStatus=LOCKED_DEFAULT & blocked=false; Firebase project/OAuth/Google-only locks intact'
       );
     } finally {
-      await new Promise<void>((resolve) => authSrv.close(() => resolve()));
+      __setServerTestDeps();
+      await new Promise<void>((resolve) => prodAuthSrv.close(() => resolve()));
     }
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

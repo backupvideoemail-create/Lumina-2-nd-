@@ -48,7 +48,7 @@ import {
 import { mediaStorage, verifySignedMediaToken, configureStorageMonitoring } from './src/services/storage/mediaStorage.ts';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import {
-  prodDb,
+  prodDb as defaultProdDb,
   adminFirestoreDb,
   adminAuthInstance,
   isIsolatedTestEnv,
@@ -380,6 +380,50 @@ function parsePort(): number {
 }
 const PORT = parsePort();
 const app = express();
+let prodDb: ProductionDatabase = defaultProdDb;
+let testVerifyFirebaseTokenOverride:
+  | ((idToken: string) => Promise<{
+      uid: string;
+      email?: string;
+      emailVerified?: boolean;
+      phone?: string;
+      name?: string;
+      avatar?: string;
+      signInProvider?: string;
+    } | null>)
+  | null = null;
+
+export function __setServerTestDeps(overrides?: {
+  db?: any;
+  verifyFirebaseToken?:
+    | ((idToken: string) => Promise<{
+        uid: string;
+        email?: string;
+        emailVerified?: boolean;
+        phone?: string;
+        name?: string;
+        avatar?: string;
+        signInProvider?: string;
+      } | null>)
+    | null;
+}) {
+  if (!isIsolatedTestEnv) {
+    throw new Error('__setServerTestDeps is strictly restricted to isolated test environments.');
+  }
+  if (!overrides) {
+    prodDb = defaultProdDb;
+    testVerifyFirebaseTokenOverride = null;
+    return;
+  }
+  if (overrides.db !== undefined) {
+    prodDb = overrides.db;
+  }
+  if (overrides.verifyFirebaseToken !== undefined) {
+    testVerifyFirebaseTokenOverride = overrides.verifyFirebaseToken;
+  }
+}
+
+export { app };
 
 let resolvedAppVersion = 'UNAVAILABLE';
 try {
@@ -874,6 +918,9 @@ async function verifyFirebaseToken(idToken: string): Promise<{
   avatar?: string;
   signInProvider?: string;
 } | null> {
+  if (isIsolatedTestEnv && testVerifyFirebaseTokenOverride) {
+    return await testVerifyFirebaseTokenOverride(idToken);
+  }
   if (!idToken || typeof idToken !== 'string') return null;
 
   let decodedProviderFromJwt: string | undefined;
@@ -8377,4 +8424,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!isIsolatedTestEnv || process.env.DISABLE_AUTO_START_SERVER !== 'true') {
+  startServer();
+}
