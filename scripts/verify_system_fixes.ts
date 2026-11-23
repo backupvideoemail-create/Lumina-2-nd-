@@ -4693,7 +4693,7 @@ async function runSystemVerification() {
       '50.1 Pending ₹1 payment keeps intro offer visible/eligible, enters pending_reconciliation, and blocks duplicate ₹1 checkout'
     );
 
-    // 50.2 Authorized-only & Failed payments grant ZERO credits; failed allows clean ₹1 retry
+    // 50.2 Authorized-only & Failed payments grant ZERO credits; distinct payment.failed never clears older authorization until Razorpay proves prior Payment ID terminal
     const authOnlyRes50 = await webhookSvc50.reconcileCustomerRazorpayPayment({
       db: db50,
       userId: u50Pending.user.id,
@@ -4732,11 +4732,61 @@ async function runSystemVerification() {
       },
       { 'x-razorpay-event-id': `evt_50_fail_${Date.now()}` }
     );
-    const stateAfterFail50 = await db50.getIntroOfferStateAuthoritative(u50Pending.user.id);
-    const preCheckoutAfterFail50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+    const preservedAuthRec50 = await db50.getPaymentAuthoritative('pay_50_auth_only');
+    const sharedSubRec50 = await db50.getPaymentAuthoritative(sub50PendingId);
+    const separateFailedRec50 = await db50.getPaymentAuthoritative('pay_50_failed_1');
+    const stateBeforeGatewayProof50 = await db50.getIntroOfferStateAuthoritative(u50Pending.user.id);
+    const preCheckoutStillAuth50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
       db: db50,
-      userId: u50Pending.user.id
+      userId: u50Pending.user.id,
+      gateway: {
+        getPayment: async (payId) => ({
+          id: payId,
+          status: 'authorized',
+          amount: 100,
+          currency: 'INR',
+          subscription_id: sub50PendingId,
+          notes: { userId: u50Pending.user.id }
+        }),
+        getSubscription: async () => ({ id: sub50PendingId, status: 'created', notes: { userId: u50Pending.user.id } }),
+        getSubscriptionInvoices: async () => []
+      }
     });
+    const preCheckoutUnavailable50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+      db: db50,
+      userId: u50Pending.user.id,
+      gateway: {
+        getPayment: async () => {
+          throw new Error('Razorpay gateway timeout');
+        },
+        getSubscription: async () => ({ id: sub50PendingId, status: 'created', notes: { userId: u50Pending.user.id } }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+
+    // Strictly prove via Razorpay Gateway that pay_50_auth_only itself transitioned to terminal 'failed'
+    let verifiedGatewayPaymentId50 = '';
+    const preCheckoutAfterGatewayProof50 = await webhookSvc50.checkPendingIntroBeforeCheckout({
+      db: db50,
+      userId: u50Pending.user.id,
+      gateway: {
+        getPayment: async (payId) => {
+          verifiedGatewayPaymentId50 = payId;
+          return {
+            id: payId,
+            status: 'failed',
+            amount: 100,
+            currency: 'INR',
+            subscription_id: sub50PendingId,
+            error_description: 'Authorization expired without capture',
+            notes: { userId: u50Pending.user.id }
+          };
+        },
+        getSubscription: async () => ({ id: sub50PendingId, status: 'created', notes: { userId: u50Pending.user.id } }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    const stateAfterFail50 = await db50.getIntroOfferStateAuthoritative(u50Pending.user.id);
     assert(
       authOnlyRes50.httpStatus === 400 &&
         authOnlyRes50.body.code === 'PAYMENT_ONLY_AUTHORIZED' &&
@@ -4744,11 +4794,20 @@ async function runSystemVerification() {
         !subAfterAuthOnly50 &&
         failWebhookRes50.status === 200 &&
         failWebhookRes50.body.status === 'recorded_payment_failure' &&
+        preservedAuthRec50?.paymentId === 'pay_50_auth_only' &&
+        preservedAuthRec50?.status === 'authorized' &&
+        sharedSubRec50?.paymentId === 'pay_50_auth_only' &&
+        separateFailedRec50?.paymentId === 'pay_50_failed_1' &&
+        separateFailedRec50?.status === 'failed' &&
+        stateBeforeGatewayProof50.status === 'pending_reconciliation' &&
+        preCheckoutStillAuth50.action === 'block_pending' &&
+        preCheckoutUnavailable50.action === 'block_pending' &&
+        verifiedGatewayPaymentId50 === 'pay_50_auth_only' &&
         (await db50.getWalletAuthoritative(u50Pending.user.id)).balance === 0 &&
         stateAfterFail50.status === 'eligible' &&
         db50.isIntroEligible(u50Pending.user.id) === true &&
-        preCheckoutAfterFail50.action === 'allow_checkout',
-      '50.2 Authorized-only & payment.failed grant ZERO credits, and failed payment leaves ₹1 intro offer retry-eligible'
+        preCheckoutAfterGatewayProof50.action === 'allow_checkout',
+      '50.2 Authorized-only & payment.failed preserve distinct records, block retry until Razorpay proves pay_50_auth_only terminal, then allow clean ₹1 retry with 0 credits'
     );
 
     // 50.3 Real HTTP subscription.authenticated webhook (with header-only x-razorpay-event-id) grants 40 credits ONCE & consumes intro

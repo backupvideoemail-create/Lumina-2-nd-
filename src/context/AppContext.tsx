@@ -38,6 +38,7 @@ import {
   savePendingAuthActionToStorage,
   setStoredSessionToken
 } from '../utils/authSession';
+import { isSubscriptionEntitled } from '../utils/subscriptionEntitlement';
 
 export type PendingAction =
   | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
@@ -127,6 +128,7 @@ interface AppContextType {
   plans: PricingPlan[];
   topUps: TopUpOption[];
   hasActivePlan: boolean;
+  billingUnavailable: boolean;
   isIntroEligible: boolean;
   introOfferState: IntroOfferStatus;
   pendingIntroPayment: PendingIntroPaymentSummary | null;
@@ -357,6 +359,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isIntroEligible, setIsIntroEligible] = useState<boolean>(true);
   const [introOfferState, setIntroOfferState] = useState<IntroOfferStatus>('eligible');
   const [pendingIntroPayment, setPendingIntroPayment] = useState<PendingIntroPaymentSummary | null>(null);
+  const [billingUnavailable, setBillingUnavailable] = useState<boolean>(false);
 
   useEffect(() => {
     mediaPlaybackCoordinator.setActiveScreen(activeTab);
@@ -383,23 +386,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     templateManagerOpen
   ]);
 
-  // Active Plan Check: align with server isSubscriptionEntitled (preserve paidThroughAt until cycle end; exclude revoked/paused/expired)
-  const paidThroughMs = activeSubscription?.paidThroughAt ? Date.parse(activeSubscription.paidThroughAt) : NaN;
-  const hasFuturePaidPeriod = Boolean(!Number.isNaN(paidThroughMs) && paidThroughMs > Date.now());
-  const hasActivePlan = Boolean(
-    activeSubscription &&
-      activeSubscription.status !== 'revoked' &&
-      activeSubscription.status !== 'paused' &&
-      activeSubscription.status !== 'expired' &&
-      (activeSubscription.status === 'active' ||
-        activeSubscription.status === 'trial' ||
-        (hasFuturePaidPeriod &&
-          (activeSubscription.status === 'cancelled' ||
-            activeSubscription.status === 'past_due' ||
-            activeSubscription.status === 'on_hold' ||
-            activeSubscription.status === 'grace_period' ||
-            activeSubscription.status === 'payment_failed')))
-  );
+  // Active Plan Check: exact parity with server isSubscriptionEntitled (enforces paidThroughAt expiry & fails closed when billingUnavailable)
+  const hasActivePlan = Boolean(!billingUnavailable && isSubscriptionEntitled(activeSubscription));
 
   // Sync Plans and Top-Up packs from Central Server Configuration
   useEffect(() => {
@@ -640,6 +628,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setTransactions([]);
       setGenerations([]);
       setIsIntroEligible(true);
+      setBillingUnavailable(false);
       setIsAdmin(false);
       setServerAdminVerified(false);
       return;
@@ -711,6 +700,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const data = parsedMe.data;
       if (data?.user) {
         setUser(data.user);
+        setBillingUnavailable(Boolean(data.billingUnavailable));
         if (data.wallet) setWallet(data.wallet);
         setActiveSubscription(data.activeSubscription || null);
         if (data.likedTemplates) setLikedTemplates(data.likedTemplates);
@@ -1043,6 +1033,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           await signOut(auth);
         } catch {}
         setUser(null);
+        setBillingUnavailable(false);
         setIsAdmin(false);
         setServerAdminVerified(false);
         setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
@@ -1072,6 +1063,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await signOut(auth);
     } catch {}
     setUser(null);
+    setBillingUnavailable(false);
     setIsAdmin(false);
     setServerAdminVerified(false);
     setWallet({ userId: '', balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: '' });
@@ -1554,6 +1546,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         plans,
         topUps,
         hasActivePlan,
+        billingUnavailable,
         isIntroEligible,
         introOfferState,
         pendingIntroPayment,

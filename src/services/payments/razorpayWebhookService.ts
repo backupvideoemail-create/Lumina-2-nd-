@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type { ProductionDatabase } from '../db/database.ts';
+import { AuthoritativeDatabaseError, type ProductionDatabase } from '../db/database.ts';
 import type { PaymentRecord, UserSubscription } from '../../types/index.ts';
 import {
   CENTRAL_TOP_UP_PACKS,
@@ -261,6 +261,7 @@ export async function processRazorpayWebhookEvent(params: {
   const db = params.db;
   const gateway = params.gateway ?? defaultRazorpayGatewayClient;
 
+  try {
   // Replay protection
   if (await db.isWebhookProcessed(eventId)) {
     return { httpStatus: 200, body: { status: 'ignored_duplicate', eventId } };
@@ -966,7 +967,7 @@ export async function processRazorpayWebhookEvent(params: {
     };
   }
 
-  // 5. payment.failed (Zero credits + protects newer captures & paidThroughAt + prevents falsely active unpaid subscriptions)
+  // 5. payment.failed (Zero credits + preserves distinct attempts + protects newer captures & paidThroughAt + prevents falsely active unpaid subscriptions)
   if (eventType === 'payment.failed') {
     const payment = event.payload?.payment?.entity;
     const paymentId = typeof payment?.id === 'string' ? payment.id.trim() : '';
@@ -978,26 +979,69 @@ export async function processRazorpayWebhookEvent(params: {
     const eventCreatedAtSec = extractProviderTimestampSec(event, payment);
     const nowIso = new Date().toISOString();
 
-    const storedPayment =
-      (paymentId ? await db.getPaymentAuthoritative(paymentId) : null) ||
+    const storedByPaymentId = paymentId ? await db.getPaymentAuthoritative(paymentId) : null;
+    const storedByOrderOrSub =
       (orderId ? await db.getPaymentAuthoritative(orderId) : null) ||
       (subId ? await db.getPaymentAuthoritative(subId) : null);
+    const storedPayment = storedByPaymentId || storedByOrderOrSub;
 
-    // Protect already-captured payments and newer payments from being overwritten by delayed payment.failed events
-    const isSamePaymentOrPending = Boolean(
+    // Only update existing record in-place if it belongs to THIS exact payment attempt (or is an unassigned pending placeholder) and is NOT captured/verified.
+    const existingHasDifferentAttempt = Boolean(
+      storedPayment &&
+        paymentId &&
+        storedPayment.paymentId &&
+        storedPayment.paymentId !== storedPayment.subscriptionId &&
+        storedPayment.paymentId !== paymentId
+    );
+    const isSamePaymentOrPlaceholder = Boolean(
       storedPayment &&
         storedPayment.status !== 'captured' &&
         storedPayment.verificationStatus !== 'verified' &&
-        (!paymentId || !storedPayment.paymentId || storedPayment.paymentId === paymentId)
+        !existingHasDifferentAttempt
     );
 
-    if (storedPayment && isSamePaymentOrPending) {
+    if (storedPayment && isSamePaymentOrPlaceholder) {
       storedPayment.paymentId = paymentId || storedPayment.paymentId;
       storedPayment.status = 'failed';
       storedPayment.verificationStatus = 'failed';
       storedPayment.failureReason = failureReason;
       storedPayment.updatedAt = nowIso;
       await db.recordPayment(storedPayment);
+    } else if (paymentId || (orderId && orderId !== subId)) {
+      // Distinct payment attempt (e.g. pay_50_failed_1 while pay_50_auth_only exists):
+      // Store strictly as its OWN separate payment-attempt record WITHOUT overwriting pay_50_auth_only or shared payments/{subId}!
+      const attemptKey = (orderId && orderId !== subId) ? orderId : paymentId;
+      const attemptSub =
+        subId || storedPayment?.subscriptionId
+          ? await db.getSubscriptionByMandateOrIdAuthoritative(subId || storedPayment!.subscriptionId!)
+          : null;
+      const attemptUserId =
+        (typeof payment?.notes?.userId === 'string' ? payment.notes.userId.trim() : '') ||
+        storedPayment?.userId ||
+        attemptSub?.userId ||
+        '';
+      if (attemptUserId && !storedByPaymentId) {
+        const failedAttemptRecord: PaymentRecord = {
+          id: `pay_att_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          orderId: attemptKey,
+          paymentId: paymentId || attemptKey,
+          subscriptionId: subId || storedPayment?.subscriptionId || undefined,
+          mandateId: subId || storedPayment?.mandateId || undefined,
+          planId: storedPayment?.planId || payment?.notes?.planId || payment?.notes?.itemId || 'plan_intro_daily',
+          userId: attemptUserId,
+          provider: 'razorpay',
+          amount: typeof payment?.amount === 'number' ? payment.amount / 100 : (storedPayment?.amount || 1),
+          currency: typeof payment?.currency === 'string' ? payment.currency : 'INR',
+          type: storedPayment?.type || (subId ? 'intro_mandate' : 'one_time'),
+          status: 'failed',
+          isAutoPay: Boolean(subId || storedPayment?.isAutoPay),
+          verificationStatus: 'failed',
+          failureReason,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        await db.recordPayment(failedAttemptRecord);
+      }
     }
 
     const effectiveSubId = subId || storedPayment?.subscriptionId || '';
@@ -1075,6 +1119,19 @@ export async function processRazorpayWebhookEvent(params: {
     httpStatus: 200,
     body: { status: 'ignored_unhandled_event', eventType, eventId }
   };
+  } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return {
+        httpStatus: 503,
+        body: {
+          error: err.message,
+          code: err.code,
+          retryable: true
+        }
+      };
+    }
+    throw err;
+  }
 }
 
 export async function reconcileCustomerRazorpayPayment(params: {
@@ -1088,6 +1145,7 @@ export async function reconcileCustomerRazorpayPayment(params: {
   const gateway = params.gateway ?? defaultRazorpayGatewayClient;
   const hasGatewayCreds = Boolean(params.gateway || getLiveAuthHeader());
 
+  try {
   let requestedPayId = typeof params.paymentId === 'string' ? params.paymentId.trim() : '';
   let requestedSubId = typeof params.subscriptionId === 'string' ? params.subscriptionId.trim() : '';
 
@@ -1119,22 +1177,49 @@ export async function reconcileCustomerRazorpayPayment(params: {
   let rzpPay: any = null;
   let rzpSub: any = null;
   let invoices: any[] = [];
+  let requestedPayLookupError: string | null = null;
 
   if (requestedPayId) {
     try {
       rzpPay = await gateway.getPayment(requestedPayId);
     } catch (err: any) {
-      console.warn(`[Reconcile] Payment lookup error for ${requestedPayId}:`, err.message);
+      requestedPayLookupError = err?.message || 'Razorpay payment lookup failed';
+      console.warn(`[Reconcile] Payment lookup error for ${requestedPayId}:`, requestedPayLookupError);
+    }
+    // Fail closed when verifying a specific known Payment ID (e.g. pending authorized payment) and provider lookup fails:
+    // Never substitute another payment or treat unavailability as proof that the authorization is terminal.
+    if (requestedPayLookupError || !rzpPay) {
+      return {
+        httpStatus: 503,
+        body: {
+          error: requestedPayLookupError || `Unable to verify payment ${requestedPayId} with Razorpay gateway right now.`,
+          code: 'PROVIDER_VERIFICATION_UNAVAILABLE',
+          retryable: true
+        }
+      };
     }
   }
 
   const effectiveSubId = requestedSubId || (typeof rzpPay?.subscription_id === 'string' ? rzpPay.subscription_id : '');
   if (effectiveSubId) {
-    const subInfo = await findLatestPaymentForSubscription(effectiveSubId, gateway);
-    rzpSub = subInfo.subscription;
-    invoices = subInfo.invoices;
-    if (!rzpPay && subInfo.payment) {
-      rzpPay = subInfo.payment;
+    try {
+      const subInfo = await findLatestPaymentForSubscription(effectiveSubId, gateway);
+      rzpSub = subInfo.subscription;
+      invoices = subInfo.invoices;
+      if (!rzpPay && subInfo.payment) {
+        rzpPay = subInfo.payment;
+      }
+    } catch (err: any) {
+      if (!rzpPay) {
+        return {
+          httpStatus: 503,
+          body: {
+            error: err?.message || 'Razorpay subscription lookup unavailable.',
+            code: 'PROVIDER_VERIFICATION_UNAVAILABLE',
+            retryable: true
+          }
+        };
+      }
     }
   }
 
@@ -1172,22 +1257,23 @@ export async function reconcileCustomerRazorpayPayment(params: {
     };
   }
 
-  // Handle failed payment explicitly
-  if (rzpPay?.status === 'failed') {
+  // Handle terminal failed/refunded/voided/expired payment explicitly proved by Razorpay Gateway
+  const terminalPayStatus = String(rzpPay?.status || '').toLowerCase();
+  if (terminalPayStatus === 'failed' || terminalPayStatus === 'refunded' || terminalPayStatus === 'voided' || terminalPayStatus === 'expired') {
     if (storedRec && storedRec.status !== 'captured') {
       storedRec.paymentId = resolvedPayId || storedRec.paymentId;
-      storedRec.status = 'failed';
-      storedRec.verificationStatus = 'failed';
-      storedRec.failureReason = rzpPay.error_description || rzpPay.error_reason || 'payment_failed';
+      storedRec.status = terminalPayStatus === 'refunded' ? 'refunded' : 'failed';
+      storedRec.verificationStatus = terminalPayStatus === 'voided' ? 'voided' : 'failed';
+      storedRec.failureReason = rzpPay.error_description || rzpPay.error_reason || `payment_${terminalPayStatus}`;
       storedRec.updatedAt = new Date().toISOString();
       await db.recordPayment(storedRec);
     }
     return {
       httpStatus: 400,
       body: {
-        error: `Payment failed on Razorpay (${rzpPay.error_description || 'declined'}). No credits granted; you may retry safely.`,
+        error: `Payment ${terminalPayStatus} on Razorpay (${rzpPay.error_description || 'declined'}). No credits granted; you may retry safely.`,
         code: 'PAYMENT_FAILED',
-        providerPaymentStatus: 'failed',
+        providerPaymentStatus: terminalPayStatus,
         providerSubscriptionStatus: rzpSub?.status || 'N/A'
       }
     };
@@ -1195,7 +1281,16 @@ export async function reconcileCustomerRazorpayPayment(params: {
 
   // Authorized-only or uncaptured subscription must NOT grant credits
   if (!rzpPay || rzpPay.status !== 'captured' || rzpPay.currency !== 'INR') {
-    if (rzpSub && ['cancelled', 'expired', 'halted'].includes(String(rzpSub.status || '')) && storedRec && storedRec.status !== 'captured') {
+    // Only mark an unattempted/non-authorized record failed from cancelled/expired/halted subscription.
+    // An 'authorized' payment MUST remain pending_reconciliation until Razorpay confirms that exact Payment ID is terminal!
+    if (
+      rzpSub &&
+      ['cancelled', 'expired', 'halted'].includes(String(rzpSub.status || '')) &&
+      rzpPay?.status !== 'authorized' &&
+      storedRec &&
+      storedRec.status !== 'captured' &&
+      storedRec.status !== 'authorized'
+    ) {
       storedRec.status = 'failed';
       storedRec.verificationStatus = 'failed';
       storedRec.failureReason = `subscription_${rzpSub.status}`;
@@ -1373,6 +1468,19 @@ export async function reconcileCustomerRazorpayPayment(params: {
       message: `Reconciliation successful! ${creditsToGrant} credits and your ${plan.name} plan have been activated.`
     }
   };
+  } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return {
+        httpStatus: 503,
+        body: {
+          error: err.message,
+          code: err.code,
+          retryable: true
+        }
+      };
+    }
+    throw err;
+  }
 }
 
 export async function checkPendingIntroBeforeCheckout(params: {
@@ -1393,7 +1501,7 @@ export async function checkPendingIntroBeforeCheckout(params: {
   if (introState.status === 'pending_reconciliation' && introState.pendingPayment) {
     const pending = introState.pendingPayment;
     const hasGateway = Boolean(params.gateway || getLiveAuthHeader());
-    if (hasGateway && (pending.subscriptionId || pending.paymentId)) {
+    if (hasGateway && (pending.paymentId || pending.subscriptionId)) {
       const recon = await reconcileCustomerRazorpayPayment({
         db: params.db,
         userId: params.userId,
@@ -1406,7 +1514,8 @@ export async function checkPendingIntroBeforeCheckout(params: {
         return { action: 'reconciled', reconcileBody: recon.body };
       }
 
-      // If provider definitively reported failed/cancelled/expired/halted, database record was marked failed -> allow clean retry
+      // If provider definitively reported that this pending Payment ID (or unattempted subscription) is terminal, allow clean retry.
+      // If provider lookup failed (503) or older authorization is still 'authorized', retain pending_reconciliation & block checkout.
       const postCheck = await params.db.getIntroOfferStateAuthoritative(params.userId);
       if (postCheck.status === 'eligible') {
         return { action: 'allow_checkout' };

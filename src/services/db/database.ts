@@ -40,11 +40,12 @@ import { HOME_HERO_BANNERS, HomeBannerItem } from '../../config/homeBannersConfi
 import { SEED_FACE_SWAP_SCENES } from '../../data/faceSwapData.ts';
 import { DEFAULT_CATEGORY_PROMPTS } from '../../config/categoryPromptsConfig.ts';
 import { AUTHORIZED_ADMIN_EMAILS, isAuthorizedAdminEmail } from '../../config/adminConfig.ts';
+import { isSubscriptionEntitled } from '../../utils/subscriptionEntitlement.ts';
 
 // Authoritative Firebase Admin instances for server persistence & cryptographic auth
 let adminFirestoreDb: any = null;
 let adminAuthInstance: any = null;
-export { adminFirestoreDb, adminAuthInstance };
+export { adminFirestoreDb, adminAuthInstance, isSubscriptionEntitled };
 
 export const isIsolatedTestEnv = process.env.IS_ISOLATED_TEST === 'true' || process.env.NODE_ENV === 'test';
 
@@ -53,33 +54,15 @@ export const CANONICAL_PROJECT_NUMBER = '855598524398';
 export const CANONICAL_PROJECT_NAME = 'AI Prime Studio';
 export const CANONICAL_DATABASE_ID = '(default)';
 
-/**
- * Authoritative entitlement check preserving already-paid billing cycles (`paidThroughAt` / `current_end`).
- * Never grants access for `revoked`, `paused`, or `expired` subscriptions, nor for `cancelled`/`past_due`/`on_hold`/`payment_failed`
- * once `paidThroughAt` is absent or expired.
- */
-export function isSubscriptionEntitled(sub: UserSubscription | null | undefined, nowMs: number = Date.now()): boolean {
-  if (!sub) return false;
-  if (sub.status === 'revoked' || sub.status === 'paused' || sub.status === 'expired') {
-    return false;
+export class AuthoritativeDatabaseError extends Error {
+  public readonly code = 'AUTHORITATIVE_DB_UNAVAILABLE';
+  public readonly statusCode = 503;
+  public readonly retryable = true;
+
+  constructor(message = 'Authoritative Firestore database is unavailable for billing and entitlement verification.') {
+    super(message);
+    this.name = 'AuthoritativeDatabaseError';
   }
-  if (sub.status === 'active' || sub.status === 'trial') {
-    return true;
-  }
-  if (
-    sub.paidThroughAt &&
-    (sub.status === 'cancelled' ||
-      sub.status === 'past_due' ||
-      sub.status === 'on_hold' ||
-      sub.status === 'grace_period' ||
-      sub.status === 'payment_failed')
-  ) {
-    const paidThroughMs = Date.parse(sub.paidThroughAt);
-    if (!Number.isNaN(paidThroughMs) && paidThroughMs > nowMs) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export interface DatabaseGuardState {
@@ -741,6 +724,32 @@ export class ProductionDatabase {
 
   private get firestoreDb(): any {
     return this.firestoreOverride !== undefined ? this.firestoreOverride : adminFirestoreDb;
+  }
+
+  private isStrictAuthoritativeUnavailable(): boolean {
+    return (
+      this.firestoreOverride === null ||
+      getDatabaseGuardState().blocked ||
+      (!this.firestoreDb && (process.env.NODE_ENV === 'production' || isIsolatedTestEnv))
+    );
+  }
+
+  private storePaymentInMemoryCache(rec: PaymentRecord, docId?: string): void {
+    if (!rec) return;
+    if (docId) {
+      this.db.payments[docId] = rec;
+    }
+    if (rec.orderId && rec.orderId !== rec.subscriptionId) {
+      this.db.payments[rec.orderId] = rec;
+    } else if (rec.orderId && !this.db.payments[rec.orderId]) {
+      this.db.payments[rec.orderId] = rec;
+    }
+    if (rec.paymentId && rec.paymentId.startsWith('pay_')) {
+      this.db.payments[rec.paymentId] = rec;
+    }
+    if (rec.subscriptionId && !this.db.payments[rec.subscriptionId]) {
+      this.db.payments[rec.subscriptionId] = rec;
+    }
   }
 
   public getCatalogueStatus(): 'READY' | 'EMPTY' | 'OFFLINE' {
@@ -1775,25 +1784,34 @@ export class ProductionDatabase {
   }
 
   public async getWalletAuthoritative(userId: string): Promise<CreditWallet> {
+    if (!userId) return this.getWallet(userId);
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify wallet balance.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
+      let walletDoc: any;
+      let grantsSnap: any;
       try {
-        const walletDoc = await fsDb.collection('wallets').doc(userId).get();
-        if (walletDoc.exists) {
-          this.db.wallets[userId] = walletDoc.data() as CreditWallet;
-        }
-        const grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
-        if (!grantsSnap.empty) {
-          const userGrants: CreditGrant[] = [];
-          grantsSnap.forEach((d: any) => userGrants.push(d.data() as CreditGrant));
-          this.db.creditGrants = [
-            ...userGrants,
-            ...(this.db.creditGrants || []).filter(g => g.userId !== userId)
-          ];
-        }
+        walletDoc = await fsDb.collection('wallets').doc(userId).get();
+        grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
       } catch (err: any) {
-        console.warn('[Database] getWalletAuthoritative fetch note:', err.message);
+        console.error('[Database] FAIL-CLOSED getWalletAuthoritative error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore wallet read failed: ${err?.message || err}`);
       }
+      if (walletDoc.exists) {
+        this.db.wallets[userId] = walletDoc.data() as CreditWallet;
+      } else {
+        delete this.db.wallets[userId];
+      }
+      const userGrants: CreditGrant[] = [];
+      if (grantsSnap && !grantsSnap.empty) {
+        grantsSnap.forEach((d: any) => userGrants.push(d.data() as CreditGrant));
+      }
+      this.db.creditGrants = [
+        ...userGrants,
+        ...(this.db.creditGrants || []).filter(g => g.userId !== userId)
+      ];
     }
     return this.getWallet(userId);
   }
@@ -2199,6 +2217,11 @@ export class ProductionDatabase {
       createdAt: now.toISOString()
     };
 
+    if (this.isStrictAuthoritativeUnavailable()) {
+      console.error('[Database] FAIL-CLOSED: Authoritative Firestore is unavailable for creditWallet');
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database unavailable for credit grant.');
+    }
+
     // If Firestore Admin is available, run inside strict ACID Transaction to ensure zero duplicate credits under concurrency
     const fsDb = this.firestoreDb;
     if (fsDb) {
@@ -2272,18 +2295,19 @@ export class ProductionDatabase {
         } else if (result) {
           return result as CreditGrant;
         }
-        throw new Error('Transaction returned empty response');
+        throw new AuthoritativeDatabaseError('Transaction returned empty response');
       } catch (err: any) {
         console.error('[Database] FAIL-CLOSED: Atomic Firestore creditWallet failed:', err.message);
+        if (err instanceof AuthoritativeDatabaseError) throw err;
         // Fail-closed: Never fall back to local/in-memory processing on Firestore transaction failure
-        throw new Error(`Authoritative credit transaction failed in Firestore: ${err.message}`);
+        throw new AuthoritativeDatabaseError(`Authoritative credit transaction failed in Firestore: ${err.message}`);
       }
     }
 
     // Fail-closed if in production and Firestore is unavailable
     if (process.env.NODE_ENV === 'production') {
       console.error('[Database] FAIL-CLOSED: Authoritative Firestore is unavailable in production for creditWallet');
-      throw new Error('Authoritative Firestore database unavailable for credit grant');
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database unavailable for credit grant');
     }
 
     // Local / In-memory fallback ONLY for non-production development without Firestore
@@ -2307,11 +2331,9 @@ export class ProductionDatabase {
 
   public async isPaymentProcessed(paymentId: string): Promise<boolean> {
     if (!paymentId) return false;
-    const byPayment = Object.values(this.db.payments).some(
-      p => p.paymentId === paymentId && p.status === 'captured'
-    );
-    const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
-    if (byPayment || byTx) return true;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify payment processing status.');
+    }
 
     const fsDb = this.firestoreDb;
     if (fsDb) {
@@ -2320,24 +2342,36 @@ export class ProductionDatabase {
         if (!paySnap.empty) return true;
         const txSnap = await fsDb.collection('transactions').where('referenceId', '==', paymentId).limit(1).get();
         if (!txSnap.empty) return true;
+        return false;
       } catch (err: any) {
-        console.warn('[Firestore] isPaymentProcessed lookup note:', err.message);
+        console.error('[Firestore] FAIL-CLOSED isPaymentProcessed lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore payment idempotency check failed: ${err?.message || err}`);
       }
     }
-    return false;
+
+    const byPayment = Object.values(this.db.payments).some(
+      p => p.paymentId === paymentId && p.status === 'captured'
+    );
+    const byTx = this.db.transactions.some(t => t.referenceId === paymentId);
+    return byPayment || byTx;
   }
 
   public async hasTransactionForReference(refId: string): Promise<boolean> {
     if (!refId) return false;
-    if (this.db.transactions.some(t => t.referenceId === refId)) return true;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to check transaction references.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
         const snap = await fsDb.collection('transactions').where('referenceId', '==', refId).limit(1).get();
-        if (!snap.empty) return true;
-      } catch {}
+        return !snap.empty;
+      } catch (err: any) {
+        console.error('[Firestore] FAIL-CLOSED hasTransactionForReference lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore transaction lookup failed: ${err?.message || err}`);
+      }
     }
-    return false;
+    return this.db.transactions.some(t => t.referenceId === refId);
   }
 
   public getPaymentByPaymentId(paymentId: string): PaymentRecord | null {
@@ -2354,27 +2388,41 @@ export class ProductionDatabase {
 
   public async getSubscriptionByMandateOrIdAuthoritative(subOrMandateId: string): Promise<UserSubscription | null> {
     if (!subOrMandateId) return null;
-    const local = this.getSubscriptionByMandateOrId(subOrMandateId);
-    if (local) return local;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify subscription by mandate ID.');
+    }
 
     const fsDb = this.firestoreDb;
     if (fsDb) {
+      let foundSub: UserSubscription | null = null;
       try {
         for (const field of ['mandateId', 'subscriptionId']) {
           const snap = await fsDb.collection('subscriptions').where(field, '==', subOrMandateId).limit(1).get();
           if (!snap.empty) {
-            const sub = snap.docs[0].data() as UserSubscription;
-            if (sub?.userId) {
-              this.db.subscriptions[sub.userId] = sub;
-            }
-            return sub;
+            foundSub = snap.docs[0].data() as UserSubscription;
+            break;
           }
         }
       } catch (err: any) {
-        console.warn('[Firestore] getSubscriptionByMandateOrIdAuthoritative lookup note:', err?.message || err);
+        console.error('[Firestore] FAIL-CLOSED getSubscriptionByMandateOrIdAuthoritative lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore subscription lookup failed: ${err?.message || err}`);
       }
+      if (foundSub) {
+        if (foundSub.userId) {
+          this.db.subscriptions[foundSub.userId] = foundSub;
+        }
+        return foundSub;
+      }
+      // Firestore succeeded with no matching document -> purge stale local RAM and return null
+      for (const [uid, cached] of Object.entries(this.db.subscriptions)) {
+        if (cached && (cached.mandateId === subOrMandateId || cached.subscriptionId === subOrMandateId)) {
+          delete this.db.subscriptions[uid];
+        }
+      }
+      return null;
     }
-    return null;
+
+    return this.getSubscriptionByMandateOrId(subOrMandateId);
   }
 
   public getUserTransactions(userId: string): CreditTransaction[] {
@@ -2480,37 +2528,41 @@ export class ProductionDatabase {
     if (!userId) {
       return { eligible: true, status: 'eligible', pendingPayment: null };
     }
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify intro offer state.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
+      await this.getSubscriptionAuthoritative(userId);
+      let paySnap: any;
+      let grantsSnap: any;
       try {
-        await this.getSubscriptionAuthoritative(userId);
-        const paySnap = await fsDb.collection('payments').where('userId', '==', userId).get();
-        if (paySnap && !paySnap.empty) {
-          paySnap.forEach((d: any) => {
-            const rec = d.data() as PaymentRecord;
-            if (rec?.orderId) {
-              this.db.payments[rec.orderId] = rec;
-            }
-            if (rec?.subscriptionId && rec.subscriptionId !== rec.orderId) {
-              this.db.payments[rec.subscriptionId] = rec;
-            }
-            if (rec?.paymentId && rec.paymentId !== rec.orderId) {
-              this.db.payments[rec.paymentId] = rec;
-            }
-          });
-        }
-        const grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
-        if (grantsSnap && !grantsSnap.empty) {
-          const remoteGrants: CreditGrant[] = [];
-          grantsSnap.forEach((d: any) => remoteGrants.push(d.data() as CreditGrant));
-          this.db.creditGrants = [
-            ...remoteGrants,
-            ...(this.db.creditGrants || []).filter((g) => g.userId !== userId)
-          ];
-        }
+        paySnap = await fsDb.collection('payments').where('userId', '==', userId).get();
+        grantsSnap = await fsDb.collection('credit_grants').where('userId', '==', userId).get();
       } catch (err: any) {
-        console.warn('[Firestore] getIntroOfferStateAuthoritative lookup note:', err?.message || err);
+        console.error('[Firestore] FAIL-CLOSED getIntroOfferStateAuthoritative lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore intro offer lookup failed: ${err?.message || err}`);
       }
+      // Replace cached payments for this userId strictly with authoritative Firestore records
+      for (const [k, p] of Object.entries(this.db.payments)) {
+        if (p && p.userId === userId) {
+          delete this.db.payments[k];
+        }
+      }
+      if (paySnap && !paySnap.empty) {
+        paySnap.forEach((d: any) => {
+          const rec = d.data() as PaymentRecord;
+          if (rec) this.storePaymentInMemoryCache(rec, d.id);
+        });
+      }
+      const remoteGrants: CreditGrant[] = [];
+      if (grantsSnap && !grantsSnap.empty) {
+        grantsSnap.forEach((d: any) => remoteGrants.push(d.data() as CreditGrant));
+      }
+      this.db.creditGrants = [
+        ...remoteGrants,
+        ...(this.db.creditGrants || []).filter((g) => g.userId !== userId)
+      ];
     }
     return this.getIntroOfferState(userId);
   }
@@ -3978,20 +4030,88 @@ export class ProductionDatabase {
      PAYMENTS & SUBSCRIPTIONS
   ========================================================================= */
   public async recordPayment(record: PaymentRecord): Promise<void> {
-    this.db.payments[record.orderId] = record;
-    if (record.subscriptionId && record.subscriptionId !== record.orderId) {
-      this.db.payments[record.subscriptionId] = record;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to record payment.');
     }
-    if (record.paymentId && record.paymentId !== record.orderId) {
+
+    const fsDb = this.firestoreDb;
+    const subId = record.subscriptionId;
+    const isNewVerifiedCapture = record.status === 'captured' && record.verificationStatus === 'verified';
+
+    // Check shared payments/{subscriptionId} slot (authoritatively via Firestore when available) so a new attempt NEVER overwrites a distinct payment attempt
+    let existingShared: PaymentRecord | null = null;
+    if (subId) {
+      if (fsDb) {
+        try {
+          const sharedSnap = await fsDb.collection('payments').doc(subId).get();
+          if (sharedSnap.exists) {
+            existingShared = sharedSnap.data() as PaymentRecord;
+          }
+        } catch (err: any) {
+          console.error('[Firestore] FAIL-CLOSED recordPayment shared check failed:', err?.message || err);
+          throw new AuthoritativeDatabaseError(`Firestore payment write pre-check failed: ${err?.message || err}`);
+        }
+      } else {
+        existingShared = this.db.payments[subId] || null;
+      }
+    }
+
+    const existingHasDistinctPayment = Boolean(
+      existingShared?.paymentId &&
+        existingShared.paymentId !== subId &&
+        existingShared.paymentId !== record.paymentId
+    );
+    const existingIsCaptured = Boolean(
+      existingShared &&
+        existingShared.status === 'captured' &&
+        existingShared.verificationStatus === 'verified'
+    );
+    const canWriteSharedSubKey =
+      Boolean(subId) &&
+      (!existingShared || (!existingHasDistinctPayment && !existingIsCaptured) || (isNewVerifiedCapture && !existingIsCaptured));
+
+    // If upgrading shared slot from an older distinct attempt on verified capture, ensure old attempt stays preserved under its own pay_* doc
+    if (canWriteSharedSubKey && existingShared && existingHasDistinctPayment && existingShared.paymentId) {
+      this.db.payments[existingShared.paymentId] = existingShared;
+      if (fsDb) {
+        await this.syncToFirestore('payments', existingShared.paymentId, existingShared);
+      }
+    }
+
+    const writtenDocKeys = new Set<string>();
+    const primaryOrderKey =
+      subId && record.orderId === subId && !canWriteSharedSubKey
+        ? (record.paymentId && record.paymentId !== subId ? record.paymentId : record.id)
+        : record.orderId;
+
+    if (primaryOrderKey) {
+      this.db.payments[primaryOrderKey] = record;
+      writtenDocKeys.add(primaryOrderKey);
+    }
+    if (subId && subId !== primaryOrderKey && canWriteSharedSubKey) {
+      this.db.payments[subId] = record;
+      writtenDocKeys.add(subId);
+    }
+    if (record.paymentId && record.paymentId.startsWith('pay_')) {
       this.db.payments[record.paymentId] = record;
+      writtenDocKeys.add(record.paymentId);
+    } else if (record.paymentId && record.paymentId !== subId && !writtenDocKeys.has(record.paymentId)) {
+      this.db.payments[record.paymentId] = record;
+      writtenDocKeys.add(record.paymentId);
     }
+    if (writtenDocKeys.size === 0 && record.id) {
+      this.db.payments[record.id] = record;
+      writtenDocKeys.add(record.id);
+    }
+
     this.save();
-    await this.syncToFirestore('payments', record.orderId, record);
-    if (record.subscriptionId && record.subscriptionId !== record.orderId) {
-      await this.syncToFirestore('payments', record.subscriptionId, record);
-    }
-    if (record.paymentId && record.paymentId.startsWith('pay_') && record.paymentId !== record.orderId && record.paymentId !== record.subscriptionId) {
-      await this.syncToFirestore('payments', record.paymentId, record);
+    if (fsDb) {
+      for (const docKey of writtenDocKeys) {
+        const syncRes = await this.syncToFirestore('payments', docKey, record);
+        if (!syncRes.cloudPersisted) {
+          throw new AuthoritativeDatabaseError(`Failed to persist payment record '${docKey}' to Firestore: ${syncRes.error || 'write failed'}`);
+        }
+      }
     }
   }
 
@@ -4011,6 +4131,10 @@ export class ProductionDatabase {
   }
 
   public async getPaymentAuthoritative(identifier: string): Promise<PaymentRecord | null> {
+    if (!identifier) return null;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify payment record.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
@@ -4018,42 +4142,61 @@ export class ProductionDatabase {
         const directDoc = await fsDb.collection('payments').doc(identifier).get();
         if (directDoc.exists) {
           const rec = directDoc.data() as PaymentRecord;
-          this.db.payments[rec.orderId] = rec;
+          this.storePaymentInMemoryCache(rec, directDoc.id);
           return rec;
         }
 
         // Try where queries
-        for (const field of ['orderId', 'subscriptionId', 'paymentId']) {
+        for (const field of ['paymentId', 'orderId', 'subscriptionId']) {
           const snap = await fsDb.collection('payments').where(field, '==', identifier).limit(1).get();
           if (!snap.empty) {
             const rec = snap.docs[0].data() as PaymentRecord;
-            this.db.payments[rec.orderId] = rec;
+            this.storePaymentInMemoryCache(rec, snap.docs[0].id);
             return rec;
           }
         }
       } catch (err: any) {
-        console.warn('[Firestore] getPaymentAuthoritative lookup note:', err.message);
+        console.error('[Firestore] FAIL-CLOSED getPaymentAuthoritative lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore payment read failed: ${err?.message || err}`);
       }
+      // Firestore explicitly confirmed no matching payment document -> purge stale RAM entries matching identifier
+      for (const [k, p] of Object.entries(this.db.payments)) {
+        if (
+          k === identifier ||
+          (p && (p.orderId === identifier || p.paymentId === identifier || p.id === identifier || p.subscriptionId === identifier))
+        ) {
+          delete this.db.payments[k];
+        }
+      }
+      return null;
     }
     return this.getPayment(identifier);
   }
 
   public async getUserPaymentsAuthoritative(userId: string): Promise<PaymentRecord[]> {
     if (!userId) return [];
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to list user payments.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
+      let snap: any;
       try {
-        const snap = await fsDb.collection('payments').where('userId', '==', userId).get();
-        if (snap && !snap.empty) {
-          snap.forEach((d: any) => {
-            const rec = d.data() as PaymentRecord;
-            if (rec?.orderId) this.db.payments[rec.orderId] = rec;
-            if (rec?.subscriptionId && rec.subscriptionId !== rec.orderId) this.db.payments[rec.subscriptionId] = rec;
-            if (rec?.paymentId && rec.paymentId !== rec.orderId) this.db.payments[rec.paymentId] = rec;
-          });
-        }
+        snap = await fsDb.collection('payments').where('userId', '==', userId).get();
       } catch (err: any) {
-        console.warn('[Firestore] getUserPaymentsAuthoritative lookup note:', err?.message || err);
+        console.error('[Firestore] FAIL-CLOSED getUserPaymentsAuthoritative lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore user payments read failed: ${err?.message || err}`);
+      }
+      for (const [k, p] of Object.entries(this.db.payments)) {
+        if (p && p.userId === userId) {
+          delete this.db.payments[k];
+        }
+      }
+      if (snap && !snap.empty) {
+        snap.forEach((d: any) => {
+          const rec = d.data() as PaymentRecord;
+          if (rec) this.storePaymentInMemoryCache(rec, d.id);
+        });
       }
     }
     const dedup = new Map<string, PaymentRecord>();
@@ -4097,9 +4240,18 @@ export class ProductionDatabase {
   }
 
   public async setSubscription(sub: UserSubscription): Promise<void> {
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to update subscription.');
+    }
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      const syncRes = await this.syncToFirestore('subscriptions', sub.userId, sub);
+      if (!syncRes.cloudPersisted) {
+        throw new AuthoritativeDatabaseError(`Failed to persist subscription to Firestore: ${syncRes.error || 'write failed'}`);
+      }
+    }
     this.db.subscriptions[sub.userId] = sub;
     this.save();
-    await this.syncToFirestore('subscriptions', sub.userId, sub);
   }
 
   public getSubscription(userId: string): UserSubscription | null {
@@ -4108,26 +4260,38 @@ export class ProductionDatabase {
 
   public async getSubscriptionAuthoritative(userId: string): Promise<UserSubscription | null> {
     if (!userId) return null;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to verify subscription status.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
+      let docSnap: any;
       try {
         // Query Firestore directly so cross-Cloud-Run subscription updates (active/cancelled/renewed) override stale RAM
-        const docSnap = await fsDb.collection('subscriptions').doc(userId).get();
-        if (docSnap.exists) {
-          const sub = docSnap.data() as UserSubscription;
-          this.db.subscriptions[userId] = sub;
-          return sub;
-        }
+        docSnap = await fsDb.collection('subscriptions').doc(userId).get();
       } catch (err: any) {
-        console.warn('[Firestore] getSubscriptionAuthoritative lookup note:', err?.message || err);
+        console.error('[Firestore] FAIL-CLOSED getSubscriptionAuthoritative lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore subscription read failed: ${err?.message || err}`);
       }
+      if (docSnap.exists) {
+        const sub = docSnap.data() as UserSubscription;
+        this.db.subscriptions[userId] = sub;
+        return sub;
+      }
+      // Firestore succeeded and document does not exist -> purge stale RAM cache and return null
+      if (this.db.subscriptions[userId]) {
+        delete this.db.subscriptions[userId];
+      }
+      return null;
     }
     return this.getSubscription(userId);
   }
 
   public async isWebhookProcessed(eventId: string): Promise<boolean> {
     if (!eventId) return false;
-    if (this.db.processedWebhooks.includes(eventId)) return true;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to check webhook idempotency.');
+    }
     const fsDb = this.firestoreDb;
     if (fsDb) {
       try {
@@ -4138,20 +4302,31 @@ export class ProductionDatabase {
           }
           return true;
         }
+        return false;
       } catch (err: any) {
-        console.warn('[Firestore] isWebhookProcessed lookup note:', err.message);
+        console.error('[Firestore] FAIL-CLOSED isWebhookProcessed lookup error:', err?.message || err);
+        throw new AuthoritativeDatabaseError(`Firestore webhook idempotency lookup failed: ${err?.message || err}`);
       }
     }
-    return false;
+    return this.db.processedWebhooks.includes(eventId);
   }
 
   public async markWebhookProcessed(eventId: string): Promise<void> {
     if (!eventId) return;
+    if (this.isStrictAuthoritativeUnavailable()) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to record webhook idempotency.');
+    }
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      const syncRes = await this.syncToFirestore('processed_webhooks', eventId, { eventId, processedAt: new Date().toISOString() });
+      if (!syncRes.cloudPersisted) {
+        throw new AuthoritativeDatabaseError(`Failed to persist processed webhook '${eventId}': ${syncRes.error || 'write failed'}`);
+      }
+    }
     if (!this.db.processedWebhooks.includes(eventId)) {
       this.db.processedWebhooks.push(eventId);
     }
     this.save();
-    await this.syncToFirestore('processed_webhooks', eventId, { eventId, processedAt: new Date().toISOString() });
   }
 
   /* =========================================================================

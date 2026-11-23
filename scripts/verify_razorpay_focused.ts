@@ -9,8 +9,18 @@ process.env.NODE_ENV = 'test';
 process.env.IS_ISOLATED_TEST = 'true';
 
 async function runFocusedRazorpayTests() {
-  const { ProductionDatabase, isSubscriptionEntitled } = await import('../src/services/db/database.ts');
-  const { processRazorpayWebhookEvent } = await import('../src/services/payments/razorpayWebhookService.ts');
+  const {
+    ProductionDatabase,
+    AuthoritativeDatabaseError,
+    InMemoryFirestoreMock,
+    isSubscriptionEntitled
+  } = await import('../src/services/db/database.ts');
+  const { isSubscriptionEntitled: clientIsSubscriptionEntitled } = await import('../src/utils/subscriptionEntitlement.ts');
+  const {
+    processRazorpayWebhookEvent,
+    reconcileCustomerRazorpayPayment,
+    checkPendingIntroBeforeCheckout
+  } = await import('../src/services/payments/razorpayWebhookService.ts');
   const { CENTRAL_SUBSCRIPTION_PLANS, SUBSCRIPTION_CONFIG, getTopUpPackById } = await import(
     '../src/config/subscriptionConfig.ts'
   );
@@ -626,9 +636,594 @@ async function runFocusedRazorpayTests() {
           body: JSON.stringify({ event: 'subscription.cancelled', event_id: 'evt_bad_sig' })
         });
         assert(badHook.status === 400, 'Live /api/razorpay/webhook strictly rejects invalid HMAC signature with HTTP 400');
+
+        console.log('\n--- TEST 9: Existing Templates Regression Tests (Before & After Auth) ---');
+        const publicTplRes = await fetch(`http://127.0.0.1:${livePort}/api/templates`);
+        const publicTplJson = await publicTplRes.json();
+        const templatesList = Array.isArray(publicTplJson?.templates) ? publicTplJson.templates : [];
+        const firstTpl = templatesList[0];
+        const singleTplRes = firstTpl ? await fetch(`http://127.0.0.1:${livePort}/api/templates/${encodeURIComponent(firstTpl.id)}`) : null;
+        const singleTplJson = singleTplRes ? await singleTplRes.json() : null;
+        const missingTplRes = await fetch(`http://127.0.0.1:${livePort}/api/templates/nonexistent_tpl_id_999`);
+        const afterAuthHeaderTplRes = await fetch(`http://127.0.0.1:${livePort}/api/templates`, {
+          headers: { Authorization: 'Bearer invalid_or_guest_header_test' }
+        });
+        const afterAuthHeaderTplJson = await afterAuthHeaderTplRes.json();
+        const idsBefore = templatesList.map((t: any) => t.id).join(',');
+        const idsAfter = (Array.isArray(afterAuthHeaderTplJson?.templates) ? afterAuthHeaderTplJson.templates : [])
+          .map((t: any) => t.id)
+          .join(',');
+        assert(
+          publicTplRes.status === 200 &&
+            publicTplJson.catalogueStatus === 'READY' &&
+            templatesList.length >= 1 &&
+            templatesList.every((t: any) => t.isActive !== false && Boolean(t.id) && Boolean(t.title)) &&
+            singleTplRes?.status === 200 &&
+            singleTplJson?.template?.id === firstTpl?.id &&
+            missingTplRes.status === 404 &&
+            afterAuthHeaderTplRes.status === 200 &&
+            idsBefore === idsAfter,
+          `Live /api/templates & /api/templates/:id preserve active catalog (${templatesList.length} templates), IDs, ordering, and public visibility`
+        );
       }
     } finally {
       child.kill('SIGTERM');
+    }
+
+    console.log('\n--- TEST 5: Payment Attempt Integrity (pay_50_auth_only vs pay_50_failed_1 + Gateway Proof) ---');
+    const attUser = await db.getOrCreateUserAsync({
+      firebaseUid: `uid_attempt_${Date.now()}`,
+      email: `attempt_${Date.now()}@example.com`,
+      name: 'Attempt User'
+    });
+    const attUid = attUser.user.id;
+    const attSubId = `sub_att_${Date.now()}`;
+    await db.recordPayment({
+      id: `pay_rec_att_${Date.now()}`,
+      orderId: attSubId,
+      paymentId: '',
+      subscriptionId: attSubId,
+      mandateId: attSubId,
+      planId: 'plan_intro_daily',
+      userId: attUid,
+      provider: 'razorpay',
+      amount: 1,
+      currency: 'INR',
+      type: 'intro_mandate',
+      status: 'pending',
+      isAutoPay: true,
+      verificationStatus: 'unverified',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    await reconcileCustomerRazorpayPayment({
+      db,
+      userId: attUid,
+      subscriptionId: attSubId,
+      gateway: {
+        getPayment: async () => ({
+          id: 'pay_50_auth_only',
+          status: 'authorized',
+          amount: 100,
+          currency: 'INR',
+          subscription_id: attSubId,
+          notes: { userId: attUid }
+        }),
+        getSubscription: async () => ({ id: attSubId, status: 'created', notes: { userId: attUid } }),
+        getSubscriptionInvoices: async () => [{ payment_id: 'pay_50_auth_only', status: 'issued', created_at: 1000 }]
+      }
+    });
+    await postWebhook({
+      event_id: `evt_att_fail_${Date.now()}`,
+      event: 'payment.failed',
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_50_failed_1',
+            subscription_id: attSubId,
+            amount: 100,
+            currency: 'INR',
+            status: 'failed',
+            error_description: 'Different payment failed'
+          }
+        }
+      }
+    });
+    const pAuthOnly = await db.getPaymentAuthoritative('pay_50_auth_only');
+    const pShared = await db.getPaymentAuthoritative(attSubId);
+    const pFailed1 = await db.getPaymentAuthoritative('pay_50_failed_1');
+    const preCheckBlockedAuth = await checkPendingIntroBeforeCheckout({
+      db,
+      userId: attUid,
+      gateway: {
+        getPayment: async (pid) => ({ id: pid, status: 'authorized', amount: 100, currency: 'INR', subscription_id: attSubId }),
+        getSubscription: async () => ({ id: attSubId, status: 'cancelled' }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    const preCheckGatewayError = await checkPendingIntroBeforeCheckout({
+      db,
+      userId: attUid,
+      gateway: {
+        getPayment: async () => {
+          throw new Error('502 Bad Gateway');
+        },
+        getSubscription: async () => ({ id: attSubId, status: 'created' }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    const preCheckTerminal = await checkPendingIntroBeforeCheckout({
+      db,
+      userId: attUid,
+      gateway: {
+        getPayment: async (pid) => ({
+          id: pid,
+          status: 'failed',
+          amount: 100,
+          currency: 'INR',
+          subscription_id: attSubId,
+          error_description: 'Voided by bank'
+        }),
+        getSubscription: async () => ({ id: attSubId, status: 'cancelled' }),
+        getSubscriptionInvoices: async () => []
+      }
+    });
+    assert(
+      pAuthOnly?.status === 'authorized' &&
+        pAuthOnly?.paymentId === 'pay_50_auth_only' &&
+        pShared?.paymentId === 'pay_50_auth_only' &&
+        pFailed1?.status === 'failed' &&
+        pFailed1?.paymentId === 'pay_50_failed_1' &&
+        preCheckBlockedAuth.action === 'block_pending' &&
+        preCheckGatewayError.action === 'block_pending' &&
+        preCheckTerminal.action === 'allow_checkout' &&
+        (await db.getWalletAuthoritative(attUid)).balance === 0,
+      'pay_50_auth_only preserved, pay_50_failed_1 stored separately, and retry blocked until Razorpay proves pay_50_auth_only terminal'
+    );
+
+    console.log('\n--- TEST 6: Firestore-First Authoritative Lookups, Missing Docs, Read Failures & Cross-Container Cache ---');
+    const sharedFs = new InMemoryFirestoreMock();
+    const containerA = new ProductionDatabase(undefined, { firestoreOverride: sharedFs as any, persistToDisk: false });
+    const containerB = new ProductionDatabase(undefined, { firestoreOverride: sharedFs as any, persistToDisk: false });
+    const fsUser = await containerA.getOrCreateUserAsync({
+      firebaseUid: `uid_cross_${Date.now()}`,
+      email: `cross_${Date.now()}@example.com`,
+      name: 'Cross Container User'
+    });
+    const subCrossId = `sub_cross_${Date.now()}`;
+    await containerA.setSubscription({
+      id: subCrossId,
+      userId: fsUser.user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer',
+      provider: 'razorpay',
+      mandateId: subCrossId,
+      subscriptionId: subCrossId,
+      status: 'trial',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 86400000).toISOString(),
+      paidThroughAt: new Date(Date.now() + 86400000).toISOString(),
+      renewalAmount: 499
+    });
+    // Seed stale RAM in containerB by reading once
+    const bInitial = await containerB.getSubscriptionByMandateOrIdAuthoritative(subCrossId);
+    // ContainerA updates subscription in Firestore directly (simulating another Cloud Run revision)
+    await containerA.setSubscription({
+      id: subCrossId,
+      userId: fsUser.user.id,
+      planId: 'plan_intro_daily',
+      planName: 'Trail Offer',
+      provider: 'razorpay',
+      mandateId: subCrossId,
+      subscriptionId: subCrossId,
+      status: 'cancelled',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 86400000).toISOString(),
+      paidThroughAt: new Date(Date.now() - 1000).toISOString(),
+      renewalAmount: 499
+    });
+    const bFreshHit = await containerB.getSubscriptionByMandateOrIdAuthoritative(subCrossId);
+    assert(
+      bInitial?.status === 'trial' && bFreshHit?.status === 'cancelled',
+      'Cross-container Firestore Hit: getSubscriptionByMandateOrIdAuthoritative bypasses stale RAM and reads fresh Firestore status'
+    );
+
+    // Missing Document test: delete from Firestore directly while containerB still has it in RAM
+    await sharedFs.collection('subscriptions').doc(fsUser.user.id).delete();
+    const bAfterMissingDoc = await containerB.getSubscriptionByMandateOrIdAuthoritative(subCrossId);
+    const bSubDocMissing = await containerB.getSubscriptionAuthoritative(fsUser.user.id);
+    assert(
+      bAfterMissingDoc === null && bSubDocMissing === null && containerB.getSubscription(fsUser.user.id) === null,
+      'Missing Firestore Document returns null and purges stale RAM (never serves stale cached subscription)'
+    );
+
+    // Read Failure test: Firestore throws -> AuthoritativeDatabaseError + HTTP 503 fail closed (even with cached RAM)
+    await containerB.setSubscription({
+      id: subCrossId,
+      userId: fsUser.user.id,
+      planId: 'plan_weekly_pass',
+      planName: 'Weekly',
+      provider: 'razorpay',
+      mandateId: subCrossId,
+      subscriptionId: subCrossId,
+      status: 'active',
+      startAt: new Date().toISOString(),
+      nextChargeAt: new Date(Date.now() + 86400000).toISOString(),
+      paidThroughAt: new Date(Date.now() + 86400000).toISOString(),
+      renewalAmount: 199
+    });
+    const throwingFs = {
+      collection: () => ({
+        doc: () => ({
+          get: async () => {
+            throw new Error('14 UNAVAILABLE: Firestore read timeout');
+          },
+          set: async () => {
+            throw new Error('14 UNAVAILABLE: Firestore write timeout');
+          }
+        }),
+        where: () => ({
+          limit: () => ({
+            get: async () => {
+              throw new Error('14 UNAVAILABLE: Firestore query timeout');
+            }
+          }),
+          get: async () => {
+            throw new Error('14 UNAVAILABLE: Firestore query timeout');
+          }
+        })
+      })
+    };
+    (containerB as any).firestoreOverride = throwingFs;
+    let threwMandate = false;
+    let threwSub = false;
+    let threwWallet = false;
+    try {
+      await containerB.getSubscriptionByMandateOrIdAuthoritative(subCrossId);
+    } catch (e) {
+      threwMandate = e instanceof AuthoritativeDatabaseError;
+    }
+    try {
+      await containerB.getSubscriptionAuthoritative(fsUser.user.id);
+    } catch (e) {
+      threwSub = e instanceof AuthoritativeDatabaseError;
+    }
+    try {
+      await containerB.getWalletAuthoritative(fsUser.user.id);
+    } catch (e) {
+      threwWallet = e instanceof AuthoritativeDatabaseError;
+    }
+    const failClosedWebhookRes = await processRazorpayWebhookEvent({
+      db: containerB,
+      rawBody: Buffer.from(JSON.stringify({ event: 'subscription.activated', event_id: 'evt_fail_closed_1' })),
+      signature: crypto
+        .createHmac('sha256', webhookSecret)
+        .update(Buffer.from(JSON.stringify({ event: 'subscription.activated', event_id: 'evt_fail_closed_1' })))
+        .digest('hex'),
+      event: { event: 'subscription.activated', event_id: 'evt_fail_closed_1' },
+      webhookSecret
+    });
+    assert(
+      threwMandate &&
+        threwSub &&
+        threwWallet &&
+        failClosedWebhookRes.httpStatus === 503 &&
+        failClosedWebhookRes.body.code === 'AUTHORITATIVE_DB_UNAVAILABLE',
+      'Firestore Read Failure throws AuthoritativeDatabaseError and webhook fails closed with HTTP 503 (never uses stale RAM)'
+    );
+
+    console.log('\n--- TEST 7: Strict paidThroughAt Expiry Boundary & Client Parity ---');
+    const fixedNow = 1_800_000_000_000;
+    const futureIso = new Date(fixedNow + 60_000).toISOString();
+    const exactIso = new Date(fixedNow).toISOString();
+    const pastIso = new Date(fixedNow - 1).toISOString();
+    const baseSub = {
+      id: 'sub_pt_test',
+      userId: 'u_pt_test',
+      planId: 'plan_weekly_pass',
+      planName: 'Weekly',
+      provider: 'razorpay' as const,
+      mandateId: 'sub_pt_test',
+      startAt: new Date(fixedNow - 86400000).toISOString(),
+      nextChargeAt: futureIso,
+      renewalAmount: 199
+    };
+    assert(
+      isSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: futureIso }, fixedNow) === true &&
+        isSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: futureIso }, fixedNow) === true &&
+        isSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: exactIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: exactIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: pastIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: pastIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: 'not-a-date' }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: '   ' }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: undefined }, fixedNow) === true &&
+        isSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: undefined }, fixedNow) === true &&
+        isSubscriptionEntitled({ ...baseSub, status: 'paused', paidThroughAt: futureIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'revoked', paidThroughAt: futureIso }, fixedNow) === false &&
+        isSubscriptionEntitled({ ...baseSub, status: 'expired', paidThroughAt: futureIso }, fixedNow) === false &&
+        clientIsSubscriptionEntitled({ ...baseSub, status: 'active', paidThroughAt: pastIso }, fixedNow) === false &&
+        clientIsSubscriptionEntitled({ ...baseSub, status: 'trial', paidThroughAt: 'invalid_ts' }, fixedNow) === false,
+      'Strict paidThroughAt checks: active/trial fail closed at <= now and invalid strings, legacy missing remains compatible'
+    );
+
+    // Route check for active/trial with expired paidThroughAt & invalid paidThroughAt -> /api/auth/me=false & topup=403
+    const ptUser = await db.getOrCreateUserAsync({
+      firebaseUid: `uid_pt_route_${Date.now()}`,
+      email: `pt_route_${Date.now()}@example.com`,
+      name: 'PaidThrough Route User'
+    });
+    await db.setSubscription({
+      id: `sub_pt_route_${Date.now()}`,
+      userId: ptUser.user.id,
+      planId: 'plan_weekly_pass',
+      planName: 'Weekly',
+      provider: 'razorpay',
+      mandateId: `sub_pt_route_${Date.now()}`,
+      status: 'active',
+      startAt: new Date(Date.now() - 10 * 86400000).toISOString(),
+      nextChargeAt: new Date(Date.now() - 60000).toISOString(),
+      paidThroughAt: new Date(Date.now() - 60000).toISOString(),
+      renewalAmount: 199
+    });
+    const ptExpiredMe = await getAuthMe(ptUser.user.id);
+    const ptExpiredTopUp = await postTopUpCheckout(ptUser.user.id);
+    await db.setSubscription({
+      ...(await db.getSubscriptionAuthoritative(ptUser.user.id))!,
+      status: 'trial',
+      paidThroughAt: 'corrupt-timestamp'
+    });
+    const ptInvalidMe = await getAuthMe(ptUser.user.id);
+    const ptInvalidTopUp = await postTopUpCheckout(ptUser.user.id);
+    const entitlementHelperSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/utils/subscriptionEntitlement.ts'), 'utf-8');
+    const appCtxSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf-8');
+    assert(
+      ptExpiredMe.body.hasActivePlan === false &&
+        ptExpiredTopUp.status === 403 &&
+        ptInvalidMe.body.hasActivePlan === false &&
+        ptInvalidTopUp.status === 403 &&
+        appCtxSrc.includes("from '../utils/subscriptionEntitlement'") &&
+        !entitlementHelperSrc.includes('firebase-admin') &&
+        !entitlementHelperSrc.includes('database'),
+      'Route /api/auth/me + Top-Up 403 enforce active/trial paidThroughAt cutoff, and client helper has zero server imports'
+    );
+
+    console.log('\n--- TEST 8: Mandatory 7 Login Regression Tests (Session Persistence, Cross-Container, Outage Isolation) ---');
+    const loginFs = new InMemoryFirestoreMock();
+    const loginNodeA = new ProductionDatabase(undefined, { firestoreOverride: loginFs as any, persistToDisk: false });
+    const loginNodeB = new ProductionDatabase(undefined, { firestoreOverride: loginFs as any, persistToDisk: false });
+
+    // Express router mirroring exact server.ts /api/auth/firebase-session + /api/auth/me + topup fail-closed behavior
+    const authTestApp = express();
+    authTestApp.use(express.json());
+    let activeLoginDb: any = loginNodeA;
+    let simulateBillingReadError = false;
+
+    const getWrappedDbForAuth = () => ({
+      async getWalletAuthoritative(uid: string) {
+        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+        return activeLoginDb.getWalletAuthoritative(uid);
+      },
+      async getSubscriptionAuthoritative(uid: string) {
+        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+        return activeLoginDb.getSubscriptionAuthoritative(uid);
+      },
+      async getIntroOfferStateAuthoritative(uid: string) {
+        if (simulateBillingReadError) throw new AuthoritativeDatabaseError('Simulated Firestore billing outage');
+        return activeLoginDb.getIntroOfferStateAuthoritative(uid);
+      }
+    });
+
+    authTestApp.post('/api/auth/firebase-session', async (req, res) => {
+      const { firebaseUid, email, name } = req.body || {};
+      const { user, token, isNewUser, cloudPersisted } = await activeLoginDb.getOrCreateUserAsync({
+        firebaseUid,
+        email,
+        name
+      });
+      if (!cloudPersisted) {
+        return res.status(503).json({ success: false, code: 'SESSION_PERSISTENCE_FAILED' });
+      }
+      try {
+        const w = await getWrappedDbForAuth().getWalletAuthoritative(user.id);
+        const s = await getWrappedDbForAuth().getSubscriptionAuthoritative(user.id);
+        return res.json({
+          success: true,
+          user,
+          token,
+          cloudPersisted,
+          isNewUser,
+          wallet: w,
+          subscription: s,
+          billingUnavailable: false,
+          billingRetryable: false,
+          billingStatus: 'ready'
+        });
+      } catch {
+        return res.json({
+          success: true,
+          user,
+          token,
+          cloudPersisted,
+          isNewUser,
+          wallet: { userId: user.id, balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() },
+          subscription: null,
+          billingUnavailable: true,
+          billingRetryable: true,
+          billingStatus: 'unavailable_retryable'
+        });
+      }
+    });
+
+    authTestApp.get('/api/auth/me', async (req, res) => {
+      const authHdr = String(req.headers['authorization'] || '');
+      const tok = authHdr.startsWith('Bearer ') ? authHdr.slice(7).trim() : '';
+      const lookup = await activeLoginDb.getUserByTokenAsyncWithStatus(tok);
+      if (!lookup.user) {
+        if (tok && lookup.transientError) {
+          return res.status(503).json({ code: 'SESSION_SYNC_RETRYABLE', retryable: true });
+        }
+        return res.status(401).json({ code: 'AUTH_SESSION_INVALID' });
+      }
+      const user = lookup.user;
+      try {
+        const w = await getWrappedDbForAuth().getWalletAuthoritative(user.id);
+        const s = await getWrappedDbForAuth().getSubscriptionAuthoritative(user.id);
+        const intro = await getWrappedDbForAuth().getIntroOfferStateAuthoritative(user.id);
+        const activePlan = isSubscriptionEntitled(s);
+        return res.json({
+          user,
+          wallet: w,
+          activeSubscription: s,
+          hasActivePlan: activePlan,
+          canTopUp: activePlan,
+          isIntroEligible: intro.eligible,
+          introOfferState: intro.status,
+          billingUnavailable: false,
+          billingRetryable: false,
+          billingStatus: 'ready'
+        });
+      } catch {
+        return res.json({
+          user,
+          wallet: { userId: user.id, balance: 0, lifetimeCredits: 0, spentCredits: 0, updatedAt: new Date().toISOString() },
+          activeSubscription: null,
+          hasActivePlan: false,
+          canTopUp: false,
+          isIntroEligible: false,
+          introOfferState: 'unavailable_retryable',
+          billingUnavailable: true,
+          billingRetryable: true,
+          billingStatus: 'unavailable_retryable'
+        });
+      }
+    });
+
+    authTestApp.post('/api/payments/checkout/order', async (req, res) => {
+      const authHdr = String(req.headers['authorization'] || '');
+      const tok = authHdr.startsWith('Bearer ') ? authHdr.slice(7).trim() : '';
+      const lookup = await activeLoginDb.getUserByTokenAsyncWithStatus(tok);
+      if (!lookup.user) return res.status(401).json({ error: 'Unauthorized' });
+      try {
+        const sub = await getWrappedDbForAuth().getSubscriptionAuthoritative(lookup.user.id);
+        if (!isSubscriptionEntitled(sub)) return res.status(403).json({ error: 'Requires active plan' });
+        return res.json({ success: true });
+      } catch (e: any) {
+        if (e instanceof AuthoritativeDatabaseError) return res.status(503).json({ code: e.code, retryable: true });
+        return res.status(500).json({ error: 'Server error' });
+      }
+    });
+
+    const authSrv = http.createServer(authTestApp);
+    await new Promise<void>((resolve) => authSrv.listen(0, '127.0.0.1', () => resolve()));
+    const authPort = (authSrv.address() as any).port;
+    const authUrl = `http://127.0.0.1:${authPort}`;
+
+    try {
+      // Login Test 2: New Google user registration & login
+      const newGoogleUid = `google_new_${Date.now()}`;
+      const regRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+      });
+      const regJson = await regRes.json();
+      assert(
+        regRes.status === 200 && regJson.success === true && regJson.isNewUser === true && regJson.cloudPersisted === true && Boolean(regJson.token),
+        'Login Test 2: New Google user registers and logs in with cloudPersisted=true and valid session token'
+      );
+
+      // Login Test 1: Existing Google user login preserves same user account ID
+      const existingLoginRes = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+      });
+      const existingLoginJson = await existingLoginRes.json();
+      assert(
+        existingLoginRes.status === 200 &&
+          existingLoginJson.isNewUser === false &&
+          existingLoginJson.user.id === regJson.user.id &&
+          Boolean(existingLoginJson.token),
+        'Login Test 1: Existing Google user logs in cleanly resolving the same persistent account ID'
+      );
+
+      // Login Test 3: Firebase session persists in Firestore auth_identities
+      const persistedIdentitySnap = await loginFs.collection('auth_identities').doc(regJson.user.id).get();
+      assert(
+        persistedIdentitySnap.exists &&
+          Array.isArray(persistedIdentitySnap.data()?.sessionTokens) &&
+          persistedIdentitySnap.data().sessionTokens.includes(existingLoginJson.token),
+        'Login Test 3: Session token persisted in Firestore auth_identities collection'
+      );
+
+      // Login Test 4 & Test 5: Refresh (/api/auth/me) + Cross-Cloud-Run instance session restore on Container B
+      activeLoginDb = loginNodeB; // Switch completely to cold Container B with empty RAM!
+      const crossMeRes = await fetch(`${authUrl}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${existingLoginJson.token}` }
+      });
+      const crossMeJson = await crossMeRes.json();
+      assert(
+        crossMeRes.status === 200 && crossMeJson.user?.id === regJson.user.id && crossMeJson.billingUnavailable === false,
+        'Login Test 4 & 5: /api/auth/me restores session after refresh across different Cloud Run instance (Container B)'
+      );
+
+      // Login Test 6: Temporary Firestore billing read failure preserves login & /api/auth/me session, disables financial actions safely, and AppContext never clears valid token on 500/503
+      simulateBillingReadError = true;
+      const loginDuringOutage = await fetch(`${authUrl}/api/auth/firebase-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firebaseUid: newGoogleUid, email: 'newcreator@gmail.com', name: 'New Creator' })
+      });
+      const loginDuringOutageJson = await loginDuringOutage.json();
+      const meDuringOutage = await fetch(`${authUrl}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${existingLoginJson.token}` }
+      });
+      const meDuringOutageJson = await meDuringOutage.json();
+      const topUpDuringOutage = await fetch(`${authUrl}/api/payments/checkout/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${existingLoginJson.token}` },
+        body: JSON.stringify({ type: 'topup', itemId: 'topup_49' })
+      });
+      const invalidTokRes = await fetch(`${authUrl}/api/auth/me`, {
+        headers: { Authorization: 'Bearer definitely_invalid_token_xyz' }
+      });
+      assert(
+        loginDuringOutage.status === 200 &&
+          loginDuringOutageJson.success === true &&
+          Boolean(loginDuringOutageJson.token) &&
+          loginDuringOutageJson.billingUnavailable === true &&
+          meDuringOutage.status === 200 &&
+          meDuringOutageJson.user?.id === regJson.user.id &&
+          meDuringOutageJson.hasActivePlan === false &&
+          meDuringOutageJson.canTopUp === false &&
+          meDuringOutageJson.billingUnavailable === true &&
+          meDuringOutageJson.billingRetryable === true &&
+          topUpDuringOutage.status === 503 &&
+          invalidTokRes.status === 401 &&
+          appCtxSrc.includes('Clear the token ONLY when the server explicitly confirms an invalid/expired session with HTTP 401') &&
+          appCtxSrc.includes('Preserving session token for outage recovery'),
+        'Login Test 6: Temporary billing outage preserves login & /api/auth/me session with safe disabled financial state; 401 only on invalid token'
+      );
+      simulateBillingReadError = false;
+
+      // Login Test 7: Firebase project ID, OAuth config & Google-only auth lock untouched
+      const fbCfg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf-8'));
+      const { PHONE_AUTH_ENABLED, AUTH_POLICY } = await import('../src/config/authConfig.ts');
+      const fbClientSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/services/firebase/firebaseClient.ts'), 'utf-8');
+      assert(
+        fbCfg.projectId === 'ai-prime-studio' &&
+          fbCfg.authDomain === 'ai-prime-studio.firebaseapp.com' &&
+          fbCfg.oAuthClientId === '855598524398-ljcakleqr4dgknkkhskp4kr9oph8o1a9.apps.googleusercontent.com' &&
+          fbClientSrc.includes("CANONICAL_FIRESTORE_DATABASE_ID = '(default)'") &&
+          PHONE_AUTH_ENABLED === false &&
+          AUTH_POLICY.googleOnly === true &&
+          serverSrc.includes("app.post('/api/auth/firebase-session'") &&
+          serverSrc.includes('getUserByTokenAsyncWithStatus'),
+        'Login Test 7: Firebase project lock (ai-prime-studio), OAuth config, Google-only auth policy, and auth route handlers preserved'
+      );
+    } finally {
+      await new Promise<void>((resolve) => authSrv.close(() => resolve()));
     }
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

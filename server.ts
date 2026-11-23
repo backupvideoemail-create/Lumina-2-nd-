@@ -54,6 +54,7 @@ import {
   isIsolatedTestEnv,
   ProductionDatabase,
   InMemoryFirestoreMock,
+  AuthoritativeDatabaseError,
   getDatabaseGuardState,
   enforceRuntimeDatabaseLock,
   refreshRuntimeGcpMetadata,
@@ -1050,6 +1051,7 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
     }
 
     const isUserAdmin = isServerVerifiedAdmin(user);
+    try {
     const wallet = await prodDb.getWalletAuthoritative(user.id);
     const subscription = await prodDb.getSubscriptionAuthoritative(user.id);
 
@@ -1061,10 +1063,43 @@ app.post('/api/auth/firebase-session', rateLimit(60000, 20), async (req, res) =>
       wallet,
       token,
       subscription,
+      billingUnavailable: false,
+      billingRetryable: false,
+      billingStatus: 'ready',
       isNewUser,
       correlationId,
       message: isNewUser ? 'Account created successfully' : 'Signed in successfully'
     });
+    } catch (billingErr: any) {
+      console.warn(
+        `[Auth Session Billing Warning] Preserving session for ${user.id} despite billing lookup failure:`,
+        billingErr?.message || billingErr
+      );
+      return res.json({
+        success: true,
+        user,
+        isAdmin: isUserAdmin,
+        cloudPersisted: true,
+        wallet: {
+          userId: user.id,
+          balance: 0,
+          expiringBalance: 0,
+          topupBalance: 0,
+          lifetimeCredits: 0,
+          spentCredits: 0,
+          grants: [],
+          updatedAt: new Date().toISOString()
+        },
+        token,
+        subscription: null,
+        billingUnavailable: true,
+        billingRetryable: true,
+        billingStatus: 'unavailable_retryable',
+        isNewUser,
+        correlationId,
+        message: isNewUser ? 'Account created successfully' : 'Signed in successfully'
+      });
+    }
   } catch (err: any) {
     console.error('[Firebase Session Error]:', err);
     emitCloudMonitoringEvent(
@@ -1136,14 +1171,15 @@ app.get('/api/auth/me', async (req, res) => {
   }
 
   const isAdmin = isServerVerifiedAdmin(user);
+  const likedTemplates = prodDb.getUserLikedTemplates(user.id);
+  try {
   const wallet = await prodDb.getWalletAuthoritative(user.id);
   const activeSubscription = await prodDb.getSubscriptionAuthoritative(user.id);
-  const likedTemplates = prodDb.getUserLikedTemplates(user.id);
   const hasActivePlan = isSubscriptionEntitled(activeSubscription);
   const introOfferState = await prodDb.getIntroOfferStateAuthoritative(user.id);
   const isIntroEligible = introOfferState.eligible;
 
-  res.json({
+  return res.json({
     user,
     isAdmin,
     wallet,
@@ -1153,8 +1189,41 @@ app.get('/api/auth/me', async (req, res) => {
     canTopUp: hasActivePlan,
     isIntroEligible,
     introOfferState: introOfferState.status,
-    pendingIntroPayment: introOfferState.pendingPayment
+    pendingIntroPayment: introOfferState.pendingPayment,
+    billingUnavailable: false,
+    billingRetryable: false,
+    billingStatus: 'ready'
   });
+  } catch (billingErr: any) {
+    console.warn(
+      `[Auth Me Billing Warning] Preserving session for ${user.id} while billing lookup is unavailable:`,
+      billingErr?.message || billingErr
+    );
+    return res.json({
+      user,
+      isAdmin,
+      wallet: {
+        userId: user.id,
+        balance: 0,
+        expiringBalance: 0,
+        topupBalance: 0,
+        lifetimeCredits: 0,
+        spentCredits: 0,
+        grants: [],
+        updatedAt: new Date().toISOString()
+      },
+      activeSubscription: null,
+      likedTemplates,
+      hasActivePlan: false,
+      canTopUp: false,
+      isIntroEligible: false,
+      introOfferState: 'unavailable_retryable',
+      pendingIntroPayment: null,
+      billingUnavailable: true,
+      billingRetryable: true,
+      billingStatus: 'unavailable_retryable'
+    });
+  }
 });
 
 // Session Logout
@@ -3734,14 +3803,25 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
   // TOP-UP FINAL BUSINESS RULE:
   // User MUST have activated a valid plan first (e.g. ₹1 intro plan or active subscription).
   if (isTopUp) {
-    const sub = await prodDb.getSubscriptionAuthoritative(user.id);
-    const hasActivePlan = isSubscriptionEntitled(sub);
+    try {
+      const sub = await prodDb.getSubscriptionAuthoritative(user.id);
+      const hasActivePlan = isSubscriptionEntitled(sub);
 
-    if (!hasActivePlan) {
-      return res.status(403).json({
-        error: 'Top-up is only available after activating an active subscription plan.',
-        requiresPlan: true
-      });
+      if (!hasActivePlan) {
+        return res.status(403).json({
+          error: 'Top-up is only available after activating an active subscription plan.',
+          requiresPlan: true
+        });
+      }
+    } catch (err: any) {
+      if (err instanceof AuthoritativeDatabaseError) {
+        return res.status(503).json({
+          error: err.message,
+          code: err.code,
+          retryable: true
+        });
+      }
+      throw err;
     }
 
     const pack = getTopUpPackById(targetId);
@@ -3789,6 +3869,9 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
         credits: pack.credits
       });
     } catch (err: any) {
+      if (err instanceof AuthoritativeDatabaseError) {
+        return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+      }
       console.error('[Create Top-Up Order Error]:', err.message);
       return res.status(500).json({ error: err.message || 'Failed to create top-up payment order' });
     }
@@ -3923,6 +4006,9 @@ app.post('/api/payments/checkout/order', requireAuth, rateLimit(60000, 20), asyn
       credits: plan.includedCredits
     });
   } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+    }
     console.error('[Create Order Error]:', err.message);
     res.status(500).json({ error: err.message || 'Failed to create payment order' });
   }
@@ -3937,6 +4023,7 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     return res.status(400).json({ error: 'Missing orderId for verification' });
   }
 
+  try {
   // Look up stored server-side order authoritatively first (so cross-Cloud-Run captures are never masked by stale RAM)
   let payRec = await prodDb.getPaymentAuthoritative(orderId);
   if (!payRec && req.body.subscriptionId) {
@@ -4248,6 +4335,13 @@ app.post('/api/payments/verify', requireAuth, rateLimit(60000, 20), async (req, 
     subscription: newSubscription,
     message: 'Payment and AutoPay mandate verified successfully'
   });
+  } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+    }
+    console.error('[Payment Verify Error]:', err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Payment verification failed' });
+  }
 });
 
 // Idempotent Customer Payment Reconciliation (For debited payments without plan activation)
@@ -4264,6 +4358,9 @@ app.post('/api/payments/reconcile', requireAuth, rateLimit(60000, 10), async (re
     });
     return res.status(result.httpStatus).json(result.body);
   } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+    }
     console.error('[Reconcile Error]:', err.message);
     return res.status(500).json({ error: err.message || 'Payment reconciliation failed' });
   }
@@ -4795,6 +4892,9 @@ const handleRazorpayWebhook = async (req: express.Request, res: express.Response
     });
     return res.status(outcome.httpStatus).json(outcome.body);
   } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+    }
     console.error('[Webhook Processing Error]:', err);
     return res.status(500).json({ error: err.message || 'Webhook processing error' });
   }
@@ -4807,30 +4907,38 @@ app.post('/api/payments/webhook', handleRazorpayWebhook);
 // Subscription Cancellation Endpoint (Strict: do NOT mark cancelled if Razorpay fails)
 app.post('/api/subscription/cancel', requireAuth, async (req, res) => {
   const user = (req as any).user as UserProfile;
-  const sub = await prodDb.getSubscriptionAuthoritative(user.id);
+  try {
+    const sub = await prodDb.getSubscriptionAuthoritative(user.id);
 
-  if (!sub || sub.status === 'cancelled') {
-    return res.status(400).json({ error: 'No active subscription found to cancel' });
-  }
-
-  // Cancel on Razorpay if real subscription exists
-  if (sub.mandateId && sub.mandateId.startsWith('sub_')) {
-    const success = await razorpayAdapter.cancelSubscription(sub.mandateId);
-    if (!success) {
-      return res.status(502).json({
-        error: 'Failed to cancel subscription on Razorpay gateway. Subscription remains active on server.'
-      });
+    if (!sub || sub.status === 'cancelled') {
+      return res.status(400).json({ error: 'No active subscription found to cancel' });
     }
+
+    // Cancel on Razorpay if real subscription exists
+    if (sub.mandateId && sub.mandateId.startsWith('sub_')) {
+      const success = await razorpayAdapter.cancelSubscription(sub.mandateId);
+      if (!success) {
+        return res.status(502).json({
+          error: 'Failed to cancel subscription on Razorpay gateway. Subscription remains active on server.'
+        });
+      }
+    }
+
+    sub.status = 'cancelled';
+    sub.cancelledAt = new Date().toISOString();
+    await prodDb.setSubscription(sub);
+
+    return res.json({
+      success: true,
+      message: 'Subscription and recurring mandate cancelled successfully.'
+    });
+  } catch (err: any) {
+    if (err instanceof AuthoritativeDatabaseError) {
+      return res.status(503).json({ error: err.message, code: err.code, retryable: true });
+    }
+    console.error('[Subscription Cancel Error]:', err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Failed to cancel subscription' });
   }
-
-  sub.status = 'cancelled';
-  sub.cancelledAt = new Date().toISOString();
-  await prodDb.setSubscription(sub);
-
-  res.json({
-    success: true,
-    message: 'Subscription and recurring mandate cancelled successfully.'
-  });
 });
 
 // AI Safety Reporting Endpoint (Strict: Authenticated, user-isolated, checks generation ownership)
