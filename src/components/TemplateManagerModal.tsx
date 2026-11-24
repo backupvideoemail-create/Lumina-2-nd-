@@ -35,10 +35,14 @@ import {
   CreditCard,
   GripVertical,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  Play,
+  Pause,
+  FlaskConical
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateEngine, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
+import { normalizeTemplateReadinessStatus, CanonicalTemplateReadinessStatus } from '../services/validation/templateReadiness';
 import {
   HomeBannerItem,
   DEFAULT_BANNER_DURATION_SECONDS,
@@ -95,7 +99,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     refreshGenerations,
     refreshTemplates,
     faceSwapScenes,
-    refreshFaceSwapScenes
+    refreshFaceSwapScenes,
+    generationGate,
+    refreshGenerationGate
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<'templates' | 'faceswap' | 'catalog' | 'banners' | 'pricing_banner' | 'demo' | 'adapters'>('templates');
@@ -246,6 +252,20 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const [adminTemplates, setAdminTemplates] = useState<Template[]>([]);
   const [loadingAdminTemplates, setLoadingAdminTemplates] = useState<boolean>(false);
+  const [readinessFilter, setReadinessFilter] = useState<'ALL' | CanonicalTemplateReadinessStatus>('ALL');
+  const [testingTemplateId, setTestingTemplateId] = useState<string | null>(null);
+  const [lastTemplateTestResult, setLastTemplateTestResult] = useState<{
+    templateId: string;
+    title: string;
+    readinessStatus: string;
+    passed: boolean;
+    message: string;
+    signedUrl?: string;
+    sizeBytes?: number;
+    mimeType?: string;
+  } | null>(null);
+  const [isTogglingGate, setIsTogglingGate] = useState<boolean>(false);
+  const [isReconcilingRuns, setIsReconcilingRuns] = useState<boolean>(false);
 
   // --- TEMPLATE & FACE SWAP DRAG-AND-DROP REORDERING STATE ---
   const [draggedTemplateId, setDraggedTemplateId] = useState<string | null>(null);
@@ -356,8 +376,9 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       fetchAdminTemplates();
+      refreshGenerationGate();
     }
-  }, [isOpen, fetchAdminTemplates]);
+  }, [isOpen, fetchAdminTemplates, refreshGenerationGate]);
 
   const displayTemplates = adminTemplates.length > 0 ? adminTemplates : templates;
 
@@ -1612,6 +1633,117 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       await Promise.all([fetchAdminTemplates(), refreshTemplates()]);
     } catch (err: any) {
       showNotification(err.message, 'error');
+    }
+  };
+
+  const handleToggleGenerationGate = async () => {
+    setIsTogglingGate(true);
+    try {
+      const nextPaused = !generationGate.customerGenerationPaused;
+      const res = await fetch('/api/admin/generation-gate', {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          customerGenerationPaused: nextPaused,
+          reason: nextPaused
+            ? 'Paid customer generation is temporarily paused while template & delivery checks complete. No credits will be charged.'
+            : ''
+        })
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
+        await refreshGenerationGate();
+        showNotification(
+          nextPaused
+            ? 'Customer generation PAUSED cleanly. Admin 0-credit tests remain active.'
+            : 'Customer generation RESUMED live for all READY templates!'
+        );
+      } else {
+        showNotification(data?.error || 'Failed to update customer generation gate', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Network error updating generation gate', 'error');
+    } finally {
+      setIsTogglingGate(false);
+    }
+  };
+
+  const handleRunTemplateVerifyTest = async (tpl: Template) => {
+    if (testingTemplateId) return;
+    setTestingTemplateId(tpl.id);
+    setLastTemplateTestResult(null);
+    try {
+      const res = await fetch(`/api/admin/templates/${encodeURIComponent(tpl.id)}/verify-test`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({})
+      });
+      const data = await res.json().catch(() => null);
+      const passed = Boolean(res.ok && data?.success && (data?.verification?.passed ?? true));
+      const mediaInfo = data?.verification || data?.deliverable;
+      setLastTemplateTestResult({
+        templateId: tpl.id,
+        title: tpl.title,
+        readinessStatus: data?.readinessStatus || data?.status || (passed ? 'READY' : 'FAILED'),
+        passed,
+        message:
+          data?.message ||
+          data?.error ||
+          (passed
+            ? 'End-to-end test, storage read-back, and download verification passed.'
+            : 'Verification test failed.'),
+        signedUrl: mediaInfo?.signedUrl,
+        sizeBytes: mediaInfo?.sizeBytes,
+        mimeType: mediaInfo?.mimeType
+      });
+      showNotification(
+        passed
+          ? `✅ "${tpl.title}" verified & promoted to READY!`
+          : `❌ "${tpl.title}" test failed: ${data?.error || 'Check diagnostics'}`,
+        passed ? 'success' : 'error'
+      );
+      await Promise.all([fetchAdminTemplates(true), refreshTemplates()]);
+    } catch (err: any) {
+      setLastTemplateTestResult({
+        templateId: tpl.id,
+        title: tpl.title,
+        readinessStatus: 'FAILED',
+        passed: false,
+        message: err?.message || 'Network error during admin test'
+      });
+      showNotification(err?.message || 'Test request failed', 'error');
+    } finally {
+      setTestingTemplateId(null);
+    }
+  };
+
+  const handleReconcileHistoricalRuns = async (dryRun: boolean) => {
+    if (isReconcilingRuns) return;
+    setIsReconcilingRuns(true);
+    try {
+      const res = await fetch('/api/admin/reconcile-generations', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ dryRun })
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
+        const s = data;
+        setRecoveryNotice(
+          `${dryRun ? '[DRY-RUN Preview]' : '[Reconciled]'} Scanned ${s.scanned} generation(s): ${s.restoredValid} valid output(s) verified/restored, ${s.refundedMissing} missing output(s) refunded once, ${s.skippedAlreadyRefunded} already settled.`
+        );
+        showNotification(
+          dryRun
+            ? `Dry-run scan complete (${s.scanned} checked).`
+            : `Reconciliation complete: ${s.restoredValid} restored, ${s.refundedMissing} refunded.`
+        );
+      } else {
+        showNotification(data?.error || 'Reconciliation failed', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Network error running reconciliation', 'error');
+    } finally {
+      setIsReconcilingRuns(false);
     }
   };
 
@@ -2982,13 +3114,78 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
           <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
             {subTab === 'list' && (
               <div className="space-y-3">
+                {/* Customer Generation Gate Banner */}
+                <div
+                  className={`p-3 rounded-2xl border flex flex-wrap items-center justify-between gap-2 ${
+                    generationGate.customerGenerationPaused
+                      ? 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                      : 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    {generationGate.customerGenerationPaused ? (
+                      <Pause className="w-4 h-4 text-amber-400 shrink-0" />
+                    ) : (
+                      <Play className="w-4 h-4 text-emerald-400 shrink-0" />
+                    )}
+                    <div className="text-xs">
+                      <span className="font-bold">
+                        {generationGate.customerGenerationPaused
+                          ? 'Customer Generation: PAUSED (Verification Mode)'
+                          : 'Customer Generation: ACTIVE (Live for READY Templates)'}
+                      </span>
+                      <p className="text-[10.5px] opacity-80">
+                        {generationGate.customerGenerationPaused
+                          ? 'Paid customer generation blocked with 0 credit deduction; Admin 0-credit tests remain active.'
+                          : 'Only ACTIVE + READY verified templates accept customer generation.'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isTogglingGate}
+                    onClick={handleToggleGenerationGate}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50 ${
+                      generationGate.customerGenerationPaused
+                        ? 'bg-emerald-500 hover:bg-emerald-400 text-stone-950'
+                        : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40'
+                    }`}
+                  >
+                    {isTogglingGate
+                      ? 'Updating...'
+                      : generationGate.customerGenerationPaused
+                      ? 'Resume Customers'
+                      : 'Pause Customers'}
+                  </button>
+                </div>
+
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-stone-400">
-                      Catalog: {displayTemplates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter).length} / {displayTemplates.length}
+                      Catalog: {displayTemplates.length} total
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleReconcileHistoricalRuns(true)}
+                      disabled={isReconcilingRuns}
+                      className="px-3 py-1.5 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-200 text-xs font-bold flex items-center gap-1.5 border border-purple-500/30 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                      title="Preview historical generation restore vs missing-output refunds"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>{isReconcilingRuns ? 'Checking...' : 'Check Past Runs'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleReconcileHistoricalRuns(false)}
+                      disabled={isReconcilingRuns}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 text-xs font-bold flex items-center gap-1.5 border border-emerald-500/30 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                      title="Restore valid R2 outputs and issue exact-once refunds for missing outputs"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Reconcile Outputs</span>
+                    </button>
                     <button
                       onClick={handleScanAndRecoverR2}
                       disabled={isRecoveringR2}
@@ -3032,7 +3229,59 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </div>
                 </div>
 
-                {/* R2 Recovery Notice Banner */}
+                {/* Live Admin Verify-Test Result Card */}
+                {lastTemplateTestResult && (
+                  <div
+                    className={`p-3 rounded-2xl border flex items-start justify-between gap-3 text-xs ${
+                      lastTemplateTestResult.passed
+                        ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                        : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3 min-w-0">
+                      {lastTemplateTestResult.signedUrl && (
+                        lastTemplateTestResult.mimeType?.startsWith('video/') ? (
+                          <video
+                            src={lastTemplateTestResult.signedUrl}
+                            muted
+                            playsInline
+                            controls
+                            className="w-16 h-20 rounded-xl object-cover bg-black border border-white/15 shrink-0"
+                          />
+                        ) : (
+                          <img
+                            src={lastTemplateTestResult.signedUrl}
+                            alt={lastTemplateTestResult.title}
+                            className="w-16 h-20 rounded-xl object-cover bg-black border border-white/15 shrink-0"
+                          />
+                        )
+                      )}
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-white">{lastTemplateTestResult.title}</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded bg-black/40 border border-white/15">
+                            {lastTemplateTestResult.readinessStatus}
+                          </span>
+                          {typeof lastTemplateTestResult.sizeBytes === 'number' && (
+                            <span className="text-[10px] font-mono opacity-80">
+                              {formatBytes(lastTemplateTestResult.sizeBytes)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] opacity-90">{lastTemplateTestResult.message}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setLastTemplateTestResult(null)}
+                      className="text-stone-400 hover:text-white text-xs font-bold px-2 py-0.5 rounded cursor-pointer shrink-0"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* R2 Recovery / Reconciliation Notice Banner */}
                 {recoveryNotice && (
                   <div className="p-3 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-between text-xs font-medium text-blue-200">
                     <span>{recoveryNotice}</span>
@@ -3044,6 +3293,48 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     </button>
                   </div>
                 )}
+
+                {/* 5-State Readiness Filter Chips */}
+                {(() => {
+                  const counts: Record<'ALL' | CanonicalTemplateReadinessStatus, number> = {
+                    ALL: displayTemplates.length,
+                    READY: 0,
+                    TEST_REQUIRED: 0,
+                    NEEDS_SETUP: 0,
+                    FAILED: 0,
+                    PAUSED: 0
+                  };
+                  displayTemplates.forEach((t) => {
+                    const norm = normalizeTemplateReadinessStatus(t);
+                    counts[norm.status] = (counts[norm.status] || 0) + 1;
+                  });
+                  const chips: Array<{ key: 'ALL' | CanonicalTemplateReadinessStatus; label: string; activeCls: string }> = [
+                    { key: 'ALL', label: `All (${counts.ALL})`, activeCls: 'bg-amber-400 text-stone-950' },
+                    { key: 'READY', label: `Ready (${counts.READY})`, activeCls: 'bg-emerald-500 text-stone-950' },
+                    { key: 'TEST_REQUIRED', label: `Test Required (${counts.TEST_REQUIRED})`, activeCls: 'bg-sky-400 text-stone-950' },
+                    { key: 'NEEDS_SETUP', label: `Needs Setup (${counts.NEEDS_SETUP})`, activeCls: 'bg-amber-500 text-stone-950' },
+                    { key: 'FAILED', label: `Failed (${counts.FAILED})`, activeCls: 'bg-rose-500 text-white' },
+                    { key: 'PAUSED', label: `Paused (${counts.PAUSED})`, activeCls: 'bg-stone-500 text-white' }
+                  ];
+                  return (
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                      {chips.map((c) => (
+                        <button
+                          key={c.key}
+                          type="button"
+                          onClick={() => setReadinessFilter(c.key)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-all cursor-pointer ${
+                            readinessFilter === c.key
+                              ? `${c.activeCls} shadow`
+                              : 'bg-white/5 text-stone-400 hover:text-white border border-white/5'
+                          }`}
+                        >
+                          {c.label}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
 
                 {/* Category Filter Chips for Live Catalog Inspection */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
@@ -3083,118 +3374,162 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
                 <div className="space-y-2">
                   {(() => {
-                    const filtered = displayTemplates.filter((t) => listCategoryFilter === 'all' || t.category === listCategoryFilter);
-                    return filtered.map((tpl, index) => (
-                      <div
-                        key={tpl.id}
-                        draggable
-                        onDragStart={() => setDraggedTemplateId(tpl.id)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => handleDropTemplate(tpl.id)}
-                        className={`p-3 rounded-2xl bg-stone-900/60 border flex items-center justify-between gap-2 sm:gap-3 transition-all ${
-                          draggedTemplateId === tpl.id
-                            ? 'opacity-40 border-amber-400/60 shadow-lg'
-                            : 'border-white/10 hover:border-white/20'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                          {/* Drag Handle & Mobile Move Up/Down Controls */}
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            <div
-                              className="p-1 text-stone-500 hover:text-amber-400 cursor-grab active:cursor-grabbing"
-                              title="Drag to reorder"
-                            >
-                              <GripVertical className="w-4 h-4" />
-                            </div>
-                            <div className="flex flex-col">
-                              <button
-                                type="button"
-                                disabled={index === 0 || isReorderingTemplates}
-                                onClick={() => handleMoveTemplate(tpl.id, 'up')}
-                                className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
-                                title="Move up"
-                              >
-                                <ChevronUp className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={index === filtered.length - 1 || isReorderingTemplates}
-                                onClick={() => handleMoveTemplate(tpl.id, 'down')}
-                                className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
-                                title="Move down"
-                              >
-                                <ChevronDown className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
+                    const filtered = displayTemplates.filter((t) => {
+                      if (listCategoryFilter !== 'all' && t.category !== listCategoryFilter) return false;
+                      if (readinessFilter !== 'ALL' && normalizeTemplateReadinessStatus(t).status !== readinessFilter) {
+                        return false;
+                      }
+                      return true;
+                    });
+                    return filtered.map((tpl, index) => {
+                      const norm = normalizeTemplateReadinessStatus(tpl);
+                      const statusBadgeCls =
+                        norm.status === 'READY'
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                          : norm.status === 'TEST_REQUIRED'
+                          ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                          : norm.status === 'NEEDS_SETUP'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          : norm.status === 'FAILED'
+                          ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                          : 'bg-stone-700/60 text-stone-300 border-stone-500/40';
+                      const providerLabel = tpl.recipe?.provider || (tpl.engine === 'SMART_TEMPLATE' ? 'smart_template' : tpl.type === 'video' ? 'higgsfield' : 'gemini');
+                      const modelLabel = tpl.model || tpl.recipe?.model || 'default';
+                      const lastVerifiedDisplay = tpl.lastVerifiedAt
+                        ? new Date(tpl.lastVerifiedAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                        : 'Never';
 
-                          <img
-                            src={tpl.cover}
-                            alt={tpl.title}
-                            className="w-12 h-14 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0"
-                          />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
-                              <h4 className="text-xs font-bold text-white truncate">{tpl.title}</h4>
-                              {tpl.badge && (
-                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                  {tpl.badge}
-                                </span>
-                              )}
-                              {tpl.isActive === false && (
-                                <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                  {tpl.readinessStatus === 'DRAFT_INCOMPLETE' ? 'DRAFT (INCOMPLETE)' : 'INACTIVE'}
-                                </span>
-                              )}
-                              {tpl.draftOfTemplateId && (
-                                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
-                                  Draft Copy
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-stone-400">
-                              <span className="text-amber-300/80 font-medium">{tpl.category}</span>
-                              <span>•</span>
-                              <span>{tpl.type.toUpperCase()}</span>
-                              <span>•</span>
-                              <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
-                              <span className="hidden sm:inline text-stone-500 font-mono text-[10px]">• {tpl.id}</span>
-                            </div>
-                            {Array.isArray(tpl.missingFields) && tpl.missingFields.length > 0 && (
-                              <div className="text-[10px] font-mono text-amber-300/90 mt-0.5 truncate">
-                                Missing: {tpl.missingFields.join(', ')}
+                      return (
+                        <div
+                          key={tpl.id}
+                          draggable
+                          onDragStart={() => setDraggedTemplateId(tpl.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => handleDropTemplate(tpl.id)}
+                          className={`p-3 rounded-2xl bg-stone-900/60 border flex items-center justify-between gap-2 sm:gap-3 transition-all ${
+                            draggedTemplateId === tpl.id
+                              ? 'opacity-40 border-amber-400/60 shadow-lg'
+                              : 'border-white/10 hover:border-white/20'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                            {/* Drag Handle & Mobile Move Up/Down Controls */}
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <div
+                                className="p-1 text-stone-500 hover:text-amber-400 cursor-grab active:cursor-grabbing"
+                                title="Drag to reorder"
+                              >
+                                <GripVertical className="w-4 h-4" />
                               </div>
-                            )}
+                              <div className="flex flex-col">
+                                <button
+                                  type="button"
+                                  disabled={index === 0 || isReorderingTemplates}
+                                  onClick={() => handleMoveTemplate(tpl.id, 'up')}
+                                  className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                  title="Move up"
+                                >
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={index === filtered.length - 1 || isReorderingTemplates}
+                                  onClick={() => handleMoveTemplate(tpl.id, 'down')}
+                                  className="p-0.5 text-stone-400 hover:text-white disabled:opacity-20 cursor-pointer"
+                                  title="Move down"
+                                >
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <img
+                              src={tpl.cover}
+                              alt={tpl.title}
+                              className="w-12 h-14 rounded-xl object-cover border border-white/10 bg-black flex-shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <h4 className="text-xs font-bold text-white truncate">{tpl.title}</h4>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${statusBadgeCls}`}>
+                                  {norm.label}
+                                </span>
+                                {tpl.badge && (
+                                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                    {tpl.badge}
+                                  </span>
+                                )}
+                                {tpl.draftOfTemplateId && (
+                                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                    Draft Copy
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[11px] text-stone-400">
+                                <span className="text-amber-300/80 font-medium">{tpl.category}</span>
+                                <span>•</span>
+                                <span>{tpl.type.toUpperCase()}</span>
+                                <span>•</span>
+                                <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
+                                <span>•</span>
+                                <span className="font-mono text-[10px] text-stone-300">{providerLabel} / {modelLabel}</span>
+                                <span className="hidden sm:inline text-stone-500 font-mono text-[10px]">• {tpl.id}</span>
+                              </div>
+                              <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-stone-400">
+                                <span>Last test: <strong className="text-stone-300">{norm.lastTestResult}</strong></span>
+                                <span>•</span>
+                                <span>Verified: <strong className="text-stone-300">{lastVerifiedDisplay}</strong></span>
+                              </div>
+                              {norm.status !== 'READY' && (
+                                <div className="text-[10px] text-amber-300/90 mt-0.5 truncate" title={norm.reason}>
+                                  {norm.reason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              disabled={testingTemplateId === tpl.id}
+                              onClick={() => handleRunTemplateVerifyTest(tpl)}
+                              title="Run 0-credit real test + storage & download verification"
+                              className="px-2.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            >
+                              {testingTemplateId === tpl.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <FlaskConical className="w-3.5 h-3.5" />
+                              )}
+                              <span className="hidden sm:inline">{testingTemplateId === tpl.id ? 'Testing' : 'Test'}</span>
+                            </button>
+                            <button
+                              onClick={() => handleToggleActive(tpl)}
+                              title={tpl.isActive !== false ? 'Pause / Deactivate' : 'Activate'}
+                              className={`p-2 rounded-xl border text-xs cursor-pointer ${
+                                tpl.isActive !== false
+                                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                                  : 'bg-stone-800 text-stone-500 border-stone-700'
+                              }`}
+                            >
+                              {tpl.isActive !== false ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              onClick={() => startEditTemplate(tpl)}
+                              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 border border-white/10 text-xs cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTemplate(tpl)}
+                              className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            onClick={() => handleToggleActive(tpl)}
-                            title={tpl.isActive !== false ? 'Deactivate' : 'Activate'}
-                            className={`p-2 rounded-xl border text-xs cursor-pointer ${
-                              tpl.isActive !== false
-                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                                : 'bg-stone-800 text-stone-500 border-stone-700'
-                            }`}
-                          >
-                            {tpl.isActive !== false ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                          </button>
-                          <button
-                            onClick={() => startEditTemplate(tpl)}
-                            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 border border-white/10 text-xs cursor-pointer"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTemplate(tpl)}
-                            className="p-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ));
+                      );
+                    });
                   })()}
                 </div>
               </div>

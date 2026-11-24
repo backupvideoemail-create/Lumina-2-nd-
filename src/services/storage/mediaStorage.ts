@@ -23,6 +23,42 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { adminFirestoreDb } from '../db/database.ts';
 
+const PRIVATE_MEDIA_PREFIXES = [
+  'gen_',
+  'gen_fsv_',
+  'user_',
+  'private_',
+  'gemini_',
+  'genjutsu_',
+  'smart_',
+  'face_ref_',
+  'asset_',
+  'user_gen_',
+  'user_trimmed_video_',
+  'faceswap_trimmed_',
+  'diag_media_'
+];
+
+export function isPrivateMediaFilename(fileName: string): boolean {
+  const base = path.basename(String(fileName || '')).toLowerCase();
+  return PRIVATE_MEDIA_PREFIXES.some((prefix) => base.startsWith(prefix));
+}
+
+export function extractMediaFileIdFromRef(mediaUrlOrFileId: string): string {
+  const raw = String(mediaUrlOrFileId || '').trim();
+  if (!raw) return '';
+  if (raw.includes('/api/media/signed/')) {
+    const seg = raw.split('/api/media/signed/')[1]?.split('?')[0]?.split('/')[0] || '';
+    const v = verifySignedMediaToken(seg);
+    if (v.valid && v.fileName) return path.basename(v.fileName);
+  }
+  if (raw.includes('/api/media/')) {
+    const seg = raw.split('/api/media/')[1]?.split('?')[0]?.split('/')[0] || '';
+    return path.basename(decodeURIComponent(seg));
+  }
+  return path.basename(raw.split('?')[0]);
+}
+
 const UPLOADS_DIR = path.resolve(process.cwd(), '.data', 'uploads');
 
 type StorageMonitoringReporter = (
@@ -74,6 +110,8 @@ export interface StorageProviderStatus {
   bucket?: string;
   publicBaseUrl?: string;
   requiredEnvVars: string[];
+  optionalEnvVars?: string[];
+  optionalVarsPresent?: Record<string, boolean>;
   missingEnvVars: string[];
   localStats: {
     directory: string;
@@ -118,8 +156,9 @@ export class MediaStorageService {
   }
 
   private async syncMetadataToFirestore(filename: string, metadata: StoredMediaMetadata): Promise<void> {
+    const isProductionRuntime = process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST;
     if (!adminFirestoreDb) {
-      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+      if (isProductionRuntime) {
         throw new Error('Authoritative Firestore database is not connected to record media metadata.');
       }
       return;
@@ -127,7 +166,7 @@ export class MediaStorageService {
     try {
       const sanitizedMetadata = JSON.parse(JSON.stringify(metadata));
       await adminFirestoreDb.collection('media_metadata').doc(filename).set(sanitizedMetadata, { merge: true });
-      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+      if (isProductionRuntime) {
         const verifyDoc = await adminFirestoreDb.collection('media_metadata').doc(filename).get();
         if (!verifyDoc.exists) {
           throw new Error(`Media metadata verification failed: document 'media_metadata/${filename}' not found after write.`);
@@ -135,7 +174,7 @@ export class MediaStorageService {
       }
     } catch (err: any) {
       console.error('[MediaStorage Critical] Failed to sync media metadata to Firestore:', err.message);
-      if (metadata.isPublic && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
+      if (isProductionRuntime) {
         throw new Error(`Failed to persist media metadata to Firestore: ${err.message}`);
       }
     }
@@ -159,6 +198,25 @@ export class MediaStorageService {
       }
     }
     return null;
+  }
+
+  public async setMetadataForTest(
+    fileName: string,
+    patch: Partial<StoredMediaMetadata>
+  ): Promise<StoredMediaMetadata | null> {
+    if (process.env.IS_ISOLATED_TEST !== 'true' && process.env.NODE_ENV !== 'test') {
+      throw new Error('setMetadataForTest is only allowed in isolated test environments.');
+    }
+    const safeName = path.basename(fileName);
+    const existing = await this.getMetadata(safeName);
+    if (!existing) return null;
+    const updated: StoredMediaMetadata = { ...existing, ...patch, fileId: safeName };
+    this.metadataIndex[safeName] = updated;
+    this.saveIndex();
+    if (adminFirestoreDb) {
+      await adminFirestoreDb.collection('media_metadata').doc(safeName).set(updated);
+    }
+    return updated;
   }
 
   private initR2Client() {
@@ -277,15 +335,18 @@ export class MediaStorageService {
       bucket: this.r2Config.bucketName || undefined,
       publicBaseUrl: this.r2Config.publicBaseUrl || undefined,
       message: isR2Ready
-        ? `Cloudflare R2 active on bucket '${this.r2Config.bucketName}' with authenticated presigned URLs & user isolation.`
-        : 'Cloudflare R2 driver pending credentials. Operating in local secure isolated storage.',
+        ? `Cloudflare R2 active on bucket '${this.r2Config.bucketName}' with private presigned URLs & owner isolation (R2_PUBLIC_BASE_URL optional).`
+        : 'Cloudflare R2 driver pending credentials. Operating in local isolated storage with signed proxy delivery.',
       requiredEnvVars: [
         'R2_ACCOUNT_ID',
         'R2_ACCESS_KEY_ID',
         'R2_SECRET_ACCESS_KEY',
-        'R2_BUCKET_NAME',
-        'R2_PUBLIC_BASE_URL (Optional)'
+        'R2_BUCKET_NAME'
       ],
+      optionalEnvVars: ['R2_PUBLIC_BASE_URL'],
+      optionalVarsPresent: {
+        R2_PUBLIC_BASE_URL: Boolean(this.r2Config.publicBaseUrl)
+      },
       missingEnvVars: missing,
       localStats: this.getLocalDiskStats()
     };
@@ -566,6 +627,10 @@ export class MediaStorageService {
       buffer = Buffer.from(payload as any);
     }
 
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Cannot store empty (0-byte) media payload.');
+    }
+
     const fileId = `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const filename = `${fileId}.${ext}`;
     const filePath = path.join(UPLOADS_DIR, filename);
@@ -594,11 +659,30 @@ export class MediaStorageService {
           }
         }));
 
-        // Read-back verification from Cloudflare R2:
-        await this.s3Client.send(new HeadObjectCommand({
+        // Read-back verification from Cloudflare R2 (HeadObject ContentLength + tiny GetObject byte probe)
+        const headRes = await this.s3Client.send(new HeadObjectCommand({
           Bucket: this.r2Config.bucketName,
           Key: r2Key
         }));
+        if (typeof headRes.ContentLength === 'number' && headRes.ContentLength <= 0) {
+          throw new Error(`R2 HeadObject returned 0 bytes for key '${r2Key}'.`);
+        }
+        const rangeEnd = Math.min(31, Math.max(0, buffer.length - 1));
+        const getRes: any = await this.s3Client.send(new GetObjectCommand({
+          Bucket: this.r2Config.bucketName,
+          Key: r2Key,
+          Range: `bytes=0-${rangeEnd}`
+        }));
+        let readBytesCount = 0;
+        if (getRes?.Body?.transformToByteArray) {
+          const arr = await getRes.Body.transformToByteArray();
+          readBytesCount = arr?.length || 0;
+        } else if (getRes?.Body) {
+          readBytesCount = Number(getRes.ContentLength || buffer.length);
+        }
+        if (readBytesCount <= 0) {
+          throw new Error(`R2 GetObject read-back returned 0 readable bytes for key '${r2Key}'.`);
+        }
 
         if (isPublic && this.r2Config.publicBaseUrl) {
           const base = this.r2Config.publicBaseUrl.replace(/\/$/, '');
@@ -606,10 +690,10 @@ export class MediaStorageService {
         }
         provider = 'cloudflare_r2';
       } catch (err: any) {
-        console.error('[MediaStorage] R2 PutObject warning:', err.message);
+        console.error('[MediaStorage] R2 PutObject/read-back warning:', err.message);
         r2UploadError = err.message;
         provider = 'local';
-        storageMonitoringReporter?.('ERROR', `Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}'`, {
+        storageMonitoringReporter?.('ERROR', `Cloudflare R2 upload or read-back failed on bucket '${this.r2Config.bucketName}'`, {
           source: 'storage_r2',
           errorStage: 'r2_put_object',
           bucket: this.r2Config.bucketName,
@@ -617,7 +701,7 @@ export class MediaStorageService {
           errorMessage: err.message
         });
         // Requirement: Do not silently disguise failed R2 upload as success
-        throw new Error(`Cloudflare R2 PutObject failed on bucket '${this.r2Config.bucketName}': ${err.message}`);
+        throw new Error(`Cloudflare R2 PutObject/read-back failed on bucket '${this.r2Config.bucketName}': ${err.message}`);
       }
     } else {
       if (prefix.startsWith('tpl_') && process.env.NODE_ENV !== 'test' && !process.env.IS_ISOLATED_TEST) {
@@ -652,30 +736,97 @@ export class MediaStorageService {
   }
 
   /**
-   * Generates a signed presigned URL for private R2 object with owner validation.
+   * Resolves short-lived authorized delivery URLs for browser playback and download.
+   * Fail-closed: private files require strict ownerUserId match and metadata presence.
+   * Never requires R2_PUBLIC_BASE_URL for private media.
    */
-  public async getPresignedUrl(
+  public async getAuthorizedDeliveryBundle(
     fileName: string,
     requestingUserId?: string,
-    expiresInSeconds: number = 3600
-  ): Promise<string | null> {
+    expiresInSeconds: number = 600
+  ): Promise<{
+    ok: boolean;
+    statusCode: number;
+    error?: string;
+    url?: string;
+    fallbackUrl?: string;
+    downloadUrl?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    provider?: 'local' | 'cloudflare_r2';
+    isPublic?: boolean;
+    expiresInSeconds?: number;
+    expiresAt?: string;
+  }> {
     const safeName = path.basename(fileName);
     const meta = await this.getMetadata(safeName);
-
-    if (!meta) return null;
-
-    // Validate ownership for private files
-    if (!meta.isPublic && meta.ownerUserId && meta.ownerUserId !== requestingUserId) {
-      return null;
+    if (!meta) {
+      return { ok: false, statusCode: 403, error: 'Unauthorized: Media metadata missing or access restricted to owner.' };
     }
 
+    if (!meta.isPublic) {
+      if (!meta.ownerUserId || !requestingUserId || meta.ownerUserId !== requestingUserId) {
+        return { ok: false, statusCode: 403, error: 'Unauthorized: Access restricted to owner.' };
+      }
+    }
+
+    const clampedTtl = Math.max(60, Math.min(3600, Math.round(expiresInSeconds || 600)));
+    const expiresAt = new Date(Date.now() + clampedTtl * 1000).toISOString();
+
+    // Verify object actually has readable bytes before minting signed links
+    let verifiedSizeBytes = meta.sizeBytes || 0;
+    let r2Verified = false;
     if (this.s3Client && this.r2Config.bucketName && meta.r2Key) {
+      try {
+        const head = await this.s3Client.send(
+          new HeadObjectCommand({
+            Bucket: this.r2Config.bucketName,
+            Key: meta.r2Key
+          })
+        );
+        if (typeof head.ContentLength === 'number' && head.ContentLength > 0) {
+          verifiedSizeBytes = head.ContentLength;
+          r2Verified = true;
+        }
+      } catch (err: any) {
+        console.warn('[MediaStorage] R2 HeadObject check failed for delivery bundle:', err?.message || err);
+      }
+    }
+
+    const fullPath = path.join(UPLOADS_DIR, safeName);
+    const localExists = fs.existsSync(fullPath);
+    const localSize = localExists ? fs.statSync(fullPath).size : 0;
+    if (!r2Verified && localSize > 0) {
+      verifiedSizeBytes = localSize;
+    }
+
+    if (!r2Verified && localSize <= 0) {
+      return {
+        ok: false,
+        statusCode: 404,
+        error: 'Stored media file bytes missing or empty (0 bytes).'
+      };
+    }
+
+    const token = createSignedMediaToken(
+      safeName,
+      clampedTtl,
+      !meta.isPublic ? meta.ownerUserId : undefined
+    );
+    const fallbackUrl = `/api/media/signed/${token}`;
+    const downloadUrl = `/api/media/signed/${token}?download=1`;
+
+    let primaryUrl = meta.isPublic ? meta.publicUrl : fallbackUrl;
+    if (this.s3Client && this.r2Config.bucketName && meta.r2Key && r2Verified) {
       try {
         const command = new GetObjectCommand({
           Bucket: this.r2Config.bucketName,
           Key: meta.r2Key
         });
-        return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+        const presigned = await getSignedUrl(this.s3Client, command, { expiresIn: clampedTtl });
+        if (presigned) {
+          primaryUrl = presigned;
+        }
       } catch (err: any) {
         console.error('[MediaStorage] getSignedUrl error:', err.message);
         storageMonitoringReporter?.('ERROR', `R2 signed GET URL generation failed for '${safeName}'`, {
@@ -687,7 +838,151 @@ export class MediaStorageService {
       }
     }
 
-    return meta.publicUrl;
+    return {
+      ok: true,
+      statusCode: 200,
+      url: primaryUrl,
+      fallbackUrl,
+      downloadUrl,
+      mimeType: meta.mimeType || 'application/octet-stream',
+      sizeBytes: verifiedSizeBytes,
+      provider: r2Verified ? 'cloudflare_r2' : meta.provider,
+      isPublic: Boolean(meta.isPublic),
+      expiresInSeconds: clampedTtl,
+      expiresAt
+    };
+  }
+
+  /**
+   * Generates a signed presigned URL for private R2 object (or signed same-origin proxy fallback)
+   * with strict fail-closed owner validation. Never returns bare /api/media/:fileId for private media.
+   */
+  public async getPresignedUrl(
+    fileName: string,
+    requestingUserId?: string,
+    expiresInSeconds: number = 600
+  ): Promise<string | null> {
+    const bundle = await this.getAuthorizedDeliveryBundle(fileName, requestingUserId, expiresInSeconds);
+    if (!bundle.ok || !bundle.url) {
+      return null;
+    }
+    return bundle.url;
+  }
+
+  /**
+   * Verifies that a newly generated private media output is durably saved, readable (>0 bytes),
+   * bound to the expected owner in metadata, and resolvable via an authorized signed URL.
+   */
+  public async verifyStoredMediaDeliverable(
+    mediaUrlOrFileId: string,
+    expectedOwnerUserId: string
+  ): Promise<{
+    verified: boolean;
+    fileId: string;
+    reason?: string;
+    sizeBytes?: number;
+    mimeType?: string;
+    deliveryUrl?: string;
+  }> {
+    const safeName = extractMediaFileIdFromRef(mediaUrlOrFileId);
+    if (!safeName) {
+      return { verified: false, fileId: '', reason: 'Empty or unparseable result media reference.' };
+    }
+
+    const meta = await this.getMetadata(safeName);
+    if (!meta) {
+      return { verified: false, fileId: safeName, reason: `Missing authoritative media_metadata for '${safeName}'.` };
+    }
+    if (meta.isPublic) {
+      return { verified: false, fileId: safeName, reason: `Private generation output '${safeName}' was unexpectedly marked public.` };
+    }
+    if (!expectedOwnerUserId || meta.ownerUserId !== expectedOwnerUserId) {
+      return { verified: false, fileId: safeName, reason: `Owner mismatch on stored media '${safeName}'.` };
+    }
+
+    let sizeBytes = 0;
+    let verifiedRead = false;
+
+    if (this.s3Client && this.r2Config.bucketName && meta.r2Key) {
+      try {
+        const headRes = await this.s3Client.send(
+          new HeadObjectCommand({
+            Bucket: this.r2Config.bucketName,
+            Key: meta.r2Key
+          })
+        );
+        const len = Number(headRes.ContentLength || 0);
+        if (len > 0) {
+          const rangeEnd = Math.min(31, len - 1);
+          const getRes: any = await this.s3Client.send(
+            new GetObjectCommand({
+              Bucket: this.r2Config.bucketName,
+              Key: meta.r2Key,
+              Range: `bytes=0-${rangeEnd}`
+            })
+          );
+          let chunkLen = 0;
+          if (getRes?.Body?.transformToByteArray) {
+            const bytes = await getRes.Body.transformToByteArray();
+            chunkLen = bytes?.length || 0;
+          } else if (getRes?.Body) {
+            chunkLen = Number(getRes.ContentLength || len);
+          }
+          if (chunkLen > 0) {
+            sizeBytes = len;
+            verifiedRead = true;
+          }
+        }
+      } catch (r2Err: any) {
+        return {
+          verified: false,
+          fileId: safeName,
+          reason: `R2 verification failed for '${safeName}': ${r2Err?.message || 'unreadable'}`
+        };
+      }
+    } else {
+      const fullPath = path.join(UPLOADS_DIR, safeName);
+      if (!fs.existsSync(fullPath)) {
+        return { verified: false, fileId: safeName, reason: `Stored local file missing for '${safeName}'.` };
+      }
+      const stat = fs.statSync(fullPath);
+      if (stat.size <= 0) {
+        return { verified: false, fileId: safeName, reason: `Stored file '${safeName}' is empty (0 bytes).` };
+      }
+      const fd = fs.openSync(fullPath, 'r');
+      try {
+        const probeBuf = Buffer.alloc(Math.min(32, stat.size));
+        const bytesRead = fs.readSync(fd, probeBuf, 0, probeBuf.length, 0);
+        if (bytesRead <= 0) {
+          return { verified: false, fileId: safeName, reason: `Stored file '${safeName}' returned 0 readable bytes.` };
+        }
+        sizeBytes = stat.size;
+        verifiedRead = true;
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+
+    if (!verifiedRead || sizeBytes <= 0) {
+      return { verified: false, fileId: safeName, reason: `Deliverable read-back failed for '${safeName}'.` };
+    }
+
+    const bundle = await this.getAuthorizedDeliveryBundle(safeName, expectedOwnerUserId, 600);
+    if (!bundle.ok || !bundle.url || bundle.url === `/api/media/${safeName}`) {
+      return {
+        verified: false,
+        fileId: safeName,
+        reason: bundle.error || `Failed to mint signed deliverable URL for '${safeName}'.`
+      };
+    }
+
+    return {
+      verified: true,
+      fileId: safeName,
+      sizeBytes,
+      mimeType: bundle.mimeType || meta.mimeType,
+      deliveryUrl: bundle.url
+    };
   }
 
   /**
@@ -752,7 +1047,7 @@ export class MediaStorageService {
     }
 
     // 2. Generate secure HMAC-signed proxy token for local disk storage
-    const token = createSignedMediaToken(safeName, expiresInSeconds);
+    const token = createSignedMediaToken(safeName, expiresInSeconds, meta && !meta.isPublic ? meta.ownerUserId : undefined);
     const hostBase = (
       process.env.PROD_SERVER_URL ||
       process.env.PUBLIC_APP_URL ||
@@ -764,29 +1059,40 @@ export class MediaStorageService {
   }
 
   /**
-   * Streams media directly from authoritative R2 storage with user isolation enforcement.
+   * Streams media directly from authoritative R2 storage or local cache with strict user isolation.
    */
   public async getAuthorizedObjectStream(
     fileName: string,
     requestingUserId?: string,
-    range?: string
+    range?: string,
+    options?: { trustedSignedToken?: boolean }
   ): Promise<{
     body: any;
     mimeType: string;
     contentRange?: string;
     contentLength?: number;
     statusCode?: number;
+    isPublic?: boolean;
     error?: string;
   }> {
     const safeName = path.basename(fileName);
     const meta = await this.getMetadata(safeName);
+    const privateByPrefix = isPrivateMediaFilename(safeName);
 
-    // Enforce ownership for private files
-    if (meta && !meta.isPublic && meta.ownerUserId) {
-      if (!requestingUserId || requestingUserId !== meta.ownerUserId) {
-        return { body: null, mimeType: '', error: 'Unauthorized: Access restricted to owner.' };
+    // Fail-closed ownership enforcement for private metadata or private filename prefixes
+    if (meta && !meta.isPublic) {
+      if (!options?.trustedSignedToken) {
+        if (!meta.ownerUserId || !requestingUserId || requestingUserId !== meta.ownerUserId) {
+          return { body: null, mimeType: '', statusCode: 403, error: 'Unauthorized: Access restricted to owner.' };
+        }
+      } else if (requestingUserId && meta.ownerUserId && requestingUserId !== meta.ownerUserId) {
+        return { body: null, mimeType: '', statusCode: 403, error: 'Unauthorized: Signed token owner mismatch.' };
       }
+    } else if (!meta && privateByPrefix && !options?.trustedSignedToken) {
+      return { body: null, mimeType: '', statusCode: 403, error: 'Unauthorized: Access restricted to owner.' };
     }
+
+    const effectiveIsPublic = Boolean(meta ? meta.isPublic : !privateByPrefix);
 
     if (this.s3Client && this.r2Config.bucketName) {
       const keysToTry = Array.from(
@@ -829,7 +1135,8 @@ export class MediaStorageService {
             mimeType: resolvedMime,
             contentRange: getRes.ContentRange,
             contentLength: getRes.ContentLength,
-            statusCode: range && getRes.ContentRange ? 206 : 200
+            statusCode: range && getRes.ContentRange ? 206 : 200,
+            isPublic: effectiveIsPublic
           };
         } catch (err: any) {
           if (err.name === 'InvalidRange' || err.$metadata?.httpStatusCode === 416) {
@@ -887,7 +1194,8 @@ export class MediaStorageService {
           mimeType: resolvedMime,
           contentRange: `bytes ${start}-${end}/${totalSize}`,
           contentLength: chunkSize,
-          statusCode: 206
+          statusCode: 206,
+          isPublic: effectiveIsPublic
         };
       }
 
@@ -895,11 +1203,12 @@ export class MediaStorageService {
         body: fs.createReadStream(fullPath),
         mimeType: resolvedMime,
         contentLength: totalSize,
-        statusCode: 200
+        statusCode: 200,
+        isPublic: effectiveIsPublic
       };
     }
 
-    return { body: null, mimeType: '', error: 'Media file not found' };
+    return { body: null, mimeType: '', statusCode: 404, error: 'Media file not found' };
   }
 
   /**
@@ -913,11 +1222,13 @@ export class MediaStorageService {
     const safeName = path.basename(fileName);
     const meta = this.metadataIndex[safeName];
 
-    // If metadata exists and it's private, enforce user identity match
-    if (meta && !meta.isPublic && meta.ownerUserId) {
-      if (!requestingUserId || requestingUserId !== meta.ownerUserId) {
+    // Fail-closed ownership enforcement for private media
+    if (meta && !meta.isPublic) {
+      if (!meta.ownerUserId || !requestingUserId || requestingUserId !== meta.ownerUserId) {
         return { filePath: null, error: 'Unauthorized: You do not have permission to access this private media file.' };
       }
+    } else if (!meta && isPrivateMediaFilename(safeName)) {
+      return { filePath: null, error: 'Unauthorized: You do not have permission to access this private media file.' };
     }
 
     const fullPath = path.join(UPLOADS_DIR, safeName);
@@ -1059,17 +1370,24 @@ const SIGNED_MEDIA_SECRET =
   process.env.SESSION_SECRET || process.env.ADMIN_SECRET_KEY || 'lumina-secure-signed-media-secret-2026';
 
 /**
- * Creates a tamper-proof, time-limited HMAC-SHA256 signed token for external provider media access.
+ * Creates a tamper-proof, time-limited HMAC-SHA256 signed token for private media access.
+ * Supports optional ownerUserId binding (4-part token) while staying backward-compatible with 3-part provider tokens.
  */
-export function createSignedMediaToken(fileName: string, expiresInSeconds: number = 3600): string {
+export function createSignedMediaToken(
+  fileName: string,
+  expiresInSeconds: number = 3600,
+  ownerUserId?: string
+): string {
   const safeName = path.basename(fileName);
   const expiresAt = Math.floor(Date.now() / 1000) + Math.max(60, expiresInSeconds);
-  const payload = `${safeName}:${expiresAt}`;
+  const cleanOwner = typeof ownerUserId === 'string' && ownerUserId.trim() ? ownerUserId.trim() : '';
+  const payload = cleanOwner
+    ? `${safeName}:${expiresAt}:${Buffer.from(cleanOwner, 'utf-8').toString('base64url')}`
+    : `${safeName}:${expiresAt}`;
   const hmac = crypto
     .createHmac('sha256', SIGNED_MEDIA_SECRET)
     .update(payload)
     .digest('hex');
-  // Format: base64(fileName:expiresAt:hmac)
   return Buffer.from(`${payload}:${hmac}`).toString('base64url');
 }
 
@@ -1079,6 +1397,7 @@ export function createSignedMediaToken(fileName: string, expiresInSeconds: numbe
 export function verifySignedMediaToken(token: string): {
   valid: boolean;
   fileName?: string;
+  ownerUserId?: string;
   error?: string;
 } {
   try {
@@ -1087,10 +1406,22 @@ export function verifySignedMediaToken(token: string): {
     }
     const decoded = Buffer.from(token, 'base64url').toString('utf-8');
     const parts = decoded.split(':');
-    if (parts.length !== 3) {
+    let fileName = '';
+    let expiresAtStr = '';
+    let ownerB64 = '';
+    let providedHmac = '';
+    let payload = '';
+
+    if (parts.length === 3) {
+      [fileName, expiresAtStr, providedHmac] = parts;
+      payload = `${fileName}:${expiresAtStr}`;
+    } else if (parts.length === 4) {
+      [fileName, expiresAtStr, ownerB64, providedHmac] = parts;
+      payload = `${fileName}:${expiresAtStr}:${ownerB64}`;
+    } else {
       return { valid: false, error: 'Malformed token format' };
     }
-    const [fileName, expiresAtStr, providedHmac] = parts;
+
     const expiresAt = parseInt(expiresAtStr, 10);
     if (isNaN(expiresAt)) {
       return { valid: false, error: 'Invalid expiry timestamp' };
@@ -1099,22 +1430,22 @@ export function verifySignedMediaToken(token: string): {
     if (now > expiresAt) {
       return { valid: false, error: 'Signed media link has expired' };
     }
-    const payload = `${fileName}:${expiresAtStr}`;
     const expectedHmac = crypto
       .createHmac('sha256', SIGNED_MEDIA_SECRET)
       .update(payload)
       .digest('hex');
 
+    const providedBuf = Buffer.from(providedHmac, 'hex');
+    const expectedBuf = Buffer.from(expectedHmac, 'hex');
     if (
-      !crypto.timingSafeEqual(
-        Buffer.from(providedHmac, 'hex'),
-        Buffer.from(expectedHmac, 'hex')
-      )
+      providedBuf.length !== expectedBuf.length ||
+      !crypto.timingSafeEqual(providedBuf, expectedBuf)
     ) {
       return { valid: false, error: 'Invalid token signature' };
     }
 
-    return { valid: true, fileName: path.basename(fileName) };
+    const ownerUserId = ownerB64 ? Buffer.from(ownerB64, 'base64url').toString('utf-8') : undefined;
+    return { valid: true, fileName: path.basename(fileName), ownerUserId };
   } catch (err: any) {
     return { valid: false, error: err.message || 'Token verification failed' };
   }

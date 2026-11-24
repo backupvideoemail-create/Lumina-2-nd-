@@ -619,6 +619,14 @@ export interface ProductionDatabaseSchema {
   dailyActivity?: Record<string, DailyActivityMetric>;
   fxCache?: { rate: number; source: string; fetchedAt: string; expiresAt: string } | null;
   ownerOmniTests?: OwnerOmniTestRecord[];
+  generationGate?: CustomerGenerationGateConfig;
+}
+
+export interface CustomerGenerationGateConfig {
+  customerGenerationPaused: boolean;
+  reason: string;
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface DailyActivityMetric {
@@ -701,7 +709,13 @@ export function validateTemplate(tpl: any): TemplateValidationResult {
 export function isPersistableDraftTemplate(tpl: any): boolean {
   if (!tpl || typeof tpl !== 'object') return false;
   if (tpl.isActive !== false) return false;
-  if (tpl.readinessStatus !== 'DRAFT_INCOMPLETE' && !tpl.draftOfTemplateId) return false;
+  if (
+    tpl.readinessStatus !== 'DRAFT_INCOMPLETE' &&
+    tpl.readinessStatus !== 'NEEDS_SETUP' &&
+    !tpl.draftOfTemplateId
+  ) {
+    return false;
+  }
   if (!tpl.id || typeof tpl.id !== 'string' || tpl.id.trim().length < 2) return false;
   if (!tpl.title || typeof tpl.title !== 'string' || tpl.title.trim().length < 2) return false;
   if (tpl.type !== 'photo' && tpl.type !== 'video') return false;
@@ -860,7 +874,12 @@ export class ProductionDatabase {
         categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
         adminLogs: [],
         fxCache: null,
-        ownerOmniTests: []
+        ownerOmniTests: [],
+        generationGate: {
+          customerGenerationPaused: true,
+          reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+          updatedAt: new Date().toISOString()
+        }
       };
       this.readyPromise = Promise.resolve();
       return;
@@ -1056,6 +1075,16 @@ export class ProductionDatabase {
         const pricingBannerDoc = await adminFirestoreDb.collection('config').doc('pricing_banner').get();
         if (pricingBannerDoc.exists && pricingBannerDoc.data()) {
           this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
+        }
+        const gateDoc = await adminFirestoreDb.collection('config').doc('generation_gate').get();
+        if (gateDoc.exists && gateDoc.data()) {
+          const gd = gateDoc.data() as Partial<CustomerGenerationGateConfig>;
+          this.db.generationGate = {
+            customerGenerationPaused: gd.customerGenerationPaused !== undefined ? Boolean(gd.customerGenerationPaused) : true,
+            reason: gd.reason || 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+            updatedAt: gd.updatedAt || new Date().toISOString(),
+            updatedBy: gd.updatedBy
+          };
         }
 
         // 13. Admin Activity Logs
@@ -1292,6 +1321,11 @@ export class ProductionDatabase {
         parsed.adminLogs = parsed.adminLogs || [];
         parsed.fxCache = parsed.fxCache || null;
         parsed.ownerOmniTests = parsed.ownerOmniTests || [];
+        parsed.generationGate = parsed.generationGate || {
+          customerGenerationPaused: true,
+          reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+          updatedAt: new Date().toISOString()
+        };
         return parsed;
       }
     } catch (err) {
@@ -1321,7 +1355,12 @@ export class ProductionDatabase {
       categoryPrompts: { ...DEFAULT_CATEGORY_PROMPTS },
       adminLogs: [],
       fxCache: null,
-      ownerOmniTests: []
+      ownerOmniTests: [],
+      generationGate: {
+        customerGenerationPaused: true,
+        reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+        updatedAt: new Date().toISOString()
+      }
     };
   }
 
@@ -2662,6 +2701,35 @@ export class ProductionDatabase {
       .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
   }
 
+  public async getAllGenerationsAuthoritative(): Promise<Generation[]> {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const snap = await fsDb.collection('generations').get();
+        if (snap && !snap.empty) {
+          const byId = new Map<string, Generation>();
+          for (const g of this.db.generations || []) {
+            if (g?.id) byId.set(g.id, g);
+          }
+          snap.forEach((d: any) => {
+            const remoteGen = d.data() as Generation;
+            if (remoteGen?.id) {
+              byId.set(remoteGen.id, { ...(byId.get(remoteGen.id) || {}), ...remoteGen });
+            }
+          });
+          this.db.generations = Array.from(byId.values()).sort(
+            (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+          );
+        }
+      } catch (err: any) {
+        console.warn('[Firestore] getAllGenerationsAuthoritative note:', err?.message || err);
+      }
+    }
+    return [...(this.db.generations || [])].sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+  }
+
   public async claimGenerationPollLease(
     genId: string,
     leaseOwner: string,
@@ -2875,18 +2943,22 @@ export class ProductionDatabase {
     }
   }
 
-  public async updateGenerationAsync(genId: string, updates: Partial<Generation>): Promise<Generation | null> {
+  public async updateGenerationAsync(
+    genId: string,
+    updates: Partial<Generation>,
+    options?: { allowReconcileMissingOutput?: boolean }
+  ): Promise<Generation | null> {
     let gen = this.db.generations.find(g => g.id === genId) || null;
     if (!gen) {
       gen = await this.getGenerationAuthoritative(genId);
     }
     if (!gen) return null;
 
-    if (gen.status === 'failed' && updates.status === 'completed') {
+    if (gen.status === 'failed' && updates.status === 'completed' && !options?.allowReconcileMissingOutput) {
       console.warn(`[Generation Guard] Attempted to mark failed/refunded generation ${genId} as completed. Blocked to prevent inconsistent state.`);
       return gen;
     }
-    if (gen.status === 'completed' && updates.status === 'failed') {
+    if (gen.status === 'completed' && updates.status === 'failed' && !options?.allowReconcileMissingOutput) {
       console.warn(`[Generation Guard] Attempted to mark completed generation ${genId} as failed. Blocked to prevent duplicate refund.`);
       return gen;
     }
@@ -4957,6 +5029,70 @@ export class ProductionDatabase {
 
   public getOwnerOmniTests(limit = 30): OwnerOmniTestRecord[] {
     return (this.db.ownerOmniTests || []).slice(0, limit);
+  }
+
+  /* =========================================================================
+     CENTRALIZED CUSTOMER GENERATION PAUSE GATE
+  ========================================================================= */
+  public getGenerationGate(): CustomerGenerationGateConfig {
+    return (
+      this.db.generationGate || {
+        customerGenerationPaused: true,
+        reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+        updatedAt: new Date().toISOString()
+      }
+    );
+  }
+
+  public async getGenerationGateAuthoritative(): Promise<CustomerGenerationGateConfig> {
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      try {
+        const docSnap = await fsDb.collection('config').doc('generation_gate').get();
+        if (docSnap.exists && docSnap.data()) {
+          const data = docSnap.data() as Partial<CustomerGenerationGateConfig>;
+          const normalized: CustomerGenerationGateConfig = {
+            customerGenerationPaused: data.customerGenerationPaused !== undefined ? Boolean(data.customerGenerationPaused) : true,
+            reason: data.reason || 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+            updatedAt: data.updatedAt || new Date().toISOString(),
+            updatedBy: data.updatedBy
+          };
+          this.db.generationGate = normalized;
+          return normalized;
+        }
+      } catch (err: any) {
+        console.warn('[Database] getGenerationGateAuthoritative note:', err?.message || err);
+      }
+    }
+    return this.getGenerationGate();
+  }
+
+  public async setGenerationGate(params: {
+    customerGenerationPaused: boolean;
+    reason?: string;
+    updatedBy?: string;
+  }): Promise<CustomerGenerationGateConfig> {
+    const updated: CustomerGenerationGateConfig = {
+      customerGenerationPaused: Boolean(params.customerGenerationPaused),
+      reason:
+        params.reason?.trim() ||
+        (params.customerGenerationPaused
+          ? 'Temporary maintenance: Paid customer generations are paused while we complete live verification.'
+          : 'Customer generation is active.'),
+      updatedAt: new Date().toISOString(),
+      updatedBy: params.updatedBy || 'authorized_admin'
+    };
+
+    const fsDb = this.firestoreDb;
+    if (fsDb) {
+      await fsDb.collection('config').doc('generation_gate').set(JSON.parse(JSON.stringify(updated)), { merge: true });
+    } else if (process.env.NODE_ENV === 'production' && !isIsolatedTestEnv) {
+      throw new AuthoritativeDatabaseError('Authoritative Firestore database is unavailable to update customer generation pause gate.');
+    }
+
+    this.db.generationGate = updated;
+    this.save();
+    return updated;
   }
 }
 

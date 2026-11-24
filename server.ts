@@ -45,7 +45,14 @@ import {
   findLatestPaymentForSubscription,
   defaultRazorpayGatewayClient
 } from './src/services/payments/razorpayWebhookService.ts';
-import { mediaStorage, verifySignedMediaToken, configureStorageMonitoring } from './src/services/storage/mediaStorage.ts';
+import {
+  mediaStorage,
+  verifySignedMediaToken,
+  configureStorageMonitoring,
+  isPrivateMediaFilename,
+  extractMediaFileIdFromRef
+} from './src/services/storage/mediaStorage.ts';
+import { Resvg } from '@resvg/resvg-js';
 import { videoTrimmer } from './src/services/video/videoTrimmer.ts';
 import {
   prodDb as defaultProdDb,
@@ -86,7 +93,9 @@ import {
 import { PHONE_AUTH_ENABLED, AUTH_POLICY } from './src/config/authConfig.ts';
 import {
   validateTemplateReadiness,
-  validateFaceSwapSceneReadiness
+  validateFaceSwapSceneReadiness,
+  normalizeTemplateReadinessStatus,
+  didTemplateExecutionRecipeChange
 } from './src/services/validation/templateReadiness.ts';
 import { getKolkataDateKey } from './src/services/db/database.ts';
 import type {
@@ -324,7 +333,9 @@ function getSanitizedPlatformAndSyncReport() {
         R2_ACCOUNT_ID: Boolean(process.env.R2_ACCOUNT_ID?.trim()),
         R2_ACCESS_KEY_ID: Boolean(process.env.R2_ACCESS_KEY_ID?.trim()),
         R2_SECRET_ACCESS_KEY: Boolean(process.env.R2_SECRET_ACCESS_KEY?.trim()),
-        R2_BUCKET_NAME: Boolean(process.env.R2_BUCKET_NAME?.trim()),
+        R2_BUCKET_NAME: Boolean(process.env.R2_BUCKET_NAME?.trim())
+      },
+      optionalVarsPresent: {
         R2_PUBLIC_BASE_URL: Boolean(process.env.R2_PUBLIC_BASE_URL?.trim())
       },
       objectCountAndUsage: 'NOT_INSTRUMENTED (R2 bucket object count / byte usage not queried in dashboard)'
@@ -687,24 +698,66 @@ app.get(['/logo.png', '/logo.jpg', '/api/branding/logo.png'], (req, res) => {
   return res.status(404).end();
 });
 
+function inferDownloadExtension(mimeType?: string, fileName?: string): string {
+  const m = String(mimeType || '').toLowerCase();
+  if (m.includes('video/mp4')) return 'mp4';
+  if (m.includes('video/webm')) return 'webm';
+  if (m.includes('video/quicktime')) return 'mov';
+  if (m.includes('image/png')) return 'png';
+  if (m.includes('image/webp')) return 'webp';
+  if (m.includes('image/gif')) return 'gif';
+  if (m.includes('image/jpeg') || m.includes('image/jpg')) return 'jpg';
+  const ext = path.extname(fileName || '').replace('.', '').toLowerCase();
+  if (['mp4', 'webm', 'mov', 'png', 'webp', 'gif', 'jpg', 'jpeg'].includes(ext)) {
+    return ext === 'jpeg' ? 'jpg' : ext;
+  }
+  return 'bin';
+}
+
+function buildSafeDownloadFilename(fileId: string, mimeType?: string): string {
+  const ext = inferDownloadExtension(mimeType, fileId);
+  const rawStem = path.basename(fileId, path.extname(fileId)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'ai_prime_result';
+  return `${rawStem}.${ext}`;
+}
+
 function setMediaStreamResponseHeaders(
   res: express.Response,
-  options: { isPublic: boolean; etag?: string; contentRange?: string; contentLength?: number; mimeType?: string }
+  options: {
+    isPublic: boolean;
+    etag?: string;
+    contentRange?: string;
+    contentLength?: number;
+    mimeType?: string;
+    downloadFilename?: string;
+  }
 ) {
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Vary', 'Range');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Range, If-None-Match');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, ETag');
-  if (options.etag) {
+  res.setHeader('Vary', options.isPublic ? 'Range' : 'Range, Authorization, Origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (options.isPublic) {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, If-None-Match');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, ETag');
+  } else {
+    res.removeHeader('Access-Control-Allow-Origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  }
+  if (options.etag && options.isPublic) {
     res.setHeader('ETag', options.etag);
   }
   res.setHeader(
     'Cache-Control',
-    options.isPublic ? 'public, max-age=86400, stale-while-revalidate=3600' : 'private, max-age=3600'
+    options.isPublic
+      ? 'public, max-age=86400, stale-while-revalidate=3600'
+      : options.downloadFilename
+      ? 'private, no-store'
+      : 'private, max-age=300'
   );
+  if (options.downloadFilename) {
+    res.setHeader('Content-Disposition', `attachment; filename="${options.downloadFilename}"`);
+  }
   if (options.contentRange) {
     res.setHeader('Content-Range', options.contentRange);
   }
@@ -770,35 +823,45 @@ async function pipeStreamBodySafely(req: express.Request, res: express.Response,
   return res.send(body);
 }
 
-// Serve media safely with user isolation directly from Cloudflare R2 or local cache
+// Serve media safely with strict user isolation directly from Cloudflare R2 or local cache
 app.get('/api/media/:fileId', async (req, res) => {
   const fileId = path.basename(req.params.fileId);
   const user = await getAuthenticatedUserAsync(req);
   const stableEtag = `"media-${fileId}"`;
+  const wantsDownload = req.query.download === '1' || req.query.download === 'true';
   try {
-    const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
-    if (fs.existsSync(localPath)) {
-      const meta = await mediaStorage.getMetadata(fileId);
-      if (meta && !meta.isPublic && meta.ownerUserId && (!user || user.id !== meta.ownerUserId)) {
+    const meta = await mediaStorage.getMetadata(fileId);
+    const privateByPrefix = isPrivateMediaFilename(fileId);
+
+    // Fail-closed ownership check BEFORE touching bytes or cache headers
+    if (meta && !meta.isPublic) {
+      if (!meta.ownerUserId || !user || user.id !== meta.ownerUserId) {
         return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
       }
-      const isPublicAsset = !meta || meta.isPublic !== false;
-      setMediaStreamResponseHeaders(res, {
-        isPublic: isPublicAsset,
-        etag: isPublicAsset ? stableEtag : undefined
-      });
-      if (isPublicAsset && req.headers['if-none-match'] === stableEtag && !req.headers.range) {
-        return res.status(304).end();
-      }
-      return res.sendFile(localPath, { acceptRanges: true });
+    } else if (!meta && privateByPrefix) {
+      return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
     }
 
-    if (!req.headers.range && req.headers['if-none-match'] === stableEtag) {
-      const meta = await mediaStorage.getMetadata(fileId);
-      if (!meta || meta.isPublic || (user && user.id === meta.ownerUserId)) {
-        setMediaStreamResponseHeaders(res, { isPublic: true, etag: stableEtag });
+    const effectiveIsPublic = Boolean(meta ? meta.isPublic : !privateByPrefix);
+    const downloadFilename = wantsDownload ? buildSafeDownloadFilename(fileId, meta?.mimeType) : undefined;
+
+    const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
+    if (fs.existsSync(localPath)) {
+      setMediaStreamResponseHeaders(res, {
+        isPublic: effectiveIsPublic,
+        etag: effectiveIsPublic ? stableEtag : undefined,
+        mimeType: meta?.mimeType,
+        downloadFilename
+      });
+      if (effectiveIsPublic && !wantsDownload && req.headers['if-none-match'] === stableEtag && !req.headers.range) {
         return res.status(304).end();
       }
+      return res.sendFile(localPath, { acceptRanges: true, cacheControl: false });
+    }
+
+    if (effectiveIsPublic && !wantsDownload && !req.headers.range && req.headers['if-none-match'] === stableEtag) {
+      setMediaStreamResponseHeaders(res, { isPublic: true, etag: stableEtag });
+      return res.status(304).end();
     }
 
     const rangeHeader = req.headers.range;
@@ -811,12 +874,14 @@ app.get('/api/media/:fileId', async (req, res) => {
     if (authResult.statusCode) {
       res.status(authResult.statusCode);
     }
+    const streamIsPublic = Boolean(authResult.isPublic);
     setMediaStreamResponseHeaders(res, {
-      isPublic: true,
-      etag: stableEtag,
+      isPublic: streamIsPublic,
+      etag: streamIsPublic ? stableEtag : undefined,
       contentRange: authResult.contentRange,
       contentLength: authResult.contentLength,
-      mimeType: authResult.mimeType || 'application/octet-stream'
+      mimeType: authResult.mimeType || 'application/octet-stream',
+      downloadFilename: wantsDownload ? buildSafeDownloadFilename(fileId, authResult.mimeType || meta?.mimeType) : undefined
     });
     return await pipeStreamBodySafely(req, res, authResult.body);
   } catch (err: any) {
@@ -827,7 +892,7 @@ app.get('/api/media/:fileId', async (req, res) => {
   }
 });
 
-// Authorized signed media stream for external AI provider downloads (e.g. Higgsfield Genjutsu Light)
+// Authorized signed media stream for browser delivery & external AI providers (same-origin CORS-free fallback)
 app.get('/api/media/signed/:token', async (req, res) => {
   const { token } = req.params;
   const verification = verifySignedMediaToken(token);
@@ -836,15 +901,31 @@ app.get('/api/media/signed/:token', async (req, res) => {
   }
 
   const fileId = verification.fileName;
+  const wantsDownload = req.query.download === '1' || req.query.download === 'true';
   try {
+    const meta = await mediaStorage.getMetadata(fileId);
+    if (meta && !meta.isPublic && verification.ownerUserId && meta.ownerUserId && meta.ownerUserId !== verification.ownerUserId) {
+      return res.status(403).json({ error: 'Unauthorized: Signed token owner mismatch.' });
+    }
+    const downloadFilename = wantsDownload ? buildSafeDownloadFilename(fileId, meta?.mimeType) : undefined;
+
     const localPath = path.resolve(process.cwd(), '.data', 'uploads', fileId);
     if (fs.existsSync(localPath)) {
-      setMediaStreamResponseHeaders(res, { isPublic: false });
-      return res.sendFile(localPath, { acceptRanges: true });
+      setMediaStreamResponseHeaders(res, {
+        isPublic: false,
+        mimeType: meta?.mimeType,
+        downloadFilename
+      });
+      return res.sendFile(localPath, { acceptRanges: true, cacheControl: false });
     }
 
     const rangeHeader = req.headers.range;
-    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, undefined, rangeHeader);
+    const authResult = await mediaStorage.getAuthorizedObjectStream(
+      fileId,
+      verification.ownerUserId,
+      rangeHeader,
+      { trustedSignedToken: true }
+    );
     if (authResult.error || !authResult.body) {
       const status = authResult.statusCode || 404;
       return res.status(status).json({ error: authResult.error || 'Media file not found' });
@@ -857,7 +938,8 @@ app.get('/api/media/signed/:token', async (req, res) => {
       isPublic: false,
       contentRange: authResult.contentRange,
       contentLength: authResult.contentLength,
-      mimeType: authResult.mimeType || 'application/octet-stream'
+      mimeType: authResult.mimeType || 'application/octet-stream',
+      downloadFilename: wantsDownload ? buildSafeDownloadFilename(fileId, authResult.mimeType || meta?.mimeType) : undefined
     });
     return await pipeStreamBodySafely(req, res, authResult.body);
   } catch (err: any) {
@@ -868,15 +950,62 @@ app.get('/api/media/signed/:token', async (req, res) => {
   }
 });
 
-// Get presigned URL for direct/cloud storage access with ownership validation
-app.get('/api/media/:fileId/signed-url', requireAuth, async (req, res) => {
-  const fileId = req.params.fileId;
+// Authorized attachment download proxy (Bearer auth required; streams R2 or local bytes with proper MIME & extension)
+app.get('/api/media/:fileId/download', requireAuth, async (req, res) => {
+  const fileId = path.basename(req.params.fileId);
   const user = (req as any).user as UserProfile;
-  const signedUrl = await mediaStorage.getPresignedUrl(fileId, user.id);
-  if (!signedUrl) {
-    return res.status(403).json({ error: 'Access denied or media not found' });
+  try {
+    const meta = await mediaStorage.getMetadata(fileId);
+    if (!meta) {
+      return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
+    }
+    if (!meta.isPublic && (!meta.ownerUserId || meta.ownerUserId !== user.id)) {
+      return res.status(403).json({ error: 'Unauthorized: Access restricted to owner.' });
+    }
+    const authResult = await mediaStorage.getAuthorizedObjectStream(fileId, user.id, req.headers.range);
+    if (authResult.error || !authResult.body) {
+      const status = authResult.statusCode || (authResult.error?.includes('Unauthorized') ? 403 : 404);
+      return res.status(status).json({ error: authResult.error || 'Media file not found' });
+    }
+    if (authResult.statusCode) {
+      res.status(authResult.statusCode);
+    }
+    const resolvedMime = authResult.mimeType || meta.mimeType || 'application/octet-stream';
+    setMediaStreamResponseHeaders(res, {
+      isPublic: false,
+      contentRange: authResult.contentRange,
+      contentLength: authResult.contentLength,
+      mimeType: resolvedMime,
+      downloadFilename: buildSafeDownloadFilename(fileId, resolvedMime)
+    });
+    return await pipeStreamBodySafely(req, res, authResult.body);
+  } catch (err: any) {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || 'Failed to download media' });
+    }
+    return res.end();
   }
-  res.json({ success: true, url: signedUrl });
+});
+
+// Get short-lived delivery bundle (primary R2 presigned URL + same-origin signed proxy/download fallbacks)
+app.get('/api/media/:fileId/signed-url', requireAuth, async (req, res) => {
+  const fileId = path.basename(req.params.fileId);
+  const user = (req as any).user as UserProfile;
+  const bundle = await mediaStorage.getAuthorizedDeliveryBundle(fileId, user.id, 600);
+  if (!bundle.ok || !bundle.url) {
+    return res.status(bundle.statusCode || 403).json({ error: bundle.error || 'Access denied or media not found' });
+  }
+  res.json({
+    success: true,
+    url: bundle.url,
+    fallbackUrl: bundle.fallbackUrl,
+    downloadUrl: bundle.downloadUrl,
+    mimeType: bundle.mimeType,
+    sizeBytes: bundle.sizeBytes,
+    provider: bundle.provider,
+    expiresInSeconds: bundle.expiresInSeconds,
+    expiresAt: bundle.expiresAt
+  });
 });
 
 // Upload media file with user isolation
@@ -2361,11 +2490,19 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
     const savedAsDraft = !readiness.ready;
     if (savedAsDraft) {
       newTemplate.isActive = false;
-      newTemplate.readinessStatus = 'DRAFT_INCOMPLETE';
+      newTemplate.readinessStatus = 'NEEDS_SETUP';
+      newTemplate.lastTestResult = 'UNTESTED';
+      newTemplate.readinessReason =
+        readiness.errors[0] || `Missing: ${readiness.missingFields.join(', ')}`;
       newTemplate.missingFields = readiness.missingFields;
       newTemplate.readinessErrors = readiness.errors;
     } else {
-      newTemplate.readinessStatus = 'READY';
+      newTemplate.readinessStatus = newTemplate.isActive === false ? 'PAUSED' : 'TEST_REQUIRED';
+      newTemplate.lastTestResult = 'UNTESTED';
+      newTemplate.readinessReason =
+        newTemplate.isActive === false
+          ? 'Paused by Admin (hidden from customer generation).'
+          : 'Saved config valid — run 1-click Admin test to verify output & download.';
       newTemplate.missingFields = [];
       newTemplate.readinessErrors = [];
     }
@@ -2536,7 +2673,13 @@ app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
           isActive: isActive !== false,
           tags: Array.isArray(tags) ? tags : [cleanCategory, 'Photo Template'],
           likesCount: 0,
-          resolutionLabel: '4K Ultra HD'
+          resolutionLabel: '4K Ultra HD',
+          readinessStatus: isActive !== false ? 'TEST_REQUIRED' : 'PAUSED',
+          lastTestResult: 'UNTESTED',
+          readinessReason:
+            isActive !== false
+              ? 'Imported config valid — run 1-click Admin test before launching to customers.'
+              : 'Paused by Admin.'
         };
 
         const saved = await prodDb.addTemplate(newTemplate);
@@ -2577,7 +2720,7 @@ app.put('/api/admin/categories/prompts', requireAdmin, (req, res) => {
   res.json({ success: true, prompts: prodDb.getCategoryPrompts() });
 });
 
-// Admin Get All Templates (Including Inactive, with optional cloud refresh)
+// Admin Get All Templates (Including Inactive, enriched with canonical 5-state readiness + pause gate status)
 app.get('/api/admin/templates', requireAdmin, async (req, res) => {
   if (req.query.refresh === 'true' && adminFirestoreDb) {
     try {
@@ -2586,7 +2729,20 @@ app.get('/api/admin/templates', requireAdmin, async (req, res) => {
       console.warn('[Admin] Template catalog refresh note:', err.message);
     }
   }
-  res.json({ templates: prodDb.getAllTemplatesAdmin() });
+  const templates = prodDb.getAllTemplatesAdmin().map((t) => {
+    const norm = normalizeTemplateReadinessStatus(t);
+    return {
+      ...t,
+      readinessStatus: norm.status,
+      readinessReason: norm.reason,
+      lastTestResult: norm.lastTestResult,
+      lastVerifiedAt: norm.lastVerifiedAt || t.lastVerifiedAt,
+      lastTestError: norm.lastTestError ?? t.lastTestError,
+      normalizedReadiness: norm
+    };
+  });
+  const generationGate = await prodDb.getGenerationGateAuthoritative();
+  res.json({ templates, generationGate });
 });
 
 // Admin Update Template (Self-service edit, replace media, recipe, driving video, tags, active)
@@ -2814,7 +2970,9 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         title: draftTitle,
         isActive: false,
         draftOfTemplateId: id,
-        readinessStatus: 'DRAFT_INCOMPLETE',
+        readinessStatus: 'NEEDS_SETUP',
+        lastTestResult: 'UNTESTED',
+        readinessReason: readiness.errors[0] || `Missing: ${readiness.missingFields.join(', ')}`,
         missingFields: readiness.missingFields,
         readinessErrors: readiness.errors
       };
@@ -2840,13 +2998,46 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
     }
 
     if (!readiness.ready) {
-      // Editing an existing inactive draft cleanly keeps it as a Draft
+      // Editing an existing inactive draft cleanly keeps it in NEEDS_SETUP
       updates.isActive = false;
-      updates.readinessStatus = 'DRAFT_INCOMPLETE';
+      updates.readinessStatus = 'NEEDS_SETUP';
+      updates.readinessReason = readiness.errors[0] || `Missing: ${readiness.missingFields.join(', ')}`;
       updates.missingFields = readiness.missingFields;
       updates.readinessErrors = readiness.errors;
+    } else if (isSimpleActiveToggle) {
+      if (updates.isActive === false) {
+        updates.readinessStatus = 'PAUSED';
+        updates.readinessReason = 'Paused by Admin (hidden from customer generation).';
+      } else {
+        const previouslyVerified = Boolean(existing.lastVerifiedAt && existing.lastTestResult === 'PASSED');
+        updates.readinessStatus = previouslyVerified ? 'READY' : 'TEST_REQUIRED';
+        updates.readinessReason = previouslyVerified
+          ? 'Verified via real Admin end-to-end test.'
+          : 'Unverified template — run 1-click Admin test before launching to customers.';
+      }
+      updates.missingFields = [];
+      updates.readinessErrors = [];
     } else {
-      updates.readinessStatus = 'READY';
+      const recipeChanged = didTemplateExecutionRecipeChange(existing, updates);
+      const nextIsActive = updates.isActive !== undefined ? updates.isActive !== false : existing.isActive !== false;
+      const hadPassedVerification = Boolean(existing.lastVerifiedAt && existing.lastTestResult === 'PASSED');
+
+      if (recipeChanged || !hadPassedVerification) {
+        updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'TEST_REQUIRED';
+        updates.lastTestResult = 'UNTESTED';
+        updates.lastVerifiedAt = '';
+        updates.lastTestError = '';
+        updates.readinessReason = !nextIsActive
+          ? 'Paused by Admin.'
+          : recipeChanged
+          ? 'Execution recipe/assets changed — run 1-click Admin test to re-verify.'
+          : 'Run 1-click Admin test to verify output & download.';
+      } else {
+        updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'READY';
+        updates.readinessReason = !nextIsActive
+          ? 'Paused by Admin.'
+          : 'Verified via real Admin end-to-end test.';
+      }
       updates.missingFields = [];
       updates.readinessErrors = [];
     }
@@ -2861,7 +3052,7 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         actorEmail: adminUser.email,
         action: 'TEMPLATE_UPDATED',
         targetId: id,
-        details: `Template "${updated.title}" updated (${updated.readinessStatus || 'READY'}).`
+        details: `Template "${updated.title}" updated (${updated.readinessStatus || 'TEST_REQUIRED'}).`
       }).catch(() => {});
     }
 
@@ -2873,6 +3064,353 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to update template' });
+  }
+});
+
+// Centralized Customer Generation Pause Gate (Public read, Admin write)
+app.get('/api/generation-gate', async (_req, res) => {
+  const gate = await prodDb.getGenerationGateAuthoritative();
+  res.json({ ...gate, gate });
+});
+
+app.put('/api/admin/generation-gate', requireAdmin, async (req, res) => {
+  try {
+    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+    const { customerGenerationPaused, reason } = req.body || {};
+    if (typeof customerGenerationPaused !== 'boolean') {
+      return res.status(400).json({ error: 'customerGenerationPaused boolean is required' });
+    }
+    const gate = await prodDb.setGenerationGate({
+      customerGenerationPaused,
+      reason: typeof reason === 'string' ? reason : undefined,
+      updatedBy: adminUser?.email || 'authorized_admin'
+    });
+    if (adminUser?.email) {
+      prodDb.logAdminActivity({
+        actorEmail: adminUser.email,
+        action: 'SYSTEM_CONFIG_UPDATED',
+        targetId: 'generation_gate',
+        details: `Customer generation gate set to ${gate.customerGenerationPaused ? 'PAUSED' : 'ACTIVE'} (${gate.reason}).`
+      }).catch(() => {});
+    }
+    return res.json({ success: true, gate });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to update customer generation gate' });
+  }
+});
+
+// Helper: Generate a small valid PNG portrait buffer via Resvg if Admin did not provide a custom test photo
+function buildSyntheticAdminTestPhotoBuffer(): Buffer {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#1e1b2e"/>
+        <stop offset="100%" stop-color="#3b2640"/>
+      </linearGradient>
+    </defs>
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <circle cx="256" cy="195" r="78" fill="#e5b899"/>
+    <path d="M128 450 C140 325 372 325 384 450 Z" fill="#2c3e50"/>
+    <circle cx="228" cy="185" r="8" fill="#1f1f1f"/>
+    <circle cx="284" cy="185" r="8" fill="#1f1f1f"/>
+    <path d="M232 225 Q256 244 280 225" stroke="#8a4b38" stroke-width="5" fill="none" stroke-linecap="round"/>
+  </svg>`;
+  const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: 512 } });
+  return Buffer.from(resvg.render().asPng());
+}
+
+// Admin 1-Click End-to-End Template Verification Test (0 credits, tests real generation + R2/disk + signed URL + download)
+app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) => {
+  const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+  const { id } = req.params;
+  const template = prodDb.getAllTemplatesAdmin().find((t) => t.id === id);
+  if (!template) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+
+  const staticReadiness = validateTemplateReadiness(template, { strictPublish: false });
+  if (!staticReadiness.ready) {
+    const reason = staticReadiness.errors[0] || `Missing: ${staticReadiness.missingFields.join(', ')}`;
+    const updated = await prodDb.updateTemplate(id, {
+      isActive: false,
+      readinessStatus: 'NEEDS_SETUP',
+      lastTestResult: 'UNTESTED',
+      readinessReason: reason,
+      missingFields: staticReadiness.missingFields,
+      readinessErrors: staticReadiness.errors
+    });
+    return res.status(400).json({
+      success: false,
+      status: 'NEEDS_SETUP',
+      readinessStatus: 'NEEDS_SETUP',
+      error: reason,
+      template: updated
+    });
+  }
+
+  const testStartedAt = new Date().toISOString();
+  const genId = `admin_verify_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const rawEffectiveModel =
+    template.model || template.recipe?.model || (template.type === 'photo' ? 'gemini-3.1-flash-lite-image' : 'hf_mult_motion_control_flash');
+  const effectiveModel = resolveCanonicalModelId(rawEffectiveModel) || rawEffectiveModel;
+  const isSmartTemplate = template.engine === 'SMART_TEMPLATE' || effectiveModel === 'smart_canvas_ffmpeg';
+  const resolvedProvider = (
+    template.provider ||
+    template.recipe?.provider ||
+    (isSmartTemplate ? 'smart_template' : template.type === 'photo' ? 'gemini' : 'higgsfield')
+  )
+    .toString()
+    .trim()
+    .toLowerCase();
+  const resolvedAdapter = (template.adapter || template.recipe?.adapter || '').toString().trim();
+
+  try {
+    const customTestInput =
+      typeof req.body?.testMediaBase64 === 'string' && req.body.testMediaBase64.trim()
+        ? req.body.testMediaBase64.trim()
+        : typeof req.body?.testMediaUrl === 'string' && req.body.testMediaUrl.trim()
+        ? req.body.testMediaUrl.trim()
+        : null;
+
+    const testPayload: string | Buffer = customTestInput || buildSyntheticAdminTestPhotoBuffer();
+    const storedInput = await mediaStorage.saveMedia(
+      testPayload,
+      'user_gen',
+      `${adminUser.id}_verify_${Date.now()}.png`,
+      adminUser.id,
+      false
+    );
+    const signedInputUrl = await mediaStorage.generateProviderSignedUrl(storedInput.fileId, 3600);
+    if (!signedInputUrl) {
+      throw new Error('Failed to create signed URL for Admin test input.');
+    }
+
+    const isCoupleTemplate = template.category === 'Couple' || (template as any).isCouple === true;
+    const structuredInputs = isCoupleTemplate
+      ? [
+          { slotId: 'partner_1', role: 'person_a', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl },
+          { slotId: 'partner_2', role: 'person_b', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl }
+        ]
+      : [{ slotId: 'partner_1', role: 'user_photo', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl }];
+
+    const resolvedRefImage =
+      template.sampleResult ||
+      template.sampleAfter ||
+      template.referenceImageUrl ||
+      (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.referenceImageUrl ||
+      template.recipe?.referenceAssets?.[0] ||
+      (template.type === 'photo' ? template.cover : undefined);
+
+    const categoryPrompt = prodDb.getCategoryPrompt(template.category);
+    const effectivePrompt = buildUnifiedGenerationPrompt({
+      categoryPrompt,
+      templateRecipePrompt: template.recipe?.prompt?.trim(),
+      userCustomInstructions: undefined,
+      templateTitle: template.title,
+      templateCategory: template.category,
+      hasAfterReference: Boolean(resolvedRefImage),
+      hasBeforeReference: Boolean(template.sampleBefore),
+      outputType: template.type,
+      workflow: template.workflow,
+      isCouple: isCoupleTemplate,
+      hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
+      wardrobeSource: template.defaultWardrobeSource as any
+    });
+
+    prodDb.recordAdminTestRun({
+      genId,
+      adminEmail: adminUser.email || 'admin',
+      templateId: template.id,
+      templateTitle: template.title,
+      model: effectiveModel,
+      providerCostUsd: isSmartTemplate ? 0 : Number(template.providerCostUsd) || 0.25
+    });
+
+    let resultMediaUrl = '';
+    if (resolvedProvider === 'higgsfield' || resolvedAdapter === 'faceSwapAdapter') {
+      const rawDriving = template.drivingVideoUrl || template.recipe?.drivingVideoUrl;
+      if (!rawDriving) {
+        throw new Error('Higgsfield template is missing drivingVideoUrl.');
+      }
+      const signedDriving = rawDriving.includes('/api/media/')
+        ? await mediaStorage.generateProviderSignedUrl(rawDriving, 3600)
+        : rawDriving;
+      const submittedJob = await faceSwapAdapter.submitFaceSwapJob({
+        videoUrl: signedDriving,
+        imageUrls: structuredInputs.map((i) => i.mediaUrl),
+        masterRecipePrompt: effectivePrompt,
+        provider: resolvedProvider,
+        adapter: resolvedAdapter || 'faceSwapAdapter',
+        model: effectiveModel,
+        workflow: template.workflow || 'MOTION_TRANSFER',
+        resolution: (template.resolutionLabel as any) || '480p',
+        durationSeconds: template.durationSeconds || 4,
+        ownerUserId: adminUser.id,
+        isCouple: isCoupleTemplate
+      });
+      if (submittedJob.immediateVideoUrl) {
+        const storedOut = await faceSwapAdapter.downloadAndSaveFaceSwapResult({
+          resultVideoUrl: submittedJob.immediateVideoUrl,
+          ownerUserId: adminUser.id
+        });
+        resultMediaUrl = storedOut.publicUrl;
+      } else {
+        // Provider queued cleanly; cannot claim customer download READY until immediate/completed output verifies
+        throw new Error(
+          `Provider queued async job '${submittedJob.requestId}' (not yet completed for instant download check). Verify once provider completes.`
+        );
+      }
+    } else {
+      const genResult = await processTemplate({
+        templateId: template.id,
+        templateTitle: template.title,
+        templateType: template.type,
+        engine: template.engine,
+        provider: resolvedProvider,
+        adapter: resolvedAdapter || undefined,
+        workflow: template.workflow,
+        inputMediaUrl: structuredInputs.map((i) => i.mediaUrl).join('|||'),
+        inputMediaUrls: structuredInputs.map((i) => i.mediaUrl),
+        inputMedia: structuredInputs,
+        referenceImageUrl: resolvedRefImage,
+        sampleBeforeUrl: template.sampleBefore,
+        sampleResultUrl: resolvedRefImage,
+        sampleFaceThumbnailUrl: template.sampleFaceThumbnail,
+        aspectRatio: template.aspectRatio,
+        ownerUserId: adminUser.id,
+        recipe: {
+          ...(template.recipe || ({} as any)),
+          provider: resolvedProvider,
+          adapter: resolvedAdapter || template.recipe?.adapter,
+          prompt: effectivePrompt,
+          model: effectiveModel,
+          referenceImageUrl: resolvedRefImage,
+          sampleResult: resolvedRefImage
+        },
+        detectedInputType: 'image',
+        drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl,
+        model: effectiveModel,
+        resolution: (template.resolutionLabel as any) || (template.type === 'video' ? '720p' : '1080p'),
+        durationSeconds: template.durationSeconds,
+        isCouple: isCoupleTemplate,
+        wardrobeSource: template.defaultWardrobeSource as any
+      });
+      resultMediaUrl = genResult.resultUrl;
+    }
+
+    // Verify stored deliverable, read-back bytes, signed URL, and download stream!
+    const deliverable = await mediaStorage.verifyStoredMediaDeliverable(resultMediaUrl, adminUser.id);
+    if (!deliverable.verified) {
+      throw new Error(deliverable.reason || 'Generated output failed private storage read-back verification.');
+    }
+
+    const bundle = await mediaStorage.getAuthorizedDeliveryBundle(deliverable.fileId, adminUser.id, 600);
+    if (!bundle.ok || !bundle.url || !bundle.downloadUrl) {
+      throw new Error(bundle.error || 'Failed to generate authorized preview & download URLs.');
+    }
+
+    const downloadStreamCheck = await mediaStorage.getAuthorizedObjectStream(
+      deliverable.fileId,
+      adminUser.id,
+      'bytes=0-15'
+    );
+    if (downloadStreamCheck.error || !downloadStreamCheck.body) {
+      throw new Error(downloadStreamCheck.error || 'Download byte-range verification failed.');
+    }
+    if (typeof downloadStreamCheck.body.destroy === 'function') {
+      downloadStreamCheck.body.destroy();
+    }
+
+    const nowIso = new Date().toISOString();
+    const nextStatus = template.isActive === false ? 'PAUSED' : 'READY';
+    const updatedTemplate = await prodDb.updateTemplate(id, {
+      readinessStatus: nextStatus,
+      lastVerifiedAt: nowIso,
+      lastTestResult: 'PASSED',
+      lastTestError: '',
+      readinessReason:
+        nextStatus === 'PAUSED'
+          ? 'Verified end-to-end by Admin test (template currently paused).'
+          : 'Verified end-to-end by Admin test.',
+      missingFields: [],
+      readinessErrors: []
+    });
+
+    if (adminUser?.email) {
+      prodDb.logAdminActivity({
+        actorEmail: adminUser.email,
+        action: 'TEMPLATE_UPDATED',
+        targetId: id,
+        details: `Admin 1-click test PASSED for "${template.title}" (${deliverable.fileId}, ${deliverable.sizeBytes} bytes, MIME=${deliverable.mimeType}).`
+      }).catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      status: nextStatus,
+      readinessStatus: nextStatus,
+      verifiedAt: nowIso,
+      verification: {
+        passed: true,
+        fileId: deliverable.fileId,
+        sizeBytes: deliverable.sizeBytes,
+        mimeType: deliverable.mimeType,
+        signedUrl: bundle.url,
+        fallbackUrl: bundle.fallbackUrl,
+        downloadUrl: bundle.downloadUrl
+      },
+      deliverable: {
+        fileId: deliverable.fileId,
+        sizeBytes: deliverable.sizeBytes,
+        mimeType: deliverable.mimeType,
+        signedUrl: bundle.url,
+        fallbackUrl: bundle.fallbackUrl,
+        downloadUrl: bundle.downloadUrl
+      },
+      template: updatedTemplate
+    });
+  } catch (err: any) {
+    const cleanErr = sanitizeMonitoringString(String(err?.message || 'Verification test failed')).slice(0, 260);
+    const updatedTemplate = await prodDb.updateTemplate(id, {
+      readinessStatus: 'FAILED',
+      lastVerifiedAt: testStartedAt,
+      lastTestResult: 'FAILED',
+      lastTestError: cleanErr,
+      readinessReason: cleanErr
+    });
+    if (adminUser?.email) {
+      prodDb.logAdminActivity({
+        actorEmail: adminUser.email,
+        action: 'TEMPLATE_UPDATED',
+        targetId: id,
+        details: `Admin 1-click test FAILED for "${template.title}": ${cleanErr}`
+      }).catch(() => {});
+    }
+    return res.status(422).json({
+      success: false,
+      status: 'FAILED',
+      readinessStatus: 'FAILED',
+      verification: { passed: false, error: cleanErr },
+      error: cleanErr,
+      template: updatedTemplate
+    });
+  }
+});
+
+// Admin Idempotent Reconciliation of Historical Affected Generations (e.g. tpl_full_swag_1)
+app.post('/api/admin/reconcile-generations', requireAdmin, async (req, res) => {
+  try {
+    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+    const { templateId, dryRun = false } = req.body || {};
+    const report = await reconcileAffectedGenerations(prodDb, mediaStorage, {
+      templateId: typeof templateId === 'string' && templateId.trim() ? templateId.trim() : undefined,
+      dryRun: Boolean(dryRun),
+      actorEmail: adminUser?.email
+    });
+    return res.json({ success: true, ...report });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Reconciliation failed' });
   }
 });
 
@@ -5121,12 +5659,25 @@ async function attemptDurableGenerationRefund(params: {
 
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
+  const isAuthorizedAdminEarly = isServerVerifiedAdmin(user);
   const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource } = req.body;
   const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
   const rawIdempotencyKey = req.body?.idempotencyKey || req.headers['x-idempotency-key'];
   const idempotencyKey = typeof rawIdempotencyKey === 'string' && rawIdempotencyKey.trim()
     ? rawIdempotencyKey.trim().slice(0, 128)
     : undefined;
+
+  if (!isAuthorizedAdminEarly) {
+    const gate = await prodDb.getGenerationGateAuthoritative();
+    if (gate.customerGenerationPaused) {
+      return res.status(503).json({
+        error: gate.reason || 'Paid customer generation is temporarily paused during verification. No credits were deducted.',
+        code: 'CUSTOMER_GENERATION_PAUSED',
+        stage: 'maintenance_gate',
+        retryable: true
+      });
+    }
+  }
 
   if (idempotencyKey) {
     const userGensForIdem = await prodDb.getUserGenerationsAuthoritative(user.id);
@@ -5142,17 +5693,24 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
   }
 
-  const template = prodDb.getTemplates().find((t) => t.id === templateId);
+  const template = isAuthorizedAdminEarly
+    ? prodDb.getAllTemplatesAdmin().find((t) => t.id === templateId)
+    : prodDb.getTemplates().find((t) => t.id === templateId);
   if (!template) {
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
   }
 
-  // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Safety Condition #3)
+  // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Safety Condition #3 + 5-State Readiness)
   const templateReadiness = validateTemplateReadiness(template, { strictPublish: false });
-  if (!templateReadiness.ready || template.isActive === false) {
+  const normalizedReadiness = normalizeTemplateReadinessStatus(template);
+  if (!templateReadiness.ready || (!isAuthorizedAdminEarly && (template.isActive === false || normalizedReadiness.status !== 'READY'))) {
+    const detailReason = !templateReadiness.ready
+      ? (templateReadiness.errors[0] || templateReadiness.missingFields.join(', '))
+      : normalizedReadiness.reason;
     return res.status(400).json({
-      error: `Template '${template.title}' is not ready for generation: ${templateReadiness.errors[0] || templateReadiness.missingFields.join(', ')}. No credits were deducted.`,
+      error: `Template '${template.title}' is not ready for customer generation (${normalizedReadiness.status}): ${detailReason}. No credits were deducted.`,
       code: 'TEMPLATE_NOT_READY',
+      readinessStatus: normalizedReadiness.status,
       stage: 'readiness_validation',
       missingFields: templateReadiness.missingFields,
       errors: templateReadiness.errors
@@ -5941,6 +6499,12 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       throw new Error('AI provider returned empty result media URL');
     }
 
+    // Verified Deliverable Gate: Refuse to mark completed unless media is saved privately, readable (>0 bytes), and mints signed URL
+    const deliverableCheck = await mediaStorage.verifyStoredMediaDeliverable(result.resultUrl, user.id);
+    if (!deliverableCheck.verified) {
+      throw new Error(`DELIVERABLE_VERIFICATION_FAILED: ${deliverableCheck.reason || 'Generated output could not be verified in private storage.'}`);
+    }
+
     // Duration probing & four-tier duration tracking
     let actualOutputDuration: number | undefined;
     let actualBillableDuration: number | undefined;
@@ -6104,6 +6668,18 @@ app.post('/api/faceswap/calculate-cost', async (req, res) => {
 // Final Face / Character Video Generation Route (Higgsfield Genjutsu Light Motion Transfer / Object Swap)
 app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
+  const isAuthorizedAdminEarly = isServerVerifiedAdmin(user);
+  if (!isAuthorizedAdminEarly) {
+    const gate = await prodDb.getGenerationGateAuthoritative();
+    if (gate.customerGenerationPaused) {
+      return res.status(503).json({
+        error: gate.reason || 'Paid customer generation is temporarily paused during verification. No credits were deducted.',
+        code: 'CUSTOMER_GENERATION_PAUSED',
+        stage: 'maintenance_gate',
+        retryable: true
+      });
+    }
+  }
   const {
     sourceVideoUrl,
     sourceVideoBase64,
@@ -6580,6 +7156,28 @@ async function finalizeFaceSwapGeneration(
     resultVideoUrl,
     ownerUserId: currentGen.userId
   });
+
+  // Verified Deliverable Gate before completion or billing reconciliation
+  const deliverableCheck = await mediaStorage.verifyStoredMediaDeliverable(stored.publicUrl, currentGen.userId);
+  if (!deliverableCheck.verified) {
+    const errText = `DELIVERABLE_VERIFICATION_FAILED: ${deliverableCheck.reason || 'Video output could not be verified in private storage.'}`;
+    if (leaseOwner) {
+      await prodDb.releaseGenerationPollLease(currentGen.id, leaseOwner, {
+        status: 'failed',
+        error: errText,
+        refundStatus: currentGen.creditCost > 0 ? 'refund_pending' : 'none'
+      });
+    }
+    const refundOutcome = await attemptDurableGenerationRefund({
+      genId: currentGen.id,
+      userId: currentGen.userId,
+      creditCost: currentGen.creditCost,
+      reason: `Refund: Video deliverable verification failed (${currentGen.templateTitle})`,
+      errorMsg: errText,
+      shouldRefund: currentGen.creditCost > 0
+    });
+    return refundOutcome.generation;
+  }
 
   // Probe actual output video duration & reconcile exact dual-duration billing
   let actualOutputDuration: number | undefined;
@@ -8422,6 +9020,213 @@ async function startServer() {
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`AI PRIME STUDIO production server running on http://0.0.0.0:${PORT}`);
   });
+}
+
+export interface ReconcileGenerationsResult {
+  dryRun: boolean;
+  templateFilter: string | null;
+  scanned: number;
+  restoredValid: number;
+  refundedMissing: number;
+  skippedAlreadyRefunded: number;
+  errors: number;
+  items: Array<{
+    generationId: string;
+    userId: string;
+    templateId: string;
+    previousStatus: string;
+    action: 'RESTORED_VALID' | 'REFUNDED_MISSING_OUTPUT' | 'ALREADY_HEALTHY' | 'SKIPPED_ALREADY_REFUNDED' | 'SKIPPED_ACTIVE_PROCESSING' | 'ERROR';
+    details: string;
+  }>;
+}
+
+export async function reconcileAffectedGenerations(
+  db: ProductionDatabase,
+  storage: typeof mediaStorage,
+  options?: { templateId?: string; dryRun?: boolean; actorEmail?: string }
+): Promise<ReconcileGenerationsResult> {
+  const dryRun = Boolean(options?.dryRun);
+  const templateFilter = options?.templateId || null;
+  const allGenerations = await db.getAllGenerationsAuthoritative();
+  const candidates = templateFilter
+    ? allGenerations.filter((g) => g.templateId === templateFilter)
+    : allGenerations.filter(
+        (g) =>
+          g.status === 'completed' ||
+          (g.status === 'failed' && g.refundStatus !== 'refunded' && g.creditCost > 0) ||
+          (g.status === 'processing' && !g.providerRequestId && !g.providerStatusUrl)
+      );
+
+  const items: ReconcileGenerationsResult['items'] = [];
+  let restoredValid = 0;
+  let refundedMissing = 0;
+  let skippedAlreadyRefunded = 0;
+  let errors = 0;
+
+  for (const gen of candidates) {
+    try {
+      const hasUrl = Boolean(gen.resultMediaUrl && gen.resultMediaUrl.trim());
+      if (hasUrl) {
+        const verify = await storage.verifyStoredMediaDeliverable(gen.resultMediaUrl!, gen.userId);
+        if (verify.verified) {
+          if (gen.status === 'completed') {
+            items.push({
+              generationId: gen.id,
+              userId: gen.userId,
+              templateId: gen.templateId,
+              previousStatus: gen.status,
+              action: 'ALREADY_HEALTHY',
+              details: `Verified private media '${verify.fileId}' (${verify.sizeBytes} bytes)`
+            });
+          } else if (gen.refundStatus === 'refunded') {
+            skippedAlreadyRefunded++;
+            items.push({
+              generationId: gen.id,
+              userId: gen.userId,
+              templateId: gen.templateId,
+              previousStatus: gen.status,
+              action: 'SKIPPED_ALREADY_REFUNDED',
+              details: 'Output file exists, but generation was already refunded earlier.'
+            });
+          } else {
+            if (!dryRun) {
+              await db.updateGenerationAsync(
+                gen.id,
+                {
+                  status: 'completed',
+                  resultMediaUrl: `/api/media/${verify.fileId}`,
+                  completedAt: gen.completedAt || new Date().toISOString()
+                },
+                { allowReconcileMissingOutput: true }
+              );
+            }
+            restoredValid++;
+            items.push({
+              generationId: gen.id,
+              userId: gen.userId,
+              templateId: gen.templateId,
+              previousStatus: gen.status,
+              action: 'RESTORED_VALID',
+              details: `${dryRun ? '[DRY-RUN] Would restore' : 'Restored'} verified private media '${verify.fileId}' (${verify.sizeBytes} bytes)`
+            });
+          }
+          continue;
+        }
+      }
+
+      // If it is still actively queued at an async video provider, skip
+      if (gen.status === 'processing' && (gen.providerRequestId || gen.providerStatusUrl)) {
+        items.push({
+          generationId: gen.id,
+          userId: gen.userId,
+          templateId: gen.templateId,
+          previousStatus: gen.status,
+          action: 'SKIPPED_ACTIVE_PROCESSING',
+          details: 'Generation has active provider handle; skipped.'
+        });
+        continue;
+      }
+
+      // Missing/unreadable output: check idempotently if already refunded
+      if (gen.refundStatus === 'refunded' || gen.creditCost <= 0) {
+        skippedAlreadyRefunded++;
+        items.push({
+          generationId: gen.id,
+          userId: gen.userId,
+          templateId: gen.templateId,
+          previousStatus: gen.status,
+          action: 'SKIPPED_ALREADY_REFUNDED',
+          details:
+            gen.creditCost <= 0
+              ? 'Zero-credit / admin test run; no refund needed.'
+              : 'Missing output already refunded earlier (idempotent skip).'
+        });
+        continue;
+      }
+
+      // Verify existing refund transaction ledger to be 100% certain no duplicate refund happens
+      const existingTx = (db.raw.transactions || []).find(
+        (t) => t.referenceId === gen.id && t.type === 'refund'
+      );
+      if (existingTx) {
+        if (!dryRun) {
+          await db.updateGenerationAsync(
+            gen.id,
+            { status: 'failed', refundStatus: 'refunded' },
+            { allowReconcileMissingOutput: true }
+          );
+        }
+        skippedAlreadyRefunded++;
+        items.push({
+          generationId: gen.id,
+          userId: gen.userId,
+          templateId: gen.templateId,
+          previousStatus: gen.status,
+          action: 'SKIPPED_ALREADY_REFUNDED',
+          details: `Found existing refund transaction '${existingTx.id}' for '${gen.id}'; normalized record without double-refund.`
+        });
+        continue;
+      }
+
+      if (!dryRun) {
+        await db.refundCredits(
+          gen.userId,
+          gen.creditCost,
+          `Reconciliation Refund: Unverified or missing generation output (${gen.templateTitle})`,
+          gen.id
+        );
+        await db.updateGenerationAsync(
+          gen.id,
+          {
+            status: 'failed',
+            refundStatus: 'refunded',
+            refundError: '',
+            error: gen.error || 'Stored media deliverable missing during reconciliation audit. Credits refunded.'
+          },
+          { allowReconcileMissingOutput: true }
+        );
+      }
+      refundedMissing++;
+      items.push({
+        generationId: gen.id,
+        userId: gen.userId,
+        templateId: gen.templateId,
+        previousStatus: gen.status,
+        action: 'REFUNDED_MISSING_OUTPUT',
+        details: `${dryRun ? '[DRY-RUN] Would refund' : 'Refunded'} ${gen.creditCost} credits once for missing output.`
+      });
+    } catch (itemErr: any) {
+      errors++;
+      items.push({
+        generationId: gen.id,
+        userId: gen.userId,
+        templateId: gen.templateId,
+        previousStatus: gen.status,
+        action: 'ERROR',
+        details: itemErr?.message || 'Reconciliation error'
+      });
+    }
+  }
+
+  if (!dryRun && options?.actorEmail) {
+    db.logAdminActivity({
+      actorEmail: options.actorEmail,
+      action: 'SYSTEM_CONFIG_UPDATED',
+      targetId: templateFilter || 'all_generations',
+      details: `Generation reconciliation (${templateFilter || 'all'}): scanned=${candidates.length}, restored=${restoredValid}, refunded=${refundedMissing}, skipped=${skippedAlreadyRefunded}, errors=${errors}.`
+    }).catch(() => {});
+  }
+
+  return {
+    dryRun,
+    templateFilter,
+    scanned: candidates.length,
+    restoredValid,
+    refundedMissing,
+    skippedAlreadyRefunded,
+    errors,
+    items
+  };
 }
 
 if (!isIsolatedTestEnv || process.env.DISABLE_AUTO_START_SERVER !== 'true') {

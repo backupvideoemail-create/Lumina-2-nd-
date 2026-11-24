@@ -3514,12 +3514,13 @@ async function runSystemVerification() {
   const appContextSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/context/AppContext.tsx'), 'utf8');
   const creationsSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/views/CreationsView.tsx'), 'utf8');
   const viewerSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/components/GenerationViewerModal.tsx'), 'utf8');
+  const resolverSrc44 = fs.readFileSync(pathUtil.resolve(process.cwd(), 'src/utils/authorizedMediaResolver.ts'), 'utf8');
   assert(
     authModalSrc44.includes('cloudPersisted === true') &&
       appContextSrc44.includes('databaseGuardBlocked') &&
       appContextSrc44.includes('safeParseJsonResponse') &&
-      creationsSrc44.includes("'mp4'") &&
-      viewerSrc44.includes("'mp4'"),
+      (creationsSrc44.includes("'mp4'") || (creationsSrc44.includes('downloadAuthorizedMedia') && resolverSrc44.includes("'mp4'"))) &&
+      (viewerSrc44.includes("'mp4'") || (viewerSrc44.includes('downloadAuthorizedMedia') && resolverSrc44.includes("'mp4'"))),
     '44.2 AuthModal cloudPersisted enforcement, AppContext cache guard & safeParseJsonResponse, and dynamic .mp4 download extensions verified'
   );
 

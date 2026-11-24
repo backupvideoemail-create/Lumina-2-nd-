@@ -22,7 +22,7 @@ import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Resvg } from '@resvg/resvg-js';
-import { mediaStorage } from '../storage/mediaStorage.ts';
+import { mediaStorage, extractMediaFileIdFromRef } from '../storage/mediaStorage.ts';
 import type { ProviderResult } from '../types.ts';
 
 const execFileAsync = promisify(execFile);
@@ -114,9 +114,10 @@ export class SmartCanvasAdapter {
       return { dataUri: `data:${mimeType};base64,${buffer.toString('base64')}`, mimeType, buffer };
     }
 
-    if (trimmed.startsWith('/api/media/') && !trimmed.startsWith('/api/media/signed/')) {
-      const fileId = path.basename(trimmed.split('?')[0]);
-      const diskPath = mediaStorage.getFilePath(fileId);
+    if (trimmed.startsWith('/api/media/')) {
+      const fileId = extractMediaFileIdFromRef(trimmed);
+      const isSigned = trimmed.startsWith('/api/media/signed/');
+      const diskPath = fileId ? mediaStorage.getFilePath(fileId) : null;
       if (diskPath && fs.existsSync(diskPath)) {
         const buffer = fs.readFileSync(diskPath);
         const mimeType = fileId.toLowerCase().endsWith('.png')
@@ -127,7 +128,9 @@ export class SmartCanvasAdapter {
         return { dataUri: `data:${mimeType};base64,${buffer.toString('base64')}`, mimeType, buffer };
       }
 
-      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, ownerUserId);
+      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, ownerUserId, undefined, {
+        trustedSignedToken: isSigned
+      });
       if (streamRes.body) {
         const buffer = await streamToBuffer(streamRes.body);
         const mimeType = normalizeMimeType(streamRes.mimeType);

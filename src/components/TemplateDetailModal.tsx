@@ -53,7 +53,10 @@ export const TemplateDetailModal: React.FC = () => {
     setInsufficientCreditsModal,
     faceSwapScenes,
     setSelectedFaceSwapScene,
-    setFaceSwapModalOpen
+    setFaceSwapModalOpen,
+    generationGate,
+    isAdmin,
+    serverAdminVerified
   } = useApp();
 
   // Multi-input slot state: maps slot ID -> base64/URL data
@@ -448,6 +451,21 @@ export const TemplateDetailModal: React.FC = () => {
     fxRateOverride: liveFxStatus?.isFresh && liveFxStatus.rate ? liveFxStatus.rate : undefined
   });
 
+  const isVerifiedAdminUser = Boolean(isAdmin && serverAdminVerified);
+  const isCustomerPaused = Boolean(generationGate?.customerGenerationPaused && !isVerifiedAdminUser);
+  const tplNormalizedStatus =
+    tpl.readinessStatus === 'READY' ||
+    tpl.readinessStatus === 'TEST_REQUIRED' ||
+    tpl.readinessStatus === 'NEEDS_SETUP' ||
+    tpl.readinessStatus === 'FAILED' ||
+    tpl.readinessStatus === 'PAUSED'
+      ? tpl.readinessStatus
+      : undefined;
+  const isTemplateBlockedForCustomer = Boolean(
+    !isVerifiedAdminUser &&
+      ((tplNormalizedStatus && tplNormalizedStatus !== 'READY') || tpl.isActive === false)
+  );
+
   // Fallback check if FX status has not been hydrated yet on client: keep strict evaluation/unsupported guards
   const isQuotePending = !isSmartTemplate && (
     customerQuote.status === 'EVALUATION_ONLY' ||
@@ -461,7 +479,7 @@ export const TemplateDetailModal: React.FC = () => {
   const liveCreditCost = isSmartTemplate
     ? (customerQuote.credits || tpl.creditCost || 10)
     : (customerQuote.status === 'QUOTED' && customerQuote.credits > 0 ? customerQuote.credits : (tpl.creditCost || 0));
-  const hasCredits = userBalance >= liveCreditCost;
+  const hasCredits = isVerifiedAdminUser || userBalance >= liveCreditCost;
 
   // Next / Previous Navigation
   const currentIndex = templates.findIndex((t) => t.id === tpl.id);
@@ -670,6 +688,21 @@ export const TemplateDetailModal: React.FC = () => {
           finalPrompt = (finalPrompt ? finalPrompt + '; ' : '') + 'Wardrobe preference: KEEP_TEMPLATE_CLOTHES';
         }
       }
+    }
+
+    if (isCustomerPaused) {
+      setUploadError(
+        generationGate.reason ||
+          'Paid customer generation is temporarily paused during studio verification. No credits were deducted.'
+      );
+      return;
+    }
+
+    if (isTemplateBlockedForCustomer) {
+      setUploadError(
+        `This template is currently marked ${tplNormalizedStatus || 'UNVERIFIED'} and paused for customer generation. No credits were deducted.`
+      );
+      return;
     }
 
     if (!user) {
@@ -1715,11 +1748,22 @@ export const TemplateDetailModal: React.FC = () => {
       {/* 5. STICKY BOTTOM GENERATION CTA */}
       <footer className="fixed bottom-0 inset-x-0 z-40 p-3.5 bg-gradient-to-t from-[#070609] via-[#070609]/95 to-transparent backdrop-blur-xl border-t border-white/10">
         <div className="max-w-md mx-auto space-y-1.5">
+          {(isCustomerPaused || isTemplateBlockedForCustomer) && (
+            <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-[11px] flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="leading-snug">
+                {isCustomerPaused
+                  ? (generationGate.reason || 'Generation temporarily paused for studio verification · कोई क्रेडिट नहीं कटेगा।')
+                  : `Template verification pending (${tplNormalizedStatus || 'NOT READY'}) · कोई क्रेडिट नहीं कटेगा।`}
+              </span>
+            </div>
+          )}
+
           <button
             onClick={handleGenerateClick}
-            disabled={isGenerating || !isAllInputsReady || isQuotePending || liveCreditCost <= 0}
+            disabled={isGenerating || isCustomerPaused || isTemplateBlockedForCustomer || !isAllInputsReady || isQuotePending || liveCreditCost <= 0}
             className={`w-full py-3.5 sm:py-4 px-6 rounded-2xl text-base font-black flex items-center justify-between shadow-2xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-              isAllInputsReady && !isQuotePending && liveCreditCost > 0
+              !isCustomerPaused && !isTemplateBlockedForCustomer && isAllInputsReady && !isQuotePending && liveCreditCost > 0
                 ? 'gold-button shadow-[0_10px_30px_rgba(212,175,55,0.35)]'
                 : 'bg-stone-800 text-stone-400 border border-white/10'
             }`}
@@ -1734,7 +1778,11 @@ export const TemplateDetailModal: React.FC = () => {
                 <>
                   <Sparkles className="w-5 h-5 fill-current" />
                   <span>
-                    {isQuotePending || liveCreditCost <= 0
+                    {isCustomerPaused
+                      ? 'Generation Temporarily Paused'
+                      : isTemplateBlockedForCustomer
+                      ? 'Verification Pending (जाँच लंबित)'
+                      : isQuotePending || liveCreditCost <= 0
                       ? 'Verification Pending (जाँच लंबित)'
                       : isAllInputsReady
                       ? (tpl.isFaceSwap ? 'Swap Face Now' : (isVideo ? 'Create Video Now' : 'Create Photo Now'))
@@ -1747,12 +1795,14 @@ export const TemplateDetailModal: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-black/40 text-xs font-black text-white tabular-nums">
-              <span>{isQuotePending || liveCreditCost <= 0 ? 'Quote Pending' : `${liveCreditCost} Credits`}</span>
+              <span>{isQuotePending || liveCreditCost <= 0 ? 'Quote Pending' : isVerifiedAdminUser ? '0 Credits (Admin)' : `${liveCreditCost} Credits`}</span>
             </div>
           </button>
 
           <p className="text-[10.5px] text-center text-stone-400">
-            {customerQuote.status === 'FX_EXPIRED' && liveFxStatus && !liveFxStatus.isFresh
+            {isCustomerPaused
+              ? 'Templates browsing & My Creations downloads remain fully active.'
+              : customerQuote.status === 'FX_EXPIRED' && liveFxStatus && !liveFxStatus.isFresh
               ? 'Live USD/INR FX exchange rate unavailable right now. Credits calculation paused for accuracy.'
               : customerQuote.status === 'EVALUATION_ONLY'
               ? 'Owner evaluation video model is currently guarded for testing before public release.'

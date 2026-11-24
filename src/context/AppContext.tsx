@@ -169,6 +169,8 @@ interface AppContextType {
   setDiagnosticsModalOpen: (open: boolean) => void;
   adminDashboardOpen: boolean;
   setAdminDashboardOpen: (open: boolean) => void;
+  generationGate: { customerGenerationPaused: boolean; reason: string; updatedAt?: string };
+  refreshGenerationGate: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -360,6 +362,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [introOfferState, setIntroOfferState] = useState<IntroOfferStatus>('eligible');
   const [pendingIntroPayment, setPendingIntroPayment] = useState<PendingIntroPaymentSummary | null>(null);
   const [billingUnavailable, setBillingUnavailable] = useState<boolean>(false);
+  const [generationGate, setGenerationGate] = useState<{
+    customerGenerationPaused: boolean;
+    reason: string;
+    updatedAt?: string;
+  }>({ customerGenerationPaused: false, reason: '' });
+
+  const refreshGenerationGate = useCallback(async () => {
+    try {
+      const res = await fetch('/api/generation-gate');
+      const parsed = await safeParseJsonResponse<any>(res);
+      if (parsed.ok && parsed.data?.gate) {
+        setGenerationGate({
+          customerGenerationPaused: Boolean(parsed.data.gate.customerGenerationPaused),
+          reason: parsed.data.gate.reason || '',
+          updatedAt: parsed.data.gate.updatedAt
+        });
+      }
+    } catch {
+      // Keep current gate state if temporarily offline
+    }
+  }, []);
 
   useEffect(() => {
     mediaPlaybackCoordinator.setActiveScreen(activeTab);
@@ -462,12 +485,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     fetchTemplates();
-  }, [fetchTemplates]);
+    refreshGenerationGate();
+  }, [fetchTemplates, refreshGenerationGate]);
 
   // Auto-refresh public catalogue on window focus and every 60s to reflect new admin publishes immediately
   useEffect(() => {
     const onFocus = () => {
       fetchTemplates();
+      refreshGenerationGate();
     };
     window.addEventListener('focus', onFocus);
     const interval = setInterval(onFocus, 60000);
@@ -475,7 +500,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('focus', onFocus);
       clearInterval(interval);
     };
-  }, [fetchTemplates]);
+  }, [fetchTemplates, refreshGenerationGate]);
 
   // Fetch Face Swap Scenes (Dynamic from server)
   const fetchFaceSwapScenes = useCallback(async () => {
@@ -1582,7 +1607,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         diagnosticsModalOpen,
         setDiagnosticsModalOpen,
         adminDashboardOpen,
-        setAdminDashboardOpen
+        setAdminDashboardOpen,
+        generationGate,
+        refreshGenerationGate
       }}
     >
       {children}

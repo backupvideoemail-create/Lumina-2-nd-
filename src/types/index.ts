@@ -137,7 +137,18 @@ export interface Template {
   allowWardrobeChoice?: boolean;
   defaultWardrobeSource?: 'auto' | 'my_photo' | 'template';
   crop?: { aspectRatio: '1:1'; positionX: number; positionY: number; zoom: number };
-  readinessStatus?: 'READY' | 'DRAFT_INCOMPLETE' | 'INVALID_CONFIG';
+  readinessStatus?:
+    | 'READY'
+    | 'TEST_REQUIRED'
+    | 'NEEDS_SETUP'
+    | 'FAILED'
+    | 'PAUSED'
+    | 'DRAFT_INCOMPLETE'
+    | 'INVALID_CONFIG';
+  lastVerifiedAt?: string;
+  lastTestResult?: 'PASSED' | 'FAILED' | 'UNTESTED';
+  lastTestError?: string;
+  readinessReason?: string;
   missingFields?: string[];
   readinessErrors?: string[];
   draftOfTemplateId?: string;

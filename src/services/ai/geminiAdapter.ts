@@ -11,7 +11,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { mediaStorage } from '../storage/mediaStorage.ts';
+import { mediaStorage, extractMediaFileIdFromRef } from '../storage/mediaStorage.ts';
 import type { ImageGenerationParams, ProviderResult } from '../types.ts';
 import { isUnifiedPrompt } from '../../config/globalMasterPrompt.ts';
 import { resolveCanonicalModelId } from '../pricing/pricingService.ts';
@@ -41,10 +41,11 @@ export class GeminiAdapter {
       }
     }
 
-    // 2. If it is a local storage path / file ID (fallback to R2 stream on stateless Cloud Run)
-    if (imageInput.startsWith('/api/media/') && !imageInput.startsWith('/api/media/signed/')) {
-      const fileId = imageInput.split('?')[0].replace('/api/media/', '');
-      const filePath = mediaStorage.getFilePath(fileId);
+    // 2. If it is a local storage path / signed token path / file ID (fallback to R2 stream on stateless Cloud Run)
+    if (imageInput.startsWith('/api/media/')) {
+      const fileId = extractMediaFileIdFromRef(imageInput);
+      const isSigned = imageInput.startsWith('/api/media/signed/');
+      const filePath = fileId ? mediaStorage.getFilePath(fileId) : null;
       if (filePath) {
         const fs = await import('fs');
         const buf = fs.readFileSync(filePath);
@@ -53,7 +54,9 @@ export class GeminiAdapter {
           mimeType: fileId.endsWith('.png') ? 'image/png' : fileId.endsWith('.webp') ? 'image/webp' : 'image/jpeg'
         };
       }
-      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId);
+      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, undefined, undefined, {
+        trustedSignedToken: isSigned
+      });
       if (streamRes.body) {
         const chunks: Buffer[] = [];
         if (typeof streamRes.body.transformToByteArray === 'function') {

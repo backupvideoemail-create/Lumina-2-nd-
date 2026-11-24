@@ -438,3 +438,176 @@ export function validateFaceSwapSceneReadiness(scene: Partial<FaceSwapScene> | n
     errors
   };
 }
+
+export type CanonicalTemplateReadinessStatus =
+  | 'READY'
+  | 'TEST_REQUIRED'
+  | 'NEEDS_SETUP'
+  | 'FAILED'
+  | 'PAUSED';
+
+export interface NormalizedTemplateReadinessInfo {
+  status: CanonicalTemplateReadinessStatus;
+  label: string;
+  reason: string;
+  lastVerifiedAt?: string;
+  lastTestResult: 'PASSED' | 'FAILED' | 'UNTESTED';
+  lastTestError?: string;
+  isCustomerGeneratable: boolean;
+}
+
+/**
+ * Normalizes any template (legacy, newly created, paused, edited, failed, or verified)
+ * into the canonical 5-state Admin Gallery Readiness model:
+ * READY | TEST_REQUIRED | NEEDS_SETUP | FAILED | PAUSED.
+ *
+ * Strictly enforces Amendment 2: never treats static config or API key checks as READY.
+ * READY requires an actual recorded passing verification test (lastVerifiedAt / lastTestResult === 'PASSED').
+ */
+export function normalizeTemplateReadinessStatus(
+  tpl: Partial<Template> | null | undefined
+): NormalizedTemplateReadinessInfo {
+  const staticCheck = validateTemplateReadiness(tpl, { strictPublish: false });
+  if (!tpl || !staticCheck.ready || tpl.readinessStatus === 'DRAFT_INCOMPLETE' || tpl.readinessStatus === 'INVALID_CONFIG' || tpl.readinessStatus === 'NEEDS_SETUP') {
+    const reason =
+      tpl?.readinessReason ||
+      staticCheck.errors[0] ||
+      (staticCheck.missingFields.length > 0
+        ? `Missing: ${staticCheck.missingFields.join(', ')}`
+        : 'Incomplete or invalid template configuration.');
+    return {
+      status: 'NEEDS_SETUP',
+      label: 'NEEDS SETUP',
+      reason,
+      lastVerifiedAt: tpl?.lastVerifiedAt,
+      lastTestResult: tpl?.lastTestResult || 'UNTESTED',
+      lastTestError: tpl?.lastTestError,
+      isCustomerGeneratable: false
+    };
+  }
+
+  if (tpl.isActive === false || tpl.readinessStatus === 'PAUSED') {
+    return {
+      status: 'PAUSED',
+      label: 'PAUSED',
+      reason: tpl.readinessReason || 'Paused by Admin (hidden from customer generation).',
+      lastVerifiedAt: tpl.lastVerifiedAt,
+      lastTestResult: tpl.lastTestResult || 'UNTESTED',
+      lastTestError: tpl.lastTestError,
+      isCustomerGeneratable: false
+    };
+  }
+
+  if (tpl.readinessStatus === 'FAILED' || tpl.lastTestResult === 'FAILED') {
+    const errText = tpl.lastTestError || tpl.readinessReason || 'Last Admin verification test failed.';
+    return {
+      status: 'FAILED',
+      label: 'FAILED',
+      reason: errText,
+      lastVerifiedAt: tpl.lastVerifiedAt,
+      lastTestResult: 'FAILED',
+      lastTestError: errText,
+      isCustomerGeneratable: false
+    };
+  }
+
+  const isSmartVerified =
+    tpl.engine === 'SMART_TEMPLATE' &&
+    tpl.readinessStatus === 'READY' &&
+    tpl.lastTestResult === 'PASSED' &&
+    Boolean(tpl.lastVerifiedAt);
+
+  if (
+    isSmartVerified ||
+    (tpl.readinessStatus === 'READY' &&
+      tpl.lastTestResult === 'PASSED' &&
+      Boolean(tpl.lastVerifiedAt))
+  ) {
+    return {
+      status: 'READY',
+      label: 'READY',
+      reason: 'Verified via real Admin end-to-end test.',
+      lastVerifiedAt: tpl.lastVerifiedAt,
+      lastTestResult: 'PASSED',
+      lastTestError: tpl.lastTestError,
+      isCustomerGeneratable: true
+    };
+  }
+
+  return {
+    status: 'TEST_REQUIRED',
+    label: 'TEST REQUIRED',
+    reason:
+      tpl.readinessReason ||
+      (tpl.readinessStatus === 'READY'
+        ? 'Unverified legacy template — run 1-click Admin test before launching to customers.'
+        : 'Saved config valid — run 1-click Admin test to verify output & download.'),
+    lastVerifiedAt: tpl.lastVerifiedAt,
+    lastTestResult: tpl.lastTestResult || 'UNTESTED',
+    lastTestError: tpl.lastTestError,
+    isCustomerGeneratable: false
+  };
+}
+
+/**
+ * Checks whether an Admin template edit changed execution recipe/provider/model/assets
+ * requiring re-verification (resetting readinessStatus to TEST_REQUIRED).
+ */
+export function didTemplateExecutionRecipeChange(
+  existing: Partial<Template>,
+  updates: Partial<Template>
+): boolean {
+  const scalarKeys: Array<keyof Template> = [
+    'type',
+    'engine',
+    'provider',
+    'adapter',
+    'model',
+    'workflow',
+    'aspectRatio',
+    'resolutionLabel',
+    'durationSeconds',
+    'cover',
+    'coverImage',
+    'coverVideo',
+    'preview',
+    'sampleResult',
+    'sampleAfter',
+    'sampleBefore',
+    'referenceImageUrl',
+    'drivingVideoUrl',
+    'inputType'
+  ];
+
+  for (const key of scalarKeys) {
+    if (updates[key] !== undefined && updates[key] !== existing[key]) {
+      return true;
+    }
+  }
+
+  if (updates.requiredInputs !== undefined) {
+    if (JSON.stringify(updates.requiredInputs) !== JSON.stringify(existing.requiredInputs || [])) {
+      return true;
+    }
+  }
+
+  if (updates.recipe !== undefined) {
+    const prevRecipe: Record<string, any> = (existing.recipe || {}) as Record<string, any>;
+    const nextRecipe: Record<string, any> = (updates.recipe || {}) as Record<string, any>;
+    const recipeKeys = ['provider', 'adapter', 'model', 'engine', 'prompt', 'workflow', 'drivingVideoUrl', 'referenceImageUrl', 'sampleResult', 'sampleBefore'];
+    for (const rk of recipeKeys) {
+      if (nextRecipe[rk] !== undefined && nextRecipe[rk] !== prevRecipe[rk]) {
+        return true;
+      }
+    }
+    if (
+      nextRecipe.referenceAssets !== undefined &&
+      JSON.stringify(nextRecipe.referenceAssets) !== JSON.stringify(prevRecipe.referenceAssets || [])
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
