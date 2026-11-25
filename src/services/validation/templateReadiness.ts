@@ -454,6 +454,7 @@ export interface NormalizedTemplateReadinessInfo {
   lastTestResult: 'PASSED' | 'FAILED' | 'UNTESTED';
   lastTestError?: string;
   isCustomerGeneratable: boolean;
+  legacyOperational?: boolean;
 }
 
 /**
@@ -461,8 +462,13 @@ export interface NormalizedTemplateReadinessInfo {
  * into the canonical 5-state Admin Gallery Readiness model:
  * READY | TEST_REQUIRED | NEEDS_SETUP | FAILED | PAUSED.
  *
- * Strictly enforces Amendment 2: never treats static config or API key checks as READY.
- * READY requires an actual recorded passing verification test (lastVerifiedAt / lastTestResult === 'PASSED').
+ * Strictly enforces:
+ * - Never treats static config or API key checks as verified READY.
+ * - READY requires an actual recorded passing verification test (lastVerifiedAt / lastTestResult === 'PASSED').
+ * - Existing active statically configured templates remain operational for customers (isCustomerGeneratable: true, legacyOperational: true)
+ *   while honestly showing TEST_REQUIRED (verification pending) in Admin Gallery until verified.
+ * - New or execution-edited templates (requiresVerificationBeforeCustomerUse === true) stay TEST_REQUIRED and blocked until tested.
+ * - Confirmed failing templates become FAILED and isolate only that template.
  */
 export function normalizeTemplateReadinessStatus(
   tpl: Partial<Template> | null | undefined
@@ -482,7 +488,8 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl?.lastVerifiedAt,
       lastTestResult: tpl?.lastTestResult || 'UNTESTED',
       lastTestError: tpl?.lastTestError,
-      isCustomerGeneratable: false
+      isCustomerGeneratable: false,
+      legacyOperational: false
     };
   }
 
@@ -494,7 +501,8 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: tpl.lastTestResult || 'UNTESTED',
       lastTestError: tpl.lastTestError,
-      isCustomerGeneratable: false
+      isCustomerGeneratable: false,
+      legacyOperational: false
     };
   }
 
@@ -507,22 +515,17 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: 'FAILED',
       lastTestError: errText,
-      isCustomerGeneratable: false
+      isCustomerGeneratable: false,
+      legacyOperational: false
     };
   }
 
-  const isSmartVerified =
-    tpl.engine === 'SMART_TEMPLATE' &&
+  const isVerifiedPassed =
     tpl.readinessStatus === 'READY' &&
     tpl.lastTestResult === 'PASSED' &&
     Boolean(tpl.lastVerifiedAt);
 
-  if (
-    isSmartVerified ||
-    (tpl.readinessStatus === 'READY' &&
-      tpl.lastTestResult === 'PASSED' &&
-      Boolean(tpl.lastVerifiedAt))
-  ) {
+  if (isVerifiedPassed) {
     return {
       status: 'READY',
       label: 'READY',
@@ -530,22 +533,24 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: 'PASSED',
       lastTestError: tpl.lastTestError,
-      isCustomerGeneratable: true
+      isCustomerGeneratable: true,
+      legacyOperational: false
     };
   }
+
+  const isBlockedNewOrEdited = Boolean(tpl.requiresVerificationBeforeCustomerUse);
 
   return {
     status: 'TEST_REQUIRED',
     label: 'TEST REQUIRED',
-    reason:
-      tpl.readinessReason ||
-      (tpl.readinessStatus === 'READY'
-        ? 'Unverified legacy template — run 1-click Admin test before launching to customers.'
-        : 'Saved config valid — run 1-click Admin test to verify output & download.'),
+    reason: isBlockedNewOrEdited
+      ? (tpl.readinessReason || 'New or edited template — run 1-click Admin test before launching to customers.')
+      : 'Legacy active template (operational for customers) — verification pending in Admin Gallery.',
     lastVerifiedAt: tpl.lastVerifiedAt,
     lastTestResult: tpl.lastTestResult || 'UNTESTED',
     lastTestError: tpl.lastTestError,
-    isCustomerGeneratable: false
+    isCustomerGeneratable: !isBlockedNewOrEdited,
+    legacyOperational: !isBlockedNewOrEdited
   };
 }
 

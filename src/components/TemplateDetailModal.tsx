@@ -24,6 +24,7 @@ import {
   Users
 } from 'lucide-react';
 import { Template, TemplateInputDef, FxRateStatus } from '../types';
+import { normalizeTemplateReadinessStatus } from '../services/validation/templateReadiness';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import {
@@ -81,6 +82,10 @@ export const TemplateDetailModal: React.FC = () => {
     correlationId?: string;
     timestamp?: string;
     refunded?: boolean;
+    isHtmlResponse?: boolean;
+    contentType?: string;
+    finalUrl?: string;
+    redirected?: boolean;
   } | null>(null);
 
   // Draggable BEFORE/AFTER comparison slider state (Photo templates)
@@ -453,17 +458,10 @@ export const TemplateDetailModal: React.FC = () => {
 
   const isVerifiedAdminUser = Boolean(isAdmin && serverAdminVerified);
   const isCustomerPaused = Boolean(generationGate?.customerGenerationPaused && !isVerifiedAdminUser);
-  const tplNormalizedStatus =
-    tpl.readinessStatus === 'READY' ||
-    tpl.readinessStatus === 'TEST_REQUIRED' ||
-    tpl.readinessStatus === 'NEEDS_SETUP' ||
-    tpl.readinessStatus === 'FAILED' ||
-    tpl.readinessStatus === 'PAUSED'
-      ? tpl.readinessStatus
-      : undefined;
+  const tplNormalizedInfo = normalizeTemplateReadinessStatus(tpl);
+  const tplNormalizedStatus = tplNormalizedInfo.status;
   const isTemplateBlockedForCustomer = Boolean(
-    !isVerifiedAdminUser &&
-      ((tplNormalizedStatus && tplNormalizedStatus !== 'READY') || tpl.isActive === false)
+    !isVerifiedAdminUser && !tplNormalizedInfo.isCustomerGeneratable
   );
 
   // Fallback check if FX status has not been hydrated yet on client: keep strict evaluation/unsupported guards
@@ -748,12 +746,16 @@ export const TemplateDetailModal: React.FC = () => {
     } else {
       setUploadError(res.error || 'Generation failed');
       setDiagnosticDetails({
-        httpStatus: res.httpStatus || 400,
+        httpStatus: res.httpStatus ?? 400,
         errorCode: res.errorCode || 'GENERATION_FAILED',
         stage: res.stage || 'generation_request',
         correlationId: res.correlationId || `req_${Date.now()}`,
         timestamp: res.timestamp || new Date().toISOString(),
-        refunded: res.refunded
+        refunded: res.refunded,
+        isHtmlResponse: res.isHtmlResponse,
+        contentType: res.contentType,
+        finalUrl: res.finalUrl,
+        redirected: res.redirected
       });
     }
   };
@@ -1653,16 +1655,20 @@ export const TemplateDetailModal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    const statusStr = diagnosticDetails?.httpStatus || 400;
+                    const statusVal = diagnosticDetails?.httpStatus ?? 400;
+                    const statusStr = statusVal === 0 ? '0 (Network / Proxy Interception)' : String(statusVal);
                     const codeStr = diagnosticDetails?.errorCode || 'GENERATION_FAILED';
                     const stageStr = diagnosticDetails?.stage || 'validation';
                     const corrIdStr = diagnosticDetails?.correlationId || 'N/A';
                     const timeStr = diagnosticDetails?.timestamp || new Date().toISOString();
                     const refundStr = diagnosticDetails?.refunded
                       ? '100% Verified Refund Completed'
-                      : (stageStr === 'validation' || statusStr === 400 || statusStr === 402 ? 'Credits Not Deducted' : 'Pending Server Verification');
+                      : (stageStr === 'validation' || stageStr === 'proxy_or_gateway' || stageStr === 'network' || statusVal === 400 || statusVal === 402 || statusVal === 0 ? 'Credits Not Deducted' : 'Pending Server Verification');
+                    const proxyMeta = diagnosticDetails?.isHtmlResponse
+                      ? `\nHTML Response Detected: true\nContent-Type: ${diagnosticDetails.contentType || 'text/html'}\nRedirected: ${Boolean(diagnosticDetails.redirected)}\nFinal URL: ${diagnosticDetails.finalUrl || 'N/A'}`
+                      : '';
 
-                    const errorReport = `AI Prime Studio Diagnostic Report\nTemplate ID: ${tpl.id}\nTitle: ${tpl.title}\nCategory: ${tpl.category}\nHTTP Status: ${statusStr}\nError Code: ${codeStr}\nFailure Stage: ${stageStr}\nCorrelation ID: ${corrIdStr}\nSafe Message: ${uploadError}\nRefund Status: ${refundStr}\nTimestamp: ${timeStr}`;
+                    const errorReport = `AI Prime Studio Diagnostic Report\nTemplate ID: ${tpl.id}\nTitle: ${tpl.title}\nCategory: ${tpl.category}\nHTTP Status: ${statusStr}\nError Code: ${codeStr}\nFailure Stage: ${stageStr}${proxyMeta}\nCorrelation ID: ${corrIdStr}\nSafe Message: ${uploadError}\nRefund Status: ${refundStr}\nTimestamp: ${timeStr}`;
                     navigator.clipboard.writeText(errorReport);
                     setCopiedError(true);
                     setTimeout(() => setCopiedError(false), 2000);
@@ -1678,7 +1684,7 @@ export const TemplateDetailModal: React.FC = () => {
               {/* Diagnostic Metadata Badges */}
               <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-rose-500/20 text-[9.5px] font-mono">
                 <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-stone-300">
-                  HTTP {diagnosticDetails?.httpStatus || 400}
+                  HTTP {diagnosticDetails?.httpStatus === 0 ? '0 (Proxy/Net)' : (diagnosticDetails?.httpStatus ?? 400)}
                 </span>
                 <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-rose-300">
                   {diagnosticDetails?.errorCode || 'ERROR'}
@@ -1686,6 +1692,11 @@ export const TemplateDetailModal: React.FC = () => {
                 <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-amber-300">
                   stage:{diagnosticDetails?.stage || 'validation'}
                 </span>
+                {diagnosticDetails?.isHtmlResponse && (
+                  <span className="px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-200">
+                    HTML Proxy ({diagnosticDetails.contentType || 'text/html'})
+                  </span>
+                )}
                 {diagnosticDetails?.correlationId && (
                   <span className="px-2 py-0.5 rounded bg-black/50 border border-white/10 text-sky-300 truncate max-w-[150px]">
                     id:{diagnosticDetails.correlationId}

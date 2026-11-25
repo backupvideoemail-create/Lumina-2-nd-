@@ -876,8 +876,8 @@ export class ProductionDatabase {
         fxCache: null,
         ownerOmniTests: [],
         generationGate: {
-          customerGenerationPaused: true,
-          reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+          customerGenerationPaused: false,
+          reason: 'Customer generation is active.',
           updatedAt: new Date().toISOString()
         }
       };
@@ -1080,8 +1080,8 @@ export class ProductionDatabase {
         if (gateDoc.exists && gateDoc.data()) {
           const gd = gateDoc.data() as Partial<CustomerGenerationGateConfig>;
           this.db.generationGate = {
-            customerGenerationPaused: gd.customerGenerationPaused !== undefined ? Boolean(gd.customerGenerationPaused) : true,
-            reason: gd.reason || 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+            customerGenerationPaused: gd.customerGenerationPaused !== undefined ? Boolean(gd.customerGenerationPaused) : false,
+            reason: gd.reason || (gd.customerGenerationPaused ? 'Temporary maintenance: Paid customer generations are paused.' : 'Customer generation is active.'),
             updatedAt: gd.updatedAt || new Date().toISOString(),
             updatedBy: gd.updatedBy
           };
@@ -1322,8 +1322,8 @@ export class ProductionDatabase {
         parsed.fxCache = parsed.fxCache || null;
         parsed.ownerOmniTests = parsed.ownerOmniTests || [];
         parsed.generationGate = parsed.generationGate || {
-          customerGenerationPaused: true,
-          reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+          customerGenerationPaused: false,
+          reason: 'Customer generation is active.',
           updatedAt: new Date().toISOString()
         };
         return parsed;
@@ -1357,8 +1357,8 @@ export class ProductionDatabase {
       fxCache: null,
       ownerOmniTests: [],
       generationGate: {
-        customerGenerationPaused: true,
-        reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+        customerGenerationPaused: false,
+        reason: 'Customer generation is active.',
         updatedAt: new Date().toISOString()
       }
     };
@@ -5037,8 +5037,8 @@ export class ProductionDatabase {
   public getGenerationGate(): CustomerGenerationGateConfig {
     return (
       this.db.generationGate || {
-        customerGenerationPaused: true,
-        reason: 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+        customerGenerationPaused: false,
+        reason: 'Customer generation is active.',
         updatedAt: new Date().toISOString()
       }
     );
@@ -5052,8 +5052,8 @@ export class ProductionDatabase {
         if (docSnap.exists && docSnap.data()) {
           const data = docSnap.data() as Partial<CustomerGenerationGateConfig>;
           const normalized: CustomerGenerationGateConfig = {
-            customerGenerationPaused: data.customerGenerationPaused !== undefined ? Boolean(data.customerGenerationPaused) : true,
-            reason: data.reason || 'Temporary maintenance: Paid customer generations are paused while we complete live verification.',
+            customerGenerationPaused: data.customerGenerationPaused !== undefined ? Boolean(data.customerGenerationPaused) : false,
+            reason: data.reason || (data.customerGenerationPaused ? 'Temporary maintenance: Paid customer generations are paused.' : 'Customer generation is active.'),
             updatedAt: data.updatedAt || new Date().toISOString(),
             updatedBy: data.updatedBy
           };

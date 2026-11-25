@@ -13,7 +13,7 @@ import {
   Film,
   RefreshCw
 } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { useApp, safeParseJsonResponse } from '../context/AppContext';
 import { Generation, Template } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { reportMediaPlaybackIssue } from '../services/media/mediaPlaybackManager';
@@ -93,13 +93,12 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
           headers,
           credentials: 'include'
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!isMounted || !data?.generation) return;
-
-        const updatedGen: Generation = data.generation;
-        if (typeof data.generation.elapsedSeconds === 'number') {
-          setElapsedSeconds(data.generation.elapsedSeconds);
+        const parsed = await safeParseJsonResponse<{ generation?: Generation & { elapsedSeconds?: number } }>(res);
+        if (!parsed.ok || !isMounted || !parsed.data?.generation) return;
+        const rawGen = parsed.data.generation;
+        const updatedGen: Generation = rawGen;
+        if (typeof rawGen.elapsedSeconds === 'number') {
+          setElapsedSeconds(rawGen.elapsedSeconds);
         }
 
         // Terminal state transition (completed or failed)

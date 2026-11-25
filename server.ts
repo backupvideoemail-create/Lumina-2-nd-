@@ -464,6 +464,11 @@ function getActiveRecentApiErrors(): RecentApiErrorEntry[] {
 }
 
 app.use('/api', (req, res, next) => {
+  const incomingCorrId = typeof req.headers['x-correlation-id'] === 'string' && req.headers['x-correlation-id'].trim()
+    ? req.headers['x-correlation-id'].trim().slice(0, 80)
+    : `req_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+  res.locals.correlationId = incomingCorrId;
+  res.setHeader('X-Correlation-Id', incomingCorrId);
   res.on('finish', () => {
     if (res.statusCode >= 400) {
       const apiPath = `${req.baseUrl || ''}${req.path || '/'}`;
@@ -2498,6 +2503,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       newTemplate.readinessErrors = readiness.errors;
     } else {
       newTemplate.readinessStatus = newTemplate.isActive === false ? 'PAUSED' : 'TEST_REQUIRED';
+      newTemplate.requiresVerificationBeforeCustomerUse = true;
       newTemplate.lastTestResult = 'UNTESTED';
       newTemplate.readinessReason =
         newTemplate.isActive === false
@@ -2675,6 +2681,7 @@ app.post('/api/admin/templates/bulk', requireAdmin, async (req, res) => {
           likesCount: 0,
           resolutionLabel: '4K Ultra HD',
           readinessStatus: isActive !== false ? 'TEST_REQUIRED' : 'PAUSED',
+          requiresVerificationBeforeCustomerUse: true,
           lastTestResult: 'UNTESTED',
           readinessReason:
             isActive !== false
@@ -3024,6 +3031,9 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
 
       if (recipeChanged || !hadPassedVerification) {
         updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'TEST_REQUIRED';
+        updates.requiresVerificationBeforeCustomerUse = recipeChanged
+          ? true
+          : Boolean(existing.requiresVerificationBeforeCustomerUse);
         updates.lastTestResult = 'UNTESTED';
         updates.lastVerifiedAt = '';
         updates.lastTestError = '';
@@ -3031,9 +3041,12 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
           ? 'Paused by Admin.'
           : recipeChanged
           ? 'Execution recipe/assets changed — run 1-click Admin test to re-verify.'
-          : 'Run 1-click Admin test to verify output & download.';
+          : (existing.requiresVerificationBeforeCustomerUse
+              ? 'Run 1-click Admin test to verify output & download.'
+              : 'Legacy operational template — Admin verification test recommended.');
       } else {
         updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'READY';
+        updates.requiresVerificationBeforeCustomerUse = false;
         updates.readinessReason = !nextIsActive
           ? 'Paused by Admin.'
           : 'Verified via real Admin end-to-end test.';
@@ -3326,6 +3339,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
     const nextStatus = template.isActive === false ? 'PAUSED' : 'READY';
     const updatedTemplate = await prodDb.updateTemplate(id, {
       readinessStatus: nextStatus,
+      requiresVerificationBeforeCustomerUse: false,
       lastVerifiedAt: nowIso,
       lastTestResult: 'PASSED',
       lastTestError: '',
@@ -3398,14 +3412,21 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
   }
 });
 
-// Admin Idempotent Reconciliation of Historical Affected Generations (e.g. tpl_full_swag_1)
+// Admin Idempotent Reconciliation of Historical Affected Generations (DRY-RUN default + explicit confirmApply safeguard)
 app.post('/api/admin/reconcile-generations', requireAdmin, async (req, res) => {
   try {
     const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
-    const { templateId, dryRun = false } = req.body || {};
+    const { templateId, dryRun = true, confirmApply = false } = req.body || {};
+    const effectiveDryRun = Boolean(dryRun);
+    if (!effectiveDryRun && confirmApply !== true) {
+      return res.status(400).json({
+        error: 'Historical reconciliation writes require DRY-RUN review first and explicit confirmApply: true.',
+        code: 'DRY_RUN_APPROVAL_REQUIRED'
+      });
+    }
     const report = await reconcileAffectedGenerations(prodDb, mediaStorage, {
       templateId: typeof templateId === 'string' && templateId.trim() ? templateId.trim() : undefined,
-      dryRun: Boolean(dryRun),
+      dryRun: effectiveDryRun,
       actorEmail: adminUser?.email
     });
     return res.json({ success: true, ...report });
@@ -5617,6 +5638,7 @@ async function attemptDurableGenerationRefund(params: {
       (await prodDb.updateGenerationAsync(genId, {
         status: 'failed',
         refundStatus: 'refunded',
+        chargeStatus: 'refunded',
         refundError: ''
       }).catch(() => null)) || updatedGen;
     return {
@@ -5700,10 +5722,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
   }
 
-  // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Safety Condition #3 + 5-State Readiness)
+  // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Preserves Legacy Active Templates + Blocks Unverified New/Edited Templates)
   const templateReadiness = validateTemplateReadiness(template, { strictPublish: false });
   const normalizedReadiness = normalizeTemplateReadinessStatus(template);
-  if (!templateReadiness.ready || (!isAuthorizedAdminEarly && (template.isActive === false || normalizedReadiness.status !== 'READY'))) {
+  if (!templateReadiness.ready || (!isAuthorizedAdminEarly && !normalizedReadiness.isCustomerGeneratable)) {
     const detailReason = !templateReadiness.ready
       ? (templateReadiness.errors[0] || templateReadiness.missingFields.join(', '))
       : normalizedReadiness.reason;
@@ -6297,6 +6319,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     aspectRatio: template.aspectRatio,
     status: 'processing',
     creditCost: isAuthorizedAdmin ? 0 : requiredCredits,
+    chargeStatus: isAuthorizedAdmin ? 'admin_free' : 'reserved',
     refundStatus: 'none',
     inputMediaUrl,
     engine: isSmartTemplate ? 'SMART_TEMPLATE' : (template.engine || 'AI_GENERATION'),
@@ -6499,10 +6522,14 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       throw new Error('AI provider returned empty result media URL');
     }
 
-    // Verified Deliverable Gate: Refuse to mark completed unless media is saved privately, readable (>0 bytes), and mints signed URL
+    // Verified Deliverable Gate: Refuse to mark completed or finalize charge unless media is saved privately, readable (>0 bytes), and mints signed preview + download URLs
     const deliverableCheck = await mediaStorage.verifyStoredMediaDeliverable(result.resultUrl, user.id);
     if (!deliverableCheck.verified) {
       throw new Error(`DELIVERABLE_VERIFICATION_FAILED: ${deliverableCheck.reason || 'Generated output could not be verified in private storage.'}`);
+    }
+    const deliveryBundle = await mediaStorage.getAuthorizedDeliveryBundle(deliverableCheck.fileId, user.id, 600);
+    if (!deliveryBundle.ok || !deliveryBundle.url || !deliveryBundle.downloadUrl) {
+      throw new Error(`DELIVERABLE_VERIFICATION_FAILED: ${deliveryBundle.error || 'Authorized delivery bundle could not be minted.'}`);
     }
 
     // Duration probing & four-tier duration tracking
@@ -6544,6 +6571,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     const completedGen =
       (await prodDb.updateGenerationAsync(genId, {
         status: 'completed',
+        chargeStatus: isAuthorizedAdmin ? 'admin_free' : 'finalized',
         resultMediaUrl: result.resultUrl,
         actualOutputDurationSeconds: actualOutputDuration,
         actualBillableDurationSeconds: actualBillableDuration,
@@ -6989,6 +7017,7 @@ app.post('/api/faceswap/generate', requireAuth, rateLimit(60000, 20), async (req
     refundStatus: 'none',
     inputMediaUrl: allReferenceUrls[0],
     creditCost: requiredCredits,
+    chargeStatus: 'reserved',
     engine: 'AI_GENERATION',
     model: sceneModel,
     workflow: sceneWorkflow,
@@ -7157,10 +7186,13 @@ async function finalizeFaceSwapGeneration(
     ownerUserId: currentGen.userId
   });
 
-  // Verified Deliverable Gate before completion or billing reconciliation
+  // Verified Deliverable Gate before completion or charge finalization
   const deliverableCheck = await mediaStorage.verifyStoredMediaDeliverable(stored.publicUrl, currentGen.userId);
-  if (!deliverableCheck.verified) {
-    const errText = `DELIVERABLE_VERIFICATION_FAILED: ${deliverableCheck.reason || 'Video output could not be verified in private storage.'}`;
+  const deliveryBundle = deliverableCheck.verified
+    ? await mediaStorage.getAuthorizedDeliveryBundle(deliverableCheck.fileId, currentGen.userId, 600)
+    : null;
+  if (!deliverableCheck.verified || !deliveryBundle || !deliveryBundle.ok || !deliveryBundle.url || !deliveryBundle.downloadUrl) {
+    const errText = `DELIVERABLE_VERIFICATION_FAILED: ${deliverableCheck.reason || deliveryBundle?.error || 'Video output could not be verified in private storage.'}`;
     if (leaseOwner) {
       await prodDb.releaseGenerationPollLease(currentGen.id, leaseOwner, {
         status: 'failed',
@@ -7214,6 +7246,7 @@ async function finalizeFaceSwapGeneration(
 
   const updates: Partial<Generation> = {
     status: 'completed',
+    chargeStatus: currentGen.creditCost > 0 ? 'finalized' : 'admin_free',
     providerStatus: 'completed',
     resultMediaUrl: stored.publicUrl,
     actualOutputDurationSeconds: actualOutputDuration,
@@ -8937,11 +8970,20 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
   });
 });
 
+// Guarantee unmatched /api/* routes synchronously always return JSON 404 (never fall through to Vite/SPA HTML)
+app.use('/api', (req, res) => {
+  return res.status(404).json({
+    error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+    code: 'API_NOT_FOUND',
+    correlationId: res.locals.correlationId || undefined
+  });
+});
+
 // Universal API Error Handler (Ensures all /api routes always return JSON, NEVER HTML)
 app.use('/api', (err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[API Middleware Error]:', err?.message || err);
   const status = err.status || err.statusCode || 500;
-  const correlationId = `err_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+  const correlationId = res.locals.correlationId || `err_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
   res.locals.correlationId = correlationId;
   if (status >= 500) {
     try {
@@ -8987,14 +9029,6 @@ async function startServer() {
     console.warn('[Server] Initial Firestore sync notice:', err.message);
   }
 
-  // Guarantee unmatched /api/* routes always return JSON 404 (never fall through to Vite/SPA index.html)
-  app.use('/api', (req, res) => {
-    return res.status(404).json({
-      error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
-      code: 'API_NOT_FOUND'
-    });
-  });
-
   const httpServer = http.createServer(app);
 
   if (process.env.NODE_ENV !== 'production') {
@@ -9035,6 +9069,10 @@ export interface ReconcileGenerationsResult {
     userId: string;
     templateId: string;
     previousStatus: string;
+    originalCreditDeduction: number;
+    existingRefundStatus: string;
+    existingRefundTxId: string | null;
+    proposedAction: string;
     action: 'RESTORED_VALID' | 'REFUNDED_MISSING_OUTPUT' | 'ALREADY_HEALTHY' | 'SKIPPED_ALREADY_REFUNDED' | 'SKIPPED_ACTIVE_PROCESSING' | 'ERROR';
     details: string;
   }>;
@@ -9045,7 +9083,7 @@ export async function reconcileAffectedGenerations(
   storage: typeof mediaStorage,
   options?: { templateId?: string; dryRun?: boolean; actorEmail?: string }
 ): Promise<ReconcileGenerationsResult> {
-  const dryRun = Boolean(options?.dryRun);
+  const dryRun = options?.dryRun !== false;
   const templateFilter = options?.templateId || null;
   const allGenerations = await db.getAllGenerationsAuthoritative();
   const candidates = templateFilter
@@ -9064,6 +9102,12 @@ export async function reconcileAffectedGenerations(
   let errors = 0;
 
   for (const gen of candidates) {
+    const existingTx = (db.raw.transactions || []).find(
+      (t) => t.referenceId === gen.id && t.type === 'refund'
+    );
+    const originalCreditDeduction = Number(gen.creditCost || 0);
+    const existingRefundStatus = String(gen.refundStatus || (existingTx ? 'refunded' : 'none'));
+    const existingRefundTxId = existingTx?.id || null;
     try {
       const hasUrl = Boolean(gen.resultMediaUrl && gen.resultMediaUrl.trim());
       if (hasUrl) {
@@ -9075,16 +9119,24 @@ export async function reconcileAffectedGenerations(
               userId: gen.userId,
               templateId: gen.templateId,
               previousStatus: gen.status,
+              originalCreditDeduction,
+              existingRefundStatus,
+              existingRefundTxId,
+              proposedAction: 'NO_OP_HEALTHY',
               action: 'ALREADY_HEALTHY',
               details: `Verified private media '${verify.fileId}' (${verify.sizeBytes} bytes)`
             });
-          } else if (gen.refundStatus === 'refunded') {
+          } else if (gen.refundStatus === 'refunded' || existingTx) {
             skippedAlreadyRefunded++;
             items.push({
               generationId: gen.id,
               userId: gen.userId,
               templateId: gen.templateId,
               previousStatus: gen.status,
+              originalCreditDeduction,
+              existingRefundStatus,
+              existingRefundTxId,
+              proposedAction: 'SKIP_ALREADY_REFUNDED',
               action: 'SKIPPED_ALREADY_REFUNDED',
               details: 'Output file exists, but generation was already refunded earlier.'
             });
@@ -9094,6 +9146,7 @@ export async function reconcileAffectedGenerations(
                 gen.id,
                 {
                   status: 'completed',
+                  chargeStatus: originalCreditDeduction > 0 ? 'finalized' : 'admin_free',
                   resultMediaUrl: `/api/media/${verify.fileId}`,
                   completedAt: gen.completedAt || new Date().toISOString()
                 },
@@ -9106,6 +9159,10 @@ export async function reconcileAffectedGenerations(
               userId: gen.userId,
               templateId: gen.templateId,
               previousStatus: gen.status,
+              originalCreditDeduction,
+              existingRefundStatus,
+              existingRefundTxId,
+              proposedAction: 'RESTORE_VALID_OUTPUT',
               action: 'RESTORED_VALID',
               details: `${dryRun ? '[DRY-RUN] Would restore' : 'Restored'} verified private media '${verify.fileId}' (${verify.sizeBytes} bytes)`
             });
@@ -9121,38 +9178,43 @@ export async function reconcileAffectedGenerations(
           userId: gen.userId,
           templateId: gen.templateId,
           previousStatus: gen.status,
+          originalCreditDeduction,
+          existingRefundStatus,
+          existingRefundTxId,
+          proposedAction: 'SKIP_ACTIVE_PROCESSING',
           action: 'SKIPPED_ACTIVE_PROCESSING',
           details: 'Generation has active provider handle; skipped.'
         });
         continue;
       }
 
-      // Missing/unreadable output: check idempotently if already refunded
-      if (gen.refundStatus === 'refunded' || gen.creditCost <= 0) {
+      // Missing/unreadable output: check idempotently if already refunded or 0-credit
+      if (gen.refundStatus === 'refunded' || originalCreditDeduction <= 0) {
         skippedAlreadyRefunded++;
         items.push({
           generationId: gen.id,
           userId: gen.userId,
           templateId: gen.templateId,
           previousStatus: gen.status,
+          originalCreditDeduction,
+          existingRefundStatus,
+          existingRefundTxId,
+          proposedAction: originalCreditDeduction <= 0 ? 'NO_OP_ZERO_CREDITS' : 'SKIP_ALREADY_REFUNDED',
           action: 'SKIPPED_ALREADY_REFUNDED',
           details:
-            gen.creditCost <= 0
-              ? 'Zero-credit / admin test run; no refund needed.'
+            originalCreditDeduction <= 0
+              ? 'Zero-credit / no-charge run; no refund needed.'
               : 'Missing output already refunded earlier (idempotent skip).'
         });
         continue;
       }
 
       // Verify existing refund transaction ledger to be 100% certain no duplicate refund happens
-      const existingTx = (db.raw.transactions || []).find(
-        (t) => t.referenceId === gen.id && t.type === 'refund'
-      );
       if (existingTx) {
         if (!dryRun) {
           await db.updateGenerationAsync(
             gen.id,
-            { status: 'failed', refundStatus: 'refunded' },
+            { status: 'failed', refundStatus: 'refunded', chargeStatus: 'refunded' },
             { allowReconcileMissingOutput: true }
           );
         }
@@ -9162,6 +9224,10 @@ export async function reconcileAffectedGenerations(
           userId: gen.userId,
           templateId: gen.templateId,
           previousStatus: gen.status,
+          originalCreditDeduction,
+          existingRefundStatus: 'refunded',
+          existingRefundTxId,
+          proposedAction: 'SKIP_LEDGER_ALREADY_REFUNDED',
           action: 'SKIPPED_ALREADY_REFUNDED',
           details: `Found existing refund transaction '${existingTx.id}' for '${gen.id}'; normalized record without double-refund.`
         });
@@ -9171,7 +9237,7 @@ export async function reconcileAffectedGenerations(
       if (!dryRun) {
         await db.refundCredits(
           gen.userId,
-          gen.creditCost,
+          originalCreditDeduction,
           `Reconciliation Refund: Unverified or missing generation output (${gen.templateTitle})`,
           gen.id
         );
@@ -9180,6 +9246,7 @@ export async function reconcileAffectedGenerations(
           {
             status: 'failed',
             refundStatus: 'refunded',
+            chargeStatus: 'refunded',
             refundError: '',
             error: gen.error || 'Stored media deliverable missing during reconciliation audit. Credits refunded.'
           },
@@ -9192,8 +9259,12 @@ export async function reconcileAffectedGenerations(
         userId: gen.userId,
         templateId: gen.templateId,
         previousStatus: gen.status,
+        originalCreditDeduction,
+        existingRefundStatus,
+        existingRefundTxId,
+        proposedAction: `REFUND_${originalCreditDeduction}_CREDITS_ONCE`,
         action: 'REFUNDED_MISSING_OUTPUT',
-        details: `${dryRun ? '[DRY-RUN] Would refund' : 'Refunded'} ${gen.creditCost} credits once for missing output.`
+        details: `${dryRun ? '[DRY-RUN] Would refund' : 'Refunded'} ${originalCreditDeduction} credits once for missing output.`
       });
     } catch (itemErr: any) {
       errors++;
@@ -9202,6 +9273,10 @@ export async function reconcileAffectedGenerations(
         userId: gen.userId,
         templateId: gen.templateId,
         previousStatus: gen.status,
+        originalCreditDeduction,
+        existingRefundStatus,
+        existingRefundTxId,
+        proposedAction: 'ERROR',
         action: 'ERROR',
         details: itemErr?.message || 'Reconciliation error'
       });

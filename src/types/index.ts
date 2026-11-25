@@ -152,6 +152,8 @@ export interface Template {
   missingFields?: string[];
   readinessErrors?: string[];
   draftOfTemplateId?: string;
+  requiresVerificationBeforeCustomerUse?: boolean;
+  legacyOperational?: boolean;
 }
 
 export interface UserProfile {
@@ -256,6 +258,7 @@ export interface Generation {
   pollLeaseOwner?: string;
   refundStatus?: 'none' | 'refund_pending' | 'refunded';
   refundError?: string;
+  chargeStatus?: 'reserved' | 'finalized' | 'refunded' | 'admin_free';
 }
 
 export type SubscriptionStatus =
@@ -456,4 +459,8 @@ export interface GenerationResult {
   correlationId?: string;
   timestamp?: string;
   refunded?: boolean;
+  isHtmlResponse?: boolean;
+  contentType?: string;
+  finalUrl?: string;
+  redirected?: boolean;
 }

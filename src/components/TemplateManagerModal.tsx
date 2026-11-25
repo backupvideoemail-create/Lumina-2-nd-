@@ -266,6 +266,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   } | null>(null);
   const [isTogglingGate, setIsTogglingGate] = useState<boolean>(false);
   const [isReconcilingRuns, setIsReconcilingRuns] = useState<boolean>(false);
+  const [dryRunReport, setDryRunReport] = useState<any | null>(null);
 
   // --- TEMPLATE & FACE SWAP DRAG-AND-DROP REORDERING STATE ---
   const [draggedTemplateId, setDraggedTemplateId] = useState<string | null>(null);
@@ -1719,22 +1720,31 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
 
   const handleReconcileHistoricalRuns = async (dryRun: boolean) => {
     if (isReconcilingRuns) return;
+    if (!dryRun && !dryRunReport) {
+      showNotification('Run DRY-RUN check ("Check Past Runs") first and review all affected generations before applying.', 'error');
+      return;
+    }
     setIsReconcilingRuns(true);
     try {
       const res = await fetch('/api/admin/reconcile-generations', {
         method: 'POST',
         headers: getAdminHeaders(),
-        body: JSON.stringify({ dryRun })
+        body: JSON.stringify({ dryRun, ...(dryRun ? {} : { confirmApply: true }) })
       });
       const data = await res.json().catch(() => null);
       if (res.ok && data?.success) {
         const s = data;
+        if (dryRun) {
+          setDryRunReport(s);
+        } else {
+          setDryRunReport(null);
+        }
         setRecoveryNotice(
-          `${dryRun ? '[DRY-RUN Preview]' : '[Reconciled]'} Scanned ${s.scanned} generation(s): ${s.restoredValid} valid output(s) verified/restored, ${s.refundedMissing} missing output(s) refunded once, ${s.skippedAlreadyRefunded} already settled.`
+          `${dryRun ? '[DRY-RUN Preview]' : '[Reconciled]'} Scanned ${s.scanned} generation(s): ${s.restoredValid} valid output(s) verified/restored, ${s.refundedMissing} missing output(s) ${dryRun ? 'eligible for refund' : 'refunded once'}, ${s.skippedAlreadyRefunded} already settled.`
         );
         showNotification(
           dryRun
-            ? `Dry-run scan complete (${s.scanned} checked).`
+            ? `Dry-run scan complete (${s.scanned} checked). Review table below before applying.`
             : `Reconciliation complete: ${s.restoredValid} restored, ${s.refundedMissing} refunded.`
         );
       } else {
@@ -3132,12 +3142,12 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       <span className="font-bold">
                         {generationGate.customerGenerationPaused
                           ? 'Customer Generation: PAUSED (Verification Mode)'
-                          : 'Customer Generation: ACTIVE (Live for READY Templates)'}
+                          : 'Customer Generation: ACTIVE (Live for Active & Verified Templates)'}
                       </span>
                       <p className="text-[10.5px] opacity-80">
                         {generationGate.customerGenerationPaused
                           ? 'Paid customer generation blocked with 0 credit deduction; Admin 0-credit tests remain active.'
-                          : 'Only ACTIVE + READY verified templates accept customer generation.'}
+                          : 'Existing active & verified templates accept customer generation; new/edited templates require Admin test first.'}
                       </p>
                     </div>
                   </div>
@@ -3171,21 +3181,23 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       onClick={() => handleReconcileHistoricalRuns(true)}
                       disabled={isReconcilingRuns}
                       className="px-3 py-1.5 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-200 text-xs font-bold flex items-center gap-1.5 border border-purple-500/30 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-                      title="Preview historical generation restore vs missing-output refunds"
+                      title="Run mandatory DRY-RUN preview of historical generations before any wallet write"
                     >
                       <ShieldCheck className="w-3.5 h-3.5" />
-                      <span>{isReconcilingRuns ? 'Checking...' : 'Check Past Runs'}</span>
+                      <span>{isReconcilingRuns ? 'Checking...' : 'Check Past Runs (Dry-Run)'}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleReconcileHistoricalRuns(false)}
-                      disabled={isReconcilingRuns}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 text-xs font-bold flex items-center gap-1.5 border border-emerald-500/30 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-                      title="Restore valid R2 outputs and issue exact-once refunds for missing outputs"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Reconcile Outputs</span>
-                    </button>
+                    {dryRunReport && (
+                      <button
+                        type="button"
+                        onClick={() => handleReconcileHistoricalRuns(false)}
+                        disabled={isReconcilingRuns}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 text-xs font-bold flex items-center gap-1.5 border border-emerald-500/40 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+                        title="Apply reviewed DRY-RUN reconciliation writes (exact-once)"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Apply Approved Reconciliation</span>
+                      </button>
+                    )}
                     <button
                       onClick={handleScanAndRecoverR2}
                       disabled={isRecoveringR2}
@@ -3291,6 +3303,53 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                     >
                       ✕
                     </button>
+                  </div>
+                )}
+
+                {/* Mandatory DRY-RUN Reconciliation Audit Review Panel */}
+                {dryRunReport && (
+                  <div className="p-3 rounded-2xl bg-purple-950/30 border border-purple-500/30 space-y-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-purple-200">
+                        DRY-RUN Historical Audit Report ({dryRunReport.scanned} scanned · 0 writes made)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setDryRunReport(null)}
+                        className="text-stone-400 hover:text-white text-xs font-bold px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-purple-200/80">
+                      Restorable: {dryRunReport.restoredValid} · Refundable once: {dryRunReport.refundedMissing} · Already settled: {dryRunReport.skippedAlreadyRefunded} · Errors: {dryRunReport.errors}
+                    </div>
+                    {Array.isArray(dryRunReport.items) && dryRunReport.items.length > 0 && (
+                      <div className="max-h-48 overflow-y-auto overflow-x-auto rounded-xl border border-white/10 bg-black/50">
+                        <table className="w-full text-left text-[10.5px] font-mono">
+                          <thead className="bg-white/5 text-stone-300">
+                            <tr>
+                              <th className="p-1.5">Gen ID</th>
+                              <th className="p-1.5">Template</th>
+                              <th className="p-1.5">Credits</th>
+                              <th className="p-1.5">Refund State</th>
+                              <th className="p-1.5">Proposed Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5 text-stone-300">
+                            {dryRunReport.items.slice(0, 40).map((it: any) => (
+                              <tr key={it.generationId}>
+                                <td className="p-1.5 text-sky-300">{it.generationId}</td>
+                                <td className="p-1.5">{it.templateId}</td>
+                                <td className="p-1.5">{it.originalCreditDeduction ?? 0}</td>
+                                <td className="p-1.5">{it.existingRefundStatus || 'none'}{it.existingRefundTxId ? ` (${it.existingRefundTxId})` : ''}</td>
+                                <td className="p-1.5 font-bold text-amber-300">{it.proposedAction || it.action}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3454,6 +3513,17 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${statusBadgeCls}`}>
                                   {norm.label}
                                 </span>
+                                {norm.status === 'TEST_REQUIRED' && (
+                                  <span
+                                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                                      norm.legacyOperational
+                                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                        : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                    }`}
+                                  >
+                                    {norm.legacyOperational ? 'Legacy Operational · Verification Pending' : 'New/Edited · Blocked Until Tested'}
+                                  </span>
+                                )}
                                 {tpl.badge && (
                                   <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                                     {tpl.badge}
@@ -3473,7 +3543,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                                 <span className="text-[#ff9f00] font-semibold">{tpl.creditCost || 30} cr</span>
                                 <span>•</span>
                                 <span className="font-mono text-[10px] text-stone-300">{providerLabel} / {modelLabel}</span>
-                                <span className="hidden sm:inline text-stone-500 font-mono text-[10px]">• {tpl.id}</span>
+                                <span className="text-stone-400 font-mono text-[10px]">• ID: {tpl.id}</span>
                               </div>
                               <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-stone-400">
                                 <span>Last test: <strong className="text-stone-300">{norm.lastTestResult}</strong></span>

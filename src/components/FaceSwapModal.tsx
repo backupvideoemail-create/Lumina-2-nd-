@@ -88,6 +88,10 @@ export const FaceSwapModal: React.FC = () => {
     correlationId?: string;
     timestamp?: string;
     refunded?: boolean;
+    isHtmlResponse?: boolean;
+    contentType?: string;
+    finalUrl?: string;
+    redirected?: boolean;
   } | null>(null);
 
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -276,12 +280,16 @@ export const FaceSwapModal: React.FC = () => {
     } else {
       setErrorMessage(res.error || 'Face swap request failed');
       setDiagnosticDetails({
-        httpStatus: res.httpStatus || 400,
+        httpStatus: res.httpStatus ?? 400,
         errorCode: res.errorCode || 'FACESWAP_FAILED',
         stage: res.stage || 'validation',
         correlationId: res.correlationId || `fsv_${Date.now()}`,
         timestamp: res.timestamp || new Date().toISOString(),
-        refunded: res.refunded
+        refunded: res.refunded,
+        isHtmlResponse: res.isHtmlResponse,
+        contentType: res.contentType,
+        finalUrl: res.finalUrl,
+        redirected: res.redirected
       });
     }
   };
@@ -662,14 +670,15 @@ export const FaceSwapModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  const statusStr = diagnosticDetails?.httpStatus || 400;
+                  const statusVal = diagnosticDetails?.httpStatus ?? 400;
+                  const statusStr = statusVal === 0 ? '0 (Network / Proxy Interception)' : String(statusVal);
                   const codeStr = diagnosticDetails?.errorCode || 'FACESWAP_FAILED';
                   const stageStr = diagnosticDetails?.stage || 'validation';
                   const corrIdStr = diagnosticDetails?.correlationId || 'N/A';
                   const timeStr = diagnosticDetails?.timestamp || new Date().toISOString();
                   const refundStr = diagnosticDetails?.refunded
                     ? '100% Verified Refund Completed'
-                    : (stageStr === 'validation' || statusStr === 400 || statusStr === 402 ? 'Credits Not Deducted' : 'Pending Server Verification');
+                    : (stageStr === 'validation' || stageStr === 'proxy_or_gateway' || stageStr === 'network' || statusVal === 400 || statusVal === 402 || statusVal === 0 ? 'Credits Not Deducted' : 'Pending Server Verification');
 
                   const safeLog = JSON.stringify({
                     reportType: 'AI Prime Studio FaceSwap Diagnostic Report',
@@ -679,6 +688,10 @@ export const FaceSwapModal: React.FC = () => {
                     httpStatus: statusStr,
                     errorCode: codeStr,
                     stage: stageStr,
+                    isHtmlResponse: Boolean(diagnosticDetails?.isHtmlResponse),
+                    contentType: diagnosticDetails?.contentType,
+                    redirected: diagnosticDetails?.redirected,
+                    finalUrl: diagnosticDetails?.finalUrl,
                     correlationId: corrIdStr,
                     error: errorMessage,
                     refundStatus: refundStr,
@@ -700,7 +713,7 @@ export const FaceSwapModal: React.FC = () => {
             {/* Diagnostic Badges */}
             <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-rose-500/20 text-[9.5px] font-mono">
               <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-stone-300">
-                HTTP {diagnosticDetails?.httpStatus || 400}
+                HTTP {diagnosticDetails?.httpStatus === 0 ? '0 (Proxy/Net)' : (diagnosticDetails?.httpStatus ?? 400)}
               </span>
               <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-rose-300">
                 {diagnosticDetails?.errorCode || 'ERROR'}
@@ -708,6 +721,11 @@ export const FaceSwapModal: React.FC = () => {
               <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-amber-300">
                 stage:{diagnosticDetails?.stage || 'validation'}
               </span>
+              {diagnosticDetails?.isHtmlResponse && (
+                <span className="px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-200">
+                  HTML Proxy
+                </span>
+              )}
               {diagnosticDetails?.correlationId && (
                 <span className="px-2 py-0.5 rounded bg-black/60 border border-white/10 text-sky-300 truncate max-w-[150px]">
                   id:{diagnosticDetails.correlationId}

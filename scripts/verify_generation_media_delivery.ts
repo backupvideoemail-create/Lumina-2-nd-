@@ -245,10 +245,15 @@ async function runVerification() {
       'B.1 R2_PUBLIC_BASE_URL is optional and excluded from mandatory R2 readiness checks'
     );
 
-    // Customer Generation Gate starts paused by default -> Customer A blocked 503 with 0 credit deduction
+    // Customer Generation Gate defaults to active (false); Admin can pause & resume cleanly
     const initialGateRes = await fetch(`${baseUrl}/api/generation-gate`);
     const initialGateJson = await initialGateRes.json();
     const walletBeforePaused = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    const adminPauseOnRes = await fetch(`${baseUrl}/api/admin/generation-gate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ customerGenerationPaused: true, reason: 'Temporary verification pause test' })
+    });
     const pausedCustomerGenRes = await fetch(`${baseUrl}/api/generations/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
@@ -265,12 +270,32 @@ async function runVerification() {
       body: JSON.stringify({ customerGenerationPaused: false })
     });
     assert(
-      initialGateJson?.gate?.customerGenerationPaused === true &&
+      initialGateJson?.gate?.customerGenerationPaused === false &&
+        adminPauseOnRes.status === 200 &&
         pausedCustomerGenRes.status === 503 &&
         pausedCustomerGenJson.code === 'CUSTOMER_GENERATION_PAUSED' &&
         walletAfterPaused === walletBeforePaused &&
         nonAdminToggleRes.status === 403,
-      `B.2 Customer pause gate blocks paid customer generation (${pausedCustomerGenRes.status} ${pausedCustomerGenJson.code}), preserves wallet (${walletAfterPaused}), and restricts toggle to Admin (${nonAdminToggleRes.status})`
+      `B.2 Customer gate defaults active (false), Admin pause blocks customer (${pausedCustomerGenRes.status} ${pausedCustomerGenJson.code}) with 0 credits deducted, and restricts toggle to Admin (${nonAdminToggleRes.status})`
+    );
+
+    // B.3 HTML-as-JSON protection & unmatched /api JSON 404 guarantee
+    const { safeParseJsonResponse } = await import('../src/context/AppContext.tsx');
+    const mockHtmlProxyRes = new Response('<!doctype html><html><head><title>Sign in - Google Accounts</title></head><body>SSO</body></html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' }
+    });
+    const parsedHtml = await safeParseJsonResponse(mockHtmlProxyRes);
+    const apiNotFoundRes = await fetch(`${baseUrl}/api/nonexistent_route_probe`);
+    const apiNotFoundJson = await apiNotFoundRes.json().catch(() => null);
+    assert(
+      parsedHtml.ok === false &&
+        parsedHtml.isHtml === true &&
+        parsedHtml.htmlTitle === 'Sign in - Google Accounts' &&
+        (apiNotFoundRes.headers.get('content-type') || '').includes('application/json') &&
+        apiNotFoundRes.status === 404 &&
+        apiNotFoundJson?.code === 'API_NOT_FOUND',
+      'B.3 safeParseJsonResponse detects preview/SSO HTML cleanly & unmatched /api/* route always returns JSON 404'
     );
 
     console.log('\n=== SUITE C: 5-STATE TEMPLATE READINESS & 1-CLICK ADMIN VERIFY-TEST ===');
@@ -399,11 +424,67 @@ async function runVerification() {
     assert(
       verifiedCustGenRes.status === 200 &&
         verifiedCustGenJson.generation?.status === 'completed' &&
+        verifiedCustGenJson.generation?.chargeStatus === 'finalized' &&
         custSignedOutRes.status === 200 &&
         custDownloadOutRes.status === 200 &&
         custDownloadOutBuf.length > 0 &&
         (custDownloadOutRes.headers.get('content-disposition') || '').includes('attachment'),
-      `C.6 Customer generation on READY template succeeded (${custDownloadOutBuf.length}B verified deliverable + attachment download)`
+      `C.6 Customer generation on READY template succeeded (${custDownloadOutBuf.length}B verified deliverable, chargeStatus=finalized, attachment download)`
+    );
+
+    // Legacy operational template (active, valid, never marked requiresVerificationBeforeCustomerUse) stays TEST_REQUIRED in Admin Gallery AND succeeds for customer generation
+    const { normalizeTemplateReadinessStatus } = await import('../src/services/validation/templateReadiness.ts');
+    const legacyTplId = `tpl_legacy_smart_${Date.now()}`;
+    await testDb.addTemplate({
+      id: legacyTplId,
+      title: 'Legacy Operational Polaroid',
+      description: 'Pre-existing active template before readiness verification',
+      category: 'Retro 80s',
+      aspectRatio: '9:16',
+      type: 'photo',
+      engine: 'SMART_TEMPLATE',
+      provider: 'smart_template',
+      model: 'smart_canvas_ffmpeg',
+      workflow: 'retro-polaroid-warm',
+      cover: TINY_PNG_BASE64,
+      preview: TINY_PNG_BASE64,
+      sampleResult: TINY_PNG_BASE64,
+      isActive: true,
+      isFeatured: false,
+      sortOrder: 0,
+      creditCost: 10,
+      tags: ['Retro'],
+      likesCount: 0,
+      requiredInputs: [{ id: 'slot_1', label: 'Photo', type: 'image', description: 'Face photo' }],
+      recipe: {
+        version: '1.0',
+        inputType: 'IMAGE_ONLY',
+        provider: 'smart_template',
+        model: 'smart_canvas_ffmpeg',
+        engine: 'SMART_TEMPLATE',
+        workflow: 'retro-polaroid-warm',
+        prompt: 'Retro legacy polaroid.',
+        aspectRatio: '9:16'
+      }
+    });
+    const legacyNorm = normalizeTemplateReadinessStatus(testDb.getTemplates().find((t) => t.id === legacyTplId)!);
+    const legacyCustRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: legacyTplId,
+        inputMediaUrl: TINY_PNG_BASE64
+      })
+    });
+    const legacyCustJson = await legacyCustRes.json();
+    assert(
+      legacyNorm.status === 'TEST_REQUIRED' &&
+        legacyNorm.legacyOperational === true &&
+        legacyNorm.isCustomerGeneratable === true &&
+        legacyCustRes.status === 200 &&
+        legacyCustJson.generation?.status === 'completed' &&
+        legacyCustJson.generation?.chargeStatus === 'finalized',
+      `C.6b Legacy active template remains TEST_REQUIRED (legacyOperational=true) in Admin Gallery while still allowing customer generation (${legacyCustRes.status})`
     );
 
     // Edit recipe prompt -> resets readiness to TEST_REQUIRED
@@ -552,7 +633,46 @@ async function runVerification() {
       isAiGenerated: true
     });
 
+    // 4. Zero-deduction failed run (like req_1795522323065) -> must propose NO_OP_ZERO_CREDITS and issue 0 refund
+    const zeroDeductId = 'req_1795522323065';
+    await testDb.addGenerationAsync({
+      id: zeroDeductId,
+      userId: sessA.user.id,
+      templateId: 'tpl_full_swag_1',
+      templateTitle: 'Full Swag',
+      templateType: 'photo',
+      aspectRatio: '9:16',
+      status: 'failed',
+      refundStatus: 'none',
+      creditCost: 0,
+      inputMediaUrl: TINY_PNG_BASE64,
+      error: 'Network HTML interception; 0 credits deducted',
+      engine: 'AI_GENERATION',
+      model: 'gemini-2.5-flash-image',
+      workflow: 'PHOTO_GENERATION',
+      createdAt: new Date().toISOString(),
+      isAiGenerated: true
+    });
+
+    // HTTP safeguard: dryRun=false without confirmApply=true must fail 400 DRY_RUN_APPROVAL_REQUIRED
+    const unsafeReconcileRes = await fetch(`${baseUrl}/api/admin/reconcile-generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ dryRun: false, templateId: 'tpl_full_swag_1' })
+    });
+    const unsafeReconcileJson = await unsafeReconcileRes.json();
+
+    // HTTP default (omitted dryRun) must execute in DRY-RUN mode with 0 wallet mutations
     const balBeforeReconcile = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    const httpDryRunRes = await fetch(`${baseUrl}/api/admin/reconcile-generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ templateId: 'tpl_full_swag_1' })
+    });
+    const httpDryRunJson = await httpDryRunRes.json();
+    const balAfterDryRun = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    const zeroDeductDryItem = (httpDryRunJson.items || []).find((it: any) => it.generationId === zeroDeductId);
+
     const reconRun1 = await reconcileAffectedGenerations(testDb, mediaStorage, {
       dryRun: false,
       templateId: 'tpl_full_swag_1',
@@ -572,16 +692,23 @@ async function runVerification() {
     const missingGenRecord = await testDb.getGenerationAuthoritative(genMissingId);
 
     assert(
-      reconRun1.restoredValid === 1 &&
+      unsafeReconcileRes.status === 400 &&
+        unsafeReconcileJson.code === 'DRY_RUN_APPROVAL_REQUIRED' &&
+        httpDryRunRes.status === 200 &&
+        httpDryRunJson.dryRun === true &&
+        balAfterDryRun === balBeforeReconcile &&
+        zeroDeductDryItem?.proposedAction === 'NO_OP_ZERO_CREDITS' &&
+        reconRun1.restoredValid === 1 &&
         reconRun1.refundedMissing === 1 &&
-        reconRun1.skippedAlreadyRefunded === 1 &&
+        reconRun1.skippedAlreadyRefunded === 2 &&
         balAfterRun1 === balBeforeReconcile + 25 &&
         reconRun2.refundedMissing === 0 &&
         balAfterRun2 === balAfterRun1 &&
         restoredGenRecord?.status === 'completed' &&
         missingGenRecord?.status === 'failed' &&
-        missingGenRecord?.refundStatus === 'refunded',
-      `D.1 Historical reconciliation restored valid run, refunded missing run exactly once (+25 -> ${balAfterRun1}), skipped ${genAlreadyRefundedId}, and stayed idempotent on run #2 (${balAfterRun2})`
+        missingGenRecord?.refundStatus === 'refunded' &&
+        missingGenRecord?.chargeStatus === 'refunded',
+      `D.1 DRY-RUN safeguard enforced (${unsafeReconcileJson.code}), 0-credit ${zeroDeductId} untouched (NO_OP_ZERO_CREDITS), valid output restored, missing refunded once (+25 -> ${balAfterRun1}), and idempotent on run #2 (${balAfterRun2})`
     );
 
     console.log('\n=== SUITE E: EXISTING ADMIN DASHBOARD ROUTES PRESERVATION ===');

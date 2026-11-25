@@ -175,18 +175,59 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Resilient Response Helper for Cloud Run 502/503/504 / HTML interception
+// Resilient Response Helper for Cloud Run 502/503/504 / AI Studio Preview Proxy HTML interception
 export async function safeParseJsonResponse<T = any>(
   res: Response
-): Promise<{ ok: boolean; status: number; data: T | null; error?: string; isHtml?: boolean; isRetryable?: boolean }> {
+): Promise<{
+  ok: boolean;
+  status: number;
+  data: T | null;
+  error?: string;
+  isHtml?: boolean;
+  isRetryable?: boolean;
+  contentType?: string;
+  finalUrl?: string;
+  redirected?: boolean;
+  correlationId?: string;
+  htmlTitle?: string;
+}> {
   const contentType = res.headers.get('content-type') || '';
-  const isJson = contentType.includes('application/json');
+  const finalUrl = res.url || undefined;
+  const redirected = Boolean(res.redirected);
+  const correlationId = res.headers.get('x-correlation-id') || undefined;
+  const isJson = contentType.toLowerCase().includes('application/json');
+
+  const buildHtmlResult = (rawText: string) => {
+    const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const htmlTitle = titleMatch?.[1]?.trim();
+    const isAuthOrSsoHtml =
+      redirected ||
+      /accounts\.google\.com|sign\s*in|oauth|sso|session/i.test(rawText) ||
+      /accounts\.google\.com/i.test(finalUrl || '');
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      isHtml: true,
+      isRetryable: res.status === 200 || res.status >= 500,
+      contentType: contentType || 'text/html',
+      finalUrl,
+      redirected,
+      correlationId,
+      htmlTitle,
+      error: isAuthOrSsoHtml
+        ? `Preview/gateway proxy intercepted the API request with an HTML login/auth page (${htmlTitle || 'HTML Proxy'}, HTTP ${res.status || 0}). Reload preview and retry — 0 credits were deducted.`
+        : htmlTitle
+        ? `Server/proxy returned HTML (${htmlTitle}, HTTP ${res.status || 0}) instead of JSON. Please retry — 0 credits were deducted.`
+        : `Server/proxy returned HTML response instead of JSON (HTTP ${res.status || 0}). Please retry — 0 credits were deducted.`
+    };
+  };
 
   if (!isJson) {
     const rawText = await res.text().catch(() => '');
     const trimmed = rawText.trimStart();
     const isHtml =
-      contentType.includes('text/html') ||
+      contentType.toLowerCase().includes('text/html') ||
       /^<!doctype\s+html|^<html\b|<head\b|<body\b/i.test(trimmed);
 
     if (res.status === 503) {
@@ -196,6 +237,10 @@ export async function safeParseJsonResponse<T = any>(
         data: null,
         isHtml,
         isRetryable: true,
+        contentType,
+        finalUrl,
+        redirected,
+        correlationId,
         error: 'Cloud Run service warming up (503 Service Unavailable). Please retry in a moment.'
       };
     }
@@ -206,6 +251,10 @@ export async function safeParseJsonResponse<T = any>(
         data: null,
         isHtml,
         isRetryable: true,
+        contentType,
+        finalUrl,
+        redirected,
+        correlationId,
         error: `Server is restarting or warming up (HTTP ${res.status}). Please retry in a moment.`
       };
     }
@@ -215,45 +264,56 @@ export async function safeParseJsonResponse<T = any>(
         status: 401,
         data: null,
         isHtml,
+        contentType,
+        finalUrl,
+        redirected,
+        correlationId,
         error: 'Authentication session expired or required (401 Unauthorized).'
       };
     }
     if (isHtml) {
-      const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i);
-      const htmlTitle = titleMatch?.[1]?.trim();
-      return {
-        ok: false,
-        status: res.status,
-        data: null,
-        isHtml: true,
-        isRetryable: res.status === 200 || res.status >= 500,
-        error: htmlTitle
-          ? `Server returned HTML proxy response (${htmlTitle}, HTTP ${res.status}). Please retry.`
-          : `Server returned temporary HTML response instead of JSON (HTTP ${res.status}). Please retry.`
-      };
+      return buildHtmlResult(rawText);
     }
     return {
       ok: false,
       status: res.status,
       data: null,
       isHtml: false,
+      contentType,
+      finalUrl,
+      redirected,
+      correlationId,
       error: trimmed.slice(0, 160) || `Server returned HTTP ${res.status}`
     };
   }
 
+  const cloned = typeof res.clone === 'function' ? res.clone() : null;
   try {
     const data = await res.json();
     return {
       ok: res.ok,
       status: res.status,
       data,
-      error: res.ok ? undefined : (data?.error || `HTTP ${res.status}`)
+      contentType,
+      finalUrl,
+      redirected,
+      correlationId: (data as any)?.correlationId || correlationId,
+      error: res.ok ? undefined : ((data as any)?.error || `HTTP ${res.status}`)
     };
   } catch {
+    const fallbackText = cloned ? await cloned.text().catch(() => '') : '';
+    const trimmed = fallbackText.trimStart();
+    if (/^<!doctype\s+html|^<html\b|<head\b|<body\b/i.test(trimmed)) {
+      return buildHtmlResult(fallbackText);
+    }
     return {
       ok: false,
       status: res.status,
       data: null,
+      contentType,
+      finalUrl,
+      redirected,
+      correlationId,
       error: 'Invalid JSON response from server'
     };
   }
@@ -1031,9 +1091,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
         body: JSON.stringify({ name, avatar })
       });
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
+      const parsed = await safeParseJsonResponse<{ user?: UserProfile }>(res);
+      if (parsed.ok && parsed.data?.user) {
+        setUser(parsed.data.user);
         return true;
       }
     } catch {
@@ -1143,8 +1203,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       });
 
-      const data = await res.json();
-      if (res.ok && data.generation) {
+      const parsed = await safeParseJsonResponse<any>(res);
+      const data = parsed.data || {};
+      if (parsed.ok && data.generation) {
         setActiveGeneration(data.generation);
         setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
         if (data.remainingCredits !== undefined && wallet) {
@@ -1157,6 +1218,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           timestamp: data.generation.createdAt
         };
       } else {
+        if (parsed.isHtml || !parsed.data) {
+          return {
+            success: false,
+            error: parsed.error || `Server returned non-JSON response (HTTP ${parsed.status})`,
+            errorCode: parsed.isHtml
+              ? (parsed.status === 401 || parsed.redirected ? 'PREVIEW_PROXY_AUTH_HTML' : 'NON_JSON_HTML_RESPONSE')
+              : `HTTP_${parsed.status || 0}`,
+            httpStatus: parsed.status,
+            stage: 'proxy_or_gateway',
+            isHtmlResponse: Boolean(parsed.isHtml),
+            contentType: parsed.contentType,
+            finalUrl: parsed.finalUrl,
+            redirected: parsed.redirected,
+            correlationId: parsed.correlationId || `req_${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            refunded: false
+          };
+        }
         if (data.generation) {
           setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
         }
@@ -1175,11 +1254,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return {
           success: false,
-          error: data.error || 'Generation request failed',
+          error: data.error || parsed.error || 'Generation request failed',
           errorCode: data.code || `HTTP_${res.status}`,
           httpStatus: res.status,
           stage: data.stage || 'generation_request',
-          correlationId: data.correlationId || data.requestId || data.generationId || `req_${Date.now()}`,
+          contentType: parsed.contentType,
+          finalUrl: parsed.finalUrl,
+          redirected: parsed.redirected,
+          correlationId: data.correlationId || data.requestId || data.generationId || parsed.correlationId || `req_${Date.now()}`,
           timestamp: data.timestamp || new Date().toISOString(),
           refunded: Boolean(data.refunded)
         };
@@ -1191,6 +1273,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         errorCode: 'NETWORK_ERROR',
         httpStatus: 0,
         stage: 'network',
+        correlationId: `req_${Date.now()}`,
         timestamp: new Date().toISOString()
       };
     }
@@ -1228,8 +1311,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         body: JSON.stringify(requestBody)
       });
 
-      const data = await res.json();
-      if (res.ok && data.generation) {
+      const parsed = await safeParseJsonResponse<any>(res);
+      const data = parsed.data || {};
+      if (parsed.ok && data.generation) {
         setActiveGeneration(data.generation);
         setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
         if (data.remainingCredits !== undefined && wallet) {
@@ -1242,6 +1326,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           timestamp: data.generation.createdAt
         };
       } else {
+        if (parsed.isHtml || !parsed.data) {
+          return {
+            success: false,
+            error: parsed.error || `Server returned non-JSON response (HTTP ${parsed.status})`,
+            errorCode: parsed.isHtml
+              ? (parsed.status === 401 || parsed.redirected ? 'PREVIEW_PROXY_AUTH_HTML' : 'NON_JSON_HTML_RESPONSE')
+              : `HTTP_${parsed.status || 0}`,
+            httpStatus: parsed.status,
+            stage: 'proxy_or_gateway',
+            isHtmlResponse: Boolean(parsed.isHtml),
+            contentType: parsed.contentType,
+            finalUrl: parsed.finalUrl,
+            redirected: parsed.redirected,
+            correlationId: parsed.correlationId || `fsv_${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            refunded: false
+          };
+        }
         if (data.generation) {
           setGenerations((prev) => [data.generation, ...prev.filter((g) => g.id !== data.generation.id)]);
         }
@@ -1260,11 +1362,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return {
           success: false,
-          error: data.error || 'Face swap request failed',
+          error: data.error || parsed.error || 'Face swap request failed',
           errorCode: data.code || `HTTP_${res.status}`,
           httpStatus: res.status,
           stage: data.stage || 'validation',
-          correlationId: data.correlationId || data.requestId || `fsv_${Date.now()}`,
+          contentType: parsed.contentType,
+          finalUrl: parsed.finalUrl,
+          redirected: parsed.redirected,
+          correlationId: data.correlationId || data.requestId || parsed.correlationId || `fsv_${Date.now()}`,
           timestamp: data.timestamp || new Date().toISOString(),
           refunded: Boolean(data.refunded)
         };
@@ -1276,6 +1381,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         errorCode: 'NETWORK_ERROR',
         httpStatus: 0,
         stage: 'network',
+        correlationId: `fsv_${Date.now()}`,
         timestamp: new Date().toISOString()
       };
     }

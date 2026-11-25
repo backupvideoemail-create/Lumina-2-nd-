@@ -570,7 +570,7 @@ export function enrichAlertDefaults(
       httpStatus = context?.httpStatus ?? (vector === 'MEDIA_SLOW_BUFFERING' ? 'CLIENT_BUFFER_WAIT' : 'CLIENT_MEDIA_ERROR');
       rootCause = 'Video/image element reported playback decode stall, byte-range stream error, or missing CORS/CORP header.';
       recommendedAction = 'Ensure media returns HTTP 206 Byte-Range with valid video/mp4 Content-Type, Vary: Range, and Cross-Origin-Resource-Policy headers.';
-      ownerAction = 'Verify R2 custom domain / media proxy headers and inspect failing asset URL in Media Cache Telemetry.';
+      ownerAction = 'Inspect same-origin /api/media/:fileId signed URL delivery headers and Media Cache Telemetry.';
       officialSetupUrl = 'https://dash.cloudflare.com/';
       break;
     }
