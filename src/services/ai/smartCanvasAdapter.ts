@@ -34,6 +34,8 @@ export interface SmartCanvasProcessParams {
   workflow: string;
   model?: string;
   inputMediaUrls: string[];
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: 'image' | 'video' }>;
+  isCouple?: boolean;
   aspectRatio?: string;
   customPrompt?: string;
   durationSeconds?: number;
@@ -508,14 +510,32 @@ export class SmartCanvasAdapter {
 
     const wfLower = (params.workflow || '').trim().toLowerCase();
     const isVideoOutput = params.templateType === 'video' || wfLower === 'synthwave-grid-animation';
-    const customerInputsDiag = resolvedAssets.map((a, idx) => ({
-      slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`,
-      role: resolvedAssets.length >= 2 ? (idx === 0 ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A' : 'CUSTOMER_SOURCE_PHOTO_PERSON_B') : 'CUSTOMER_SOURCE_PHOTO',
-      mediaType: 'image' as const,
-      mimeType: a.mimeType,
-      sizeBytes: a.buffer.length,
-      sha256Prefix: crypto.createHash('sha256').update(a.buffer).digest('hex').slice(0, 16)
-    }));
+    const isCoupleMode = Boolean(params.isCouple);
+    const inputMeta = Array.isArray(params.inputMedia) ? params.inputMedia : [];
+    const customerInputsDiag = resolvedAssets.map((a, idx) => {
+      const meta = inputMeta[idx];
+      const slotId = meta?.slotId || (isCoupleMode ? (idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`) : (idx === 0 ? 'user_photo' : `slot_${idx + 1}`));
+      const explicitRole = meta?.role ? String(meta.role).trim() : '';
+      const role = isCoupleMode
+        ? (explicitRole === 'person_b' || explicitRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' || slotId === 'partner_2' || slotId === 'slot_2'
+            ? 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+            : 'CUSTOMER_SOURCE_PHOTO_PERSON_A')
+        : (explicitRole &&
+            explicitRole !== 'person_a' &&
+            explicitRole !== 'person_b' &&
+            explicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
+            explicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+            ? explicitRole
+            : 'CUSTOMER_SOURCE_PHOTO');
+      return {
+        slotId,
+        role,
+        mediaType: 'image' as const,
+        mimeType: a.mimeType,
+        sizeBytes: a.buffer.length,
+        sha256Prefix: crypto.createHash('sha256').update(a.buffer).digest('hex').slice(0, 16)
+      };
+    });
 
     if (isVideoOutput) {
       const mp4Buffer = await this.encodeVideoFromPosterPng(
@@ -544,6 +564,7 @@ export class SmartCanvasAdapter {
           adapter: this.adapterName,
           model: params.model || 'smart_canvas_ffmpeg',
           workflow: params.workflow,
+          isCouple: isCoupleMode,
           customerInputCount: customerInputsDiag.length,
           customerInputs: customerInputsDiag,
           providerStatus: 'completed',
@@ -578,6 +599,7 @@ export class SmartCanvasAdapter {
         adapter: this.adapterName,
         model: params.model || 'smart_canvas',
         workflow: params.workflow,
+        isCouple: isCoupleMode,
         customerInputCount: customerInputsDiag.length,
         customerInputs: customerInputsDiag,
         providerStatus: 'completed',

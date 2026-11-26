@@ -42,7 +42,12 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Template, TemplateEngine, TemplateInputType, TemplateInputDef, TemplateExecutionRecipe, FaceSwapScene } from '../types';
-import { normalizeTemplateReadinessStatus, CanonicalTemplateReadinessStatus } from '../services/validation/templateReadiness';
+import {
+  normalizeTemplateReadinessStatus,
+  CanonicalTemplateReadinessStatus,
+  resolveTemplateInputSlots,
+  requiresCustomerPhotoPersonalization
+} from '../services/validation/templateReadiness';
 import {
   HomeBannerItem,
   DEFAULT_BANNER_DURATION_SECONDS,
@@ -254,15 +259,24 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [loadingAdminTemplates, setLoadingAdminTemplates] = useState<boolean>(false);
   const [readinessFilter, setReadinessFilter] = useState<'ALL' | CanonicalTemplateReadinessStatus>('ALL');
   const [testingTemplateId, setTestingTemplateId] = useState<string | null>(null);
+  const [testInputPanelTemplateId, setTestInputPanelTemplateId] = useState<string | null>(null);
+  const [testSlotPayloads, setTestSlotPayloads] = useState<
+    Record<string, Record<string, { dataUrl: string; fileName: string; mimeType: string; sizeBytes: number }>>
+  >({});
+  const [isApprovingVisual, setIsApprovingVisual] = useState<boolean>(false);
   const [lastTemplateTestResult, setLastTemplateTestResult] = useState<{
     templateId: string;
     title: string;
     readinessStatus: string;
+    lastTestResult?: string;
+    verificationInputMode?: string;
+    requiresVisualAcceptance?: boolean;
     passed: boolean;
     message: string;
     signedUrl?: string;
     sizeBytes?: number;
     mimeType?: string;
+    diagnostics?: any;
   } | null>(null);
   const [isTogglingGate, setIsTogglingGate] = useState<boolean>(false);
   const [isReconcilingRuns, setIsReconcilingRuns] = useState<boolean>(false);
@@ -1669,40 +1683,109 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     }
   };
 
-  const handleRunTemplateVerifyTest = async (tpl: Template) => {
+  const handleTestSlotFileSelect = (templateId: string, slotId: string, file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) return;
+      setTestSlotPayloads((prev) => ({
+        ...prev,
+        [templateId]: {
+          ...(prev[templateId] || {}),
+          [slotId]: {
+            dataUrl,
+            fileName: file.name,
+            mimeType: file.type || 'image/png',
+            sizeBytes: file.size || 0
+          }
+        }
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRunTemplateVerifyTest = async (tpl: Template, mode: 'smoke' | 'real_slots' = 'smoke') => {
     if (testingTemplateId) return;
+    const schemaSlots = resolveTemplateInputSlots(tpl);
+    let bodyPayload: Record<string, any> = {};
+
+    if (mode === 'real_slots') {
+      const slotMap = testSlotPayloads[tpl.id] || {};
+      const testInputs = schemaSlots
+        .map((slot) => {
+          const uploaded = slotMap[slot.slotId] || slotMap[slot.id];
+          if (!uploaded?.dataUrl) return null;
+          return {
+            slotId: slot.slotId,
+            role: slot.role,
+            type: slot.type,
+            mediaBase64: uploaded.dataUrl
+          };
+        })
+        .filter(Boolean);
+
+      const missingRequired = schemaSlots.filter(
+        (s) => s.isRequired && !(slotMap[s.slotId]?.dataUrl || slotMap[s.id]?.dataUrl)
+      );
+      if (missingRequired.length > 0) {
+        showNotification(
+          `Upload real test input(s) for: ${missingRequired.map((s) => s.label).join(', ')}`,
+          'error'
+        );
+        return;
+      }
+      bodyPayload = { testInputs };
+    }
+
     setTestingTemplateId(tpl.id);
     setLastTemplateTestResult(null);
     try {
       const res = await fetch(`/api/admin/templates/${encodeURIComponent(tpl.id)}/verify-test`, {
         method: 'POST',
         headers: getAdminHeaders(),
-        body: JSON.stringify({})
+        body: JSON.stringify(bodyPayload)
       });
       const data = await res.json().catch(() => null);
       const passed = Boolean(res.ok && data?.success && (data?.verification?.passed ?? true));
       const mediaInfo = data?.verification || data?.deliverable;
+      const nextReadiness = data?.readinessStatus || data?.status || (passed ? 'TEST_REQUIRED' : 'FAILED');
+      const nextLastResult = data?.lastTestResult || data?.verification?.lastTestResult;
+      const inputMode = data?.verificationInputMode || data?.verification?.verificationInputMode;
+      const awaitingVisual = Boolean(
+        data?.requiresVisualAcceptance || nextLastResult === 'AWAITING_VISUAL_ACCEPTANCE'
+      );
+
       setLastTemplateTestResult({
         templateId: tpl.id,
         title: tpl.title,
-        readinessStatus: data?.readinessStatus || data?.status || (passed ? 'READY' : 'FAILED'),
+        readinessStatus: nextReadiness,
+        lastTestResult: nextLastResult,
+        verificationInputMode: inputMode,
+        requiresVisualAcceptance: awaitingVisual,
         passed,
         message:
           data?.message ||
           data?.error ||
           (passed
-            ? 'End-to-end test, storage read-back, and download verification passed.'
+            ? 'Test executed and storage deliverable verified.'
             : 'Verification test failed.'),
         signedUrl: mediaInfo?.signedUrl,
         sizeBytes: mediaInfo?.sizeBytes,
-        mimeType: mediaInfo?.mimeType
+        mimeType: mediaInfo?.mimeType,
+        diagnostics: data?.diagnostics
       });
-      showNotification(
-        passed
-          ? `✅ "${tpl.title}" verified & promoted to READY!`
-          : `❌ "${tpl.title}" test failed: ${data?.error || 'Check diagnostics'}`,
-        passed ? 'success' : 'error'
-      );
+
+      if (!passed) {
+        showNotification(`❌ "${tpl.title}" test failed: ${data?.error || 'Check diagnostics'}`, 'error');
+      } else if (nextReadiness === 'READY') {
+        showNotification(`✅ "${tpl.title}" verified & promoted to READY!`, 'success');
+      } else if (awaitingVisual) {
+        showNotification(`👁️ "${tpl.title}" real test ran — inspect output & Approve Visual Quality for READY.`, 'success');
+      } else {
+        showNotification(`🧪 "${tpl.title}" smoke check passed (upload real test input for READY).`, 'success');
+      }
+
       await Promise.all([fetchAdminTemplates(true), refreshTemplates()]);
     } catch (err: any) {
       setLastTemplateTestResult({
@@ -1715,6 +1798,49 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
       showNotification(err?.message || 'Test request failed', 'error');
     } finally {
       setTestingTemplateId(null);
+    }
+  };
+
+  const handleVisualAcceptanceDecision = async (templateId: string, title: string, decision: 'approve' | 'reject') => {
+    if (isApprovingVisual) return;
+    setIsApprovingVisual(true);
+    try {
+      const res = await fetch(`/api/admin/templates/${encodeURIComponent(templateId)}/visual-acceptance`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ decision })
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
+        const approved = decision === 'approve';
+        setLastTemplateTestResult((prev) =>
+          prev && prev.templateId === templateId
+            ? {
+                ...prev,
+                readinessStatus: data.readinessStatus || (approved ? 'READY' : 'TEST_REQUIRED'),
+                lastTestResult: approved ? 'PASSED' : 'FAILED',
+                requiresVisualAcceptance: false,
+                passed: approved,
+                message: approved
+                  ? 'Visual quality approved by Admin — template is now READY.'
+                  : 'Visual quality rejected — update recipe/assets and re-test.'
+              }
+            : prev
+        );
+        showNotification(
+          approved
+            ? `✅ "${title}" visually approved and promoted to READY!`
+            : `⚠️ "${title}" rejected — status reset to TEST REQUIRED.`,
+          approved ? 'success' : 'error'
+        );
+        await Promise.all([fetchAdminTemplates(true), refreshTemplates()]);
+      } else {
+        showNotification(data?.error || 'Visual acceptance request failed', 'error');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Network error saving visual review', 'error');
+    } finally {
+      setIsApprovingVisual(false);
     }
   };
 
@@ -3241,16 +3367,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                   </div>
                 </div>
 
-                {/* Live Admin Verify-Test Result Card */}
+                {/* Live Admin Verify-Test & Visual Acceptance Card */}
                 {lastTemplateTestResult && (
                   <div
                     className={`p-3 rounded-2xl border flex items-start justify-between gap-3 text-xs ${
-                      lastTemplateTestResult.passed
+                      !lastTemplateTestResult.passed
+                        ? 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+                        : lastTemplateTestResult.readinessStatus === 'READY'
                         ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
-                        : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+                        : 'bg-amber-950/40 border-amber-500/40 text-amber-100'
                     }`}
                   >
-                    <div className="flex items-start gap-3 min-w-0">
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
                       {lastTemplateTestResult.signedUrl && (
                         lastTemplateTestResult.mimeType?.startsWith('video/') ? (
                           <video
@@ -3258,22 +3386,32 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             muted
                             playsInline
                             controls
-                            className="w-16 h-20 rounded-xl object-cover bg-black border border-white/15 shrink-0"
+                            className="w-20 h-24 rounded-xl object-cover bg-black border border-white/15 shrink-0"
                           />
                         ) : (
                           <img
                             src={lastTemplateTestResult.signedUrl}
                             alt={lastTemplateTestResult.title}
-                            className="w-16 h-20 rounded-xl object-cover bg-black border border-white/15 shrink-0"
+                            className="w-20 h-24 rounded-xl object-cover bg-black border border-white/15 shrink-0"
                           />
                         )
                       )}
-                      <div className="min-w-0 space-y-1">
+                      <div className="min-w-0 space-y-1.5 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-white">{lastTemplateTestResult.title}</span>
                           <span className="text-[10px] font-black px-2 py-0.5 rounded bg-black/40 border border-white/15">
                             {lastTemplateTestResult.readinessStatus}
                           </span>
+                          {lastTemplateTestResult.verificationInputMode && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/10 border border-white/15">
+                              {lastTemplateTestResult.verificationInputMode === 'real_input' ? 'Real Input' : 'Smoke Check'}
+                            </span>
+                          )}
+                          {lastTemplateTestResult.mimeType && (
+                            <span className="text-[10px] font-mono opacity-80">
+                              {lastTemplateTestResult.mimeType}
+                            </span>
+                          )}
                           {typeof lastTemplateTestResult.sizeBytes === 'number' && (
                             <span className="text-[10px] font-mono opacity-80">
                               {formatBytes(lastTemplateTestResult.sizeBytes)}
@@ -3281,6 +3419,55 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           )}
                         </div>
                         <p className="text-[11px] opacity-90">{lastTemplateTestResult.message}</p>
+                        {Array.isArray(lastTemplateTestResult.diagnostics?.inputs) &&
+                          lastTemplateTestResult.diagnostics.inputs.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {lastTemplateTestResult.diagnostics.inputs.map((inp: any, i: number) => (
+                                <span
+                                  key={`${inp.slotId}_${i}`}
+                                  className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-stone-300"
+                                >
+                                  {inp.role} · {inp.sizeBytes}B · sha:{inp.sha256Prefix || 'ok'}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        {lastTemplateTestResult.passed &&
+                          lastTemplateTestResult.readinessStatus !== 'READY' &&
+                          (lastTemplateTestResult.requiresVisualAcceptance ||
+                            lastTemplateTestResult.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE') && (
+                            <div className="flex items-center gap-2 pt-1 flex-wrap">
+                              <button
+                                type="button"
+                                disabled={isApprovingVisual}
+                                onClick={() =>
+                                  handleVisualAcceptanceDecision(
+                                    lastTemplateTestResult.templateId,
+                                    lastTemplateTestResult.title,
+                                    'approve'
+                                  )
+                                }
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>{isApprovingVisual ? 'Saving...' : 'Approve Visual Quality → Mark READY'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isApprovingVisual}
+                                onClick={() =>
+                                  handleVisualAcceptanceDecision(
+                                    lastTemplateTestResult.templateId,
+                                    lastTemplateTestResult.title,
+                                    'reject'
+                                  )
+                                }
+                                className="px-2.5 py-1.5 rounded-xl bg-rose-600/30 hover:bg-rose-600/50 border border-rose-500/40 text-rose-100 text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                              >
+                                Reject Output
+                              </button>
+                            </div>
+                          )}
                       </div>
                     </div>
                     <button
@@ -3458,6 +3645,11 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                         ? new Date(tpl.lastVerifiedAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
                         : 'Never';
 
+                      const templateSlots = resolveTemplateInputSlots(tpl);
+                      const needsRealVisual = requiresCustomerPhotoPersonalization(tpl);
+                      const isRealPanelOpen = testInputPanelTemplateId === tpl.id;
+                      const tplSlotUploads = testSlotPayloads[tpl.id] || {};
+
                       return (
                         <div
                           key={tpl.id}
@@ -3465,12 +3657,13 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           onDragStart={() => setDraggedTemplateId(tpl.id)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => handleDropTemplate(tpl.id)}
-                          className={`p-3 rounded-2xl bg-stone-900/60 border flex items-center justify-between gap-2 sm:gap-3 transition-all ${
+                          className={`p-3 rounded-2xl bg-stone-900/60 border flex flex-col gap-2.5 transition-all ${
                             draggedTemplateId === tpl.id
                               ? 'opacity-40 border-amber-400/60 shadow-lg'
                               : 'border-white/10 hover:border-white/20'
                           }`}
                         >
+                          <div className="flex items-center justify-between gap-2 sm:gap-3">
                           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                             {/* Drag Handle & Mobile Move Up/Down Controls */}
                             <div className="flex items-center gap-0.5 shrink-0">
@@ -3562,8 +3755,8 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             <button
                               type="button"
                               disabled={testingTemplateId === tpl.id}
-                              onClick={() => handleRunTemplateVerifyTest(tpl)}
-                              title="Run 0-credit real test + storage & download verification"
+                              onClick={() => handleRunTemplateVerifyTest(tpl, 'smoke')}
+                              title="Run 0-credit Smoke Test (SmartCanvas non-personalized promotes READY; AI/personalized runs provider+storage check)"
                               className="px-2.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
                             >
                               {testingTemplateId === tpl.id ? (
@@ -3571,8 +3764,23 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                               ) : (
                                 <FlaskConical className="w-3.5 h-3.5" />
                               )}
-                              <span className="hidden sm:inline">{testingTemplateId === tpl.id ? 'Testing' : 'Test'}</span>
+                              <span className="hidden sm:inline">{testingTemplateId === tpl.id ? 'Testing' : 'Smoke'}</span>
                             </button>
+                            {needsRealVisual && (
+                              <button
+                                type="button"
+                                onClick={() => setTestInputPanelTemplateId(isRealPanelOpen ? null : tpl.id)}
+                                title="Upload real schema-mapped test input(s) for visual quality acceptance"
+                                className={`px-2.5 py-2 rounded-xl border text-[11px] font-bold flex items-center gap-1 cursor-pointer ${
+                                  isRealPanelOpen
+                                    ? 'bg-amber-500/30 text-amber-100 border-amber-400/50'
+                                    : 'bg-white/5 hover:bg-white/10 text-amber-200 border-amber-500/30'
+                                }`}
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Real Test</span>
+                              </button>
+                            )}
                             <button
                               onClick={() => handleToggleActive(tpl)}
                               title={tpl.isActive !== false ? 'Pause / Deactivate' : 'Activate'}
@@ -3598,6 +3806,83 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                             </button>
                           </div>
                         </div>
+
+                        {isRealPanelOpen && (
+                          <div className="p-2.5 rounded-xl bg-black/40 border border-amber-500/25 space-y-2 text-xs">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="text-[11px] font-bold text-amber-200">
+                                Universal Schema Real-Input Verification ({templateSlots.length} slot{templateSlots.length === 1 ? '' : 's'})
+                              </span>
+                              <span className="text-[10px] text-stone-400">
+                                Test inputs are kept private & deleted after verification (0 credits).
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {templateSlots.map((slot) => {
+                                const uploaded = tplSlotUploads[slot.slotId] || tplSlotUploads[slot.id];
+                                return (
+                                  <label
+                                    key={slot.slotId}
+                                    className="flex items-center justify-between gap-2 p-2 rounded-lg bg-stone-900/80 border border-white/10 cursor-pointer hover:border-amber-400/40"
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="text-[11px] font-bold text-white truncate">
+                                        {slot.label} {slot.isRequired ? '*' : ''}
+                                      </div>
+                                      <div className="text-[9.5px] font-mono text-stone-400 truncate">
+                                        {slot.role} ({slot.type})
+                                      </div>
+                                      {uploaded && (
+                                        <div className="text-[10px] text-emerald-300 truncate mt-0.5">
+                                          ✓ {uploaded.fileName} ({formatBytes(uploaded.sizeBytes)})
+                                        </div>
+                                      )}
+                                    </div>
+                                    <span className="px-2 py-1 rounded bg-white/10 text-[10px] font-bold text-white shrink-0">
+                                      {uploaded ? 'Replace' : 'Choose'}
+                                    </span>
+                                    <input
+                                      type="file"
+                                      accept={slot.type === 'video' ? 'video/*' : 'image/*'}
+                                      className="hidden"
+                                      onChange={(e) => {
+                                        const f = e.target.files?.[0] || null;
+                                        handleTestSlotFileSelect(tpl.id, slot.slotId, f);
+                                        e.target.value = '';
+                                      }}
+                                    />
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
+                              <span className="text-[10px] text-stone-400">
+                                Runs real provider/storage verification → preview output → Approve Visual Quality for READY.
+                              </span>
+                              <div className="flex items-center gap-2">
+                                {norm.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE' && norm.status !== 'READY' && (
+                                  <button
+                                    type="button"
+                                    disabled={isApprovingVisual}
+                                    onClick={() => handleVisualAcceptanceDecision(tpl.id, tpl.title, 'approve')}
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                                  >
+                                    Approve Visual Quality
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={testingTemplateId === tpl.id}
+                                  onClick={() => handleRunTemplateVerifyTest(tpl, 'real_slots')}
+                                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-extrabold cursor-pointer disabled:opacity-50"
+                                >
+                                  {testingTemplateId === tpl.id ? 'Running...' : 'Run Real-Input Test (0 cr)'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                       );
                     });
                   })()}

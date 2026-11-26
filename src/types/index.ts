@@ -32,7 +32,7 @@ export type AspectRatio = '9:16' | '4:5' | '1:1' | '16:9';
 
 export type TemplateEngine = 'SMART_TEMPLATE' | 'AI_GENERATION';
 
-export type TemplateInputType = 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO';
+export type TemplateInputType = 'IMAGE_ONLY' | 'VIDEO_ONLY' | 'IMAGE_OR_VIDEO' | 'NONE';
 
 export interface TemplateWorkflowConfig {
   provider?: 'gemini' | 'google_veo' | 'higgsfield' | 'smart_canvas' | string;
@@ -82,10 +82,22 @@ export interface TemplateExecutionRecipe {
   videoWorkflow?: TemplateWorkflowConfig;
 }
 
+export type SemanticInputRole =
+  | 'CUSTOMER_SOURCE_PHOTO'
+  | 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+  | 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+  | 'CUSTOMER_SOURCE_VIDEO'
+  | 'TEMPLATE_AFTER_REFERENCE'
+  | 'TEMPLATE_BEFORE_REFERENCE'
+  | 'TEMPLATE_FACE_THUMBNAIL'
+  | 'TEMPLATE_DRIVING_VIDEO'
+  | 'TEMPLATE_STYLE_REFERENCE';
+
 export interface TemplateInputDef {
   id: string;
   label: string;
   type: 'image' | 'video';
+  role?: SemanticInputRole | 'person_a' | 'person_b' | 'user_photo' | 'user_video' | string;
   description?: string;
   isRequired?: boolean;
   slotId?: string;
@@ -107,6 +119,7 @@ export interface Template {
   description: string;
   aspectRatio: AspectRatio;
   inputType?: TemplateInputType;
+  isCouple?: boolean;
   recipe?: TemplateExecutionRecipe;
   drivingVideoUrl?: string;
   requiredInputs: TemplateInputDef[];
@@ -146,8 +159,14 @@ export interface Template {
     | 'DRAFT_INCOMPLETE'
     | 'INVALID_CONFIG';
   lastVerifiedAt?: string;
-  lastTestResult?: 'PASSED' | 'FAILED' | 'UNTESTED';
+  lastTestResult?: 'PASSED' | 'FAILED' | 'UNTESTED' | 'SMOKE_PASSED' | 'AWAITING_VISUAL_ACCEPTANCE';
+  lastTestInputMode?: 'real_input' | 'synthetic_smoke';
   lastTestError?: string;
+  verifiedConfigFingerprint?: string;
+  visualAcceptanceStatus?: 'NOT_REQUIRED' | 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
+  visualAcceptanceAt?: string;
+  visualAcceptanceBy?: string;
+  visualAcceptanceNote?: string;
   readinessReason?: string;
   missingFields?: string[];
   readinessErrors?: string[];
@@ -235,6 +254,8 @@ export interface GenerationPipelineDiagnostics {
   adapter: string;
   model: string;
   workflow: string;
+  isCouple?: boolean;
+  verificationInputMode?: 'real_input' | 'synthetic_smoke';
   customerInputCount: number;
   customerInputs: GenerationDiagnosticInputItem[];
   referenceInput?: {

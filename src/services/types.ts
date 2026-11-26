@@ -7,6 +7,7 @@ export interface ImageGenerationParams {
   userImageUrl?: string;
   userImageUrls?: string[];
   inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
+  isCouple?: boolean;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
@@ -26,6 +27,7 @@ export interface VideoGenerationParams {
   userImageUrl?: string;
   userImageUrls?: string[];
   inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
+  isCouple?: boolean;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
@@ -57,6 +59,7 @@ export interface FaceSwapParams {
   adapter?: string;
   model?: string;
   workflow?: string;
+  isCouple?: boolean;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
   inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;

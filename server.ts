@@ -95,7 +95,11 @@ import {
   validateTemplateReadiness,
   validateFaceSwapSceneReadiness,
   normalizeTemplateReadinessStatus,
-  didTemplateExecutionRecipeChange
+  didTemplateExecutionRecipeChange,
+  resolveTemplateInputSlots,
+  requiresCustomerPhotoPersonalization,
+  computeTemplateConfigFingerprint,
+  isExplicitCoupleTemplate
 } from './src/services/validation/templateReadiness.ts';
 import { getKolkataDateKey } from './src/services/db/database.ts';
 import type {
@@ -2526,6 +2530,7 @@ app.post('/api/admin/templates', requireAdmin, async (req, res) => {
       model: model || resolvedRecipe.model || defaultModel,
       workflow: workflow || resolvedRecipe.workflow || 'PHOTO_GENERATION',
       drivingVideoUrl: drivingVideoUrl || resolvedRecipe.drivingVideoUrl || undefined,
+      isCouple: Boolean(body.isCouple === true || category === 'Couple'),
       recipe: resolvedRecipe,
       badge: badge || undefined,
       sortOrder: 0,
@@ -3067,18 +3072,24 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         updates.readinessStatus = 'PAUSED';
         updates.readinessReason = 'Paused by Admin (hidden from customer generation).';
       } else {
-        const previouslyVerified = Boolean(existing.lastVerifiedAt && existing.lastTestResult === 'PASSED');
-        updates.readinessStatus = previouslyVerified ? 'READY' : 'TEST_REQUIRED';
-        updates.readinessReason = previouslyVerified
-          ? 'Verified via real Admin end-to-end test.'
-          : 'Unverified template — run 1-click Admin test before launching to customers.';
+        const rechecked = normalizeTemplateReadinessStatus({ ...existing, isActive: true });
+        updates.readinessStatus = rechecked.status === 'READY' ? 'READY' : 'TEST_REQUIRED';
+        updates.readinessReason = rechecked.status === 'READY'
+          ? rechecked.reason
+          : 'Unverified template — run Admin test before launching to customers.';
       }
       updates.missingFields = [];
       updates.readinessErrors = [];
     } else {
       const recipeChanged = didTemplateExecutionRecipeChange(existing, updates);
       const nextIsActive = updates.isActive !== undefined ? updates.isActive !== false : existing.isActive !== false;
-      const hadPassedVerification = Boolean(existing.lastVerifiedAt && existing.lastTestResult === 'PASSED');
+      const mergedCheck = normalizeTemplateReadinessStatus({
+        ...existing,
+        ...updates,
+        isActive: nextIsActive,
+        verifiedConfigFingerprint: recipeChanged ? '' : existing.verifiedConfigFingerprint
+      });
+      const hadPassedVerification = mergedCheck.status === 'READY';
 
       if (recipeChanged || !hadPassedVerification) {
         updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'TEST_REQUIRED';
@@ -3088,19 +3099,25 @@ app.put('/api/admin/templates/:id', requireAdmin, async (req, res) => {
         updates.lastTestResult = 'UNTESTED';
         updates.lastVerifiedAt = '';
         updates.lastTestError = '';
+        updates.verifiedConfigFingerprint = '';
+        updates.lastTestInputMode = undefined;
+        updates.visualAcceptanceStatus = 'NOT_REQUIRED';
+        updates.visualAcceptanceAt = '';
+        updates.visualAcceptanceBy = '';
+        updates.visualAcceptanceNote = '';
         updates.readinessReason = !nextIsActive
           ? 'Paused by Admin.'
           : recipeChanged
-          ? 'Execution recipe/assets changed — run 1-click Admin test to re-verify.'
+          ? 'Execution recipe/assets changed — run Admin test & visual review to re-verify.'
           : (existing.requiresVerificationBeforeCustomerUse
-              ? 'Run 1-click Admin test to verify output & download.'
+              ? 'Run Admin test to verify output & download.'
               : 'Legacy operational template — Admin verification test recommended.');
       } else {
         updates.readinessStatus = !nextIsActive ? 'PAUSED' : 'READY';
         updates.requiresVerificationBeforeCustomerUse = false;
         updates.readinessReason = !nextIsActive
           ? 'Paused by Admin.'
-          : 'Verified via real Admin end-to-end test.';
+          : mergedCheck.reason;
       }
       updates.missingFields = [];
       updates.readinessErrors = [];
@@ -3183,7 +3200,7 @@ function buildSyntheticAdminTestPhotoBuffer(): Buffer {
   return Buffer.from(resvg.render().asPng());
 }
 
-// Admin 1-Click End-to-End Template Verification Test (0 credits, tests real generation + R2/disk + signed URL + download)
+// Admin End-to-End Template Verification Test (0 credits, schema-driven inputs, real-input vs smoke gating, private temp cleanup)
 app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) => {
   const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
   const { id } = req.params;
@@ -3227,35 +3244,228 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
     .trim()
     .toLowerCase();
   const resolvedAdapter = (template.adapter || template.recipe?.adapter || '').toString().trim();
+  const isCoupleTemplate = isExplicitCoupleTemplate(template);
+  const schemaSlots = resolveTemplateInputSlots(template);
+  const requiresRealAndVisual = requiresCustomerPhotoPersonalization(template);
+  const configFingerprint = computeTemplateConfigFingerprint(template);
+  const uploadedTempInputFileIds: string[] = [];
 
   try {
-    const customTestInput =
-      typeof req.body?.testMediaBase64 === 'string' && req.body.testMediaBase64.trim()
-        ? req.body.testMediaBase64.trim()
-        : typeof req.body?.testMediaUrl === 'string' && req.body.testMediaUrl.trim()
-        ? req.body.testMediaUrl.trim()
-        : null;
+    const rawBody = req.body || {};
+    const parsedRealInputs: Array<{ slotId?: string; role?: string; type?: 'image' | 'video'; mediaPayload: string }> = [];
 
-    const testPayload: string | Buffer = customTestInput || buildSyntheticAdminTestPhotoBuffer();
-    const storedInput = await mediaStorage.saveMedia(
-      testPayload,
-      'user_gen',
-      `${adminUser.id}_verify_${Date.now()}.png`,
-      adminUser.id,
-      false
-    );
-    const signedInputUrl = await mediaStorage.generateProviderSignedUrl(storedInput.fileId, 3600);
-    if (!signedInputUrl) {
-      throw new Error('Failed to create signed URL for Admin test input.');
+    if (Array.isArray(rawBody.testInputs)) {
+      for (const entry of rawBody.testInputs) {
+        if (!entry) continue;
+        const payload =
+          typeof entry === 'string'
+            ? entry.trim()
+            : String(entry.mediaBase64 || entry.mediaUrl || entry.media || '').trim();
+        if (payload) {
+          parsedRealInputs.push({
+            slotId: entry.slotId ? String(entry.slotId).trim() : undefined,
+            role: entry.role ? String(entry.role).trim() : undefined,
+            type: entry.type === 'video' ? 'video' : undefined,
+            mediaPayload: payload
+          });
+        }
+      }
+    } else if (rawBody.testInputs && typeof rawBody.testInputs === 'object') {
+      for (const [k, v] of Object.entries(rawBody.testInputs)) {
+        const entryObj = v as any;
+        const payload =
+          typeof entryObj === 'string'
+            ? entryObj.trim()
+            : String(entryObj?.mediaBase64 || entryObj?.mediaUrl || entryObj?.media || '').trim();
+        if (payload) {
+          parsedRealInputs.push({
+            slotId: k,
+            role: entryObj?.role ? String(entryObj.role).trim() : undefined,
+            type: entryObj?.type === 'video' ? 'video' : undefined,
+            mediaPayload: payload
+          });
+        }
+      }
     }
 
-    const isCoupleTemplate = template.category === 'Couple' || (template as any).isCouple === true;
-    const structuredInputs = isCoupleTemplate
-      ? [
-          { slotId: 'partner_1', role: 'person_a', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl },
-          { slotId: 'partner_2', role: 'person_b', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl }
-        ]
-      : [{ slotId: 'partner_1', role: 'user_photo', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl }];
+    if (parsedRealInputs.length === 0) {
+      const singleCustom =
+        typeof rawBody.testMediaBase64 === 'string' && rawBody.testMediaBase64.trim()
+          ? rawBody.testMediaBase64.trim()
+          : typeof rawBody.testMediaUrl === 'string' && rawBody.testMediaUrl.trim()
+          ? rawBody.testMediaUrl.trim()
+          : typeof rawBody.inputMediaUrl === 'string' && rawBody.inputMediaUrl.trim()
+          ? rawBody.inputMediaUrl.trim()
+          : '';
+      if (singleCustom) {
+        const splitItems = singleCustom.includes('|||')
+          ? singleCustom.split('|||').map((s: string) => s.trim()).filter(Boolean)
+          : [singleCustom];
+        splitItems.forEach((item: string, idx: number) => {
+          const targetSlot = schemaSlots[idx];
+          parsedRealInputs.push({
+            slotId: targetSlot?.slotId || (isCoupleTemplate ? (idx === 0 ? 'partner_1' : 'partner_2') : `slot_${idx + 1}`),
+            role: targetSlot?.role,
+            type: targetSlot?.type,
+            mediaPayload: item
+          });
+        });
+      }
+    }
+
+    const verificationInputMode: 'real_input' | 'synthetic_smoke' =
+      parsedRealInputs.length > 0 ? 'real_input' : 'synthetic_smoke';
+
+    if (verificationInputMode === 'real_input' && isCoupleTemplate) {
+      if (parsedRealInputs.length < 2) {
+        return res.status(400).json({
+          success: false,
+          code: 'INVALID_COUPLE_SLOTS',
+          error: 'Couple template real-photo verification requires distinct test photos for both Person A and Person B.'
+        });
+      }
+    }
+
+    const slotsToPopulate =
+      schemaSlots.length > 0
+        ? schemaSlots
+        : [
+            {
+              id: 'user_photo',
+              slotId: 'user_photo',
+              label: 'Smoke Sample',
+              type: 'image' as const,
+              role: 'CUSTOMER_SOURCE_PHOTO' as const,
+              isRequired: false
+            }
+          ];
+
+    const structuredInputs: Array<{
+      slotId: string;
+      role: string;
+      type: 'image' | 'video';
+      mediaUrl: string;
+      media: string;
+      mimeType: string;
+      sizeBytes: number;
+      sha256Prefix: string;
+    }> = [];
+
+    if (verificationInputMode === 'synthetic_smoke') {
+      const smokeBuf = buildSyntheticAdminTestPhotoBuffer();
+      const smokeSha = crypto.createHash('sha256').update(smokeBuf).digest('hex').slice(0, 16);
+      const storedInput = await mediaStorage.saveMedia(
+        smokeBuf,
+        'user_gen',
+        `${adminUser.id}_smoke_${Date.now()}.png`,
+        adminUser.id,
+        false
+      );
+      uploadedTempInputFileIds.push(storedInput.fileId);
+      const signedInputUrl = await mediaStorage.generateProviderSignedUrl(storedInput.fileId, 3600);
+      if (!signedInputUrl) {
+        throw new Error('Failed to create signed URL for private Admin smoke test input.');
+      }
+      for (let i = 0; i < slotsToPopulate.length; i++) {
+        const slot = slotsToPopulate[i];
+        structuredInputs.push({
+          slotId: slot.slotId,
+          role: slot.role,
+          type: 'image',
+          mediaUrl: signedInputUrl,
+          media: signedInputUrl,
+          mimeType: storedInput.mimeType || 'image/png',
+          sizeBytes: storedInput.sizeBytes || smokeBuf.length,
+          sha256Prefix: smokeSha
+        });
+      }
+    } else {
+      for (let i = 0; i < slotsToPopulate.length; i++) {
+        const slot = slotsToPopulate[i];
+        const matched =
+          parsedRealInputs.find(
+            (r) =>
+              (r.slotId && (r.slotId === slot.slotId || r.slotId === slot.id)) ||
+              (r.role && r.role.toUpperCase() === slot.role.toUpperCase())
+          ) || parsedRealInputs[i];
+        if (!matched || !matched.mediaPayload) {
+          if (slot.isRequired) {
+            return res.status(400).json({
+              success: false,
+              code: isCoupleTemplate ? 'INVALID_COUPLE_SLOTS' : 'MISSING_SLOT_INPUT',
+              error: `Real-input test is missing uploaded media for required slot '${slot.label}' (${slot.slotId}).`
+            });
+          }
+          continue;
+        }
+
+        const isVideoPayload =
+          matched.type === 'video' ||
+          matched.mediaPayload.startsWith('data:video/') ||
+          /\.(mp4|mov|webm)(\?|$)/i.test(matched.mediaPayload);
+        if (slot.type === 'video' && !isVideoPayload) {
+          return res.status(400).json({
+            success: false,
+            code: 'INVALID_INPUT_TYPE',
+            error: `Slot '${slot.label}' requires a real video file, not an image.`
+          });
+        }
+        if (slot.type === 'image' && isVideoPayload) {
+          return res.status(400).json({
+            success: false,
+            code: 'INVALID_INPUT_TYPE',
+            error: `Slot '${slot.label}' requires an image photo, not a video.`
+          });
+        }
+
+        let shaPrefix = '';
+        if (matched.mediaPayload.startsWith('data:')) {
+          const commaIdx = matched.mediaPayload.indexOf(',');
+          if (commaIdx !== -1) {
+            const rawBytes = Buffer.from(matched.mediaPayload.slice(commaIdx + 1), 'base64');
+            shaPrefix = crypto.createHash('sha256').update(rawBytes).digest('hex').slice(0, 16);
+          }
+        }
+        const ext = slot.type === 'video' ? 'mp4' : 'png';
+        const storedInput = await mediaStorage.saveMedia(
+          matched.mediaPayload,
+          'user_gen',
+          `${adminUser.id}_verify_${i}_${Date.now()}.${ext}`,
+          adminUser.id,
+          false
+        );
+        uploadedTempInputFileIds.push(storedInput.fileId);
+        const signedInputUrl = await mediaStorage.generateProviderSignedUrl(storedInput.fileId, 3600);
+        if (!signedInputUrl) {
+          throw new Error(`Failed to create signed URL for private Admin test input '${slot.slotId}'.`);
+        }
+        if (!shaPrefix) {
+          shaPrefix = crypto
+            .createHash('sha256')
+            .update(`${storedInput.fileId}:${storedInput.sizeBytes}`)
+            .digest('hex')
+            .slice(0, 16);
+        }
+        structuredInputs.push({
+          slotId: slot.slotId,
+          role: slot.role,
+          type: slot.type,
+          mediaUrl: signedInputUrl,
+          media: signedInputUrl,
+          mimeType: storedInput.mimeType || (slot.type === 'video' ? 'video/mp4' : 'image/png'),
+          sizeBytes: storedInput.sizeBytes || 0,
+          sha256Prefix: shaPrefix
+        });
+      }
+
+      if (structuredInputs.length === 0) {
+        return res.status(400).json({
+          success: false,
+          code: 'MISSING_SLOT_INPUT',
+          error: 'No matching real test input could be resolved for template slots.'
+        });
+      }
+    }
 
     const explicitAfterRef =
       template.sampleResult ||
@@ -3315,6 +3525,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
       const submittedJob = await faceSwapAdapter.submitFaceSwapJob({
         videoUrl: signedDriving,
         imageUrls: structuredInputs.map((i) => i.mediaUrl),
+        inputMedia: structuredInputs,
         masterRecipePrompt: effectivePrompt,
         provider: resolvedProvider,
         adapter: resolvedAdapter || 'faceSwapAdapter',
@@ -3332,7 +3543,6 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
         });
         resultMediaUrl = storedOut.publicUrl;
       } else {
-        // Provider queued cleanly; cannot claim customer download READY until immediate/completed output verifies
         throw new Error(
           `Provider queued async job '${submittedJob.requestId}' (not yet completed for instant download check). Verify once provider completes.`
         );
@@ -3364,7 +3574,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
           referenceImageUrl: resolvedRefImage,
           sampleResult: resolvedRefImage
         },
-        detectedInputType: 'image',
+        detectedInputType: structuredInputs.some((i) => i.type === 'video') ? 'video' : 'image',
         drivingVideoUrl: template.drivingVideoUrl || template.recipe?.drivingVideoUrl,
         model: effectiveModel,
         resolution: (template.resolutionLabel as any) || (template.type === 'video' ? '720p' : '1080p'),
@@ -3381,6 +3591,14 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
       throw new Error(deliverable.reason || 'Generated output failed private storage read-back verification.');
     }
 
+    if (template.type === 'video') {
+      if (!String(deliverable.mimeType || '').startsWith('video/')) {
+        throw new Error(
+          `VIDEO_DELIVERABLE_INVALID: Video template test produced '${deliverable.mimeType || 'unknown'}' instead of a valid video MP4/WEBM stream.`
+        );
+      }
+    }
+
     const bundle = await mediaStorage.getAuthorizedDeliveryBundle(deliverable.fileId, adminUser.id, 600);
     if (!bundle.ok || !bundle.url || !bundle.downloadUrl) {
       throw new Error(bundle.error || 'Failed to generate authorized preview & download URLs.');
@@ -3394,22 +3612,56 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
     if (downloadStreamCheck.error || !downloadStreamCheck.body) {
       throw new Error(downloadStreamCheck.error || 'Download byte-range verification failed.');
     }
+    if (template.type === 'video' && downloadStreamCheck.statusCode !== 206 && !downloadStreamCheck.contentRange) {
+      if (typeof downloadStreamCheck.body.destroy === 'function') {
+        downloadStreamCheck.body.destroy();
+      }
+      throw new Error('VIDEO_RANGE_206_REQUIRED: Video template deliverable did not serve HTTP 206 Partial Content byte-range stream.');
+    }
     if (typeof downloadStreamCheck.body.destroy === 'function') {
       downloadStreamCheck.body.destroy();
     }
 
     const nowIso = new Date().toISOString();
-    const nextStatus = template.isActive === false ? 'PAUSED' : 'READY';
+    const canPromoteDirectlyFromTest = !requiresRealAndVisual;
+    const isPaused = template.isActive === false;
+
+    let nextStatus: 'READY' | 'TEST_REQUIRED' | 'PAUSED' = isPaused
+      ? 'PAUSED'
+      : canPromoteDirectlyFromTest
+      ? 'READY'
+      : 'TEST_REQUIRED';
+    let nextTestResult: 'PASSED' | 'SMOKE_PASSED' | 'AWAITING_VISUAL_ACCEPTANCE' =
+      canPromoteDirectlyFromTest
+        ? 'PASSED'
+        : verificationInputMode === 'real_input'
+        ? 'AWAITING_VISUAL_ACCEPTANCE'
+        : 'SMOKE_PASSED';
+    let nextVisualStatus: 'NOT_REQUIRED' | 'PENDING_REVIEW' =
+      canPromoteDirectlyFromTest ? 'NOT_REQUIRED' : 'PENDING_REVIEW';
+    let nextReason = '';
+    if (isPaused) {
+      nextReason = 'Verification test ran on paused template.';
+    } else if (canPromoteDirectlyFromTest) {
+      nextReason = 'Verified end-to-end (non-personalized SmartCanvas template).';
+    } else if (verificationInputMode === 'real_input') {
+      nextReason = 'Real-input technical test passed — visually inspect output & click Approve Visual Quality to mark READY.';
+    } else {
+      nextReason = 'Synthetic smoke check passed (provider & storage OK) — upload real test input(s) and approve visual quality for READY.';
+    }
+
     const updatedTemplate = await prodDb.updateTemplate(id, {
       readinessStatus: nextStatus,
-      requiresVerificationBeforeCustomerUse: false,
+      requiresVerificationBeforeCustomerUse: canPromoteDirectlyFromTest
+        ? false
+        : Boolean(template.requiresVerificationBeforeCustomerUse),
       lastVerifiedAt: nowIso,
-      lastTestResult: 'PASSED',
+      lastTestResult: nextTestResult,
+      lastTestInputMode: verificationInputMode,
+      visualAcceptanceStatus: nextVisualStatus,
+      verifiedConfigFingerprint: canPromoteDirectlyFromTest ? configFingerprint : '',
       lastTestError: '',
-      readinessReason:
-        nextStatus === 'PAUSED'
-          ? 'Verified end-to-end by Admin test (template currently paused).'
-          : 'Verified end-to-end by Admin test.',
+      readinessReason: nextReason,
       missingFields: [],
       readinessErrors: []
     });
@@ -3419,7 +3671,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
         actorEmail: adminUser.email,
         action: 'TEMPLATE_UPDATED',
         targetId: id,
-        details: `Admin 1-click test PASSED for "${template.title}" (${deliverable.fileId}, ${deliverable.sizeBytes} bytes, MIME=${deliverable.mimeType}).`
+        details: `Admin ${verificationInputMode} test completed (${nextTestResult}) for "${template.title}" (${deliverable.fileId}, ${deliverable.sizeBytes} bytes, MIME=${deliverable.mimeType}).`
       }).catch(() => {});
     }
 
@@ -3427,9 +3679,30 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
       success: true,
       status: nextStatus,
       readinessStatus: nextStatus,
+      lastTestResult: nextTestResult,
+      verificationInputMode,
+      requiresVisualAcceptance: !canPromoteDirectlyFromTest && verificationInputMode === 'real_input',
       verifiedAt: nowIso,
+      message: nextReason,
+      diagnostics: {
+        verificationInputMode,
+        isCouple: isCoupleTemplate,
+        configFingerprint,
+        rangeStatusCode: downloadStreamCheck.statusCode || 206,
+        inputs: structuredInputs.map((i) => ({
+          slotId: i.slotId,
+          role: i.role,
+          mediaType: i.type,
+          mimeType: i.mimeType,
+          sizeBytes: i.sizeBytes,
+          sha256Prefix: i.sha256Prefix
+        }))
+      },
       verification: {
         passed: true,
+        promotedReady: nextStatus === 'READY',
+        verificationInputMode,
+        lastTestResult: nextTestResult,
         fileId: deliverable.fileId,
         sizeBytes: deliverable.sizeBytes,
         mimeType: deliverable.mimeType,
@@ -3454,6 +3727,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
       lastVerifiedAt: testStartedAt,
       lastTestResult: 'FAILED',
       lastTestError: cleanErr,
+      verifiedConfigFingerprint: '',
       readinessReason: cleanErr
     });
     if (adminUser?.email) {
@@ -3461,7 +3735,7 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
         actorEmail: adminUser.email,
         action: 'TEMPLATE_UPDATED',
         targetId: id,
-        details: `Admin 1-click test FAILED for "${template.title}": ${cleanErr}`
+        details: `Admin verification test FAILED for "${template.title}": ${cleanErr}`
       }).catch(() => {});
     }
     return res.status(422).json({
@@ -3472,6 +3746,123 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
       error: cleanErr,
       template: updatedTemplate
     });
+  } finally {
+    if (uploadedTempInputFileIds.length > 0) {
+      await Promise.allSettled(
+        uploadedTempInputFileIds.map((fid) => mediaStorage.deleteMedia(fid))
+      );
+    }
+  }
+});
+
+// Admin Visual Quality Acceptance Sign-off (0 credits; promotes verified real-input test to READY or rejects)
+app.post('/api/admin/templates/:id/visual-acceptance', requireAdmin, async (req, res) => {
+  try {
+    const adminUser = ((req as any).user as UserProfile) || getAuthenticatedUser(req);
+    const { id } = req.params;
+    const template = prodDb.getAllTemplatesAdmin().find((t) => t.id === id);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    const decision = req.body?.decision === 'reject' ? 'reject' : req.body?.decision === 'approve' ? 'approve' : null;
+    if (!decision) {
+      return res.status(400).json({ error: "Decision must be 'approve' or 'reject'." });
+    }
+    const cleanNote = typeof req.body?.note === 'string' ? sanitizeMonitoringString(req.body.note).slice(0, 240) : '';
+    const nowIso = new Date().toISOString();
+    const actor = adminUser?.email || adminUser?.id || 'authorized_admin';
+
+    if (decision === 'reject') {
+      const updated = await prodDb.updateTemplate(id, {
+        readinessStatus: template.isActive === false ? 'PAUSED' : 'TEST_REQUIRED',
+        requiresVerificationBeforeCustomerUse: true,
+        lastTestResult: 'FAILED',
+        lastTestError: cleanNote || 'Visual quality rejected by Admin review.',
+        visualAcceptanceStatus: 'REJECTED',
+        visualAcceptanceAt: nowIso,
+        visualAcceptanceBy: actor,
+        visualAcceptanceNote: cleanNote,
+        verifiedConfigFingerprint: '',
+        readinessReason: cleanNote || 'Visual quality rejected — adjust template recipe/references and re-test.'
+      });
+      if (adminUser?.email) {
+        prodDb.logAdminActivity({
+          actorEmail: adminUser.email,
+          action: 'TEMPLATE_UPDATED',
+          targetId: id,
+          details: `Visual acceptance REJECTED for "${template.title}"${cleanNote ? `: ${cleanNote}` : ''}.`
+        }).catch(() => {});
+      }
+      return res.json({
+        success: true,
+        decision: 'reject',
+        readinessStatus: updated?.readinessStatus || 'TEST_REQUIRED',
+        template: updated
+      });
+    }
+
+    const staticReadiness = validateTemplateReadiness(template, { strictPublish: false });
+    if (!staticReadiness.ready) {
+      return res.status(400).json({
+        error: staticReadiness.errors[0] || 'Template configuration is incomplete.',
+        code: 'NEEDS_SETUP'
+      });
+    }
+
+    const requiresRealAndVisual = requiresCustomerPhotoPersonalization(template);
+    if (requiresRealAndVisual && template.lastTestInputMode !== 'real_input') {
+      return res.status(400).json({
+        error: 'Cannot approve visual quality from a synthetic smoke check. Upload real customer-like test input(s) first.',
+        code: 'REAL_INPUT_TEST_REQUIRED'
+      });
+    }
+    if (template.lastTestResult !== 'AWAITING_VISUAL_ACCEPTANCE' && template.lastTestResult !== 'PASSED') {
+      return res.status(400).json({
+        error: 'Run a real-input Admin test before approving visual quality.',
+        code: 'TEST_REQUIRED_BEFORE_VISUAL_ACCEPTANCE'
+      });
+    }
+
+    const configFingerprint = computeTemplateConfigFingerprint(template);
+    const nextStatus = template.isActive === false ? 'PAUSED' : 'READY';
+    const updated = await prodDb.updateTemplate(id, {
+      readinessStatus: nextStatus,
+      requiresVerificationBeforeCustomerUse: false,
+      lastTestResult: 'PASSED',
+      lastVerifiedAt: template.lastVerifiedAt || nowIso,
+      lastTestError: '',
+      visualAcceptanceStatus: 'APPROVED',
+      visualAcceptanceAt: nowIso,
+      visualAcceptanceBy: actor,
+      visualAcceptanceNote: cleanNote || 'Visual quality approved by Admin.',
+      verifiedConfigFingerprint: configFingerprint,
+      readinessReason:
+        nextStatus === 'PAUSED'
+          ? 'Approved visually by Admin (template currently paused).'
+          : 'Verified end-to-end with real inputs and Admin visual quality acceptance.',
+      missingFields: [],
+      readinessErrors: []
+    });
+
+    if (adminUser?.email) {
+      prodDb.logAdminActivity({
+        actorEmail: adminUser.email,
+        action: 'TEMPLATE_UPDATED',
+        targetId: id,
+        details: `Visual acceptance APPROVED -> READY for "${template.title}" (fingerprint=${configFingerprint}).`
+      }).catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      decision: 'approve',
+      readinessStatus: nextStatus,
+      verifiedConfigFingerprint: configFingerprint,
+      template: updated
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Visual acceptance update failed' });
   }
 });
 
@@ -6079,13 +6470,25 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     : (template.inputType === 'VIDEO_ONLY');
 
   // Validate Couple templates: require configured Person A and Person B slots and both matching uploads
-  const isCoupleTemplate = template.category === 'Couple' || (template as any).isCouple === true;
+  const isCoupleTemplate = isExplicitCoupleTemplate(template);
   let mediaList: any = rawStructuredInput;
   const configuredCoupleSlots = (template.requiredInputs || []).filter(
-    (s) => s.id === 'partner_1' || s.id === 'partner_2' || s.id === 'slot_1' || s.id === 'slot_2' || (s as any).role === 'person_a' || (s as any).role === 'person_b'
+    (s) =>
+      s.id === 'partner_1' ||
+      s.id === 'partner_2' ||
+      s.id === 'slot_1' ||
+      s.id === 'slot_2' ||
+      (s as any).role === 'person_a' ||
+      (s as any).role === 'person_b' ||
+      (s as any).role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+      (s as any).role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
   );
-  const personASlots = configuredCoupleSlots.filter(s => s.id === 'partner_1' || s.id === 'slot_1' || (s as any).role === 'person_a');
-  const personBSlots = configuredCoupleSlots.filter(s => s.id === 'partner_2' || s.id === 'slot_2' || (s as any).role === 'person_b');
+  const personASlots = configuredCoupleSlots.filter(
+    (s) => s.id === 'partner_1' || s.id === 'slot_1' || (s as any).role === 'person_a' || (s as any).role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+  );
+  const personBSlots = configuredCoupleSlots.filter(
+    (s) => s.id === 'partner_2' || s.id === 'slot_2' || (s as any).role === 'person_b' || (s as any).role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+  );
   const hasConfiguredCoupleSlots = personASlots.length === 1 && personBSlots.length === 1;
 
   if (isCoupleTemplate) {
@@ -6122,20 +6525,44 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   for (let mIdx = 0; mIdx < rawStructuredInput.length; mIdx++) {
     const rawSlot = rawStructuredInput[mIdx];
     const rawMediaString = rawSlot?.mediaUrl || rawSlot?.media || rawSlot?.url || (typeof rawSlot === 'string' ? rawSlot : '');
-    const slotId = rawSlot?.slotId || (mIdx === 0 ? 'partner_1' : mIdx === 1 ? 'partner_2' : `slot_${mIdx + 1}`);
+    const defaultSlotId = isCoupleTemplate
+      ? (mIdx === 0 ? 'partner_1' : mIdx === 1 ? 'partner_2' : `slot_${mIdx + 1}`)
+      : (mIdx === 0 ? 'user_photo' : `slot_${mIdx + 1}`);
+    const slotId = rawSlot?.slotId || defaultSlotId;
 
     const configuredDef = (template.requiredInputs || []).find((s) => s.id === slotId || (s as any).slotId === slotId);
     let resolvedRole = (configuredDef as any)?.role;
     if (isCoupleTemplate) {
-      if (slotId === 'partner_1' || slotId === 'slot_1' || (configuredDef as any)?.role === 'person_a') {
+      if (
+        slotId === 'partner_1' ||
+        slotId === 'slot_1' ||
+        (configuredDef as any)?.role === 'person_a' ||
+        (configuredDef as any)?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+      ) {
         resolvedRole = 'person_a';
-      } else if (slotId === 'partner_2' || slotId === 'slot_2' || (configuredDef as any)?.role === 'person_b') {
+      } else if (
+        slotId === 'partner_2' ||
+        slotId === 'slot_2' ||
+        (configuredDef as any)?.role === 'person_b' ||
+        (configuredDef as any)?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+      ) {
         resolvedRole = 'person_b';
       } else if (!resolvedRole) {
         resolvedRole = mIdx === 0 ? 'person_a' : 'person_b';
       }
     } else {
-      if (!resolvedRole) resolvedRole = rawSlot?.role || 'user_photo';
+      const candidateRole = resolvedRole || rawSlot?.role;
+      if (
+        !candidateRole ||
+        candidateRole === 'person_a' ||
+        candidateRole === 'person_b' ||
+        candidateRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+        candidateRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+      ) {
+        resolvedRole = isVideoMedia(rawMediaString) ? 'CUSTOMER_SOURCE_VIDEO' : 'CUSTOMER_SOURCE_PHOTO';
+      } else {
+        resolvedRole = candidateRole;
+      }
     }
 
     const itemIsVideo = isVideoMedia(rawMediaString);
@@ -6420,10 +6847,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     adapter: templateConfiguredAdapter || modelEntry?.adapterId || (isSmartTemplate ? 'smartCanvas' : ''),
     model: effectiveModel,
     workflow: template.workflow || '',
+    isCouple: isCoupleTemplate,
     customerInputCount: sanitizedStructuredMedia.length,
     customerInputs: sanitizedStructuredMedia.map((m) => ({
       slotId: m.slotId,
-      role: m.role || 'user_photo',
+      role: m.role || 'CUSTOMER_SOURCE_PHOTO',
       mediaType: m.type,
       mimeType: m.mimeType || (m.type === 'video' ? 'video/mp4' : 'image/jpeg'),
       sizeBytes: m.sizeBytes || 0,

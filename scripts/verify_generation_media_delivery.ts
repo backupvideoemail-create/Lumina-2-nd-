@@ -30,6 +30,7 @@ const TINY_MP4_BUFFER = Buffer.from(
     '41495052494d455f564944454f5f5041594c4f41445f42595445535f30313233',
   'hex'
 );
+const TINY_MP4_BASE64 = `data:video/mp4;base64,${TINY_MP4_BUFFER.toString('base64')}`;
 
 async function runVerification() {
   const { ProductionDatabase, InMemoryFirestoreMock } = await import('../src/services/db/database.ts');
@@ -383,23 +384,57 @@ async function runVerification() {
       `C.4 Customer blocked from TEST_REQUIRED template (${unverifiedCustRes.status} ${unverifiedCustJson.code}) with 0 credits charged`
     );
 
-    // Run 1-Click Admin Verify-Test on SmartCanvas template -> real render + deliverable verification -> READY!
+    // Run Admin Smoke Test first on personalized SmartCanvas -> must stay TEST_REQUIRED (SMOKE_PASSED), NOT promote to READY!
     const adminBalanceBefore = (await testDb.getWalletAuthoritative(sessAdmin.user.id)).balance;
+    const smokeTestRes = await fetch(`${baseUrl}/api/admin/templates/${smartTplId}/verify-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({})
+    });
+    const smokeTestJson = await smokeTestRes.json();
+    assert(
+      smokeTestRes.status === 200 &&
+        smokeTestJson.success === true &&
+        smokeTestJson.readinessStatus === 'TEST_REQUIRED' &&
+        smokeTestJson.lastTestResult === 'SMOKE_PASSED' &&
+        smokeTestJson.verificationInputMode === 'synthetic_smoke',
+      `C.5a Personalized SmartCanvas smoke test stayed TEST_REQUIRED (lastTestResult=${smokeTestJson.lastTestResult}, mode=${smokeTestJson.verificationInputMode})`
+    );
+
+    // Run Admin Real-Input Verify-Test -> AWAITING_VISUAL_ACCEPTANCE -> Approve Visual Quality -> READY!
     const verifyTestRes = await fetch(`${baseUrl}/api/admin/templates/${smartTplId}/verify-test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
-      body: JSON.stringify({ inputMediaUrl: TINY_PNG_BASE64 })
+      body: JSON.stringify({
+        testInputs: [
+          { slotId: 'user_input_media', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image', mediaBase64: TINY_PNG_BASE64 }
+        ]
+      })
     });
     const verifyTestJson = await verifyTestRes.json();
-    const adminBalanceAfter = (await testDb.getWalletAuthoritative(sessAdmin.user.id)).balance;
     assert(
       verifyTestRes.status === 200 &&
         verifyTestJson.success === true &&
-        verifyTestJson.readinessStatus === 'READY' &&
-        verifyTestJson.verification?.passed === true &&
-        verifyTestJson.verification?.sizeBytes > 0 &&
+        verifyTestJson.readinessStatus === 'TEST_REQUIRED' &&
+        verifyTestJson.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE' &&
+        verifyTestJson.verificationInputMode === 'real_input' &&
+        verifyTestJson.verification?.sizeBytes > 0,
+      `C.5b Admin Real-Input Verify-Test rendered deliverable (${verifyTestJson.verification?.sizeBytes}B) and entered AWAITING_VISUAL_ACCEPTANCE`
+    );
+
+    const visualApproveRes = await fetch(`${baseUrl}/api/admin/templates/${smartTplId}/visual-acceptance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ decision: 'approve', note: 'Verified clean framing in automated suite' })
+    });
+    const visualApproveJson = await visualApproveRes.json();
+    const adminBalanceAfter = (await testDb.getWalletAuthoritative(sessAdmin.user.id)).balance;
+    assert(
+      visualApproveRes.status === 200 &&
+        visualApproveJson.success === true &&
+        visualApproveJson.readinessStatus === 'READY' &&
         adminBalanceAfter === adminBalanceBefore,
-      `C.5 1-Click Admin Verify-Test executed real render (${verifyTestJson.verification?.sizeBytes}B), verified delivery, promoted template to READY, and charged 0 admin credits`
+      `C.5c Visual Quality Acceptance promoted template to READY with 0 admin credits charged`
     );
 
     // Customer A now runs generation on READY template -> succeeds 200, deliverable resolves & downloads cleanly!
@@ -767,6 +802,11 @@ async function runVerification() {
       prompt: unifiedPhotoPrompt,
       userImageUrl: `${CUST_PNG}|||${CUST_B_PNG}`,
       userImageUrls: [CUST_PNG, CUST_B_PNG],
+      inputMedia: [
+        { slotId: 'partner_1', role: 'person_a', type: 'image' },
+        { slotId: 'partner_2', role: 'person_b', type: 'image' }
+      ],
+      isCouple: true,
       sampleResultUrl: AFTER_PNG,
       sampleBeforeUrl: BEFORE_PNG,
       aspectRatio: '9:16'
@@ -775,12 +815,13 @@ async function runVerification() {
     const coupleFinalText = String(coupleReq.parts[coupleReq.parts.length - 1]?.text || '');
     assert(
       coupleInlineParts.length === 3 &&
+        coupleReq.isCoupleMode === true &&
         String(coupleReq.parts[0]?.text || '').includes('Person A') &&
         String(coupleReq.parts[2]?.text || '').includes('Person B') &&
         String(coupleReq.parts[4]?.text || '').includes('TEMPLATE_AFTER_REFERENCE') &&
         coupleFinalText.includes('NEVER blend, average, or cross-fuse') &&
         !coupleReq.parts.some((p: any) => p.inlineData?.data === beforeB64),
-      `F.2 Couple-photo payload labels Person A, Person B, and TEMPLATE_AFTER_REFERENCE separately (inline=${coupleInlineParts.length}) without before-model leak`
+      `F.2 Couple-photo payload (explicit isCouple=true) labels Person A, Person B, and TEMPLATE_AFTER_REFERENCE separately (inline=${coupleInlineParts.length}) without before-model leak`
     );
 
     let emptyCustomerFailed = false;
@@ -971,9 +1012,30 @@ async function runVerification() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${sessAdmin.token}`
       },
-      body: JSON.stringify({ inputMediaUrl: TINY_PNG_BASE64 })
+      body: JSON.stringify({
+        testInputs: [
+          { slotId: 'partner_1', role: 'person_a', type: 'image', mediaBase64: TINY_PNG_BASE64 },
+          { slotId: 'partner_2', role: 'person_b', type: 'image', mediaBase64: TINY_PNG_BASE64 }
+        ]
+      })
     });
-    assert(coupleVerifyRes.status === 200, `G.5b Couple Smart template verified (${coupleVerifyRes.status})`);
+    const coupleVerifyJson = await coupleVerifyRes.json();
+    const coupleVisualRes = await fetch(`${baseUrl}/api/admin/templates/${coupleTplId}/visual-acceptance`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessAdmin.token}`
+      },
+      body: JSON.stringify({ decision: 'approve' })
+    });
+    const coupleVisualJson = await coupleVisualRes.json();
+    assert(
+      coupleVerifyRes.status === 200 &&
+        coupleVerifyJson.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE' &&
+        coupleVisualRes.status === 200 &&
+        coupleVisualJson.readinessStatus === 'READY',
+      `G.5b Couple Smart template real-input verified + visual acceptance promoted to READY (${coupleVerifyRes.status}/${coupleVisualRes.status})`
+    );
 
     const coupleGenRes = await fetch(`${baseUrl}/api/generations/create`, {
       method: 'POST',
@@ -1002,6 +1064,7 @@ async function runVerification() {
     assert(
       coupleGenRes.status === 200 &&
         diag?.correlationId === 'req_couple_diag_check_001' &&
+        diag?.isCouple === true &&
         diag?.customerInputCount === 2 &&
         diag?.customerInputs?.[0]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
         diag?.customerInputs?.[1]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' &&
@@ -1009,7 +1072,297 @@ async function runVerification() {
         !diagSerialized.includes('data:image') &&
         !diagSerialized.includes('token=') &&
         !diagSerialized.includes('AIza'),
-      `G.5c Couple generation persisted redacted diagnostics (count=${diag?.customerInputCount}, roles=${diag?.customerInputs?.map((i: any) => i.role).join('+')}, verified=${diag?.storageVerification?.verified})`
+      `G.5c Couple generation persisted redacted diagnostics (count=${diag?.customerInputCount}, isCouple=${diag?.isCouple}, roles=${diag?.customerInputs?.map((i: any) => i.role).join('+')}, verified=${diag?.storageVerification?.verified})`
+    );
+
+    console.log('\n=== SUITE H: UNIVERSAL ENGINE, EXPLICIT COUPLE GATE, VIDEO 206 & FINGERPRINT INVALIDATION ===');
+    // H.1 Normal Single-Photo Gemini check (isCouple=false)
+    assert(
+      singleReq.isCoupleMode === false &&
+        singleReq.customerInputsDiagnostics.length === 1 &&
+        singleReq.customerInputsDiagnostics[0]?.role === 'CUSTOMER_SOURCE_PHOTO',
+      `H.1 Single-photo payload sets isCoupleMode=false and role=CUSTOMER_SOURCE_PHOTO`
+    );
+
+    // H.2 Normal Multi-Photo Non-Couple template (2 images, isCouple=false) must NOT trigger Couple Person A/B mode
+    const multiNonCoupleReq = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: unifiedPhotoPrompt,
+      userImageUrl: `${CUST_PNG}|||${CUST_B_PNG}`,
+      userImageUrls: [CUST_PNG, CUST_B_PNG],
+      inputMedia: [
+        { slotId: 'front_face', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image' },
+        { slotId: 'side_angle', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image' }
+      ],
+      isCouple: false,
+      sampleResultUrl: AFTER_PNG,
+      aspectRatio: '9:16'
+    });
+    const multiJoinedText = multiNonCoupleReq.parts.map((p: any) => String(p.text || '')).join('\n');
+    const { smartCanvasAdapter } = await import('../src/services/ai/smartCanvasAdapter.ts');
+    const smartNonCoupleRes = await smartCanvasAdapter.processSmartTemplate({
+      templateTitle: 'Multi-Angle Non-Couple Smart',
+      templateType: 'photo',
+      workflow: 'retro-polaroid-warm',
+      model: 'smart_canvas_ffmpeg',
+      inputMediaUrls: [
+        `data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+        `data:image/png;base64,${real1x1PngBuf.toString('base64')}`
+      ],
+      inputMedia: [
+        { slotId: 'front_face', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image' },
+        { slotId: 'side_angle', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image' }
+      ],
+      isCouple: false,
+      ownerUserId: sessA.user.id
+    });
+    if (smartNonCoupleRes.resultUrl) {
+      const fp = mediaStorage.getFilePath(extractMediaFileIdFromRef(smartNonCoupleRes.resultUrl));
+      if (fp) savedFilesToCleanup.push(fp);
+    }
+    assert(
+      Boolean(
+        multiNonCoupleReq.isCoupleMode === false &&
+          !multiJoinedText.includes('Person A') &&
+          !multiJoinedText.includes('Person B') &&
+          multiNonCoupleReq.customerInputsDiagnostics.every((d) => d.role === 'CUSTOMER_SOURCE_PHOTO') &&
+          smartNonCoupleRes.diagnostics?.isCouple === false &&
+          smartNonCoupleRes.diagnostics?.customerInputs?.every((d) => d.role === 'CUSTOMER_SOURCE_PHOTO')
+      ),
+      `H.2 Multi-image non-Couple templates (Gemini + SmartCanvas) keep isCouple=false and never trigger Person A/B Couple mode`
+    );
+
+    // H.3 Fail-closed INVALID_COUPLE_SLOTS checks (Gemini 1-input Couple, duplicate person_a, and Customer API 1-photo Couple)
+    let coupleOneRejected = false;
+    try {
+      await geminiAdapter.buildMultimodalRequestParts({
+        prompt: unifiedPhotoPrompt,
+        userImageUrl: CUST_PNG,
+        userImageUrls: [CUST_PNG],
+        isCouple: true,
+        sampleResultUrl: AFTER_PNG,
+        aspectRatio: '9:16'
+      });
+    } catch (e: any) {
+      coupleOneRejected = String(e?.message || '').includes('INVALID_COUPLE_SLOTS');
+    }
+    let coupleDupRoleRejected = false;
+    try {
+      await geminiAdapter.buildMultimodalRequestParts({
+        prompt: unifiedPhotoPrompt,
+        userImageUrl: `${CUST_PNG}|||${CUST_B_PNG}`,
+        userImageUrls: [CUST_PNG, CUST_B_PNG],
+        inputMedia: [
+          { slotId: 'partner_1', role: 'person_a', type: 'image' },
+          { slotId: 'partner_1', role: 'person_a', type: 'image' }
+        ],
+        isCouple: true,
+        sampleResultUrl: AFTER_PNG,
+        aspectRatio: '9:16'
+      });
+    } catch (e: any) {
+      coupleDupRoleRejected = String(e?.message || '').includes('INVALID_COUPLE_SLOTS');
+    }
+    const custABalBefore = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    const custMissingPartnerRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        inputMediaUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}`
+      })
+    });
+    const custMissingPartnerJson = await custMissingPartnerRes.json();
+    const custABalAfter = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    assert(
+      coupleOneRejected &&
+        coupleDupRoleRejected &&
+        custMissingPartnerRes.status === 400 &&
+        (custMissingPartnerJson.code === 'MISSING_PARTNER_PHOTO' || custMissingPartnerJson.code === 'INVALID_COUPLE_SLOTS') &&
+        custABalAfter === custABalBefore,
+      `H.3 Couple validation fails closed on missing/mismatched Person A/B slots with 0 credits charged`
+    );
+
+    // H.4 Non-personalized SmartCanvas promotes directly on Smoke vs AI/Personalized blocked from skipping real-input review
+    const nonPersSmartRes = await fetch(`${baseUrl}/api/admin/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({
+        id: 'tpl_nonpers_smart_test',
+        title: 'Non-Personalized Frame Smoke',
+        type: 'photo',
+        category: 'Trending',
+        inputType: 'NONE',
+        engine: 'SMART_TEMPLATE',
+        provider: 'smart_template',
+        model: 'smart_canvas_ffmpeg',
+        workflow: 'good-morning-frame',
+        aspectRatio: '9:16',
+        creditCost: 5,
+        mediaBase64: TINY_PNG_BASE64,
+        coverBase64: TINY_PNG_BASE64,
+        sampleResultBase64: TINY_PNG_BASE64,
+        requiredInputs: [],
+        recipe: {
+          version: '1.0',
+          inputType: 'NONE',
+          provider: 'smart_template',
+          model: 'smart_canvas_ffmpeg',
+          engine: 'SMART_TEMPLATE',
+          workflow: 'good-morning-frame',
+          prompt: 'Non-personalized frame.',
+          aspectRatio: '9:16'
+        }
+      })
+    });
+    const nonPersCreateJson = await nonPersSmartRes.json();
+    const nonPersId = nonPersCreateJson.template?.id || 'tpl_nonpers_smart_test';
+    const nonPersSmokeRes = await fetch(`${baseUrl}/api/admin/templates/${nonPersId}/verify-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({})
+    });
+    const nonPersSmokeJson = await nonPersSmokeRes.json();
+
+    // Create an AI photo template, run smoke only -> must reject visual-acceptance approve (REAL_INPUT_TEST_REQUIRED)
+    const aiPhotoRes = await fetch(`${baseUrl}/api/admin/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({
+        id: 'tpl_ai_smoke_guard_test',
+        title: 'AI Photo Smoke Guard',
+        type: 'photo',
+        category: 'Trending',
+        engine: 'AI_GENERATION',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash-image',
+        workflow: 'PHOTO_GENERATION',
+        aspectRatio: '9:16',
+        creditCost: 30,
+        mediaBase64: TINY_PNG_BASE64,
+        coverBase64: TINY_PNG_BASE64,
+        sampleResultBase64: TINY_PNG_BASE64,
+        requiredInputs: [{ id: 'user_photo', slotId: 'user_photo', role: 'CUSTOMER_SOURCE_PHOTO', label: 'Customer Photo', type: 'image' }],
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'gemini',
+          model: 'gemini-2.5-flash-image',
+          engine: 'AI_GENERATION',
+          workflow: 'PHOTO_GENERATION',
+          prompt: 'Studio fashion portrait.',
+          aspectRatio: '9:16'
+        }
+      })
+    });
+    const aiPhotoJson = await aiPhotoRes.json();
+    const aiPhotoId = aiPhotoJson.template?.id || 'tpl_ai_smoke_guard_test';
+    const aiApproveWithoutRealRes = await fetch(`${baseUrl}/api/admin/templates/${aiPhotoId}/visual-acceptance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ decision: 'approve' })
+    });
+    const aiApproveWithoutRealJson = await aiApproveWithoutRealRes.json();
+    assert(
+      nonPersSmokeRes.status === 200 &&
+        nonPersSmokeJson.readinessStatus === 'READY' &&
+        aiApproveWithoutRealRes.status === 400 &&
+        aiApproveWithoutRealJson.code === 'REAL_INPUT_TEST_REQUIRED',
+      `H.4 Non-personalized SmartCanvas promotes READY via smoke, while AI template blocks visual approval without real_input (${aiApproveWithoutRealJson.code})`
+    );
+
+    // H.5 Video Template MP4 + 206 Byte-Range verification & Visual Acceptance
+    const videoSmartCreateRes = await fetch(`${baseUrl}/api/admin/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({
+        id: 'tpl_smart_video_h5_test',
+        title: 'Synthwave Video H5',
+        type: 'video',
+        category: 'Trending',
+        engine: 'SMART_TEMPLATE',
+        provider: 'smart_template',
+        model: 'smart_canvas_ffmpeg',
+        workflow: 'synthwave-grid-animation',
+        aspectRatio: '9:16',
+        durationSeconds: 3,
+        resolutionLabel: '480p',
+        creditCost: 20,
+        mediaBase64: TINY_MP4_BASE64,
+        coverBase64: TINY_PNG_BASE64,
+        sampleResultBase64: TINY_MP4_BASE64,
+        requiredInputs: [{ id: 'user_photo', slotId: 'user_photo', role: 'CUSTOMER_SOURCE_PHOTO', label: 'Photo', type: 'image' }],
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'smart_template',
+          model: 'smart_canvas_ffmpeg',
+          engine: 'SMART_TEMPLATE',
+          workflow: 'synthwave-grid-animation',
+          prompt: 'Neon horizon reel.',
+          aspectRatio: '9:16'
+        }
+      })
+    });
+    const videoSmartId = (await videoSmartCreateRes.json()).template?.id || 'tpl_smart_video_h5_test';
+    const videoVerifyRes = await fetch(`${baseUrl}/api/admin/templates/${videoSmartId}/verify-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({
+        testInputs: [{ slotId: 'user_photo', role: 'CUSTOMER_SOURCE_PHOTO', type: 'image', mediaBase64: TINY_PNG_BASE64 }]
+      })
+    });
+    const videoVerifyJson = await videoVerifyRes.json();
+    const videoApproveRes = await fetch(`${baseUrl}/api/admin/templates/${videoSmartId}/visual-acceptance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({ decision: 'approve' })
+    });
+    const videoApproveJson = await videoApproveRes.json();
+    if (videoVerifyJson.deliverable?.fileId) {
+      const fp = mediaStorage.getFilePath(videoVerifyJson.deliverable.fileId);
+      if (fp) savedFilesToCleanup.push(fp);
+    }
+    assert(
+      videoVerifyRes.status === 200 &&
+        String(videoVerifyJson.deliverable?.mimeType || '').startsWith('video/') &&
+        videoVerifyJson.diagnostics?.rangeStatusCode === 206 &&
+        videoVerifyJson.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE' &&
+        videoApproveRes.status === 200 &&
+        videoApproveJson.readinessStatus === 'READY',
+      `H.5 Video template verified MP4 deliverable (${videoVerifyJson.deliverable?.mimeType}, range=${videoVerifyJson.diagnostics?.rangeStatusCode}), AWAITING_VISUAL_ACCEPTANCE -> READY`
+    );
+
+    // H.6 Scoped Config Fingerprint Invalidation + Private Admin Temp Input Cleanup verification
+    const editActiveTplRes = await fetch(`${baseUrl}/api/admin/templates/${videoSmartId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessAdmin.token}` },
+      body: JSON.stringify({
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'smart_template',
+          model: 'smart_canvas_ffmpeg',
+          engine: 'SMART_TEMPLATE',
+          workflow: 'synthwave-grid-animation',
+          prompt: 'Updated neon horizon prompt requiring fresh verification.',
+          aspectRatio: '9:16'
+        }
+      })
+    });
+    const editActiveTplJson = await editActiveTplRes.json();
+    const coupleAfterEditNorm = normalizeTemplateReadinessStatus(testDb.getTemplates().find((t) => t.id === coupleTplId)!);
+    // Confirm private temporary Admin test inputs from verify-test do not remain in media_metadata
+    const uploadsDir = path.resolve(process.cwd(), '.data', 'uploads');
+    const remainingAdminVerifyTempFiles = fs.existsSync(uploadsDir)
+      ? fs.readdirSync(uploadsDir).filter((f) => f.includes(`${sessAdmin.user.id}_verify_`) || f.includes(`${sessAdmin.user.id}_smoke_`))
+      : [];
+    assert(
+      editActiveTplRes.status === 200 &&
+        editActiveTplJson.template?.readinessStatus === 'TEST_REQUIRED' &&
+        editActiveTplJson.template?.verifiedConfigFingerprint === '' &&
+        coupleAfterEditNorm.status === 'READY' &&
+        remainingAdminVerifyTempFiles.length === 0,
+      `H.6 Prompt edit reset ONLY edited template (${videoSmartId} -> ${editActiveTplJson.template?.readinessStatus}) while preserving ${coupleTplId} (${coupleAfterEditNorm.status}), and ${remainingAdminVerifyTempFiles.length} temporary Admin test inputs remain on disk`
     );
   } finally {
     __setServerTestDeps();

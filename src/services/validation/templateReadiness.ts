@@ -1,9 +1,214 @@
-import type { FaceSwapScene, Template } from '../../types';
+import type { FaceSwapScene, SemanticInputRole, Template, TemplateInputDef } from '../../types';
 import {
   FACE_SWAP_COMPATIBLE_COMBINATIONS,
   getRegisteredModelEntry,
   resolveCanonicalModelId
 } from '../pricing/pricingService';
+
+export interface ResolvedTemplateSlot {
+  id: string;
+  slotId: string;
+  label: string;
+  type: 'image' | 'video';
+  role: SemanticInputRole;
+  isRequired: boolean;
+  description?: string;
+}
+
+function stableStringifyForFingerprint(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringifyForFingerprint(v)).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringifyForFingerprint(obj[k])}`).join(',')}}`;
+}
+
+/**
+ * Pure TypeScript deterministic 128-bit hex fingerprint (safe for both Node.js and Vite browser builds).
+ */
+function deterministicHexDigest128(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  let h3 = 0x85ebca6b;
+  let h4 = 0xc2b2ae35;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (ch + i), 0x85ebca6b) >>> 0;
+    h3 = Math.imul(h3 ^ (ch * 31 + i), 0xc2b2ae35) >>> 0;
+    h4 = Math.imul(h4 ^ ((ch << 5) - ch + i), 0x27d4eb2f) >>> 0;
+  }
+  return [h1, h2, h3, h4].map((n) => n.toString(16).padStart(8, '0')).join('');
+}
+
+export function isExplicitCoupleTemplate(tpl: Partial<Template> | null | undefined): boolean {
+  if (!tpl) return false;
+  return Boolean(tpl.isCouple === true || tpl.category === 'Couple');
+}
+
+function normalizeSlotRole(
+  rawRole: unknown,
+  slotId: string,
+  slotType: 'image' | 'video',
+  isCouple: boolean,
+  index: number
+): SemanticInputRole {
+  const roleStr = String(rawRole || '').trim();
+  const upper = roleStr.toUpperCase();
+  if (
+    upper === 'CUSTOMER_SOURCE_PHOTO' ||
+    upper === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+    upper === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ||
+    upper === 'CUSTOMER_SOURCE_VIDEO' ||
+    upper === 'TEMPLATE_AFTER_REFERENCE' ||
+    upper === 'TEMPLATE_BEFORE_REFERENCE' ||
+    upper === 'TEMPLATE_FACE_THUMBNAIL' ||
+    upper === 'TEMPLATE_DRIVING_VIDEO' ||
+    upper === 'TEMPLATE_STYLE_REFERENCE'
+  ) {
+    // Prevent non-Couple template slots from accidentally assuming Couple Person A/B roles unless explicitly Couple
+    if (!isCouple && (upper === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' || upper === 'CUSTOMER_SOURCE_PHOTO_PERSON_B')) {
+      return 'CUSTOMER_SOURCE_PHOTO';
+    }
+    return upper as SemanticInputRole;
+  }
+
+  const lower = roleStr.toLowerCase();
+  if (isCouple) {
+    if (lower === 'person_a' || slotId === 'partner_1' || slotId === 'slot_1' || index === 0) {
+      return 'CUSTOMER_SOURCE_PHOTO_PERSON_A';
+    }
+    if (lower === 'person_b' || slotId === 'partner_2' || slotId === 'slot_2' || index === 1) {
+      return 'CUSTOMER_SOURCE_PHOTO_PERSON_B';
+    }
+  }
+  if (lower === 'style_reference' || lower === 'reference') {
+    return 'TEMPLATE_STYLE_REFERENCE';
+  }
+  if (lower === 'driving_video') {
+    return 'TEMPLATE_DRIVING_VIDEO';
+  }
+  if (slotType === 'video' || lower === 'user_video') {
+    return 'CUSTOMER_SOURCE_VIDEO';
+  }
+  return 'CUSTOMER_SOURCE_PHOTO';
+}
+
+/**
+ * Universal declarative slot resolver for all current and future templates.
+ * Reads template requiredInputs + workflow capabilities without hardcoding specific templates.
+ */
+export function resolveTemplateInputSlots(tpl: Partial<Template> | null | undefined): ResolvedTemplateSlot[] {
+  if (!tpl || typeof tpl !== 'object') return [];
+  const isCouple = isExplicitCoupleTemplate(tpl);
+  const rawList: TemplateInputDef[] = Array.isArray(tpl.requiredInputs)
+    ? tpl.requiredInputs
+    : Array.isArray(tpl.recipe?.requiredInputs)
+    ? tpl.recipe!.requiredInputs!
+    : [];
+
+  if (rawList.length > 0) {
+    return rawList
+      .filter((s) => s && (s.type === 'image' || s.type === 'video'))
+      .map((slot, idx) => {
+        const slotId = String(slot.slotId || slot.id || `slot_${idx + 1}`).trim();
+        const type: 'image' | 'video' = slot.type === 'video' ? 'video' : 'image';
+        return {
+          id: String(slot.id || slotId).trim(),
+          slotId,
+          label: String(slot.label || (isCouple ? (idx === 0 ? 'Person A Photo' : 'Person B Photo') : 'Customer Input')).trim(),
+          type,
+          role: normalizeSlotRole(slot.role, slotId, type, isCouple, idx),
+          isRequired: slot.isRequired !== false,
+          description: slot.description
+        };
+      });
+  }
+
+  // Fallback synthesis only when a legacy template lacks explicit requiredInputs
+  if (tpl.engine === 'SMART_TEMPLATE' && (tpl.inputType === 'NONE' || (tpl as any).requiresCustomerIdentity === false)) {
+    return [];
+  }
+  if (isCouple) {
+    return [
+      { id: 'partner_1', slotId: 'partner_1', label: 'Person A Photo', type: 'image', role: 'CUSTOMER_SOURCE_PHOTO_PERSON_A', isRequired: true },
+      { id: 'partner_2', slotId: 'partner_2', label: 'Person B Photo', type: 'image', role: 'CUSTOMER_SOURCE_PHOTO_PERSON_B', isRequired: true }
+    ];
+  }
+  const inputType = tpl.inputType || tpl.recipe?.inputType;
+  if (tpl.type === 'video' && inputType === 'VIDEO_ONLY') {
+    return [{ id: 'user_video', slotId: 'user_video', label: 'Source Video', type: 'video', role: 'CUSTOMER_SOURCE_VIDEO', isRequired: true }];
+  }
+  return [{ id: 'user_photo', slotId: 'user_photo', label: 'Customer Photo', type: 'image', role: 'CUSTOMER_SOURCE_PHOTO', isRequired: true }];
+}
+
+/**
+ * Clarification #1:
+ * SmartCanvas templates may become READY after synthetic testing ONLY when they do not require
+ * customer identity/photo personalization. Customer-personalized SmartCanvas templates & all AI templates
+ * require real-input verification and visual acceptance.
+ */
+export function requiresCustomerPhotoPersonalization(tpl: Partial<Template> | null | undefined): boolean {
+  if (!tpl) return true;
+  if (tpl.engine !== 'SMART_TEMPLATE') return true;
+  if ((tpl as any).requiresCustomerIdentity === false || tpl.inputType === 'NONE') {
+    return false;
+  }
+  const slots = resolveTemplateInputSlots(tpl);
+  if (slots.length === 0) return false;
+  return slots.some(
+    (s) =>
+      s.role === 'CUSTOMER_SOURCE_PHOTO' ||
+      s.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+      s.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ||
+      s.role === 'CUSTOMER_SOURCE_VIDEO'
+  );
+}
+
+/**
+ * Deterministic fingerprint of a template's execution-relevant configuration.
+ * Changing prompt, provider, model, workflow, adapter, Couple setting, slots, or references
+ * automatically invalidates prior readiness verification for that template alone.
+ */
+export function computeTemplateConfigFingerprint(tpl: Partial<Template> | null | undefined): string {
+  if (!tpl || typeof tpl !== 'object') return '';
+  const slots = resolveTemplateInputSlots(tpl).map((s) => ({
+    id: s.id,
+    slotId: s.slotId,
+    role: s.role,
+    type: s.type,
+    isRequired: s.isRequired
+  }));
+  const recipe = (tpl.recipe || {}) as Record<string, any>;
+  const payload = {
+    type: tpl.type || '',
+    engine: tpl.engine || '',
+    provider: tpl.provider || recipe.provider || '',
+    adapter: tpl.adapter || recipe.adapter || '',
+    model: tpl.model || recipe.model || '',
+    workflow: tpl.workflow || recipe.workflow || '',
+    category: tpl.category || '',
+    isCouple: isExplicitCoupleTemplate(tpl),
+    aspectRatio: tpl.aspectRatio || '',
+    resolutionLabel: tpl.resolutionLabel || '',
+    durationSeconds: tpl.durationSeconds ?? null,
+    inputType: tpl.inputType || recipe.inputType || '',
+    requiredInputs: slots,
+    referenceImageUrl: tpl.referenceImageUrl || recipe.referenceImageUrl || '',
+    sampleResult: tpl.sampleResult || recipe.sampleResult || '',
+    sampleAfter: tpl.sampleAfter || recipe.sampleAfter || '',
+    sampleBefore: tpl.sampleBefore || recipe.sampleBefore || '',
+    drivingVideoUrl: tpl.drivingVideoUrl || recipe.drivingVideoUrl || '',
+    recipePrompt: recipe.prompt || '',
+    recipeReferenceAssets: Array.isArray(recipe.referenceAssets) ? recipe.referenceAssets : []
+  };
+  return `fp_${deterministicHexDigest128(stableStringifyForFingerprint(payload))}`;
+}
 
 export interface TemplateReadinessResult {
   ready: boolean;
@@ -252,24 +457,37 @@ export function validateTemplateReadiness(
     : Array.isArray(tpl.recipe?.requiredInputs)
     ? tpl.recipe!.requiredInputs!
     : [];
-  let requiredInputsValid = reqInputs.length > 0 && reqInputs.every(
-    (slot) =>
-      slot &&
-      typeof slot.id === 'string' &&
-      slot.id.trim().length > 0 &&
-      typeof slot.label === 'string' &&
-      slot.label.trim().length > 0 &&
-      (slot.type === 'image' || slot.type === 'video')
-  );
+  const allowNoCustomerSlots =
+    engine === 'SMART_TEMPLATE' && (tpl.inputType === 'NONE' || (tpl as any).requiresCustomerIdentity === false);
+  let requiredInputsValid =
+    (allowNoCustomerSlots && reqInputs.length === 0) ||
+    (reqInputs.length > 0 &&
+      reqInputs.every(
+        (slot) =>
+          slot &&
+          typeof slot.id === 'string' &&
+          slot.id.trim().length > 0 &&
+          typeof slot.label === 'string' &&
+          slot.label.trim().length > 0 &&
+          (slot.type === 'image' || slot.type === 'video')
+      ));
   if (!requiredInputsValid) {
     missingFields.push('requiredInputs');
     errors.push('At least one valid required input slot (id, label, image/video type) is required.');
-  } else if (tpl.category === 'Couple' || (tpl as any).isCouple === true) {
+  } else if (isExplicitCoupleTemplate(tpl)) {
     const personASlots = reqInputs.filter(
-      (s) => s.id === 'partner_1' || s.id === 'slot_1' || (s as any).role === 'person_a'
+      (s) =>
+        s.id === 'partner_1' ||
+        s.id === 'slot_1' ||
+        s.role === 'person_a' ||
+        s.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
     );
     const personBSlots = reqInputs.filter(
-      (s) => s.id === 'partner_2' || s.id === 'slot_2' || (s as any).role === 'person_b'
+      (s) =>
+        s.id === 'partner_2' ||
+        s.id === 'slot_2' ||
+        s.role === 'person_b' ||
+        s.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
     );
     if (personASlots.length !== 1 || personBSlots.length !== 1) {
       missingFields.push('requiredInputs(couple_slots)');
@@ -457,8 +675,11 @@ export interface NormalizedTemplateReadinessInfo {
   label: string;
   reason: string;
   lastVerifiedAt?: string;
-  lastTestResult: 'PASSED' | 'FAILED' | 'UNTESTED';
+  lastTestResult: 'PASSED' | 'FAILED' | 'UNTESTED' | 'SMOKE_PASSED' | 'AWAITING_VISUAL_ACCEPTANCE';
   lastTestError?: string;
+  lastTestInputMode?: 'real_input' | 'synthetic_smoke';
+  visualAcceptanceStatus?: 'NOT_REQUIRED' | 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
+  configFingerprint?: string;
   isCustomerGeneratable: boolean;
   legacyOperational?: boolean;
 }
@@ -470,16 +691,16 @@ export interface NormalizedTemplateReadinessInfo {
  *
  * Strictly enforces:
  * - Never treats static config or API key checks as verified READY.
- * - READY requires an actual recorded passing verification test (lastVerifiedAt / lastTestResult === 'PASSED').
- * - Existing active statically configured templates remain operational for customers (isCustomerGeneratable: true, legacyOperational: true)
- *   while honestly showing TEST_REQUIRED (verification pending) in Admin Gallery until verified.
- * - New or execution-edited templates (requiresVerificationBeforeCustomerUse === true) stay TEST_REQUIRED and blocked until tested.
- * - Confirmed failing templates become FAILED and isolate only that template.
+ * - AI templates & customer-personalized SmartCanvas templates require real test input + visual acceptance before READY.
+ * - Non-personalized SmartCanvas templates may become READY from synthetic smoke testing.
+ * - Video templates never become READY from photo-only or smoke-only verification.
+ * - Changing execution config invalidates verifiedConfigFingerprint -> TEST_REQUIRED for that template alone.
  */
 export function normalizeTemplateReadinessStatus(
   tpl: Partial<Template> | null | undefined
 ): NormalizedTemplateReadinessInfo {
   const staticCheck = validateTemplateReadiness(tpl, { strictPublish: false });
+  const currentFingerprint = tpl ? computeTemplateConfigFingerprint(tpl) : undefined;
   if (!tpl || !staticCheck.ready || tpl.readinessStatus === 'DRAFT_INCOMPLETE' || tpl.readinessStatus === 'INVALID_CONFIG' || tpl.readinessStatus === 'NEEDS_SETUP') {
     const reason =
       tpl?.readinessReason ||
@@ -494,6 +715,9 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl?.lastVerifiedAt,
       lastTestResult: tpl?.lastTestResult || 'UNTESTED',
       lastTestError: tpl?.lastTestError,
+      lastTestInputMode: tpl?.lastTestInputMode,
+      visualAcceptanceStatus: tpl?.visualAcceptanceStatus,
+      configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
       legacyOperational: false
     };
@@ -507,6 +731,9 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: tpl.lastTestResult || 'UNTESTED',
       lastTestError: tpl.lastTestError,
+      lastTestInputMode: tpl.lastTestInputMode,
+      visualAcceptanceStatus: tpl.visualAcceptanceStatus,
+      configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
       legacyOperational: false
     };
@@ -521,12 +748,36 @@ export function normalizeTemplateReadinessStatus(
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: 'FAILED',
       lastTestError: errText,
+      lastTestInputMode: tpl.lastTestInputMode,
+      visualAcceptanceStatus: tpl.visualAcceptanceStatus,
+      configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
       legacyOperational: false
     };
   }
 
+  const fingerprintMismatch = Boolean(
+    tpl.verifiedConfigFingerprint &&
+      currentFingerprint &&
+      tpl.verifiedConfigFingerprint !== currentFingerprint
+  );
+
+  const awaitingVisual =
+    tpl.lastTestResult === 'AWAITING_VISUAL_ACCEPTANCE' ||
+    tpl.visualAcceptanceStatus === 'PENDING_REVIEW';
+  const smokeOnlyPassed = tpl.lastTestResult === 'SMOKE_PASSED';
+  const requiresRealAndVisual = requiresCustomerPhotoPersonalization(tpl);
+  const blockedBySmokeOnPersonalized =
+    requiresRealAndVisual && tpl.lastTestInputMode === 'synthetic_smoke';
+  const blockedByPendingVisual =
+    requiresRealAndVisual &&
+    (awaitingVisual || tpl.visualAcceptanceStatus === 'REJECTED');
+
   const isVerifiedPassed =
+    !fingerprintMismatch &&
+    !smokeOnlyPassed &&
+    !blockedBySmokeOnPersonalized &&
+    !blockedByPendingVisual &&
     tpl.readinessStatus === 'READY' &&
     tpl.lastTestResult === 'PASSED' &&
     Boolean(tpl.lastVerifiedAt);
@@ -535,34 +786,50 @@ export function normalizeTemplateReadinessStatus(
     return {
       status: 'READY',
       label: 'READY',
-      reason: 'Verified via real Admin end-to-end test.',
+      reason:
+        tpl.visualAcceptanceStatus === 'APPROVED'
+          ? 'Verified end-to-end with real inputs and Admin visual quality acceptance.'
+          : 'Verified via Admin end-to-end test.',
       lastVerifiedAt: tpl.lastVerifiedAt,
       lastTestResult: 'PASSED',
       lastTestError: tpl.lastTestError,
+      lastTestInputMode: tpl.lastTestInputMode,
+      visualAcceptanceStatus: tpl.visualAcceptanceStatus,
+      configFingerprint: currentFingerprint,
       isCustomerGeneratable: true,
       legacyOperational: false
     };
   }
 
-  const isBlockedNewOrEdited = Boolean(tpl.requiresVerificationBeforeCustomerUse);
+  const isBlockedNewOrEdited = Boolean(tpl.requiresVerificationBeforeCustomerUse || fingerprintMismatch);
+  const resolvedReason = fingerprintMismatch
+    ? 'Template configuration changed since last verification — run Admin Test to re-verify.'
+    : awaitingVisual
+    ? 'Technical test passed — review generated output & click Approve Visual Quality to mark READY.'
+    : smokeOnlyPassed || blockedBySmokeOnPersonalized
+    ? 'Synthetic smoke test passed (provider & storage OK) — upload real test input(s) and approve visual quality for READY.'
+    : isBlockedNewOrEdited
+    ? tpl.readinessReason || 'New or edited template — run Admin test before launching to customers.'
+    : 'Legacy active template (operational for customers) — verification pending in Admin Gallery.';
 
   return {
     status: 'TEST_REQUIRED',
     label: 'TEST REQUIRED',
-    reason: isBlockedNewOrEdited
-      ? (tpl.readinessReason || 'New or edited template — run 1-click Admin test before launching to customers.')
-      : 'Legacy active template (operational for customers) — verification pending in Admin Gallery.',
+    reason: resolvedReason,
     lastVerifiedAt: tpl.lastVerifiedAt,
-    lastTestResult: tpl.lastTestResult || 'UNTESTED',
+    lastTestResult: fingerprintMismatch ? 'UNTESTED' : (tpl.lastTestResult || 'UNTESTED'),
     lastTestError: tpl.lastTestError,
+    lastTestInputMode: tpl.lastTestInputMode,
+    visualAcceptanceStatus: tpl.visualAcceptanceStatus,
+    configFingerprint: currentFingerprint,
     isCustomerGeneratable: !isBlockedNewOrEdited,
     legacyOperational: !isBlockedNewOrEdited
   };
 }
 
 /**
- * Checks whether an Admin template edit changed execution recipe/provider/model/assets
- * requiring re-verification (resetting readinessStatus to TEST_REQUIRED).
+ * Checks whether an Admin template edit changed execution recipe/provider/model/slots/Couple/assets
+ * requiring re-verification (resetting readinessStatus to TEST_REQUIRED for that template alone).
  */
 export function didTemplateExecutionRecipeChange(
   existing: Partial<Template>,
@@ -575,6 +842,8 @@ export function didTemplateExecutionRecipeChange(
     'adapter',
     'model',
     'workflow',
+    'category',
+    'isCouple',
     'aspectRatio',
     'resolutionLabel',
     'durationSeconds',
@@ -605,7 +874,18 @@ export function didTemplateExecutionRecipeChange(
   if (updates.recipe !== undefined) {
     const prevRecipe: Record<string, any> = (existing.recipe || {}) as Record<string, any>;
     const nextRecipe: Record<string, any> = (updates.recipe || {}) as Record<string, any>;
-    const recipeKeys = ['provider', 'adapter', 'model', 'engine', 'prompt', 'workflow', 'drivingVideoUrl', 'referenceImageUrl', 'sampleResult', 'sampleBefore'];
+    const recipeKeys = [
+      'provider',
+      'adapter',
+      'model',
+      'engine',
+      'prompt',
+      'workflow',
+      'drivingVideoUrl',
+      'referenceImageUrl',
+      'sampleResult',
+      'sampleBefore'
+    ];
     for (const rk of recipeKeys) {
       if (nextRecipe[rk] !== undefined && nextRecipe[rk] !== prevRecipe[rk]) {
         return true;
@@ -617,8 +897,19 @@ export function didTemplateExecutionRecipeChange(
     ) {
       return true;
     }
+    if (
+      nextRecipe.requiredInputs !== undefined &&
+      JSON.stringify(nextRecipe.requiredInputs) !== JSON.stringify(prevRecipe.requiredInputs || [])
+    ) {
+      return true;
+    }
   }
 
-  return false;
+  const mergedCandidate: Partial<Template> = {
+    ...existing,
+    ...updates,
+    recipe: updates.recipe !== undefined ? { ...(existing.recipe || {}), ...(updates.recipe || {}) } : existing.recipe
+  };
+  return computeTemplateConfigFingerprint(existing) !== computeTemplateConfigFingerprint(mergedCandidate);
 }
 

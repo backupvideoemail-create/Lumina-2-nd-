@@ -174,6 +174,7 @@ export class GeminiAdapter {
     prohibitedSampleSha256s: string[];
     customerInputsDiagnostics: GenerationDiagnosticInputItem[];
     referenceDiagnostic?: { role: string; mimeType: string; sizeBytes: number; sha256Prefix?: string };
+    isCoupleMode: boolean;
   }> {
     const parts: any[] = [];
 
@@ -190,6 +191,30 @@ export class GeminiAdapter {
       throw new Error('CUSTOMER_SOURCE_PHOTO is required for Gemini photo generation.');
     }
 
+    const isCoupleMode = Boolean(params.isCouple);
+    if (isCoupleMode && rawUserImages.length < 2) {
+      throw new Error('INVALID_COUPLE_SLOTS: Couple template requires both Person A and Person B customer photos.');
+    }
+    if (isCoupleMode && structuredInputMeta.length > 0) {
+      const hasPersonA = structuredInputMeta.some(
+        (m) =>
+          m?.role === 'person_a' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+          m?.slotId === 'partner_1' ||
+          m?.slotId === 'slot_1'
+      );
+      const hasPersonB = structuredInputMeta.some(
+        (m) =>
+          m?.role === 'person_b' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ||
+          m?.slotId === 'partner_2' ||
+          m?.slotId === 'slot_2'
+      );
+      if (!hasPersonA || !hasPersonB) {
+        throw new Error('INVALID_COUPLE_SLOTS: Couple template requires distinct Person A and Person B input roles.');
+      }
+    }
+
     const resolvedUserPayloads: Array<ResolvedImagePayload & { slotId: string; role: string }> = [];
     for (let i = 0; i < rawUserImages.length; i++) {
       const uImg = rawUserImages[i];
@@ -197,14 +222,28 @@ export class GeminiAdapter {
       try {
         const imagePayload = await this.resolveImagePayload(uImg, params.ownerUserId);
         const meta = structuredInputMeta[i];
-        const slotId = meta?.slotId || (i === 0 ? 'partner_1' : i === 1 ? 'partner_2' : `slot_${i + 1}`);
-        const role =
-          meta?.role ||
-          (rawUserImages.length >= 2
-            ? i === 0
+        const defaultSlotId = isCoupleMode
+          ? (i === 0 ? 'partner_1' : i === 1 ? 'partner_2' : `slot_${i + 1}`)
+          : (i === 0 ? 'user_photo' : `slot_${i + 1}`);
+        const slotId = meta?.slotId || defaultSlotId;
+        const normalizedExplicitRole = meta?.role
+          ? String(meta.role).trim()
+          : '';
+        const role = isCoupleMode
+          ? (normalizedExplicitRole === 'person_b' || normalizedExplicitRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' || slotId === 'partner_2' || slotId === 'slot_2'
+              ? 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+              : normalizedExplicitRole === 'person_a' || normalizedExplicitRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' || slotId === 'partner_1' || slotId === 'slot_1'
               ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
-              : 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
-            : 'CUSTOMER_SOURCE_PHOTO');
+              : i === 0
+              ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+              : 'CUSTOMER_SOURCE_PHOTO_PERSON_B')
+          : (normalizedExplicitRole &&
+              normalizedExplicitRole !== 'person_a' &&
+              normalizedExplicitRole !== 'person_b' &&
+              normalizedExplicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
+              normalizedExplicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+              ? normalizedExplicitRole
+              : 'CUSTOMER_SOURCE_PHOTO');
         resolvedUserPayloads.push({
           ...imagePayload,
           slotId,
@@ -220,23 +259,26 @@ export class GeminiAdapter {
       throw new Error('CUSTOMER_SOURCE_PHOTO could not be loaded for Gemini photo generation.');
     }
 
-    const isCoupleMode = attachedUserCount >= 2;
     for (let i = 0; i < resolvedUserPayloads.length; i++) {
       const payload = resolvedUserPayloads[i];
       if (isCoupleMode) {
-        const slotLabel = i === 0 ? 'Person A' : i === 1 ? 'Person B' : `Person ${i + 1}`;
+        const slotLabel = payload.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ? 'Person B' : 'Person A';
         parts.push({
           text:
-            `IMAGE ${i + 1} — CUSTOMER_SOURCE_PHOTO (${slotLabel} AUTHORITATIVE IDENTITY — MUST APPEAR IN OUTPUT): ` +
+            `IMAGE ${i + 1} — ${payload.role} (${slotLabel} AUTHORITATIVE IDENTITY — MUST APPEAR IN OUTPUT): ` +
             `This is real customer ${slotLabel}. Preserve ${slotLabel}'s exact face, facial bone structure, eyes, eyebrows, nose, lips, jawline, beard/hair, and skin tone. ` +
             `If this photo is a phone screenshot or has UI icons or a corner PiP thumbnail, IGNORE all UI chrome/thumbnails and extract ONLY the main foreground person's real face.`
         });
       } else {
+        const multiHint =
+          attachedUserCount > 1
+            ? ` (Customer Input ${i + 1} of ${attachedUserCount} for slot '${payload.slotId}')`
+            : '';
         parts.push({
           text:
-            `IMAGE 1 — CUSTOMER_SOURCE_PHOTO (AUTHORITATIVE CUSTOMER IDENTITY — MUST STAR IN OUTPUT): ` +
+            `IMAGE ${i + 1} — ${payload.role}${multiHint} (AUTHORITATIVE CUSTOMER IDENTITY — MUST STAR IN OUTPUT): ` +
             `This is the real customer who must appear as the main starring subject in the final generated image. Preserve this exact person's face, facial structure, unobstructed eyes, eyebrows, nose, lips, jawline, natural skin tone, facial hair/beard, hair/head likeness, and gender/identity. ` +
-            `If IMAGE 1 is a phone/social-app screenshot or contains status bars, circular filter icons, or a small corner PiP/inset face, IGNORE all app UI elements and small corner thumbnails and extract ONLY the main foreground person's real face.`
+            `If IMAGE ${i + 1} is a phone/social-app screenshot or contains status bars, circular filter icons, or a small corner PiP/inset face, IGNORE all app UI elements and small corner thumbnails and extract ONLY the main foreground person's real face.`
         });
       }
       parts.push({
@@ -358,7 +400,8 @@ export class GeminiAdapter {
       userSha256s: resolvedUserPayloads.map((p) => p.sha256),
       prohibitedSampleSha256s,
       customerInputsDiagnostics,
-      referenceDiagnostic
+      referenceDiagnostic,
+      isCoupleMode
     };
   }
 
@@ -411,7 +454,8 @@ export class GeminiAdapter {
       userSha256s,
       prohibitedSampleSha256s,
       customerInputsDiagnostics,
-      referenceDiagnostic
+      referenceDiagnostic,
+      isCoupleMode
     } = await this.buildMultimodalRequestParts(params);
 
     // Allowed aspect ratios for Gemini Image: "1:1", "3:4", "4:3", "9:16", "16:9"
@@ -507,6 +551,7 @@ export class GeminiAdapter {
         adapter: this.adapterName,
         model: targetModel,
         workflow: params.styleWorkflow || 'PHOTO_GENERATION',
+        isCouple: isCoupleMode,
         customerInputCount: customerInputsDiagnostics.length,
         customerInputs: customerInputsDiagnostics,
         referenceInput: referenceDiagnostic,

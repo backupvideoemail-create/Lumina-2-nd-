@@ -1317,7 +1317,8 @@ export class MediaStorageService {
 
   public async deleteMedia(fileName: string): Promise<boolean> {
     const safeName = path.basename(fileName);
-    const meta = this.metadataIndex[safeName];
+    const meta = await this.getMetadata(safeName);
+    let deletedAny = false;
 
     if (this.s3Client && this.r2Config.bucketName && meta?.r2Key) {
       try {
@@ -1325,6 +1326,7 @@ export class MediaStorageService {
           Bucket: this.r2Config.bucketName,
           Key: meta.r2Key
         }));
+        deletedAny = true;
       } catch (err: any) {
         console.error('[MediaStorage] Failed to delete from R2:', err.message);
       }
@@ -1333,11 +1335,24 @@ export class MediaStorageService {
     const fullPath = path.join(UPLOADS_DIR, safeName);
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);
+      deletedAny = true;
+    }
+
+    if (this.metadataIndex[safeName]) {
       delete this.metadataIndex[safeName];
       this.saveIndex();
-      return true;
+      deletedAny = true;
     }
-    return false;
+
+    if (adminFirestoreDb) {
+      try {
+        await adminFirestoreDb.collection('media_metadata').doc(safeName).delete();
+      } catch (err: any) {
+        console.warn('[MediaStorage] Failed to delete Firestore media_metadata:', err?.message || err);
+      }
+    }
+
+    return deletedAny;
   }
 
   /**

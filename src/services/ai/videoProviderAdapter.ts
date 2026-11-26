@@ -218,6 +218,30 @@ export class VideoProviderAdapter {
       throw new Error('CUSTOMER_SOURCE_MEDIA_MISSING: At least one customer photo or source video is required for video generation.');
     }
 
+    const isCoupleMode = Boolean(params.isCouple);
+    if (isCoupleMode && rawInputs.length < 2) {
+      throw new Error('INVALID_COUPLE_SLOTS: Couple video template requires both Person A and Person B customer inputs.');
+    }
+    if (isCoupleMode && structuredInputMeta.length > 0) {
+      const hasPersonA = structuredInputMeta.some(
+        (m) =>
+          m?.role === 'person_a' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+          m?.slotId === 'partner_1' ||
+          m?.slotId === 'slot_1'
+      );
+      const hasPersonB = structuredInputMeta.some(
+        (m) =>
+          m?.role === 'person_b' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ||
+          m?.slotId === 'partner_2' ||
+          m?.slotId === 'slot_2'
+      );
+      if (!hasPersonA || !hasPersonB) {
+        throw new Error('INVALID_COUPLE_SLOTS: Couple video template requires distinct Person A and Person B input roles.');
+      }
+    }
+
     const resolvedInputs: Array<ResolvedVideoInputPayload & { slotId: string; role: string }> = [];
     for (let i = 0; i < rawInputs.length; i++) {
       const ref = rawInputs[i];
@@ -225,16 +249,28 @@ export class VideoProviderAdapter {
       try {
         const mediaPayload = await this.resolveMediaPayload(ref, params.ownerUserId);
         const meta = structuredInputMeta[i];
-        const slotId = meta?.slotId || (i === 0 ? 'partner_1' : i === 1 ? 'partner_2' : `slot_${i + 1}`);
-        const role =
-          meta?.role ||
-          (rawInputs.length >= 2
-            ? i === 0
-              ? 'CUSTOMER_SOURCE_PERSON_A'
-              : 'CUSTOMER_SOURCE_PERSON_B'
-            : mediaPayload.partType === 'video'
-            ? 'CUSTOMER_SOURCE_VIDEO'
-            : 'CUSTOMER_SOURCE_PHOTO');
+        const defaultSlotId = isCoupleMode
+          ? (i === 0 ? 'partner_1' : i === 1 ? 'partner_2' : `slot_${i + 1}`)
+          : (i === 0 ? 'user_input' : `slot_${i + 1}`);
+        const slotId = meta?.slotId || defaultSlotId;
+        const explicitRole = meta?.role ? String(meta.role).trim() : '';
+        const role = isCoupleMode
+          ? (explicitRole === 'person_b' || explicitRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' || slotId === 'partner_2' || slotId === 'slot_2'
+              ? 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+              : explicitRole === 'person_a' || explicitRole === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' || slotId === 'partner_1' || slotId === 'slot_1'
+              ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+              : i === 0
+              ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A'
+              : 'CUSTOMER_SOURCE_PHOTO_PERSON_B')
+          : (explicitRole &&
+              explicitRole !== 'person_a' &&
+              explicitRole !== 'person_b' &&
+              explicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
+              explicitRole !== 'CUSTOMER_SOURCE_PHOTO_PERSON_B'
+              ? explicitRole
+              : mediaPayload.partType === 'video'
+              ? 'CUSTOMER_SOURCE_VIDEO'
+              : 'CUSTOMER_SOURCE_PHOTO');
         resolvedInputs.push({
           ...mediaPayload,
           slotId,
@@ -249,9 +285,10 @@ export class VideoProviderAdapter {
       throw new Error('CUSTOMER_SOURCE_MEDIA_MISSING: Resolved customer media list is empty.');
     }
 
-    const isCoupleMode = resolvedInputs.length >= 2;
     const roleGuidance = isCoupleMode
       ? 'Keep Person A (input 1) and Person B (input 2) as two distinct recognizable people; never blend or merge their faces.'
+      : resolvedInputs.length > 1
+      ? 'Use the provided customer media inputs as the authoritative subject and scene references without splitting into two different couple identities.'
       : 'Use the customer input as the authoritative subject identity throughout the video.';
 
     const prompt = `${params.prompt}\n\n${roleGuidance}\nTarget style: ${params.styleWorkflow || 'cinematic motion'}. Realistic fluid motion, studio lighting, 60fps aesthetic.`;
@@ -373,6 +410,7 @@ export class VideoProviderAdapter {
           adapter: this.adapterName,
           model: targetModel,
           workflow: params.styleWorkflow || 'IMAGE_TO_VIDEO',
+          isCouple: isCoupleMode,
           customerInputCount: customerInputsDiag.length,
           customerInputs: customerInputsDiag,
           providerStatus: 'completed',

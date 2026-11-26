@@ -421,6 +421,12 @@ export class AIRouter {
         workflow: workflowName || rawModel || 'smart_canvas',
         model: selectedModel || (params.templateType === 'video' ? 'smart_canvas_ffmpeg' : 'smart_canvas'),
         inputMediaUrls: customerMediaUrls,
+        inputMedia: params.inputMedia?.map((m) => ({
+          slotId: m.slotId,
+          role: m.role,
+          type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video'
+        })),
+        isCouple,
         aspectRatio: activeWorkflowConfig?.aspectRatio || params.aspectRatio || '9:16',
         customPrompt: params.customPrompt,
         durationSeconds: params.durationSeconds,
@@ -456,6 +462,7 @@ export class AIRouter {
         userImageUrl: customerMediaUrls[0] || params.inputMediaUrl,
         userImageUrls: customerMediaUrls,
         inputMedia: params.inputMedia,
+        isCouple,
         referenceImageUrl,
         sampleBeforeUrl,
         sampleResultUrl: referenceImageUrl,
@@ -487,6 +494,7 @@ export class AIRouter {
       userImageUrl: customerMediaUrls[0] || params.inputMediaUrl,
       userImageUrls: customerMediaUrls,
       inputMedia: params.inputMedia,
+      isCouple,
       referenceImageUrl: params.referenceImageUrl,
       sampleBeforeUrl,
       sampleResultUrl: params.sampleResultUrl,

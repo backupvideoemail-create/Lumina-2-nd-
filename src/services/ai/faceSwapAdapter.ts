@@ -51,6 +51,7 @@ export interface GenjutsuMotionTransferParams {
   adapter?: string;
   workflow?: string;
   isCouple?: boolean;
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
 }
 
 export interface HiggsfieldSubmittedJob {
@@ -208,6 +209,25 @@ export class HiggsfieldGenjutsuAdapter {
     }
     if (params.isCouple && validImageUrls.length < 2) {
       throw new Error('MISSING_PARTNER_PHOTO: Couple FaceSwap requires both Person A and Person B face images.');
+    }
+    if (params.isCouple && Array.isArray(params.inputMedia) && params.inputMedia.length > 0) {
+      const hasPersonA = params.inputMedia.some(
+        (m) =>
+          m?.role === 'person_a' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' ||
+          m?.slotId === 'partner_1' ||
+          m?.slotId === 'slot_1'
+      );
+      const hasPersonB = params.inputMedia.some(
+        (m) =>
+          m?.role === 'person_b' ||
+          m?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' ||
+          m?.slotId === 'partner_2' ||
+          m?.slotId === 'slot_2'
+      );
+      if (!hasPersonA || !hasPersonB) {
+        throw new Error('INVALID_COUPLE_SLOTS: Couple FaceSwap requires distinct Person A and Person B inputs.');
+      }
     }
 
     // Build prompt according to workflow & couple identity
