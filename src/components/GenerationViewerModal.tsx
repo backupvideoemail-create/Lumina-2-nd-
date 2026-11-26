@@ -51,7 +51,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
     gen.status === 'processing' ||
     gen.status === 'finalizing';
 
-  const rawMediaUrl = gen.resultMediaUrl || (gen.status === 'completed' ? gen.inputMediaUrl : '');
+  const rawMediaUrl = gen.resultMediaUrl || '';
   const {
     resolvedUrl: resolvedMediaUrl,
     mimeType: resolvedMimeType,
@@ -123,7 +123,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
   }, [gen.id, isProcessing, setActiveGeneration, refreshUserData, refreshGenerations]);
 
   const handleDownload = async () => {
-    const targetUrl = gen.resultMediaUrl || gen.inputMediaUrl;
+    const targetUrl = gen.resultMediaUrl || '';
     if (!targetUrl || isDownloading) return;
     setIsDownloading(true);
     setDownloadError(null);

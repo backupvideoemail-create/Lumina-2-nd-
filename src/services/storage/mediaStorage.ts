@@ -59,6 +59,50 @@ export function extractMediaFileIdFromRef(mediaUrlOrFileId: string): string {
   return path.basename(raw.split('?')[0]);
 }
 
+export function detectMediaFormatFromBuffer(buf: Buffer): { mimeType: string; ext: string } | null {
+  if (!buf || buf.length < 4) return null;
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return { mimeType: 'image/png', ext: 'png' };
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mimeType: 'image/jpeg', ext: 'jpg' };
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString('ascii', 0, 4) === 'RIFF' &&
+    buf.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return { mimeType: 'image/webp', ext: 'webp' };
+  }
+  if (
+    buf.length >= 6 &&
+    (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a')
+  ) {
+    return { mimeType: 'image/gif', ext: 'gif' };
+  }
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+    return { mimeType: 'video/webm', ext: 'webm' };
+  }
+  if (buf.length >= 12 && buf.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buf.toString('ascii', 8, 12).trim().toLowerCase();
+    if (brand === 'qt') {
+      return { mimeType: 'video/quicktime', ext: 'mov' };
+    }
+    return { mimeType: 'video/mp4', ext: 'mp4' };
+  }
+  return null;
+}
+
 const UPLOADS_DIR = path.resolve(process.cwd(), '.data', 'uploads');
 
 type StorageMonitoringReporter = (
@@ -570,23 +614,33 @@ export class MediaStorageService {
     let buffer: Buffer;
     let mimeType = 'image/jpeg';
     let ext = 'jpg';
+    const lowerCustomName = (customFileName || '').toLowerCase();
 
-    if (Buffer.isBuffer(payload)) {
-      buffer = payload;
-      const lowerName = (customFileName || '').toLowerCase();
-      if (lowerName.endsWith('.mp4')) {
+    const applyCustomNameExtHint = () => {
+      if (lowerCustomName.endsWith('.mp4')) {
         mimeType = 'video/mp4';
         ext = 'mp4';
-      } else if (lowerName.endsWith('.png')) {
+      } else if (lowerCustomName.endsWith('.mov')) {
+        mimeType = 'video/quicktime';
+        ext = 'mov';
+      } else if (lowerCustomName.endsWith('.webm')) {
+        mimeType = 'video/webm';
+        ext = 'webm';
+      } else if (lowerCustomName.endsWith('.png')) {
         mimeType = 'image/png';
         ext = 'png';
-      } else if (lowerName.endsWith('.webp')) {
+      } else if (lowerCustomName.endsWith('.webp')) {
         mimeType = 'image/webp';
         ext = 'webp';
-      } else if (lowerName.endsWith('.gif')) {
+      } else if (lowerCustomName.endsWith('.gif')) {
         mimeType = 'image/gif';
         ext = 'gif';
       }
+    };
+
+    if (Buffer.isBuffer(payload)) {
+      buffer = payload;
+      applyCustomNameExtHint();
     } else if (typeof payload === 'string' && payload.startsWith('data:')) {
       const commaIdx = payload.indexOf(',');
       if (commaIdx !== -1) {
@@ -597,7 +651,13 @@ export class MediaStorageService {
           mimeType = mimeMatch[1].trim();
         }
         buffer = Buffer.from(rawBase64, 'base64');
-        if (mimeType.includes('video') || mimeType.includes('mp4') || mimeType.includes('quicktime') || mimeType.includes('webm')) {
+        if (mimeType.includes('webm')) {
+          ext = 'webm';
+          mimeType = 'video/webm';
+        } else if (mimeType.includes('quicktime')) {
+          ext = 'mov';
+          mimeType = 'video/quicktime';
+        } else if (mimeType.includes('video') || mimeType.includes('mp4')) {
           ext = 'mp4';
           mimeType = 'video/mp4';
         } else if (mimeType.includes('png')) {
@@ -615,9 +675,11 @@ export class MediaStorageService {
         }
       } else {
         buffer = Buffer.from(payload, 'base64');
+        applyCustomNameExtHint();
       }
     } else if (typeof payload === 'string') {
       // Raw base64 string or binary payload
+      applyCustomNameExtHint();
       try {
         buffer = Buffer.from(payload, 'base64');
       } catch {
@@ -625,10 +687,18 @@ export class MediaStorageService {
       }
     } else {
       buffer = Buffer.from(payload as any);
+      applyCustomNameExtHint();
     }
 
     if (!buffer || buffer.length === 0) {
       throw new Error('Cannot store empty (0-byte) media payload.');
+    }
+
+    // Authoritative magic-byte verification ensures actual PNG/JPEG/WEBP/MP4 bytes never get stored under mismatched extension or MIME type
+    const detectedFormat = detectMediaFormatFromBuffer(buffer);
+    if (detectedFormat) {
+      mimeType = detectedFormat.mimeType;
+      ext = detectedFormat.ext;
     }
 
     const fileId = `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;

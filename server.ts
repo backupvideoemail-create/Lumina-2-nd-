@@ -113,7 +113,8 @@ import type {
   PaymentRecord,
   FaceSwapScene,
   OwnerOmniTestRecord,
-  PerTemplateReadinessItem
+  PerTemplateReadinessItem,
+  GenerationPipelineDiagnostics
 } from './src/types/index.ts';
 
 import { execSync } from 'child_process';
@@ -181,20 +182,30 @@ configureFxHooks({
 const VERIFIED_GITHUB_BASELINE_SHA = '1ee049a00d241ca9c3f26a1d2a7f7e9d6dcf6047';
 let resolvedCommitSha = process.env.COMMIT_SHA || process.env.GIT_COMMIT || process.env.GITHUB_SHA || '';
 let resolvedCommitSource: 'env' | 'git' | 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK' = resolvedCommitSha ? 'env' : 'git';
+const hasGitMetadata = fs.existsSync(path.resolve(process.cwd(), '.git'));
 if (!resolvedCommitSha) {
-  try {
-    resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    resolvedCommitSource = 'git';
-  } catch {
+  if (hasGitMetadata) {
+    try {
+      resolvedCommitSha = execSync('git rev-parse HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      resolvedCommitSource = 'git';
+    } catch {
+      resolvedCommitSha = 'UNVERIFIED/BLOCKED';
+      resolvedCommitSource = 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK';
+    }
+  } else {
     resolvedCommitSha = 'UNVERIFIED/BLOCKED';
     resolvedCommitSource = 'UNVERIFIED_RUNTIME_NO_GIT_BASELINE_FALLBACK';
   }
 }
 let resolvedGitBranch = process.env.GIT_BRANCH || process.env.GITHUB_REF_NAME || '';
 if (!resolvedGitBranch) {
-  try {
-    resolvedGitBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
+  if (hasGitMetadata) {
+    try {
+      resolvedGitBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      resolvedGitBranch = 'BLOCKED (no .git metadata in runtime)';
+    }
+  } else {
     resolvedGitBranch = 'BLOCKED (no .git metadata in runtime)';
   }
 }
@@ -529,6 +540,36 @@ app.use('/api', (req, res, next) => {
       }
     }
   });
+  next();
+});
+
+const STARTUP_WAIT_EXEMPT_PATHS = new Set(['/version', '/health', '/generation-gate']);
+let startupSyncSettled = isIsolatedTestEnv;
+if (!startupSyncSettled && prodDb?.readyPromise) {
+  prodDb.readyPromise
+    .finally(() => {
+      startupSyncSettled = true;
+    })
+    .catch(() => {});
+}
+
+// Wait briefly for initial Firestore hydration on data endpoints while keeping health/version probes instant
+app.use('/api', async (req, _res, next) => {
+  if (!startupSyncSettled && !isIsolatedTestEnv && !STARTUP_WAIT_EXEMPT_PATHS.has(req.path) && prodDb?.readyPromise) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        prodDb.readyPromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 10000);
+        })
+      ]);
+    } catch {
+      // Fallback handled by downstream route handlers
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
   next();
 });
 
@@ -1446,6 +1487,16 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
 /* =========================================================================
    4. VERSION & TEMPLATES CATALOG (WITH WORKING LIKES & ZERO-CACHE)
 ========================================================================= */
+
+// Fast non-blocking readiness/liveness probe
+app.get('/api/health', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    status: 'up',
+    catalogueStatus: prodDb.getCatalogueStatus()
+  });
+});
 
 // Deployment Version & Environment Health Verification (Public, non-sensitive summary)
 app.get('/api/version', (_req, res) => {
@@ -3206,14 +3257,26 @@ app.post('/api/admin/templates/:id/verify-test', requireAdmin, async (req, res) 
         ]
       : [{ slotId: 'partner_1', role: 'user_photo', type: 'image' as const, mediaUrl: signedInputUrl, media: signedInputUrl }];
 
-    const resolvedRefImage =
+    const explicitAfterRef =
       template.sampleResult ||
       template.sampleAfter ||
       template.referenceImageUrl ||
       (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.sampleAfter ||
       (template.recipe as any)?.referenceImageUrl ||
-      template.recipe?.referenceAssets?.[0] ||
-      (template.type === 'photo' ? template.cover : undefined);
+      template.recipe?.referenceAssets?.[0];
+    const safeCoverFallback =
+      template.type === 'photo' &&
+      template.cover &&
+      template.cover !== template.sampleFaceThumbnail &&
+      template.cover !== template.sampleBefore
+        ? template.cover
+        : undefined;
+    const resolvedRefImage = explicitAfterRef || safeCoverFallback;
+
+    if (template.type === 'photo' && !isSmartTemplate && !resolvedRefImage) {
+      throw new Error('Template is missing its dedicated AFTER / sample result reference image (cannot use face thumbnail or before asset).');
+    }
 
     const categoryPrompt = prodDb.getCategoryPrompt(template.category);
     const effectivePrompt = buildUnifiedGenerationPrompt({
@@ -5738,15 +5801,22 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       errors: templateReadiness.errors
     });
   }
-  if (template.type === 'photo') {
-    const preResolvedRef =
+  if (template.type === 'photo' && template.engine !== 'SMART_TEMPLATE') {
+    const explicitAfterRef =
       template.sampleResult ||
       template.sampleAfter ||
       template.referenceImageUrl ||
       (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.sampleAfter ||
       (template.recipe as any)?.referenceImageUrl ||
-      template.recipe?.referenceAssets?.[0] ||
-      template.cover;
+      template.recipe?.referenceAssets?.[0];
+    const safeCoverFallback =
+      template.cover &&
+      template.cover !== template.sampleFaceThumbnail &&
+      template.cover !== template.sampleBefore
+        ? template.cover
+        : undefined;
+    const preResolvedRef = explicitAfterRef || safeCoverFallback;
     if (!preResolvedRef) {
       return res.status(400).json({
         error: 'Template is missing its designated AFTER / sample result reference image. No credits were deducted.',
@@ -6042,6 +6112,10 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     type: 'image' | 'video';
     mediaUrl: string;
     media: string;
+    fileId?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    sha256Prefix?: string;
   }
   const sanitizedStructuredMedia: SanitizedSlot[] = [];
 
@@ -6083,13 +6157,33 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
 
     let effectiveUrl = '';
+    let storedFileId: string | undefined;
+    let storedMimeType: string | undefined;
+    let storedSizeBytes: number | undefined;
+    let computedShaPrefix: string | undefined;
+
     if (rawMediaString && (rawMediaString.startsWith('data:') || rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://'))) {
       if (rawMediaString.includes('/api/media/') && !rawMediaString.includes('token=')) {
-        return res.status(400).json({
-          error: 'Insecure local media URL cannot be dispatched to AI provider without verified HMAC token.',
-          code: 'INSECURE_MEDIA_URL',
-          stage: 'validation'
-        });
+        const isSignedRoute = rawMediaString.includes('/api/media/signed/');
+        const tokenSeg = isSignedRoute ? rawMediaString.split('/api/media/signed/')[1]?.split('?')[0]?.split('/')[0] : '';
+        const signedCheck = tokenSeg ? verifySignedMediaToken(tokenSeg) : { valid: false };
+        if (!signedCheck.valid) {
+          return res.status(400).json({
+            error: 'Insecure local media URL cannot be dispatched to AI provider without verified HMAC token.',
+            code: 'INSECURE_MEDIA_URL',
+            stage: 'validation'
+          });
+        }
+      }
+
+      if (rawMediaString.startsWith('data:')) {
+        const commaIdx = rawMediaString.indexOf(',');
+        if (commaIdx !== -1) {
+          const decodedIn = Buffer.from(rawMediaString.substring(commaIdx + 1), 'base64');
+          if (decodedIn.length > 0) {
+            computedShaPrefix = crypto.createHash('sha256').update(decodedIn).digest('hex').slice(0, 16);
+          }
+        }
       }
 
       // Ingest through mediaStorage to bind to user.id in private storage and get signed provider URL
@@ -6101,6 +6195,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         user.id,
         false
       );
+      storedFileId = stored.fileId;
+      storedMimeType = stored.mimeType;
+      storedSizeBytes = stored.sizeBytes;
 
       if (stored.r2Key) {
         try {
@@ -6143,7 +6240,11 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       role: resolvedRole,
       type: mediaType,
       mediaUrl: effectiveUrl,
-      media: effectiveUrl
+      media: effectiveUrl,
+      fileId: storedFileId,
+      mimeType: storedMimeType,
+      sizeBytes: storedSizeBytes,
+      sha256Prefix: computedShaPrefix
     });
   }
 
@@ -6310,6 +6411,29 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   }
 
   // 2. Durably persist initial generation record in Firestore BEFORE invoking any AI provider (fail closed)
+  const correlationId = String(req.headers['x-correlation-id'] || '').trim() || genId;
+  const initialPipelineDiagnostics: GenerationPipelineDiagnostics = {
+    correlationId,
+    templateId: template.id,
+    generationId: genId,
+    provider: templateConfiguredProvider,
+    adapter: templateConfiguredAdapter || modelEntry?.adapterId || (isSmartTemplate ? 'smartCanvas' : ''),
+    model: effectiveModel,
+    workflow: template.workflow || '',
+    customerInputCount: sanitizedStructuredMedia.length,
+    customerInputs: sanitizedStructuredMedia.map((m) => ({
+      slotId: m.slotId,
+      role: m.role || 'user_photo',
+      mediaType: m.type,
+      mimeType: m.mimeType || (m.type === 'video' ? 'video/mp4' : 'image/jpeg'),
+      sizeBytes: m.sizeBytes || 0,
+      ...(m.sha256Prefix ? { sha256Prefix: m.sha256Prefix } : {})
+    })),
+    providerStatus: 'submitted',
+    finalStatus: 'processing',
+    recordedAt: new Date().toISOString()
+  };
+
   const generation: Generation & { idempotencyKey?: string } = {
     id: genId,
     userId: user.id,
@@ -6322,6 +6446,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     chargeStatus: isAuthorizedAdmin ? 'admin_free' : 'reserved',
     refundStatus: 'none',
     inputMediaUrl,
+    inputMediaFileIds: sanitizedStructuredMedia.map((m) => m.fileId).filter(Boolean) as string[],
     engine: isSmartTemplate ? 'SMART_TEMPLATE' : (template.engine || 'AI_GENERATION'),
     model: effectiveModel,
     workflow: template.workflow,
@@ -6332,6 +6457,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     requestedOutputDurationSeconds: requestedDuration,
     sourceVideoDurationSeconds: measuredSourceVideoDuration,
     wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined,
+    pipelineDiagnostics: initialPipelineDiagnostics,
     ...(idempotencyKey ? { idempotencyKey } : {})
   };
 
@@ -6362,17 +6488,25 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
   // 3. Execute synchronously inside active HTTP request (Cloud Run Request-Based Billing safe; zero post-response background throttling)
   try {
     // 1. Resolve designated AFTER sample reference image (authoritative target for scene, styling, and composition)
-    const resolvedRefImage =
+    const explicitAfterRef =
       template.sampleResult ||
       template.sampleAfter ||
       template.referenceImageUrl ||
       (template.recipe as any)?.sampleResult ||
+      (template.recipe as any)?.sampleAfter ||
       (template.recipe as any)?.referenceImageUrl ||
-      template.recipe?.referenceAssets?.[0] ||
-      (template.type === 'photo' ? template.cover : undefined);
+      template.recipe?.referenceAssets?.[0];
+    const safeCoverFallback =
+      template.type === 'photo' &&
+      template.cover &&
+      template.cover !== template.sampleFaceThumbnail &&
+      template.cover !== template.sampleBefore
+        ? template.cover
+        : undefined;
+    const resolvedRefImage = explicitAfterRef || safeCoverFallback;
 
-    if (template.type === 'photo' && !resolvedRefImage) {
-      throw new Error('Template is missing its designated AFTER / sample result reference image. Please configure this template in Template Manager.');
+    if (template.type === 'photo' && template.engine !== 'SMART_TEMPLATE' && !resolvedRefImage) {
+      throw new Error('Template is missing its designated AFTER / sample result reference image (cannot use face thumbnail or before asset).');
     }
 
     // 2. Authoritative Prompt Construction (Prompt Standard v1.1 & v1.2 Modality Hierarchy)
@@ -6568,6 +6702,34 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       await prodDb.refundCredits(user.id, reconciliation.refundCredits, `Reconciliation Refund: Duration adjustment (${template.title})`, genId);
     }
 
+    const completedDiagnostics: GenerationPipelineDiagnostics = {
+      ...initialPipelineDiagnostics,
+      ...(result.diagnostics || {}),
+      correlationId,
+      templateId: template.id,
+      generationId: genId,
+      provider: result.provider || initialPipelineDiagnostics.provider,
+      adapter: result.adapter || initialPipelineDiagnostics.adapter,
+      model: result.model || initialPipelineDiagnostics.model,
+      customerInputCount:
+        result.diagnostics?.customerInputCount ?? initialPipelineDiagnostics.customerInputCount,
+      customerInputs:
+        result.diagnostics?.customerInputs && result.diagnostics.customerInputs.length > 0
+          ? result.diagnostics.customerInputs
+          : initialPipelineDiagnostics.customerInputs,
+      providerStatus: 'completed',
+      processingTimeMs: result.processingTimeMs,
+      storageVerification: {
+        verified: Boolean(deliverableCheck.verified),
+        fileId: deliverableCheck.fileId,
+        sizeBytes: deliverableCheck.sizeBytes,
+        mimeType: deliverableCheck.mimeType
+      },
+      finalStatus: 'completed',
+      recordedAt: new Date().toISOString()
+    };
+    console.log('[GenerationDiagnostics]', JSON.stringify(completedDiagnostics));
+
     const completedGen =
       (await prodDb.updateGenerationAsync(genId, {
         status: 'completed',
@@ -6579,6 +6741,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
         reconciliationStatus: costMeasurement.isExactTransactionCost ? 'RECONCILED' : 'UNMEASURED_NO_POST_DEBIT',
         actualProviderCostUsd: costMeasurement.isExactTransactionCost ? costMeasurement.costUsd : undefined,
         reconciledCostCredits: isAuthorizedAdmin ? 0 : reconciliation.finalChargeCredits,
+        pipelineDiagnostics: completedDiagnostics,
         completedAt: new Date().toISOString()
       })) || (await prodDb.getGenerationAuthoritative(genId)) || generation;
 
@@ -6597,7 +6760,26 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       ? 'PROVIDER_ROUTING_MISMATCH'
       : errMsg.includes('MODEL_EVALUATION_ONLY')
       ? 'MODEL_EVALUATION_ONLY'
+      : errMsg.includes('UNCHANGED_REFERENCE_OUTPUT')
+      ? 'UNCHANGED_REFERENCE_OUTPUT'
+      : errMsg.includes('UNCHANGED_CUSTOMER_INPUT_OUTPUT')
+      ? 'UNCHANGED_CUSTOMER_INPUT_OUTPUT'
+      : errMsg.includes('LEAKED_TEMPLATE_SAMPLE_OUTPUT')
+      ? 'LEAKED_TEMPLATE_SAMPLE_OUTPUT'
       : 'GENERATION_ERROR';
+
+    const failedDiagnostics: GenerationPipelineDiagnostics = {
+      ...initialPipelineDiagnostics,
+      providerStatus: 'failed',
+      finalStatus: 'failed',
+      errorCode: derivedCode,
+      recordedAt: new Date().toISOString()
+    };
+    console.log('[GenerationDiagnostics]', JSON.stringify(failedDiagnostics));
+    try {
+      await prodDb.updateGenerationAsync(genId, { pipelineDiagnostics: failedDiagnostics });
+    } catch {}
+
     try {
       emitCloudMonitoringEvent(
         derivedCode === 'PROVIDER_ROUTING_MISMATCH' ? 'PROVIDER_ROUTING_MISMATCH' : 'GENERATION_PIPELINE_FAILURE',
@@ -6641,6 +6823,7 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       error: errMsg,
       code: derivedCode,
       stage: 'generation_pipeline',
+      correlationId,
       refunded: refundOutcome.refunded,
       refundStatus: refundOutcome.refundStatus,
       generationId: genId,
@@ -9012,35 +9195,57 @@ app.use('/api', (err: any, req: express.Request, res: express.Response, _next: e
 ========================================================================= */
 
 async function startServer() {
-  try {
-    await refreshRuntimeGcpMetadata();
-    await prodDb.readyPromise;
-    const savedFx = prodDb.getFxCacheRecord();
-    if (savedFx) {
-      hydrateFxCache(savedFx);
-    }
-    if (!isIsolatedTestEnv) {
-      refreshLiveUsdInrRate().catch((fxErr: any) => {
-        console.warn('[Server] Initial live USD/INR FX fetch notice:', fxErr?.message || fxErr);
-      });
-    }
-    console.log('[Server] Authoritative Firestore database state synchronized successfully.');
-  } catch (err: any) {
-    console.warn('[Server] Initial Firestore sync notice:', err.message);
-  }
-
   const httpServer = http.createServer(app);
+
+  // Kick off authoritative Firestore, GCP metadata, and FX hydration concurrently without delaying HTTP port binding
+  const startupSyncTask = (async () => {
+    try {
+      await Promise.all([
+        refreshRuntimeGcpMetadata(),
+        prodDb.readyPromise
+      ]);
+      const savedFx = prodDb.getFxCacheRecord();
+      if (savedFx) {
+        hydrateFxCache(savedFx);
+      }
+      if (!isIsolatedTestEnv) {
+        refreshLiveUsdInrRate().catch((fxErr: any) => {
+          console.warn('[Server] Initial live USD/INR FX fetch notice:', fxErr?.message || fxErr);
+        });
+      }
+      console.log('[Server] Authoritative Firestore database state synchronized successfully.');
+    } catch (err: any) {
+      console.warn('[Server] Initial Firestore sync notice:', err.message);
+    } finally {
+      startupSyncSettled = true;
+    }
+  })();
+  startupSyncTask.catch(() => {});
 
   if (process.env.NODE_ENV !== 'production') {
     const isHmrDisabled = process.env.DISABLE_HMR === 'true';
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       server: {
         middlewareMode: true,
-        hmr: isHmrDisabled ? false : { server: httpServer }
+        hmr: isHmrDisabled ? false : true,
+        ws: isHmrDisabled ? false : { server: httpServer }
       },
       appType: 'spa'
     });
-    app.use(vite.middlewares);
+    vitePromise.catch((viteErr: any) => {
+      console.error('[Server] Vite dev middleware startup error:', viteErr?.message || viteErr);
+    });
+    app.use(async (req, res, next) => {
+      if (req.path.startsWith('/api')) {
+        return next();
+      }
+      try {
+        const vite = await vitePromise;
+        return vite.middlewares(req, res, next);
+      } catch (err) {
+        return next(err);
+      }
+    });
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
     if (fs.existsSync(distPath)) {

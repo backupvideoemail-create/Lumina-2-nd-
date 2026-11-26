@@ -199,8 +199,15 @@ export class HiggsfieldGenjutsuAdapter {
       throw new Error('Missing videoUrl for Genjutsu Motion Transfer.');
     }
 
-    if (!params.imageUrls || params.imageUrls.length === 0) {
+    const validImageUrls = (params.imageUrls || []).map((u) => String(u || '').trim()).filter(Boolean);
+    if (validImageUrls.length === 0) {
       throw new Error('At least 1 face reference image is required (4-5 recommended from different angles).');
+    }
+    if (validImageUrls.some((u) => u === params.videoUrl)) {
+      throw new Error('INVALID_CUSTOMER_INPUT: Customer face image cannot be identical to template drivingVideoUrl.');
+    }
+    if (params.isCouple && validImageUrls.length < 2) {
+      throw new Error('MISSING_PARTNER_PHOTO: Couple FaceSwap requires both Person A and Person B face images.');
     }
 
     // Build prompt according to workflow & couple identity
@@ -253,7 +260,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
 
     const payload: Record<string, any> = {
       video_url: params.videoUrl,
-      image_urls: params.imageUrls,
+      image_urls: validImageUrls,
       prompt: finalPrompt,
       resolution: requestedResolution
     };
@@ -406,7 +413,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
     ownerUserId?: string;
     fetchImpl?: typeof fetch;
     dnsLookup?: (hostname: string) => Promise<Array<{ address: string }>>;
-  }): Promise<{ publicUrl: string }> {
+  }): Promise<{ publicUrl: string; mimeType?: string; sizeBytes?: number }> {
     const buf = await safeFetchAllowedVideoBuffer(params.resultVideoUrl, {
       strictR2Only: false,
       maxBytes: 150 * 1024 * 1024,
@@ -422,7 +429,7 @@ Never blend, average, cross-apply, or fuse their faces.`;
       params.ownerUserId,
       false // Private: owned by authenticated user
     );
-    return { publicUrl: stored.publicUrl };
+    return { publicUrl: stored.publicUrl, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes };
   }
 
   /**
@@ -463,13 +470,27 @@ Never blend, average, cross-apply, or fuse their faces.`;
       ownerUserId: params.ownerUserId
     });
 
+    const elapsedMs = Date.now() - startTime;
     return {
       success: true,
       resultUrl: stored.publicUrl,
       provider: this.providerName,
       adapter: this.adapterName,
       model: submitted.model,
-      processingTimeMs: Date.now() - startTime
+      processingTimeMs: elapsedMs,
+      diagnostics: {
+        provider: this.providerName,
+        adapter: this.adapterName,
+        model: submitted.model,
+        workflow: params.workflow || 'MOTION_TRANSFER',
+        customerInputCount: (params.imageUrls || []).length,
+        providerStatus: 'completed',
+        processingTimeMs: elapsedMs,
+        output: {
+          mimeType: stored.mimeType || 'video/mp4',
+          sizeBytes: stored.sizeBytes || 0
+        }
+      }
     };
   }
 }

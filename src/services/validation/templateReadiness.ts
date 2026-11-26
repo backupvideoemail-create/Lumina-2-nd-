@@ -297,18 +297,24 @@ export function validateTemplateReadiness(
   // 8. Required Generation Assets
   let requiredGenerationAssets = true;
   if (tpl.type === 'photo' && engine !== 'SMART_TEMPLATE') {
-    const resolvedPhotoRef =
+    const explicitAfterRef =
       tpl.sampleResult ||
       tpl.sampleAfter ||
       tpl.referenceImageUrl ||
       tpl.recipe?.sampleResult ||
       tpl.recipe?.sampleAfter ||
       tpl.recipe?.referenceImageUrl ||
-      tpl.recipe?.referenceAssets?.[0] ||
-      tpl.cover;
+      tpl.recipe?.referenceAssets?.[0];
+    const safeCoverFallback =
+      tpl.cover &&
+      tpl.cover !== tpl.sampleFaceThumbnail &&
+      tpl.cover !== tpl.sampleBefore
+        ? tpl.cover
+        : undefined;
+    const resolvedPhotoRef = explicitAfterRef || safeCoverFallback;
     if (!isNonEmptyMediaRef(resolvedPhotoRef)) {
       missingFields.push('sampleResult/referenceImageUrl');
-      errors.push('Photo template requires an AFTER sample result or reference image asset for generation.');
+      errors.push('Photo template requires a dedicated AFTER sample result or reference image asset (cannot substitute cover/face-thumbnail/before asset).');
       requiredGenerationAssets = false;
     }
   } else if (tpl.type === 'video') {

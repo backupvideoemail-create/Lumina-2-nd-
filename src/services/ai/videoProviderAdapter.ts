@@ -12,10 +12,24 @@
  * are missing, throws a clear Error so caller automatically initiates exact credit refund.
  */
 
+import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
-import { mediaStorage } from '../storage/mediaStorage.ts';
+import {
+  mediaStorage,
+  extractMediaFileIdFromRef,
+  detectMediaFormatFromBuffer
+} from '../storage/mediaStorage.ts';
 import type { VideoGenerationParams, ProviderResult } from '../types.ts';
+import type { GenerationDiagnosticInputItem } from '../../types/index.ts';
 import { resolveCanonicalModelId } from '../pricing/pricingService.ts';
+
+interface ResolvedVideoInputPayload {
+  data: string;
+  mimeType: string;
+  partType: 'image' | 'video';
+  sizeBytes: number;
+  sha256: string;
+}
 
 export class VideoProviderAdapter {
   readonly providerName = 'google_omni';
@@ -23,37 +37,60 @@ export class VideoProviderAdapter {
   readonly modelName = 'gemini-omni-1.2-flash';
 
   /**
-   * Helper to resolve starting image input into base64 bytes and mimeType.
+   * Resolves customer image or video input into base64 bytes, authoritative mimeType, and part type.
+   * Fails closed on missing /api/media/* files, HTML error pages, or 0-byte payloads.
    */
-  /**
-   * Helper to resolve starting image or video input into base64 bytes, normalized mimeType, and part type.
-   */
-  private async resolveMediaPayload(mediaInput: string, ownerUserId?: string): Promise<{ data: string; mimeType: string; partType: 'image' | 'video' }> {
-    const cleanMime = (raw?: string | null, fallback = 'image/jpeg') => {
-      const normalized = String(raw || fallback).split(';')[0].trim().toLowerCase();
+  public async resolveMediaPayload(
+    mediaInput: string,
+    ownerUserId?: string
+  ): Promise<ResolvedVideoInputPayload> {
+    const raw = String(mediaInput || '').trim();
+    if (!raw) {
+      throw new Error('EMPTY_MEDIA_INPUT: Media input is empty.');
+    }
+
+    const cleanMime = (mime?: string | null, fallback = 'image/jpeg') => {
+      const normalized = String(mime || fallback).split(';')[0].trim().toLowerCase();
       return normalized || fallback;
     };
 
-    if (mediaInput.startsWith('data:')) {
-      const match = mediaInput.match(/^data:([^;]+);base64,(.+)$/i);
-      if (match) {
-        const mimeType = cleanMime(match[1]);
-        return {
-          mimeType,
-          data: match[2],
-          partType: mimeType.startsWith('video/') ? 'video' : 'image'
-        };
+    const finalize = (buf: Buffer, hintMime?: string): ResolvedVideoInputPayload => {
+      if (!buf || buf.length === 0) {
+        throw new Error('EMPTY_MEDIA_BYTES: Resolved media contains 0 bytes.');
       }
+      const sniffed = detectMediaFormatFromBuffer(buf);
+      const mimeType = sniffed?.mimeType || cleanMime(hintMime, 'image/jpeg');
+      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+      return {
+        data: buf.toString('base64'),
+        mimeType,
+        partType: mimeType.startsWith('video/') ? 'video' : 'image',
+        sizeBytes: buf.length,
+        sha256
+      };
+    };
+
+    if (raw.startsWith('data:')) {
+      const match = raw.match(/^data:([^;]+);base64,(.+)$/is);
+      if (!match) {
+        throw new Error('INVALID_DATA_URI: Media data URI is malformed or missing base64 data.');
+      }
+      const buf = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+      return finalize(buf, match[1]);
     }
 
-    if (mediaInput.startsWith('/api/media/') && !mediaInput.startsWith('/api/media/signed/')) {
-      const fileId = mediaInput.split('?')[0].replace('/api/media/', '');
+    if (raw.startsWith('/api/media/')) {
+      const fileId = extractMediaFileIdFromRef(raw);
+      if (!fileId) {
+        throw new Error(`INVALID_MEDIA_REF: Could not extract media file ID from '${raw.split('?')[0]}'.`);
+      }
+      const isSigned = raw.startsWith('/api/media/signed/');
       const filePath = mediaStorage.getFilePath(fileId);
       if (filePath) {
         const fs = await import('fs');
         const buf = fs.readFileSync(filePath);
         const lower = fileId.toLowerCase();
-        const mimeType = lower.endsWith('.mp4')
+        const hint = lower.endsWith('.mp4')
           ? 'video/mp4'
           : lower.endsWith('.mov')
           ? 'video/quicktime'
@@ -64,14 +101,12 @@ export class VideoProviderAdapter {
           : lower.endsWith('.webp')
           ? 'image/webp'
           : 'image/jpeg';
-        return {
-          data: buf.toString('base64'),
-          mimeType,
-          partType: mimeType.startsWith('video/') ? 'video' : 'image'
-        };
+        return finalize(buf, hint);
       }
 
-      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, ownerUserId);
+      const streamRes = await mediaStorage.getAuthorizedObjectStream(fileId, ownerUserId, undefined, {
+        trustedSignedToken: isSigned
+      });
       if (streamRes.body) {
         const chunks: Buffer[] = [];
         if (typeof streamRes.body.transformToByteArray === 'function') {
@@ -82,31 +117,40 @@ export class VideoProviderAdapter {
           }
         }
         const buf = Buffer.concat(chunks);
-        const mimeType = cleanMime(streamRes.mimeType, 'image/jpeg');
-        return {
-          data: buf.toString('base64'),
-          mimeType,
-          partType: mimeType.startsWith('video/') ? 'video' : 'image'
-        };
+        return finalize(buf, streamRes.mimeType || 'image/jpeg');
       }
+
+      throw new Error(`MISSING_MEDIA_ASSET: Could not load stored media '${fileId}' from disk or R2 (${streamRes.error || streamRes.statusCode}).`);
     }
 
-    if (mediaInput.startsWith('http://') || mediaInput.startsWith('https://')) {
-      const res = await fetch(mediaInput);
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      const res = await fetch(raw, { signal: AbortSignal.timeout(45000) });
       if (!res.ok) {
-        throw new Error(`Failed to fetch source media for video from ${mediaInput}: HTTP ${res.status}`);
+        throw new Error(`Failed to fetch source media for video: HTTP ${res.status}`);
+      }
+      const contentType = cleanMime(res.headers.get('content-type'), 'image/jpeg');
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        throw new Error(`INVALID_MEDIA_RESPONSE: Expected media bytes from URL, received '${contentType}'.`);
       }
       const arrayBuffer = await res.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const mimeType = cleanMime(res.headers.get('content-type'), 'image/jpeg');
-      return {
-        data: buffer.toString('base64'),
-        mimeType,
-        partType: mimeType.startsWith('video/') ? 'video' : 'image'
-      };
+      const headText = buffer.subarray(0, 64).toString('utf8').trimStart().toLowerCase();
+      if (headText.startsWith('<!doctype') || headText.startsWith('<html')) {
+        throw new Error('INVALID_MEDIA_RESPONSE: Fetched URL returned an HTML document instead of media bytes.');
+      }
+      return finalize(buffer, contentType);
     }
 
-    return { data: mediaInput, mimeType: 'image/jpeg', partType: 'image/jpeg'.startsWith('video/') ? 'video' : 'image' };
+    if (raw.startsWith('/') || raw.startsWith('<')) {
+      throw new Error('UNSUPPORTED_MEDIA_INPUT: Unsupported video/image reference format.');
+    }
+
+    const compact = raw.replace(/\s+/g, '');
+    if (compact.length < 4 || !/^[A-Za-z0-9+/=]+$/.test(compact)) {
+      throw new Error('INVALID_BASE64_MEDIA: Input string is neither a valid media URL nor valid base64 data.');
+    }
+    const decoded = Buffer.from(compact, 'base64');
+    return finalize(decoded, 'image/jpeg');
   }
 
   private async fetchOutputVideoUri(uri: string, apiKey: string): Promise<Buffer | null> {
@@ -159,27 +203,65 @@ export class VideoProviderAdapter {
       }
     });
 
-    // Incorporate prompt directives with clear scene and motion instructions
-    const prompt = `Cinematic 9:16 Instagram Reels video: ${params.prompt}. Style: ${params.styleWorkflow || 'viral motion'}. Realistic fluid motion, studio lighting, vivid atmospheric smoke, 60fps aesthetic.`;
+    const structuredInputMeta = Array.isArray(params.inputMedia) ? params.inputMedia : [];
+    const rawInputs: string[] =
+      params.userImageUrls && params.userImageUrls.length > 0
+        ? params.userImageUrls
+        : (params.userImageUrl || params.sourceMediaUrl)
+        ? String(params.userImageUrl || params.sourceMediaUrl)
+            .split('|||')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [];
 
-    const inputParts: any[] = [];
+    if (rawInputs.length === 0) {
+      throw new Error('CUSTOMER_SOURCE_MEDIA_MISSING: At least one customer photo or source video is required for video generation.');
+    }
 
-    // Customer Image or Video is the primary identity starting frame (CUSTOMER_SOURCE_PHOTO / VIDEO)
-    const primaryIdentityMedia = params.userImageUrl || params.sourceMediaUrl;
-    if (primaryIdentityMedia) {
+    const resolvedInputs: Array<ResolvedVideoInputPayload & { slotId: string; role: string }> = [];
+    for (let i = 0; i < rawInputs.length; i++) {
+      const ref = rawInputs[i];
+      if (!ref) continue;
       try {
-        const mediaPayload = await this.resolveMediaPayload(primaryIdentityMedia, params.ownerUserId);
-        inputParts.push({
-          type: mediaPayload.partType,
-          data: mediaPayload.data,
-          mime_type: mediaPayload.mimeType
+        const mediaPayload = await this.resolveMediaPayload(ref, params.ownerUserId);
+        const meta = structuredInputMeta[i];
+        const slotId = meta?.slotId || (i === 0 ? 'partner_1' : i === 1 ? 'partner_2' : `slot_${i + 1}`);
+        const role =
+          meta?.role ||
+          (rawInputs.length >= 2
+            ? i === 0
+              ? 'CUSTOMER_SOURCE_PERSON_A'
+              : 'CUSTOMER_SOURCE_PERSON_B'
+            : mediaPayload.partType === 'video'
+            ? 'CUSTOMER_SOURCE_VIDEO'
+            : 'CUSTOMER_SOURCE_PHOTO');
+        resolvedInputs.push({
+          ...mediaPayload,
+          slotId,
+          role
         });
       } catch (err: any) {
-        throw new Error(`Starting frame resolution failed for customer media: ${err.message}`);
+        throw new Error(`Starting frame resolution failed for customer media ${i + 1}: ${err.message}`);
       }
     }
 
-    // Add text prompt
+    if (resolvedInputs.length === 0) {
+      throw new Error('CUSTOMER_SOURCE_MEDIA_MISSING: Resolved customer media list is empty.');
+    }
+
+    const isCoupleMode = resolvedInputs.length >= 2;
+    const roleGuidance = isCoupleMode
+      ? 'Keep Person A (input 1) and Person B (input 2) as two distinct recognizable people; never blend or merge their faces.'
+      : 'Use the customer input as the authoritative subject identity throughout the video.';
+
+    const prompt = `${params.prompt}\n\n${roleGuidance}\nTarget style: ${params.styleWorkflow || 'cinematic motion'}. Realistic fluid motion, studio lighting, 60fps aesthetic.`;
+
+    const inputParts: any[] = resolvedInputs.map((item) => ({
+      type: item.partType,
+      data: item.data,
+      mime_type: item.mimeType
+    }));
+
     inputParts.push({
       type: 'text',
       text: prompt
@@ -217,7 +299,6 @@ export class VideoProviderAdapter {
       } else if ((videoPart as any)?.uri) {
         videoBuffer = await this.fetchOutputVideoUri((videoPart as any).uri, apiKey);
       } else {
-        // Inspect steps for model_output video
         for (const step of (interaction.steps || []) as any[]) {
           if (step.type === 'model_output' && Array.isArray(step.content)) {
             const vContent = step.content.find((c: any) => c.type === 'video');
@@ -238,14 +319,31 @@ export class VideoProviderAdapter {
         );
       }
 
+      const outSha = crypto.createHash('sha256').update(videoBuffer).digest('hex');
+      if (resolvedInputs.some((i) => i.sha256 === outSha)) {
+        throw new Error('UNCHANGED_CUSTOMER_INPUT_OUTPUT: Video provider returned customer input unchanged.');
+      }
+
+      const outSniffed = detectMediaFormatFromBuffer(videoBuffer);
+      const outExt = outSniffed?.ext || 'mp4';
+
       // 2. Save actual video bytes to durable storage with owner isolation
       const stored = await mediaStorage.saveMedia(
         videoBuffer,
         'generation',
-        `omni_${Date.now()}.mp4`,
+        `omni_${Date.now()}.${outExt}`,
         params.ownerUserId,
         false
       );
+
+      const customerInputsDiag: GenerationDiagnosticInputItem[] = resolvedInputs.map((r) => ({
+        slotId: r.slotId,
+        role: r.role,
+        mediaType: r.partType,
+        mimeType: r.mimeType,
+        sizeBytes: r.sizeBytes,
+        sha256Prefix: r.sha256.slice(0, 16)
+      }));
 
       const rawSanitizedResponse = params.returnRawDiagnostics
         ? {
@@ -261,14 +359,30 @@ export class VideoProviderAdapter {
           }
         : undefined;
 
+      const elapsedMs = Date.now() - startTime;
       return {
         success: true,
         resultUrl: stored.publicUrl,
         provider: this.providerName,
         adapter: this.adapterName,
         model: targetModel,
-        processingTimeMs: Date.now() - startTime,
-        ...(rawSanitizedResponse ? { rawSanitizedResponse } : {})
+        processingTimeMs: elapsedMs,
+        ...(rawSanitizedResponse ? { rawSanitizedResponse } : {}),
+        diagnostics: {
+          provider: this.providerName,
+          adapter: this.adapterName,
+          model: targetModel,
+          workflow: params.styleWorkflow || 'IMAGE_TO_VIDEO',
+          customerInputCount: customerInputsDiag.length,
+          customerInputs: customerInputsDiag,
+          providerStatus: 'completed',
+          processingTimeMs: elapsedMs,
+          output: {
+            mimeType: stored.mimeType || outSniffed?.mimeType || 'video/mp4',
+            sizeBytes: stored.sizeBytes || videoBuffer.length,
+            sha256Prefix: outSha.slice(0, 16)
+          }
+        }
       };
     } catch (err: any) {
       console.error('[VideoProviderAdapter] Generation failed:', err.message);

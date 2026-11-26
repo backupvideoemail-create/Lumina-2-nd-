@@ -488,7 +488,11 @@ export class SmartCanvasAdapter {
 
     const resolvedAssets: ResolvedImageAsset[] = [];
     for (const input of validInputs.slice(0, 3)) {
-      resolvedAssets.push(await this.resolveInputImage(input, params.ownerUserId));
+      const resolved = await this.resolveInputImage(input, params.ownerUserId);
+      if (!resolved.buffer || resolved.buffer.length === 0) {
+        throw new Error('SMART_CANVAS_INPUT_EMPTY: Customer input image contains 0 bytes.');
+      }
+      resolvedAssets.push(resolved);
     }
 
     const { width, height } = inferCanvasDimensions(params.aspectRatio, params.resolution);
@@ -504,6 +508,14 @@ export class SmartCanvasAdapter {
 
     const wfLower = (params.workflow || '').trim().toLowerCase();
     const isVideoOutput = params.templateType === 'video' || wfLower === 'synthwave-grid-animation';
+    const customerInputsDiag = resolvedAssets.map((a, idx) => ({
+      slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`,
+      role: resolvedAssets.length >= 2 ? (idx === 0 ? 'CUSTOMER_SOURCE_PHOTO_PERSON_A' : 'CUSTOMER_SOURCE_PHOTO_PERSON_B') : 'CUSTOMER_SOURCE_PHOTO',
+      mediaType: 'image' as const,
+      mimeType: a.mimeType,
+      sizeBytes: a.buffer.length,
+      sha256Prefix: crypto.createHash('sha256').update(a.buffer).digest('hex').slice(0, 16)
+    }));
 
     if (isVideoOutput) {
       const mp4Buffer = await this.encodeVideoFromPosterPng(
@@ -519,13 +531,29 @@ export class SmartCanvasAdapter {
         params.ownerUserId,
         false
       );
+      const elapsedMs = Date.now() - startTime;
       return {
         success: true,
         resultUrl: stored.publicUrl,
         provider: this.providerName,
         adapter: this.adapterName,
         model: params.model || 'smart_canvas_ffmpeg',
-        processingTimeMs: Date.now() - startTime
+        processingTimeMs: elapsedMs,
+        diagnostics: {
+          provider: this.providerName,
+          adapter: this.adapterName,
+          model: params.model || 'smart_canvas_ffmpeg',
+          workflow: params.workflow,
+          customerInputCount: customerInputsDiag.length,
+          customerInputs: customerInputsDiag,
+          providerStatus: 'completed',
+          processingTimeMs: elapsedMs,
+          output: {
+            mimeType: stored.mimeType || 'video/mp4',
+            sizeBytes: stored.sizeBytes || mp4Buffer.length,
+            sha256Prefix: crypto.createHash('sha256').update(mp4Buffer).digest('hex').slice(0, 16)
+          }
+        }
       };
     }
 
@@ -537,13 +565,29 @@ export class SmartCanvasAdapter {
       false
     );
 
+    const elapsedMs = Date.now() - startTime;
     return {
       success: true,
       resultUrl: stored.publicUrl,
       provider: this.providerName,
       adapter: this.adapterName,
       model: params.model || 'smart_canvas',
-      processingTimeMs: Date.now() - startTime
+      processingTimeMs: elapsedMs,
+      diagnostics: {
+        provider: this.providerName,
+        adapter: this.adapterName,
+        model: params.model || 'smart_canvas',
+        workflow: params.workflow,
+        customerInputCount: customerInputsDiag.length,
+        customerInputs: customerInputsDiag,
+        providerStatus: 'completed',
+        processingTimeMs: elapsedMs,
+        output: {
+          mimeType: stored.mimeType || 'image/png',
+          sizeBytes: stored.sizeBytes || pngBuffer.length,
+          sha256Prefix: crypto.createHash('sha256').update(pngBuffer).digest('hex').slice(0, 16)
+        }
+      }
     };
   }
 }

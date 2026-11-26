@@ -33,7 +33,7 @@ const TINY_MP4_BUFFER = Buffer.from(
 
 async function runVerification() {
   const { ProductionDatabase, InMemoryFirestoreMock } = await import('../src/services/db/database.ts');
-  const { mediaStorage } = await import('../src/services/storage/mediaStorage.ts');
+  const { mediaStorage, createSignedMediaToken, extractMediaFileIdFromRef } = await import('../src/services/storage/mediaStorage.ts');
   const { app, __setServerTestDeps, reconcileAffectedGenerations } = await import('../server.ts');
 
   const fsMock = new InMemoryFirestoreMock();
@@ -720,6 +720,296 @@ async function runVerification() {
     assert(
       actRes.status === 200 && logsRes.status === 200 && sysRes.status === 200,
       `E.1 Preserved Admin Dashboard routes remain healthy (activity=${actRes.status}, logs=${logsRes.status}, system-health=${sysRes.status})`
+    );
+
+    console.log('\n=== SUITE F: GEMINI PHOTO IDENTITY BINDING & NO-BEFORE-LEAK REGRESSION ===');
+    const { geminiAdapter } = await import('../src/services/ai/geminiAdapter.ts');
+    const { buildUnifiedGenerationPrompt } = await import('../src/config/globalMasterPrompt.ts');
+
+    const CUST_PNG = `data:image/png;base64,${Buffer.from('CUSTOMER_FACE_BYTES_UNIQUE_001').toString('base64')}`;
+    const CUST_B_PNG = `data:image/png;base64,${Buffer.from('PARTNER_B_FACE_BYTES_UNIQUE_002').toString('base64')}`;
+    const AFTER_PNG = `data:image/png;base64,${Buffer.from('TEMPLATE_AFTER_STYLE_BYTES_003').toString('base64')}`;
+    const BEFORE_PNG = `data:image/png;base64,${Buffer.from('TEMPLATE_BEFORE_ADMIN_MODEL_004').toString('base64')}`;
+    const beforeB64 = Buffer.from('TEMPLATE_BEFORE_ADMIN_MODEL_004').toString('base64');
+
+    const unifiedPhotoPrompt = buildUnifiedGenerationPrompt({
+      outputType: 'photo',
+      templateTitle: 'Full Swag',
+      templateCategory: 'Trending',
+      categoryPrompt: 'Trending studio editorial look',
+      templateRecipePrompt: 'Studio editorial magazine portrait.',
+      hasAfterReference: true,
+      hasBeforeReference: true
+    });
+
+    const singleReq = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: unifiedPhotoPrompt,
+      userImageUrl: CUST_PNG,
+      sampleResultUrl: AFTER_PNG,
+      sampleBeforeUrl: BEFORE_PNG,
+      aspectRatio: '9:16'
+    });
+    const singleInlineParts = singleReq.parts.filter((p: any) => Boolean(p.inlineData));
+    const singleContainsBeforeBytes = singleReq.parts.some((p: any) => p.inlineData?.data === beforeB64);
+    assert(
+      singleInlineParts.length === 2 &&
+        !singleContainsBeforeBytes &&
+        String(singleReq.parts[0]?.text || '').includes('CUSTOMER_SOURCE_PHOTO') &&
+        singleReq.parts[1]?.inlineData?.data === Buffer.from('CUSTOMER_FACE_BYTES_UNIQUE_001').toString('base64') &&
+        String(singleReq.parts[2]?.text || '').includes('TEMPLATE_AFTER_REFERENCE') &&
+        singleReq.parts[3]?.inlineData?.data === Buffer.from('TEMPLATE_AFTER_STYLE_BYTES_003').toString('base64') &&
+        String(singleReq.parts[4]?.text || '').includes('FINAL EXECUTION DIRECTIVE') &&
+        String(singleReq.parts[4]?.text || '').includes('Completely replace the template model'),
+      `F.1 Single-photo payload labels CUSTOMER_SOURCE_PHOTO first, TEMPLATE_AFTER_REFERENCE second, omits competing sampleBeforeUrl image (inline=${singleInlineParts.length}), and mandates replacing template model face`
+    );
+
+    const coupleReq = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: unifiedPhotoPrompt,
+      userImageUrl: `${CUST_PNG}|||${CUST_B_PNG}`,
+      userImageUrls: [CUST_PNG, CUST_B_PNG],
+      sampleResultUrl: AFTER_PNG,
+      sampleBeforeUrl: BEFORE_PNG,
+      aspectRatio: '9:16'
+    });
+    const coupleInlineParts = coupleReq.parts.filter((p: any) => Boolean(p.inlineData));
+    const coupleFinalText = String(coupleReq.parts[coupleReq.parts.length - 1]?.text || '');
+    assert(
+      coupleInlineParts.length === 3 &&
+        String(coupleReq.parts[0]?.text || '').includes('Person A') &&
+        String(coupleReq.parts[2]?.text || '').includes('Person B') &&
+        String(coupleReq.parts[4]?.text || '').includes('TEMPLATE_AFTER_REFERENCE') &&
+        coupleFinalText.includes('NEVER blend, average, or cross-fuse') &&
+        !coupleReq.parts.some((p: any) => p.inlineData?.data === beforeB64),
+      `F.2 Couple-photo payload labels Person A, Person B, and TEMPLATE_AFTER_REFERENCE separately (inline=${coupleInlineParts.length}) without before-model leak`
+    );
+
+    let emptyCustomerFailed = false;
+    try {
+      await geminiAdapter.buildMultimodalRequestParts({
+        prompt: unifiedPhotoPrompt,
+        userImageUrl: '',
+        sampleResultUrl: AFTER_PNG,
+        aspectRatio: '9:16'
+      });
+    } catch (e: any) {
+      emptyCustomerFailed = String(e?.message || '').includes('CUSTOMER_SOURCE_PHOTO is required');
+    }
+    assert(emptyCustomerFailed, 'F.3 Empty customer input fails closed before invoking Gemini');
+
+    console.log('\n=== SUITE G: P0 MAGIC-BYTE MIME, FAIL-CLOSED ADAPTERS, ROLE SEPARATION & DIAGNOSTICS ===');
+    // G.1 Raw-base64 PNG bytes saved with mismatched .jpg filename hint must persist as .png / image/png
+    const real1x1PngBuf = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64'
+    );
+    const mismatchSaved = await mediaStorage.saveMedia(
+      real1x1PngBuf.toString('base64'),
+      'generation',
+      `gemini_mismatch_${Date.now()}.jpg`,
+      sessA.user.id,
+      false
+    );
+    if (mismatchSaved.filePath) savedFilesToCleanup.push(mismatchSaved.filePath);
+    assert(
+      mismatchSaved.fileId.endsWith('.png') &&
+        mismatchSaved.mimeType === 'image/png' &&
+        mismatchSaved.sizeBytes === real1x1PngBuf.length,
+      `G.1 Raw-base64 PNG payload auto-corrected from .jpg hint to ${mismatchSaved.fileId} (${mismatchSaved.mimeType}, ${mismatchSaved.sizeBytes}B)`
+    );
+
+    // G.2 geminiAdapter fails closed on missing /api/media/* and 0-byte data URI + tracks prohibited sampleBefore/faceThumb hashes without leaking into parts
+    let missingMediaRejected = false;
+    try {
+      await geminiAdapter.buildMultimodalRequestParts({
+        prompt: unifiedPhotoPrompt,
+        userImageUrl: '/api/media/user_nonexistent_test_999.png',
+        sampleResultUrl: AFTER_PNG,
+        aspectRatio: '9:16'
+      });
+    } catch (e: any) {
+      missingMediaRejected = String(e?.message || '').includes('MISSING_MEDIA_ASSET');
+    }
+    let zeroByteInputRejected = false;
+    try {
+      await geminiAdapter.buildMultimodalRequestParts({
+        prompt: unifiedPhotoPrompt,
+        userImageUrl: 'data:image/png;base64,',
+        sampleResultUrl: AFTER_PNG,
+        aspectRatio: '9:16'
+      });
+    } catch (e: any) {
+      zeroByteInputRejected =
+        String(e?.message || '').includes('INVALID_DATA_URI') ||
+        String(e?.message || '').includes('EMPTY_IMAGE_BYTES');
+    }
+    const FACE_THUMB_PNG = `data:image/png;base64,${Buffer.from('TEMPLATE_FACE_THUMB_ADMIN_ONLY_005').toString('base64')}`;
+    const faceThumbB64 = Buffer.from('TEMPLATE_FACE_THUMB_ADMIN_ONLY_005').toString('base64');
+    const guardedReq = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: unifiedPhotoPrompt,
+      userImageUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+      sampleResultUrl: AFTER_PNG,
+      sampleBeforeUrl: BEFORE_PNG,
+      sampleFaceThumbnailUrl: FACE_THUMB_PNG,
+      aspectRatio: '9:16'
+    });
+    const containsFaceThumb = guardedReq.parts.some((p: any) => p.inlineData?.data === faceThumbB64);
+    const hasScreenshotAndSunglassesGuards =
+      String(guardedReq.parts[0]?.text || '').includes('PiP') &&
+      String(guardedReq.parts[2]?.text || '').includes('dark sunglasses') &&
+      String(guardedReq.parts[4]?.text || '').includes('unobstructed');
+    assert(
+      missingMediaRejected &&
+        zeroByteInputRejected &&
+        !containsFaceThumb &&
+        guardedReq.prohibitedSampleSha256s.length === 2 &&
+        hasScreenshotAndSunglassesGuards,
+      `G.2 geminiAdapter fails closed on missing/empty inputs, excludes sampleFaceThumbnail from parts[], tracks ${guardedReq.prohibitedSampleSha256s.length} anti-leak sample hashes, and includes screenshot/sunglasses identity guards`
+    );
+
+    // G.3 videoProviderAdapter resolves signed /api/media/signed/* tokens cleanly & rejects missing media
+    const { videoProviderAdapter } = await import('../src/services/ai/videoProviderAdapter.ts');
+    const signedVidToken = createSignedMediaToken(savedVideo.fileId, 600, sessA.user.id);
+    const resolvedSignedVid = await videoProviderAdapter.resolveMediaPayload(
+      `/api/media/signed/${signedVidToken}`,
+      sessA.user.id
+    );
+    let missingVideoRejected = false;
+    try {
+      await videoProviderAdapter.resolveMediaPayload('/api/media/user_missing_vid_999.mp4', sessA.user.id);
+    } catch (e: any) {
+      missingVideoRejected = String(e?.message || '').includes('MISSING_MEDIA_ASSET');
+    }
+    assert(
+      resolvedSignedVid.partType === 'video' &&
+        resolvedSignedVid.sizeBytes > 0 &&
+        missingVideoRejected,
+      `G.3 videoProviderAdapter resolves signed /api/media/signed/* (${resolvedSignedVid.sizeBytes}B) and fails closed on missing files`
+    );
+
+    // G.4 Role-collision protection: photo template with cover === sampleFaceThumbnail & no sampleResult -> NEEDS_SETUP
+    const { validateTemplateReadiness: validateReadinessG4 } = await import('../src/services/validation/templateReadiness.ts');
+    const collidingTplCheck = validateReadinessG4({
+      id: 'tpl_role_collision_test',
+      title: 'Role Collision Photo',
+      type: 'photo',
+      category: 'Trending',
+      engine: 'AI_GENERATION',
+      provider: 'gemini',
+      adapter: 'geminiAdapter',
+      model: 'gemini-3.1-flash-lite-image',
+      workflow: 'PHOTO_GENERATION',
+      aspectRatio: '9:16',
+      cover: '/api/media/tpl_face_admin_only.png',
+      preview: '/api/media/tpl_face_admin_only.png',
+      sampleFaceThumbnail: '/api/media/tpl_face_admin_only.png',
+      requiredInputs: [{ id: 'slot_1', label: 'Photo', type: 'image' }],
+      recipe: {
+        version: '1.0',
+        inputType: 'IMAGE_ONLY',
+        provider: 'gemini',
+        model: 'gemini-3.1-flash-lite-image',
+        engine: 'AI_GENERATION',
+        workflow: 'PHOTO_GENERATION',
+        prompt: 'Place customer in dark studio aesthetic.',
+        aspectRatio: '9:16'
+      }
+    });
+    assert(
+      !collidingTplCheck.ready &&
+        collidingTplCheck.status === 'DRAFT_INCOMPLETE' &&
+        collidingTplCheck.missingFields.includes('sampleResult/referenceImageUrl'),
+      `G.4 Role-collision guard blocks template where cover === sampleFaceThumbnail without explicit AFTER reference (missing=${collidingTplCheck.missingFields.join(',')})`
+    );
+
+    // G.5 Couple Smart Canvas E2E generation persists redacted GenerationPipelineDiagnostics (no base64/tokens/keys)
+    const coupleSmartRes = await fetch(`${baseUrl}/api/admin/templates`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessAdmin.token}`
+      },
+      body: JSON.stringify({
+        id: 'tpl_couple_diag_test',
+        title: 'Couple Diagnostics Test',
+        type: 'photo',
+        category: 'Couple',
+        isCouple: true,
+        isActive: true,
+        engine: 'SMART_TEMPLATE',
+        provider: 'smart_template',
+        adapter: 'smartCanvas',
+        model: 'smart_canvas_ffmpeg',
+        workflow: 'retro-polaroid-warm',
+        aspectRatio: '9:16',
+        creditCost: 10,
+        mediaBase64: TINY_PNG_BASE64,
+        coverBase64: TINY_PNG_BASE64,
+        sampleResultBase64: TINY_PNG_BASE64,
+        requiredInputs: [
+          { id: 'partner_1', slotId: 'partner_1', role: 'person_a', label: 'Person A', type: 'image' },
+          { id: 'partner_2', slotId: 'partner_2', role: 'person_b', label: 'Person B', type: 'image' }
+        ],
+        recipe: {
+          version: '1.0',
+          inputType: 'IMAGE_ONLY',
+          provider: 'smart_template',
+          adapter: 'smartCanvas',
+          model: 'smart_canvas_ffmpeg',
+          engine: 'SMART_TEMPLATE',
+          workflow: 'retro-polaroid-warm',
+          prompt: 'Couple retro polaroid frame.',
+          aspectRatio: '9:16'
+        }
+      })
+    });
+    const coupleSmartJson = await coupleSmartRes.json();
+    const coupleTplId = coupleSmartJson.template?.id || 'tpl_couple_diag_test';
+    assert(coupleSmartRes.status === 201 || coupleSmartRes.status === 200, `G.5a Couple test template created (${coupleSmartRes.status})`);
+    const coupleVerifyRes = await fetch(`${baseUrl}/api/admin/templates/${coupleTplId}/verify-test`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessAdmin.token}`
+      },
+      body: JSON.stringify({ inputMediaUrl: TINY_PNG_BASE64 })
+    });
+    assert(coupleVerifyRes.status === 200, `G.5b Couple Smart template verified (${coupleVerifyRes.status})`);
+
+    const coupleGenRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessA.token}`,
+        'x-correlation-id': 'req_couple_diag_check_001'
+      },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        inputMediaUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}|||data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+        inputMedia: [
+          { slotId: 'partner_1', role: 'person_a', type: 'image', media: `data:image/png;base64,${real1x1PngBuf.toString('base64')}` },
+          { slotId: 'partner_2', role: 'person_b', type: 'image', media: `data:image/png;base64,${real1x1PngBuf.toString('base64')}` }
+        ]
+      })
+    });
+    const coupleGenJson = await coupleGenRes.json();
+    const diag = coupleGenJson.generation?.pipelineDiagnostics;
+    const diagSerialized = JSON.stringify(diag || {});
+    if (coupleGenJson.generation?.resultMediaUrl) {
+      const outId = extractMediaFileIdFromRef(coupleGenJson.generation.resultMediaUrl);
+      const fp = mediaStorage.getFilePath(outId);
+      if (fp) savedFilesToCleanup.push(fp);
+    }
+    assert(
+      coupleGenRes.status === 200 &&
+        diag?.correlationId === 'req_couple_diag_check_001' &&
+        diag?.customerInputCount === 2 &&
+        diag?.customerInputs?.[0]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
+        diag?.customerInputs?.[1]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B' &&
+        diag?.storageVerification?.verified === true &&
+        !diagSerialized.includes('data:image') &&
+        !diagSerialized.includes('token=') &&
+        !diagSerialized.includes('AIza'),
+      `G.5c Couple generation persisted redacted diagnostics (count=${diag?.customerInputCount}, roles=${diag?.customerInputs?.map((i: any) => i.role).join('+')}, verified=${diag?.storageVerification?.verified})`
     );
   } finally {
     __setServerTestDeps();

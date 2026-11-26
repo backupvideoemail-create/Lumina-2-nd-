@@ -23,7 +23,7 @@ const CreationMediaThumbnail: React.FC<{
   gen: Generation;
   isProcessing: boolean;
 }> = ({ gen, isProcessing }) => {
-  const rawUrl = gen.resultMediaUrl || gen.inputMediaUrl;
+  const rawUrl = gen.resultMediaUrl || (isProcessing ? gen.inputMediaUrl : '');
   const { resolvedUrl, mimeType, loading, error, refresh, handleMediaLoadError } = useAuthorizedMedia(rawUrl, {
     isActive: Boolean(rawUrl)
   });
@@ -155,7 +155,7 @@ export const CreationsView: React.FC = () => {
 
   const handleDownload = async (e: React.MouseEvent, gen: Generation) => {
     e.stopPropagation();
-    const url = gen.resultMediaUrl || gen.inputMediaUrl;
+    const url = gen.resultMediaUrl || '';
     if (!url || downloadingId === gen.id) return;
     setActionError(null);
     setDownloadingId(gen.id);

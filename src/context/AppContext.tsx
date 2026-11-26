@@ -41,7 +41,24 @@ import {
 import { isSubscriptionEntitled } from '../utils/subscriptionEntitlement';
 
 export type PendingAction =
-  | { type: 'generate'; templateId: string; inputMediaUrl: string; customPrompt?: string }
+  | {
+      type: 'generate';
+      templateId: string;
+      inputMediaUrl: string;
+      customPrompt?: string;
+      mediaDetails?: {
+        inputMediaUrls?: string[];
+        inputMedia?: Array<{ slotId: string; role?: string; type: string; media: string }>;
+      };
+      options?: {
+        resolution?: string;
+        durationSeconds?: number;
+        model?: string;
+        wardrobeSource?: string;
+        wardrobeSourceA?: string;
+        wardrobeSourceB?: string;
+      };
+    }
   | { type: 'buy_plan'; planId?: string }
   | {
       type: 'faceswap';
@@ -110,7 +127,7 @@ interface AppContextType {
     customPrompt?: string,
     mediaDetails?: {
       inputMediaUrls?: string[];
-      inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+      inputMedia?: Array<{ slotId: string; role?: string; type: string; media: string }>;
     },
     options?: {
       resolution?: string;
@@ -1063,7 +1080,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (tpl) {
           setSelectedTemplate(tpl);
           if (activePendingAction.inputMediaUrl) {
-            createGeneration(activePendingAction.templateId, activePendingAction.inputMediaUrl, activePendingAction.customPrompt);
+            createGeneration(
+              activePendingAction.templateId,
+              activePendingAction.inputMediaUrl,
+              activePendingAction.customPrompt,
+              activePendingAction.mediaDetails,
+              activePendingAction.options
+            );
           }
         }
       } else if (activePendingAction.type === 'buy_plan') {
@@ -1164,7 +1187,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customPrompt?: string,
     mediaDetails?: {
       inputMediaUrls?: string[];
-      inputMedia?: Array<{ slotId: string; type: string; media: string }>;
+      inputMedia?: Array<{ slotId: string; role?: string; type: string; media: string }>;
     },
     options?: {
       resolution?: string;
@@ -1176,7 +1199,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   ): Promise<GenerationResult> => {
     if (!user) {
-      setPendingAction({ type: 'generate', templateId, inputMediaUrl, customPrompt });
+      setPendingAction({
+        type: 'generate',
+        templateId,
+        inputMediaUrl,
+        customPrompt,
+        mediaDetails,
+        options
+      });
       setAuthModalOpen(true);
       return { success: false, error: 'Authentication required' };
     }

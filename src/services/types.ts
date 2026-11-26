@@ -1,13 +1,16 @@
 // Common Provider-Agnostic Interfaces
+import type { GenerationPipelineDiagnostics } from '../types/index.ts';
 
 export interface ImageGenerationParams {
   prompt: string;
   sourceImageUrl?: string;
   userImageUrl?: string;
   userImageUrls?: string[];
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
+  sampleFaceThumbnailUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   provider?: string;
   adapter?: string;
@@ -22,9 +25,11 @@ export interface VideoGenerationParams {
   sourceMediaUrl?: string;
   userImageUrl?: string;
   userImageUrls?: string[];
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
+  sampleFaceThumbnailUrl?: string;
   aspectRatio?: '9:16' | '4:5' | '1:1' | '16:9';
   resolution?: '480p' | '720p' | '1080p';
   durationSeconds?: number;
@@ -54,7 +59,7 @@ export interface FaceSwapParams {
   workflow?: string;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
-  inputMedia?: Array<{ slotId?: string; type?: string; media?: string; mediaUrl?: string }>;
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
 }
 
 export interface TemplateProcessParams {
@@ -64,7 +69,7 @@ export interface TemplateProcessParams {
   engine: 'SMART_TEMPLATE' | 'AI_GENERATION';
   inputMediaUrl: string;
   inputMediaUrls?: string[];
-  inputMedia?: Array<{ slotId?: string; type?: string; media?: string; mediaUrl?: string }>;
+  inputMedia?: Array<{ slotId?: string; role?: string; type?: string; media?: string; mediaUrl?: string }>;
   referenceImageUrl?: string;
   sampleBeforeUrl?: string;
   sampleResultUrl?: string;
@@ -95,6 +100,7 @@ export interface ProviderResult {
   model: string;
   processingTimeMs: number;
   rawSanitizedResponse?: Record<string, any>;
+  diagnostics?: Partial<GenerationPipelineDiagnostics>;
   error?: string;
 }
 

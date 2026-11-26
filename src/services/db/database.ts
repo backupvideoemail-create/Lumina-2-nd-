@@ -897,14 +897,69 @@ export class ProductionDatabase {
   public async loadAuthoritativeFromFirestore(): Promise<void> {
     if (!adminFirestoreDb) return;
     try {
+      const tombstonePromise = adminFirestoreDb
+        .collection('config')
+        .doc('deleted_template_ids')
+        .get()
+        .then((doc: any) => ({ ok: true as const, doc }))
+        .catch((delErr: any) => {
+          console.error('[Database Critical] Failed to fetch authoritative deleted template tombstones from Firestore during startup:', delErr.message);
+          return { ok: false as const, doc: null };
+        });
+
+      const optionalGet = <T = any>(promise: Promise<T>): Promise<T | null> =>
+        promise.catch(() => null);
+
+      const [
+        walletsSnap,
+        usersSnap,
+        authSnap,
+        grantsSnap,
+        txSnap,
+        genSnap,
+        subsSnap,
+        paySnap,
+        webhooksSnap,
+        likesSnap,
+        tombstoneResult,
+        tplSnap,
+        bannerDoc,
+        demoDoc,
+        scenesDoc,
+        promptsDoc,
+        pricingBannerDoc,
+        gateDoc,
+        logsSnap,
+        metaDoc
+      ] = await Promise.all([
+        adminFirestoreDb.collection('wallets').get(),
+        adminFirestoreDb.collection('users').get(),
+        adminFirestoreDb.collection('auth_identities').get(),
+        adminFirestoreDb.collection('credit_grants').get(),
+        adminFirestoreDb.collection('transactions').get(),
+        adminFirestoreDb.collection('generations').get(),
+        adminFirestoreDb.collection('subscriptions').get(),
+        adminFirestoreDb.collection('payments').get(),
+        adminFirestoreDb.collection('processed_webhooks').get(),
+        adminFirestoreDb.collection('user_likes').get(),
+        tombstonePromise,
+        adminFirestoreDb.collection('templates').get(),
+        optionalGet(adminFirestoreDb.collection('config').doc('banners').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('faceswap_demo').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('faceswap_scenes').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('category_prompts').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('pricing_banner').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('generation_gate').get()),
+        optionalGet(adminFirestoreDb.collection('admin_logs').get()),
+        optionalGet(adminFirestoreDb.collection('config').doc('catalog_metadata').get())
+      ]);
+
       // 1. Wallets
-      const walletsSnap = await adminFirestoreDb.collection('wallets').get();
       walletsSnap.forEach((d: any) => {
         this.db.wallets[d.id] = d.data();
       });
 
       // 2. Users (Server Authoritative Admin Role Assignment for Allowlisted Emails)
-      const usersSnap = await adminFirestoreDb.collection('users').get();
       usersSnap.forEach((d: any) => {
         const u = d.data() as UserProfile;
         if (u && isAuthorizedAdminEmail(u.email)) {
@@ -914,13 +969,11 @@ export class ProductionDatabase {
       });
 
       // 3. Auth Identities (Server Authoritative)
-      const authSnap = await adminFirestoreDb.collection('auth_identities').get();
       authSnap.forEach((d: any) => {
         this.db.authIdentities[d.id] = d.data();
       });
 
       // 4. Credit Grants (FIFO Expiry Ledger)
-      const grantsSnap = await adminFirestoreDb.collection('credit_grants').get();
       if (!grantsSnap.empty) {
         const grants: CreditGrant[] = [];
         grantsSnap.forEach((d: any) => {
@@ -930,7 +983,6 @@ export class ProductionDatabase {
       }
 
       // 5. Transactions
-      const txSnap = await adminFirestoreDb.collection('transactions').get();
       if (!txSnap.empty) {
         const txs: CreditTransaction[] = [];
         txSnap.forEach((d: any) => {
@@ -940,7 +992,6 @@ export class ProductionDatabase {
       }
 
       // 6. Generations & Jobs
-      const genSnap = await adminFirestoreDb.collection('generations').get();
       if (!genSnap.empty) {
         const gens: Generation[] = [];
         genSnap.forEach((d: any) => {
@@ -950,19 +1001,16 @@ export class ProductionDatabase {
       }
 
       // 7. Subscriptions
-      const subsSnap = await adminFirestoreDb.collection('subscriptions').get();
       subsSnap.forEach((d: any) => {
         this.db.subscriptions[d.id] = d.data();
       });
 
       // 8. Payments
-      const paySnap = await adminFirestoreDb.collection('payments').get();
       paySnap.forEach((d: any) => {
         this.db.payments[d.id] = d.data();
       });
 
       // 9. Processed Webhook Events (Idempotency Ledger)
-      const webhooksSnap = await adminFirestoreDb.collection('processed_webhooks').get();
       const webhookEvents: string[] = [];
       webhooksSnap.forEach((d: any) => {
         webhookEvents.push(d.id);
@@ -972,29 +1020,24 @@ export class ProductionDatabase {
       }
 
       // 10. User Likes
-      const likesSnap = await adminFirestoreDb.collection('user_likes').get();
       likesSnap.forEach((d: any) => {
         this.db.userLikes[d.id] = d.data()?.templateIds || [];
       });
 
       // 11. Templates (Authoritative sync with tombstone filtering)
-      // 11a. Fetch deleted_template_ids doc from Firestore first
       let tombstoneFetchSuccess = false;
-      try {
-        const deletedDoc = await adminFirestoreDb.collection('config').doc('deleted_template_ids').get();
+      if (tombstoneResult.ok && tombstoneResult.doc) {
+        const deletedDoc = tombstoneResult.doc;
         if (deletedDoc.exists && Array.isArray(deletedDoc.data()?.ids)) {
           this.db.deletedTemplateIds = [...deletedDoc.data()!.ids];
         } else {
           this.db.deletedTemplateIds = [];
         }
         tombstoneFetchSuccess = true;
-      } catch (delErr: any) {
-        console.error('[Database Critical] Failed to fetch authoritative deleted template tombstones from Firestore during startup:', delErr.message);
       }
 
       if (tombstoneFetchSuccess) {
         const deletedIds = new Set(this.db.deletedTemplateIds || []);
-        const tplSnap = await adminFirestoreDb.collection('templates').get();
         this.rawFirestoreTemplatesCount = tplSnap.size;
         const firestoreTemplates: Template[] = [];
         if (!tplSnap.empty) {
@@ -1040,74 +1083,57 @@ export class ProductionDatabase {
       // Orphan recovery is strictly run manually via Admin "Scan & Recover R2" to prevent resurrecting deleted templates.
 
       // 12. App Config (Banners, Demo Video, Face Swap Scenes)
-      try {
-        const bannerDoc = await adminFirestoreDb.collection('config').doc('banners').get();
-        if (bannerDoc.exists && bannerDoc.data()?.banners) {
-          this.db.banners = bannerDoc.data().banners;
-        }
-        const demoDoc = await adminFirestoreDb.collection('config').doc('faceswap_demo').get();
-        if (demoDoc.exists && demoDoc.data()?.demoVideoUrl) {
-          this.db.faceSwapDemoVideoUrl = demoDoc.data().demoVideoUrl;
-        }
-        const scenesDoc = await adminFirestoreDb.collection('config').doc('faceswap_scenes').get();
-        if (scenesDoc.exists && scenesDoc.data()?.scenes) {
-          const firestoreScenes: FaceSwapScene[] = scenesDoc.data().scenes;
-          const sceneMap = new Map<string, FaceSwapScene>();
-          SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
-          (this.db.faceSwapScenes || []).forEach(s => sceneMap.set(s.id, s));
-          firestoreScenes.forEach(s => sceneMap.set(s.id, s));
-          const syncedScenes = Array.from(sceneMap.values()).map(s => {
-            if (s.id === 'fsv_trending_dance_stage' && s.title === 'Viral Instagram Dance Sequence') {
-              return { ...s, title: 'Viral Instagram Reels Sequence' };
-            }
-            return s;
-          });
-          this.db.faceSwapScenes = syncedScenes;
-        }
-
-        const promptsDoc = await adminFirestoreDb.collection('config').doc('category_prompts').get();
-        if (promptsDoc.exists && promptsDoc.data()?.prompts) {
-          this.db.categoryPrompts = {
-            ...DEFAULT_CATEGORY_PROMPTS,
-            ...promptsDoc.data().prompts
-          };
-        }
-        const pricingBannerDoc = await adminFirestoreDb.collection('config').doc('pricing_banner').get();
-        if (pricingBannerDoc.exists && pricingBannerDoc.data()) {
-          this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
-        }
-        const gateDoc = await adminFirestoreDb.collection('config').doc('generation_gate').get();
-        if (gateDoc.exists && gateDoc.data()) {
-          const gd = gateDoc.data() as Partial<CustomerGenerationGateConfig>;
-          this.db.generationGate = {
-            customerGenerationPaused: gd.customerGenerationPaused !== undefined ? Boolean(gd.customerGenerationPaused) : false,
-            reason: gd.reason || (gd.customerGenerationPaused ? 'Temporary maintenance: Paid customer generations are paused.' : 'Customer generation is active.'),
-            updatedAt: gd.updatedAt || new Date().toISOString(),
-            updatedBy: gd.updatedBy
-          };
-        }
-
-        // 13. Admin Activity Logs
-        try {
-          const logsSnap = await adminFirestoreDb.collection('admin_logs').get();
-          if (!logsSnap.empty) {
-            const loadedLogs: AdminActivityLog[] = [];
-            logsSnap.forEach((d: any) => {
-              loadedLogs.push(d.data() as AdminActivityLog);
-            });
-            this.db.adminLogs = loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      if (bannerDoc?.exists && bannerDoc.data()?.banners) {
+        this.db.banners = bannerDoc.data().banners;
+      }
+      if (demoDoc?.exists && demoDoc.data()?.demoVideoUrl) {
+        this.db.faceSwapDemoVideoUrl = demoDoc.data().demoVideoUrl;
+      }
+      if (scenesDoc?.exists && scenesDoc.data()?.scenes) {
+        const firestoreScenes: FaceSwapScene[] = scenesDoc.data().scenes;
+        const sceneMap = new Map<string, FaceSwapScene>();
+        SEED_FACE_SWAP_SCENES.forEach(s => sceneMap.set(s.id, { ...s, isActive: true, status: 'published' }));
+        (this.db.faceSwapScenes || []).forEach(s => sceneMap.set(s.id, s));
+        firestoreScenes.forEach(s => sceneMap.set(s.id, s));
+        const syncedScenes = Array.from(sceneMap.values()).map(s => {
+          if (s.id === 'fsv_trending_dance_stage' && s.title === 'Viral Instagram Dance Sequence') {
+            return { ...s, title: 'Viral Instagram Reels Sequence' };
           }
-        } catch {}
+          return s;
+        });
+        this.db.faceSwapScenes = syncedScenes;
+      }
+      if (promptsDoc?.exists && promptsDoc.data()?.prompts) {
+        this.db.categoryPrompts = {
+          ...DEFAULT_CATEGORY_PROMPTS,
+          ...promptsDoc.data().prompts
+        };
+      }
+      if (pricingBannerDoc?.exists && pricingBannerDoc.data()) {
+        this.db.pricingBanner = pricingBannerDoc.data() as PricingBannerConfig;
+      }
+      if (gateDoc?.exists && gateDoc.data()) {
+        const gd = gateDoc.data() as Partial<CustomerGenerationGateConfig>;
+        this.db.generationGate = {
+          customerGenerationPaused: gd.customerGenerationPaused !== undefined ? Boolean(gd.customerGenerationPaused) : false,
+          reason: gd.reason || (gd.customerGenerationPaused ? 'Temporary maintenance: Paid customer generations are paused.' : 'Customer generation is active.'),
+          updatedAt: gd.updatedAt || new Date().toISOString(),
+          updatedBy: gd.updatedBy
+        };
+      }
 
-        // 14. Hydrate Catalog Metadata Revision on startup
-        try {
-          const metaDoc = await adminFirestoreDb.collection('config').doc('catalog_metadata').get();
-          if (metaDoc.exists && typeof metaDoc.data()?.revision === 'number') {
-            this.catalogRevision = metaDoc.data()!.revision;
-          }
-        } catch {}
-      } catch {
-        // config docs optional
+      // 13. Admin Activity Logs
+      if (logsSnap && !logsSnap.empty) {
+        const loadedLogs: AdminActivityLog[] = [];
+        logsSnap.forEach((d: any) => {
+          loadedLogs.push(d.data() as AdminActivityLog);
+        });
+        this.db.adminLogs = loadedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      }
+
+      // 14. Hydrate Catalog Metadata Revision on startup
+      if (metaDoc?.exists && typeof metaDoc.data()?.revision === 'number') {
+        this.catalogRevision = metaDoc.data()!.revision;
       }
 
       if (!isIsolatedTestEnv) {

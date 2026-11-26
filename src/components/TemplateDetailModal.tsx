@@ -617,6 +617,10 @@ export const TemplateDetailModal: React.FC = () => {
     if (!activePickingSlot) return;
 
     setUploadError(null);
+    if (!file || file.size <= 0) {
+      setUploadError('Selected file is empty (0 bytes). Please choose a valid photo or video.');
+      return;
+    }
     const MAX_SIZE = 40 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       setUploadError('File size exceeds 40MB limit. Please upload a smaller file.');
@@ -633,12 +637,17 @@ export const TemplateDetailModal: React.FC = () => {
       return;
     }
 
+    const slotTargetId = activePickingSlot.id;
     const reader = new FileReader();
     reader.onload = (e) => {
       const result = e.target?.result as string;
+      if (!result || typeof result !== 'string' || !result.startsWith('data:')) {
+        setUploadError('Uploaded file could not be read cleanly. Please choose a valid photo or video.');
+        return;
+      }
       setInputSlots((prev) => ({
         ...prev,
-        [activePickingSlot.id]: result
+        [slotTargetId]: result
       }));
     };
     reader.onerror = () => {
@@ -660,17 +669,27 @@ export const TemplateDetailModal: React.FC = () => {
     // Pack media: send both delimited string (for legacy backends) and structured array
     const slotValues = requiredSlots.map((s) => inputSlots[s.id]).filter(Boolean);
     const combinedPayload = slotValues.join('|||');
+    const isCoupleTemplate = tpl.category === 'Couple' || Boolean((tpl as any).isCouple);
     const structuredMedia = {
       inputMediaUrls: slotValues,
-      inputMedia: requiredSlots.map((s) => ({
-        slotId: s.id,
-        type: s.type,
-        media: inputSlots[s.id] || ''
-      })).filter((m) => Boolean(m.media))
+      inputMedia: requiredSlots.map((s, idx) => {
+        const inferredRole = (s as any).role || (
+          isCoupleTemplate
+            ? (s.id === 'partner_1' || s.id === 'slot_1' || idx === 0 ? 'person_a' : 'person_b')
+            : s.type === 'video'
+            ? 'user_video'
+            : 'user_photo'
+        );
+        return {
+          slotId: s.id,
+          role: inferredRole,
+          type: s.type,
+          media: inputSlots[s.id] || ''
+        };
+      }).filter((m) => Boolean(m.media))
     };
 
     let finalPrompt = customPrompt.trim();
-    const isCoupleTemplate = tpl.category === 'Couple' || Boolean((tpl as any).isCouple);
     if (tpl.allowWardrobeChoice) {
       if (isCoupleTemplate) {
         if (wardrobeSourceA !== 'AUTO') {
@@ -703,12 +722,23 @@ export const TemplateDetailModal: React.FC = () => {
       return;
     }
 
+    const generationOptions = {
+      resolution: selectedResolution,
+      durationSeconds: selectedDuration,
+      model: tpl.model,
+      wardrobeSource,
+      wardrobeSourceA,
+      wardrobeSourceB
+    };
+
     if (!user) {
       triggerHighIntentAction({
         type: 'generate',
         templateId: tpl.id,
         inputMediaUrl: combinedPayload,
-        customPrompt: finalPrompt || undefined
+        customPrompt: finalPrompt || undefined,
+        mediaDetails: structuredMedia,
+        options: generationOptions
       });
       return;
     }

@@ -218,6 +218,49 @@ export type GenerationState =
   | 'completed'
   | 'failed';
 
+export interface GenerationDiagnosticInputItem {
+  slotId: string;
+  role: string;
+  mediaType: 'image' | 'video';
+  mimeType: string;
+  sizeBytes: number;
+  sha256Prefix?: string;
+}
+
+export interface GenerationPipelineDiagnostics {
+  correlationId: string;
+  templateId: string;
+  generationId: string;
+  provider: string;
+  adapter: string;
+  model: string;
+  workflow: string;
+  customerInputCount: number;
+  customerInputs: GenerationDiagnosticInputItem[];
+  referenceInput?: {
+    role: string;
+    mimeType: string;
+    sizeBytes: number;
+    sha256Prefix?: string;
+  };
+  providerStatus: 'submitted' | 'completed' | 'failed';
+  processingTimeMs?: number;
+  output?: {
+    mimeType: string;
+    sizeBytes: number;
+    sha256Prefix?: string;
+  };
+  storageVerification?: {
+    verified: boolean;
+    fileId?: string;
+    sizeBytes?: number;
+    mimeType?: string;
+  };
+  finalStatus: GenerationState;
+  errorCode?: string;
+  recordedAt: string;
+}
+
 export interface Generation {
   id: string;
   userId: string;
@@ -227,6 +270,7 @@ export interface Generation {
   aspectRatio: AspectRatio;
   status: GenerationState;
   inputMediaUrl: string;
+  inputMediaFileIds?: string[];
   resultMediaUrl?: string;
   creditCost: number;
   engine: TemplateEngine;
@@ -259,6 +303,7 @@ export interface Generation {
   refundStatus?: 'none' | 'refund_pending' | 'refunded';
   refundError?: string;
   chargeStatus?: 'reserved' | 'finalized' | 'refunded' | 'admin_free';
+  pipelineDiagnostics?: GenerationPipelineDiagnostics;
 }
 
 export type SubscriptionStatus =

@@ -121,15 +121,17 @@ Use the customer's own recognizable identity, understand the selected template's
  * Universal PHOTO Global Prompt (English — application internal)
  * From AI Prime Studio Prompt Standard v1.1 Section 5
  */
-export const PHOTO_GLOBAL_PROMPT = `TASK: Create the selected photo transformation using the configured reference roles.
+export const PHOTO_GLOBAL_PROMPT = `TASK: Create a new personalized photograph placing the real customer from CUSTOMER_SOURCE_PHOTO into the scene, styling, and composition of TEMPLATE_AFTER_REFERENCE.
 
-CUSTOMER_SOURCE_PHOTO: The authoritative facial identity reference for the customer. Preserve recognizable facial features and natural appearance as faithfully as the selected image model supports.
+CUSTOMER_SOURCE_PHOTO: The ONLY authoritative human facial identity for the generated subject. Preserve this customer's recognizable face, facial structure, eyes, eyebrows, nose, lips, jawline, natural skin tone, beard/facial hair, hair/head likeness, and gender/identity as faithfully as the selected image model supports. If CUSTOMER_SOURCE_PHOTO is a mobile screenshot or contains app UI bars, icons, filters, or a small corner PiP/inset face, IGNORE all UI overlays and small inset thumbnails and extract ONLY the main primary foreground person's real face.
 
-TEMPLATE_AFTER_REFERENCE: The primary target for scene, pose, composition, camera angle, background, lighting, colors and styling.
+TEMPLATE_AFTER_REFERENCE: The visual target for scene, pose, camera angle, background, lighting, colors, typography/overlays, and styling ONLY. Completely REPLACE any sample model/person shown in TEMPLATE_AFTER_REFERENCE with the customer from CUSTOMER_SOURCE_PHOTO.
 
-WARDROBE: Follow the template's wardrobeSource setting. In AUTO mode, use customer clothing only when clearly visible and sufficiently represented; otherwise use the clothing shown in the designated template reference. Do not invent unseen clothing.
+FACE VISIBILITY & ANTI-CLONING RULE: If the sample model in TEMPLATE_AFTER_REFERENCE wears dark/opaque sunglasses, masks, or face-hiding props, DO NOT copy those dark sunglasses onto the customer unless CUSTOMER_SOURCE_PHOTO or explicit customer instructions require them — keep the customer's real unobstructed eyes and recognizable face clearly visible. Adapt hair, beard, and facial proportions cleanly to match CUSTOMER_SOURCE_PHOTO rather than cloning the sample model.
 
-Keep the customer identity distinct from any sample person. Do not use a display thumbnail as the customer's identity input. Preserve important scene elements and avoid unrelated additions. Generate a new result; never return the reference image unchanged.`;
+WARDROBE: Follow the template's wardrobeSource setting. In AUTO mode, use customer clothing only when clearly visible and sufficiently represented; otherwise adapt the clothing shown in TEMPLATE_AFTER_REFERENCE naturally onto the customer. Do not invent unseen clothing.
+
+STRICT IDENTITY RULE: Never keep or copy the template sample person's face, eyes, beard, hairstyle, or head. Never use a display thumbnail or BEFORE example person as the customer's identity. Always generate a new image starring CUSTOMER_SOURCE_PHOTO; never return any template reference image unchanged.`;
 
 /**
  * Universal VIDEO Source-Preserving Global Prompt (English — application internal)
