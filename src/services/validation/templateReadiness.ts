@@ -682,6 +682,7 @@ export interface NormalizedTemplateReadinessInfo {
   configFingerprint?: string;
   isCustomerGeneratable: boolean;
   legacyOperational?: boolean;
+  recommendedFix?: string;
 }
 
 /**
@@ -719,7 +720,10 @@ export function normalizeTemplateReadinessStatus(
       visualAcceptanceStatus: tpl?.visualAcceptanceStatus,
       configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
-      legacyOperational: false
+      legacyOperational: false,
+      recommendedFix: staticCheck.missingFields.length > 0
+        ? `Edit template and fill missing items: ${staticCheck.missingFields.join(', ')}.`
+        : 'Open Edit Template and fix invalid provider, model, slot, or media configuration.'
     };
   }
 
@@ -735,7 +739,8 @@ export function normalizeTemplateReadinessStatus(
       visualAcceptanceStatus: tpl.visualAcceptanceStatus,
       configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
-      legacyOperational: false
+      legacyOperational: false,
+      recommendedFix: 'Click the Eye icon to activate this template when ready for customers.'
     };
   }
 
@@ -752,7 +757,12 @@ export function normalizeTemplateReadinessStatus(
       visualAcceptanceStatus: tpl.visualAcceptanceStatus,
       configFingerprint: currentFingerprint,
       isCustomerGeneratable: false,
-      legacyOperational: false
+      legacyOperational: false,
+      recommendedFix: errText.toLowerCase().includes('api_key') || errText.toLowerCase().includes('gemini_api_key') || errText.toLowerCase().includes('higgsfield')
+        ? 'Check provider API key/billing secret on Cloud Run, then re-run Test.'
+        : errText.toLowerCase().includes('rejected') || errText.toLowerCase().includes('visual')
+        ? 'Review template prompt/AFTER reference, edit if needed, and re-run Real Test.'
+        : 'Review failure reason, verify reference/slots in Edit, and re-run Smoke or Real Test.'
     };
   }
 
@@ -812,6 +822,18 @@ export function normalizeTemplateReadinessStatus(
     ? tpl.readinessReason || 'New or edited template — run Admin test before launching to customers.'
     : 'Legacy active template (operational for customers) — verification pending in Admin Gallery.';
 
+  const recommendedFix = fingerprintMismatch
+    ? requiresRealAndVisual
+      ? 'Open Real Test, upload real test input(s), verify output, and Approve Visual Quality.'
+      : 'Click Smoke Test to re-verify updated SmartCanvas configuration.'
+    : awaitingVisual
+    ? 'Inspect the generated preview and click Approve Visual Quality to mark READY.'
+    : smokeOnlyPassed || blockedBySmokeOnPersonalized
+    ? 'Click Real Test, upload actual customer-style sample photo(s)/video, then Approve Visual Quality.'
+    : requiresRealAndVisual
+    ? 'Click Real Test (0 cr) with a real sample input and approve visual quality.'
+    : 'Click Smoke Test (0 cr) to verify and mark READY.';
+
   return {
     status: 'TEST_REQUIRED',
     label: 'TEST REQUIRED',
@@ -823,7 +845,8 @@ export function normalizeTemplateReadinessStatus(
     visualAcceptanceStatus: tpl.visualAcceptanceStatus,
     configFingerprint: currentFingerprint,
     isCustomerGeneratable: !isBlockedNewOrEdited,
-    legacyOperational: !isBlockedNewOrEdited
+    legacyOperational: !isBlockedNewOrEdited,
+    recommendedFix
   };
 }
 
@@ -911,5 +934,176 @@ export function didTemplateExecutionRecipeChange(
     recipe: updates.recipe !== undefined ? { ...(existing.recipe || {}), ...(updates.recipe || {}) } : existing.recipe
   };
   return computeTemplateConfigFingerprint(existing) !== computeTemplateConfigFingerprint(mergedCandidate);
+}
+
+export interface IterativeChangeCapability {
+  supported: boolean;
+  mode: 'image_edit' | 'smart_rerender' | 'video_instruction_rerender' | 'unsupported';
+  reason?: string;
+}
+
+/**
+ * Determines universally across Photo AI, SmartCanvas, Video AI, and FaceSwap/Motion-Transfer
+ * whether the template's configured provider & adapter genuinely supports iterative "Make More Changes".
+ */
+export function supportsIterativeChanges(
+  tpl: Partial<Template> | null | undefined
+): IterativeChangeCapability {
+  if (!tpl) {
+    return { supported: false, mode: 'unsupported', reason: 'Template metadata unavailable.' };
+  }
+
+  const engine = tpl.engine || tpl.recipe?.engine || 'AI_GENERATION';
+  const provider = String(tpl.provider || tpl.recipe?.provider || '').trim().toLowerCase();
+  const adapter = String(tpl.adapter || tpl.recipe?.adapter || '').trim();
+  const inputType = tpl.inputType || tpl.recipe?.inputType;
+  const isNonPersonalized =
+    inputType === 'NONE' || (tpl as any).requiresCustomerIdentity === false;
+  const hasInputs = Boolean(!isNonPersonalized && ((tpl.requiredInputs && tpl.requiredInputs.length > 0) || inputType));
+
+  if (engine === 'SMART_TEMPLATE' || provider === 'smart_template' || adapter === 'smartCanvas') {
+    if (isNonPersonalized || !hasInputs) {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: 'Non-personalized static SmartCanvas frames do not support custom iterative edits.'
+      };
+    }
+    return { supported: true, mode: 'smart_rerender' };
+  }
+
+  if (tpl.type === 'photo' || provider === 'gemini' || adapter === 'geminiAdapter') {
+    return { supported: true, mode: 'image_edit' };
+  }
+
+  if (
+    tpl.type === 'video' ||
+    provider === 'google_omni' ||
+    provider === 'google_veo' ||
+    provider === 'higgsfield' ||
+    adapter === 'videoProviderAdapter' ||
+    adapter === 'faceSwapAdapter'
+  ) {
+    return { supported: true, mode: 'video_instruction_rerender' };
+  }
+
+  return {
+    supported: false,
+    mode: 'unsupported',
+    reason: 'Configured adapter does not support iterative post-result changes.'
+  };
+}
+
+export interface BilingualCustomizationChip {
+  id: string;
+  labelEn: string;
+  labelHi: string;
+  promptDirective: string;
+}
+
+/**
+ * Generates universal, template-aware bilingual (English + Hindi) customization chips
+ * for both pre-generation ("Customize Your Result") and post-result ("Make More Changes").
+ * Zero chips are auto-selected by default so pure template fidelity holds unless chosen.
+ */
+export function getBilingualCustomizationChips(
+  tpl: Partial<Template> | null | undefined,
+  context: 'pre_gen' | 'post_edit' = 'pre_gen'
+): BilingualCustomizationChip[] {
+  const category = String(tpl?.category || '').toLowerCase();
+  const desc = `${tpl?.title || ''} ${tpl?.description || ''} ${tpl?.workflow || ''}`.toLowerCase();
+  const isCouple = isExplicitCoupleTemplate(tpl);
+  const isVideo = tpl?.type === 'video';
+  const chips: BilingualCustomizationChip[] = [];
+
+  const mentionsEyewear =
+    desc.includes('sunglass') ||
+    desc.includes('eyewear') ||
+    desc.includes('glasses') ||
+    desc.includes('swag') ||
+    category.includes('swag') ||
+    category.includes('luxury') ||
+    category.includes('fashion') ||
+    category.includes('retro') ||
+    category.includes('trending');
+
+  if (context === 'post_edit') {
+    chips.push({
+      id: 'keep_unchanged',
+      labelEn: 'Keep everything else unchanged',
+      labelHi: 'बाकी सब वैसा ही रखें',
+      promptDirective: 'Keep everything else unchanged (pose, face, lighting, and background)'
+    });
+  }
+
+  if (mentionsEyewear || !isVideo) {
+    chips.push({
+      id: 'remove_sunglasses',
+      labelEn: 'Remove sunglasses',
+      labelHi: 'चश्मा हटाएं',
+      promptDirective: 'Remove sunglasses and show customer natural eyes clearly'
+    });
+  }
+
+  if (!desc.includes('sunglass') && !isVideo) {
+    chips.push({
+      id: 'add_sunglasses',
+      labelEn: 'Add stylish sunglasses',
+      labelHi: 'स्टाइलिश चश्मा लगाएं',
+      promptDirective: 'Add stylish dark sunglasses matching the scene'
+    });
+  }
+
+  chips.push({
+    id: 'outfit_color',
+    labelEn: 'Change outfit colour',
+    labelHi: 'कपड़ों का रंग बदलें',
+    promptDirective: 'Change outfit colour to royal black and gold'
+  });
+
+  if (category.includes('royal') || category.includes('festival') || category.includes('devotional') || category.includes('fashion') || category.includes('luxury') || isCouple) {
+    chips.push({
+      id: 'jewelry_watch',
+      labelEn: 'Adjust watch or jewelry',
+      labelHi: 'घड़ी या ज्वेलरी बदलें',
+      promptDirective: 'Update watch and jewelry details while keeping pose intact'
+    });
+  }
+
+  if (!isVideo && !isCouple) {
+    chips.push({
+      id: 'add_person',
+      labelEn: 'Add companion / friend',
+      labelHi: 'एक और व्यक्ति जोड़ें',
+      promptDirective: 'Add another person beside the subject naturally'
+    });
+  }
+
+  chips.push({
+    id: 'lighting_bg',
+    labelEn: isVideo ? 'Richer cinematic lighting' : 'Change background / lighting',
+    labelHi: isVideo ? 'बेहतर सिनेमैटिक लाइटिंग' : 'बैकग्राउंड / लाइटिंग बदलें',
+    promptDirective: isVideo
+      ? 'Enhance cinematic lighting and atmospheric glow'
+      : 'Enhance background ambiance with warm golden studio lighting'
+  });
+
+  if (!isVideo) {
+    chips.push({
+      id: 'soft_smile',
+      labelEn: 'Natural soft smile',
+      labelHi: 'हल्की मुस्कान जोड़ें',
+      promptDirective: 'Give a natural confident soft smile'
+    });
+  } else {
+    chips.push({
+      id: 'smooth_motion',
+      labelEn: 'Smoother slow-motion feel',
+      labelHi: 'स्मूथ स्लो-मोशन इफेक्ट',
+      promptDirective: 'Keep motion smooth and natural with crisp facial clarity'
+    });
+  }
+
+  return chips.slice(0, 6);
 }
 

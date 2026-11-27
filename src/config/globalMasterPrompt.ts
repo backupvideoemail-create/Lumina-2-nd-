@@ -79,9 +79,9 @@ REFERENCE SCENE PRESERVATION:
 
 Recreate the TEMPLATE_AFTER_REFERENCE as faithfully as possible.
 
-Preserve the intended background, subject placement, pose, clothing, accessories, objects, colors, lighting, shadows, camera composition, and overall atmosphere unless an explicitly requested change requires otherwise.
+Preserve the intended background, subject placement, pose, clothing, clothing colors/design, sunglasses, eyeglasses, jewelry, watches, accessories, objects, colors, lighting, shadows, camera composition, and overall atmosphere by default unless USER_CUSTOM_INSTRUCTIONS explicitly requests a change.
 
-Do not unnecessarily remove, replace, redesign, or add important scene elements.
+Adapt the outfit styling and accessories naturally to the real customer's facial identity and gender presentation (whether female, male, or couple subjects) without copying the sample model's face. Do not unnecessarily remove, replace, redesign, or add important scene elements.
 
 Maintain realistic anatomy, natural skin texture, coherent lighting, and photographic consistency. Avoid cartoon-like results, plastic-looking faces, artificial cutout boundaries, distorted facial features, and obvious face-swap artifacts.
 
@@ -121,17 +121,15 @@ Use the customer's own recognizable identity, understand the selected template's
  * Universal PHOTO Global Prompt (English — application internal)
  * From AI Prime Studio Prompt Standard v1.1 Section 5
  */
-export const PHOTO_GLOBAL_PROMPT = `TASK: Create a new personalized photograph placing the real customer from CUSTOMER_SOURCE_PHOTO into the scene, styling, and composition of TEMPLATE_AFTER_REFERENCE.
+export const PHOTO_GLOBAL_PROMPT = `TASK: Create a new personalized photograph placing the customer from CUSTOMER_SOURCE_PHOTO into the scene, styling, and composition of TEMPLATE_AFTER_REFERENCE.
 
-CUSTOMER_SOURCE_PHOTO: The ONLY authoritative human facial identity for the generated subject. Preserve this customer's recognizable face, facial structure, eyes, eyebrows, nose, lips, jawline, natural skin tone, beard/facial hair, hair/head likeness, and gender/identity as faithfully as the selected image model supports. If CUSTOMER_SOURCE_PHOTO is a mobile screenshot or contains app UI bars, icons, filters, or a small corner PiP/inset face, IGNORE all UI overlays and small inset thumbnails and extract ONLY the main primary foreground person's real face.
+CUSTOMER_SOURCE_PHOTO: Authoritative facial identity for the generated subject. Preserve facial structure, eyes, eyebrows, nose, lips, jawline, skin tone, hair/beard likeness, and gender identity. If CUSTOMER_SOURCE_PHOTO is a mobile screenshot or has UI bars, filters, or a corner PiP face, IGNORE UI chrome/thumbnails and extract ONLY the main foreground person's face.
 
-TEMPLATE_AFTER_REFERENCE: The visual target for scene, pose, camera angle, background, lighting, colors, typography/overlays, and styling ONLY. Completely REPLACE any sample model/person shown in TEMPLATE_AFTER_REFERENCE with the customer from CUSTOMER_SOURCE_PHOTO.
+TEMPLATE_AFTER_REFERENCE: Visual target for scene, pose, framing, lighting, colors, clothing design/colors, sunglasses, eyeglasses, watches, jewelry, accessories, and typography/overlays. Replace ONLY the sample model's facial identity with CUSTOMER_SOURCE_PHOTO.
 
-FACE VISIBILITY & ANTI-CLONING RULE: If the sample model in TEMPLATE_AFTER_REFERENCE wears dark/opaque sunglasses, masks, or face-hiding props, DO NOT copy those dark sunglasses onto the customer unless CUSTOMER_SOURCE_PHOTO or explicit customer instructions require them — keep the customer's real unobstructed eyes and recognizable face clearly visible. Adapt hair, beard, and facial proportions cleanly to match CUSTOMER_SOURCE_PHOTO rather than cloning the sample model.
+TEMPLATE FIDELITY & GENDER-AWARE STYLING LOCK: Preserve ALL visible template styling elements from TEMPLATE_AFTER_REFERENCE by default — including sunglasses, eyeglasses, watches, jewelry, accessories, outfit design/colors, hairstyle styling, pose, framing, lighting, and background. Do NOT remove sunglasses, eyewear, accessories, or wardrobe details unless USER_CUSTOM_INSTRUCTIONS explicitly requests removing or changing them. Adapt styling, fit, and accessories naturally to match CUSTOMER_SOURCE_PHOTO's facial identity and gender presentation (whether female, male, or any subject).
 
-WARDROBE: Follow the template's wardrobeSource setting. In AUTO mode, use customer clothing only when clearly visible and sufficiently represented; otherwise adapt the clothing shown in TEMPLATE_AFTER_REFERENCE naturally onto the customer. Do not invent unseen clothing.
-
-STRICT IDENTITY RULE: Never keep or copy the template sample person's face, eyes, beard, hairstyle, or head. Never use a display thumbnail or BEFORE example person as the customer's identity. Always generate a new image starring CUSTOMER_SOURCE_PHOTO; never return any template reference image unchanged.`;
+WARDROBE: Follow wardrobeSource. In AUTO mode, use customer clothing only when clearly visible; otherwise adapt the template outfit and accessories naturally. Never keep the template person's face or return any reference image unchanged.`;
 
 /**
  * Universal VIDEO Source-Preserving Global Prompt (English — application internal)
@@ -203,10 +201,9 @@ Maintain the facial structure, identity, and visual aesthetics of the initial re
  * From AI Prime Studio Prompt Standard v1.1 Section 6
  */
 export const COUPLE_PHOTO_MAPPING = `COUPLE INPUT MAPPING:
-SLOT A / Person A: Use only the image uploaded in the configured Person A slot as Person A's identity reference.
-SLOT B / Person B: Use only the image uploaded in the configured Person B slot as Person B's identity reference.
-
-Keep Person A and Person B as two distinct people. Never blend, average, exchange or cross-apply their faces. Follow the template's subject/shot map to determine where each person appears. Preserve each person's identity independently across cuts and camera angles. If the selected provider cannot reliably preserve two separate identities, stop and report the limitation rather than claiming success.`;
+SLOT A / Person A: Person A slot image is strictly Person A's identity.
+SLOT B / Person B: Person B slot image is strictly Person B's identity.
+Keep Person A and Person B distinct; never blend, swap, or average their faces across the scene.`;
 
 export const COUPLE_VIDEO_MAPPING = `COUPLE VIDEO IDENTITY MAPPING:
 SLOT A / Person A: Customer Person A reference image maps strictly to Subject A in the scene.
@@ -251,6 +248,7 @@ export interface PromptAssemblyOptions {
   wardrobeSource?: 'auto' | 'my_photo' | 'template';
   wardrobeSourceA?: 'auto' | 'my_photo' | 'template';
   wardrobeSourceB?: 'auto' | 'my_photo' | 'template';
+  isIterativeEdit?: boolean;
 }
 
 /**
@@ -318,11 +316,19 @@ export function buildUnifiedGenerationPrompt(options: PromptAssemblyOptions): st
     sections.push(getWardrobePrompt(options.wardrobeSource));
   }
 
-  // 5. Customer Custom Instructions (Sanitized)
+  // 5. Iterative Edit Context (when refining a prior generated output)
+  if (options.isIterativeEdit) {
+    sections.push(
+      `--- ITERATIVE EDITING MODE (MAKE MORE CHANGES) ---\n` +
+        `Editing base is the previous generated output. Keep CUSTOMER_SOURCE_PHOTO face, pose, lighting, accessories, and background UNCHANGED except for OPTIONAL CUSTOMER INSTRUCTIONS.`
+    );
+  }
+
+  // 6. Customer Custom Instructions (Sanitized; omit completely when blank so pure template fidelity holds)
   if (options.userCustomInstructions && options.userCustomInstructions.trim()) {
     const sanitizedCustomerInput = options.userCustomInstructions.trim().slice(0, 300);
     sections.push(
-      `--- OPTIONAL CUSTOMER INSTRUCTIONS ---\n${sanitizedCustomerInput}`
+      `--- OPTIONAL CUSTOMER INSTRUCTIONS ---\n${sanitizedCustomerInput}\nApply ONLY these explicitly requested changes while keeping all other template elements faithful.`
     );
   }
 

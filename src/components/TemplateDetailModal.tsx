@@ -24,7 +24,7 @@ import {
   Users
 } from 'lucide-react';
 import { Template, TemplateInputDef, FxRateStatus } from '../types';
-import { normalizeTemplateReadinessStatus } from '../services/validation/templateReadiness';
+import { normalizeTemplateReadinessStatus, getBilingualCustomizationChips } from '../services/validation/templateReadiness';
 import { useApp } from '../context/AppContext';
 import { isVideoMedia } from '../utils/mediaUtils';
 import {
@@ -1644,32 +1644,67 @@ export const TemplateDetailModal: React.FC = () => {
             </div>
           )}
 
-          {/* CUSTOM INSTRUCTIONS (OPTIONAL, MAX 300 CHARACTERS) */}
-          <div className="space-y-1.5 p-3 rounded-2xl bg-[#121018] border border-white/10">
-            <div className="flex items-center justify-between">
+          {/* CUSTOMIZE YOUR RESULT (OPTIONAL, BILINGUAL CHIPS + MAX 300 CHARACTERS) */}
+          <div className="space-y-2.5 p-3.5 rounded-2xl bg-[#121018] border border-white/10">
+            <div className="flex items-center justify-between gap-2">
               <label htmlFor="custom-instructions-input" className="text-xs font-bold text-white flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Custom Instructions (Optional)</span>
+                <span>Customize Your Result (Optional)</span>
               </label>
               <span
-                className={`text-[10px] font-mono font-semibold ${
+                className={`text-[10px] font-mono tabular-nums font-semibold ${
                   customPrompt.length >= 280 ? 'text-amber-400' : 'text-stone-400'
                 }`}
               >
                 {customPrompt.length}/300
               </span>
             </div>
+
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Bilingual customization suggestions">
+              {getBilingualCustomizationChips(tpl, 'pre_gen').map((chip) => {
+                const isSelected = customPrompt.toLowerCase().includes(chip.promptDirective.toLowerCase());
+                return (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => {
+                      setCustomPrompt((prev) => {
+                        const cleanPrev = prev.trim();
+                        if (isSelected) {
+                          const escaped = chip.promptDirective.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                          return cleanPrev
+                            .replace(new RegExp(`(?:^|[.;,]\\s*)${escaped}`, 'i'), '')
+                            .replace(/^[.;,\s]+|[.;,\s]+$/g, '')
+                            .slice(0, 300);
+                        }
+                        const next = cleanPrev ? `${cleanPrev}; ${chip.promptDirective}` : chip.promptDirective;
+                        return next.slice(0, 300);
+                      });
+                    }}
+                    className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border text-left transition-colors cursor-pointer flex flex-col justify-center ${
+                      isSelected
+                        ? 'bg-amber-400/15 border-amber-400/70 text-amber-100'
+                        : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-stone-200'
+                    }`}
+                  >
+                    <span className="text-[11px] font-semibold leading-tight">{chip.labelEn}</span>
+                    <span className="text-[10px] text-stone-400 leading-tight">{chip.labelHi}</span>
+                  </button>
+                );
+              })}
+            </div>
+
             <textarea
               id="custom-instructions-input"
               value={customPrompt}
               onChange={(e) => setCustomPrompt(e.target.value.slice(0, 300))}
               maxLength={300}
               rows={2}
-              placeholder="E.g., warm golden hour lighting, cinematic film grain, formal navy suit..."
+              placeholder="Optional: e.g. Remove sunglasses, navy suit, or leave blank for exact template style..."
               className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 transition-colors resize-none"
             />
             <p className="text-[10px] text-stone-400 leading-tight">
-              Tailor expressions, mood, or lighting without altering base identity.
+              Leave blank to preserve the template&apos;s default sunglasses, clothing, jewelry, and styling automatically.
             </p>
           </div>
 

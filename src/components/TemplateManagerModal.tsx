@@ -3738,14 +3738,21 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                                 <span className="font-mono text-[10px] text-stone-300">{providerLabel} / {modelLabel}</span>
                                 <span className="text-stone-400 font-mono text-[10px]">• ID: {tpl.id}</span>
                               </div>
-                              <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-stone-400">
-                                <span>Last test: <strong className="text-stone-300">{norm.lastTestResult}</strong></span>
+                              <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-stone-400 font-mono tabular-nums">
+                                <span>Last test: <strong className="text-stone-200">{norm.lastTestResult}</strong></span>
                                 <span>•</span>
-                                <span>Verified: <strong className="text-stone-300">{lastVerifiedDisplay}</strong></span>
+                                <span>Verified: <strong className="text-stone-200">{lastVerifiedDisplay}</strong></span>
                               </div>
                               {norm.status !== 'READY' && (
-                                <div className="text-[10px] text-amber-300/90 mt-0.5 truncate" title={norm.reason}>
-                                  {norm.reason}
+                                <div className="mt-1.5 p-2 rounded-lg bg-black/40 border border-white/10 space-y-0.5 text-[10.5px] leading-snug">
+                                  <div className="text-amber-200">
+                                    <span className="font-bold text-amber-400">Reason:</span> {norm.reason}
+                                  </div>
+                                  {norm.recommendedFix && (
+                                    <div className="text-sky-200">
+                                      <span className="font-bold text-sky-400">Recommended Fix:</span> {norm.recommendedFix}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>

@@ -894,17 +894,18 @@ async function runVerification() {
       aspectRatio: '9:16'
     });
     const containsFaceThumb = guardedReq.parts.some((p: any) => p.inlineData?.data === faceThumbB64);
-    const hasScreenshotAndSunglassesGuards =
+    const hasScreenshotAndFidelityGuards =
       String(guardedReq.parts[0]?.text || '').includes('PiP') &&
-      String(guardedReq.parts[2]?.text || '').includes('dark sunglasses') &&
-      String(guardedReq.parts[4]?.text || '').includes('unobstructed');
+      String(guardedReq.parts[2]?.text || '').includes('sunglasses/eyewear') &&
+      !String(guardedReq.parts[2]?.text || '').includes('DO NOT copy those dark sunglasses') &&
+      String(guardedReq.parts[4]?.text || '').includes('Preserve ALL visible template sunglasses, accessories');
     assert(
       missingMediaRejected &&
         zeroByteInputRejected &&
         !containsFaceThumb &&
         guardedReq.prohibitedSampleSha256s.length === 2 &&
-        hasScreenshotAndSunglassesGuards,
-      `G.2 geminiAdapter fails closed on missing/empty inputs, excludes sampleFaceThumbnail from parts[], tracks ${guardedReq.prohibitedSampleSha256s.length} anti-leak sample hashes, and includes screenshot/sunglasses identity guards`
+        hasScreenshotAndFidelityGuards,
+      `G.2 geminiAdapter fails closed on missing/empty inputs, excludes sampleFaceThumbnail from parts[], tracks ${guardedReq.prohibitedSampleSha256s.length} anti-leak sample hashes, and includes screenshot + template sunglasses fidelity guards`
     );
 
     // G.3 videoProviderAdapter resolves signed /api/media/signed/* tokens cleanly & rejects missing media
@@ -1363,6 +1364,411 @@ async function runVerification() {
         coupleAfterEditNorm.status === 'READY' &&
         remainingAdminVerifyTempFiles.length === 0,
       `H.6 Prompt edit reset ONLY edited template (${videoSmartId} -> ${editActiveTplJson.template?.readinessStatus}) while preserving ${coupleTplId} (${coupleAfterEditNorm.status}), and ${remainingAdminVerifyTempFiles.length} temporary Admin test inputs remain on disk`
+    );
+
+    console.log('\n=== SUITE I: TEMPLATE FIDELITY, BILINGUAL CUSTOMIZATION, MAKE MORE CHANGES & INLINE DIAGNOSTICS ===');
+
+    const {
+      PHOTO_GLOBAL_PROMPT,
+      buildUnifiedGenerationPrompt: buildUnifiedPromptI
+    } = await import('../src/config/globalMasterPrompt.ts');
+    const {
+      getBilingualCustomizationChips,
+      supportsIterativeChanges,
+      computeTemplateConfigFingerprint
+    } = await import('../src/services/validation/templateReadiness.ts');
+
+    // I.1 Sunglasses & accessories preserved by default (no blanket strip directive)
+    const defaultPrompt = buildUnifiedPromptI({
+      outputType: 'photo',
+      templateTitle: 'Full Swag',
+      templateCategory: 'Royal Swag',
+      templateRecipePrompt: 'Keep black sunglasses, gold watch, and luxury jacket.',
+      hasAfterReference: true,
+      wardrobeSource: 'auto'
+    });
+    const defaultParts = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: defaultPrompt,
+      userImageUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+      sampleResultUrl: AFTER_PNG,
+      aspectRatio: '9:16'
+    });
+    const defaultPartsJoined = defaultParts.parts.map((p: any) => String(p.text || '')).join('\n');
+    assert(
+      !PHOTO_GLOBAL_PROMPT.includes('DO NOT copy those dark sunglasses') &&
+        !defaultPartsJoined.includes('DO NOT copy dark sunglasses') &&
+        !defaultPartsJoined.includes('keeping the customer\'s real eyes clearly visible rather than cloning any opaque sunglasses') &&
+        defaultPartsJoined.includes('sunglasses/eyewear, watches, jewelry, accessories'),
+      'I.1 Sunglasses, eyewear, watches, and accessories preserved by default with zero strip-sunglasses bias'
+    );
+
+    // I.2 Clothing colors, jewelry & styling preserved by default across Single & Couple
+    const coupleDefaultParts = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: buildUnifiedPromptI({
+        outputType: 'photo',
+        isCouple: true,
+        templateTitle: 'Royal Couple',
+        templateCategory: 'Couple',
+        templateRecipePrompt: 'Royal couple lehenga and sherwani with gold watch.',
+        hasAfterReference: true
+      }),
+      userImageUrl: `${CUST_PNG}|||${CUST_B_PNG}`,
+      userImageUrls: [CUST_PNG, CUST_B_PNG],
+      isCouple: true,
+      sampleResultUrl: AFTER_PNG,
+      aspectRatio: '9:16'
+    });
+    const coupleJoined = coupleDefaultParts.parts.map((p: any) => String(p.text || '')).join('\n');
+    assert(
+      PHOTO_GLOBAL_PROMPT.includes('clothing design/colors, sunglasses, eyeglasses, watches, jewelry, accessories') &&
+        coupleJoined.includes('watches, jewelry, accessories') &&
+        coupleJoined.includes('Person A') &&
+        coupleJoined.includes('Person B'),
+      'I.2 Default styling lock preserves clothing design/colors, jewelry, watches & accessories for Single and Couple'
+    );
+
+    // I.3 Explicit custom instructions applied cleanly while preserving rest
+    const explicitEditPrompt = buildUnifiedPromptI({
+      outputType: 'photo',
+      templateTitle: 'Full Swag',
+      templateCategory: 'Royal Swag',
+      templateRecipePrompt: 'Luxury black jacket portrait.',
+      userCustomInstructions: 'Remove sunglasses and show natural eyes; Change outfit colour to navy blue',
+      hasAfterReference: true
+    });
+    assert(
+      explicitEditPrompt.includes('OPTIONAL CUSTOMER INSTRUCTIONS') &&
+        explicitEditPrompt.includes('Remove sunglasses and show natural eyes') &&
+        explicitEditPrompt.includes('Apply ONLY these explicitly requested changes while keeping all other template elements faithful'),
+      'I.3 Explicit custom instructions inject targeted change directive without disturbing unmentioned template elements'
+    );
+
+    // I.4 Empty customPrompt omits customer instruction overrides completely
+    assert(
+      !defaultPrompt.includes('OPTIONAL CUSTOMER INSTRUCTIONS') &&
+        !defaultPrompt.includes('ITERATIVE EDITING MODE'),
+      'I.4 Empty customPrompt omits optional customization blocks so pure template fidelity governs output'
+    );
+
+    // I.5 Male & female customer source-photo gender-aware adaptation + strict role separation
+    assert(
+      PHOTO_GLOBAL_PROMPT.includes('whether female, male, or any subject') &&
+        PHOTO_GLOBAL_PROMPT.includes('gender presentation') &&
+        defaultPartsJoined.includes('CUSTOMER_SOURCE_PHOTO') &&
+        defaultPartsJoined.includes('TEMPLATE_AFTER_REFERENCE') &&
+        defaultPartsJoined.includes('adapting naturally to IMAGE 1\'s real facial identity and gender presentation'),
+      'I.5 Female & male customer adaptation directives present alongside strict CUSTOMER_SOURCE_PHOTO vs TEMPLATE_AFTER_REFERENCE separation'
+    );
+
+    // I.6 Bilingual EN + HI suggestion chips & multi-image non-Couple handling
+    const photoChips = getBilingualCustomizationChips(
+      { id: 'tpl_swag', title: 'Full Swag', category: 'Royal Swag', type: 'photo', description: 'Dark sunglasses swagger look' },
+      'pre_gen'
+    );
+    const postEditVideoChips = getBilingualCustomizationChips(
+      { id: 'tpl_vid', title: 'Royal Walk', category: 'Cinematic', type: 'video', description: 'Walking reel' },
+      'post_edit'
+    );
+    const multiChipJoined = photoChips
+      .slice(0, 3)
+      .map((c) => c.promptDirective)
+      .join('; ')
+      .slice(0, 300);
+    assert(
+      photoChips.length >= 4 &&
+        photoChips.every((c) => c.labelEn.trim().length > 0 && c.labelHi.trim().length > 0) &&
+        postEditVideoChips.some((c) => c.id === 'keep_unchanged' && c.labelHi.includes('बाकी सब')) &&
+        multiChipJoined.length <= 300 &&
+        multiNonCoupleReq.isCoupleMode === false,
+      `I.6 Bilingual EN+HI customization chips (${photoChips.length} pre-gen, ${postEditVideoChips.length} post-edit) & multi-image non-Couple separation verified`
+    );
+
+    // I.7 Genuine Couple role mapping preserved (Person A & Person B distinct)
+    assert(
+      coupleDefaultParts.isCoupleMode === true &&
+        coupleDefaultParts.customerInputsDiagnostics[0]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_A' &&
+        coupleDefaultParts.customerInputsDiagnostics[1]?.role === 'CUSTOMER_SOURCE_PHOTO_PERSON_B',
+      'I.7 Genuine Couple template keeps Person A and Person B roles strictly distinct'
+    );
+
+    // I.8 End-to-end Make More Changes (iterative edit) + security & validation gates
+    await testDb.creditWallet(sessA.user.id, 150, 'Suite I Iterative Credits', `seed_suite_i_${Date.now()}`, 'purchase');
+
+    // Initial SmartCanvas personalized generation for Make More Changes base
+    const baseIterRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        inputMediaUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}|||data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+        inputMedia: [
+          { slotId: 'partner_1', role: 'person_a', type: 'image', media: `data:image/png;base64,${real1x1PngBuf.toString('base64')}` },
+          { slotId: 'partner_2', role: 'person_b', type: 'image', media: `data:image/png;base64,${real1x1PngBuf.toString('base64')}` }
+        ]
+      })
+    });
+    const baseIterJson = await baseIterRes.json();
+    const baseIterGenId = baseIterJson.generation?.id;
+    if (baseIterJson.generation?.resultMediaUrl) {
+      const fp = mediaStorage.getFilePath(extractMediaFileIdFromRef(baseIterJson.generation.resultMediaUrl));
+      if (fp) savedFilesToCleanup.push(fp);
+    }
+
+    // Cross-user iterative edit attempt must fail closed (403)
+    const crossUserEditRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessB.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        previousGenerationId: baseIterGenId,
+        editMode: 'iterative_edit',
+        customPrompt: 'Remove sunglasses'
+      })
+    });
+    const crossUserEditJson = await crossUserEditRes.json();
+
+    // Missing edit instructions must fail closed (400)
+    const emptyEditInstrRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        previousGenerationId: baseIterGenId,
+        editMode: 'iterative_edit',
+        customPrompt: '   '
+      })
+    });
+    const emptyEditInstrJson = await emptyEditInstrRes.json();
+
+    // Unsupported non-personalized static SmartCanvas (NONE) must fail closed (400)
+    const staticBaseGenId = `gen_static_none_${Date.now()}`;
+    await testDb.addGenerationAsync({
+      id: staticBaseGenId,
+      userId: sessA.user.id,
+      templateId: nonPersId,
+      templateTitle: 'Non-Personalized Frame Smoke',
+      templateType: 'photo',
+      aspectRatio: '9:16',
+      status: 'completed',
+      inputMediaUrl: '',
+      resultMediaUrl: savedPhoto.publicUrl,
+      creditCost: 5,
+      engine: 'SMART_TEMPLATE',
+      model: 'smart_canvas_ffmpeg',
+      workflow: 'good-morning-frame',
+      createdAt: new Date().toISOString(),
+      isAiGenerated: false
+    });
+    const unsupportedStaticEditRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: nonPersId,
+        previousGenerationId: staticBaseGenId,
+        editMode: 'iterative_edit',
+        customPrompt: 'Change background'
+      })
+    });
+    const unsupportedStaticEditJson = await unsupportedStaticEditRes.json();
+
+    // GeminiAdapter iterative edit part labeling check (retains original customer identity + marks previous result as editing base)
+    const geminiIterParts = await geminiAdapter.buildMultimodalRequestParts({
+      prompt: buildUnifiedPromptI({
+        outputType: 'photo',
+        templateTitle: 'Full Swag',
+        templateCategory: 'Royal Swag',
+        userCustomInstructions: 'Remove sunglasses only',
+        isIterativeEdit: true,
+        hasAfterReference: true
+      }),
+      userImageUrl: `data:image/png;base64,${real1x1PngBuf.toString('base64')}`,
+      sampleResultUrl: AFTER_PNG,
+      isIterativeEdit: true,
+      aspectRatio: '9:16'
+    });
+    const geminiIterText = geminiIterParts.parts.map((p: any) => String(p.text || '')).join('\n');
+
+    assert(
+      baseIterRes.status === 200 &&
+        Boolean(baseIterGenId) &&
+        crossUserEditRes.status === 403 &&
+        crossUserEditJson.code === 'FORBIDDEN_GENERATION_ACCESS' &&
+        emptyEditInstrRes.status === 400 &&
+        emptyEditInstrJson.code === 'MISSING_EDIT_INSTRUCTIONS' &&
+        unsupportedStaticEditRes.status === 400 &&
+        unsupportedStaticEditJson.code === 'UNSUPPORTED_ITERATIVE_EDIT' &&
+        geminiIterText.includes('PREVIOUS_GENERATED_OUTPUT (ITERATIVE EDIT BASE)') &&
+        geminiIterText.includes('CUSTOMER_SOURCE_PHOTO'),
+      `I.8 Make More Changes enforces ownership (${crossUserEditRes.status}), non-empty instruction (${emptyEditInstrRes.status}), adapter support (${unsupportedStaticEditRes.status}), and iterative Gemini base + identity anchor`
+    );
+
+    // I.9 Make More Changes upfront credit quote, idempotency deduplication, parentGenerationId lineage & atomic refund on failure
+    const balBeforeIter = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    const iterIdemKey = `suite_i_idem_${Date.now()}`;
+    const iterSuccessRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        previousGenerationId: baseIterGenId,
+        editMode: 'iterative_edit',
+        customPrompt: 'Warm golden glow and caption: Forever Royal',
+        idempotencyKey: iterIdemKey
+      })
+    });
+    const iterSuccessJson = await iterSuccessRes.json();
+    if (iterSuccessJson.generation?.resultMediaUrl) {
+      const fp = mediaStorage.getFilePath(extractMediaFileIdFromRef(iterSuccessJson.generation.resultMediaUrl));
+      if (fp) savedFilesToCleanup.push(fp);
+    }
+    const balAfterIter = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+
+    // Duplicate submission with same idempotencyKey must deduplicate with zero extra charge
+    const iterDupRes = await fetch(`${baseUrl}/api/generations/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+      body: JSON.stringify({
+        templateId: coupleTplId,
+        previousGenerationId: baseIterGenId,
+        editMode: 'iterative_edit',
+        customPrompt: 'Warm golden glow and caption: Forever Royal',
+        idempotencyKey: iterIdemKey
+      })
+    });
+    const iterDupJson = await iterDupRes.json();
+    const balAfterDup = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+
+    // Atomic refund check when Make More Changes fails at provider (no GEMINI_API_KEY in test env)
+    const readyAiTplCandidate: any = {
+      id: 'tpl_ai_iter_refund_ready',
+      title: 'AI Photo Iterative Refund Test',
+      type: 'photo',
+      category: 'Royal Swag',
+      engine: 'AI_GENERATION',
+      provider: 'gemini',
+      adapter: 'geminiAdapter',
+      model: 'gemini-2.5-flash-image',
+      workflow: 'PHOTO_GENERATION',
+      aspectRatio: '9:16',
+      creditCost: 30,
+      isActive: true,
+      cover: AFTER_PNG,
+      preview: AFTER_PNG,
+      sampleResult: AFTER_PNG,
+      requiredInputs: [{ id: 'user_photo', slotId: 'user_photo', role: 'CUSTOMER_SOURCE_PHOTO', label: 'Photo', type: 'image' }],
+      recipe: {
+        version: '1.0',
+        inputType: 'IMAGE_ONLY',
+        provider: 'gemini',
+        adapter: 'geminiAdapter',
+        model: 'gemini-2.5-flash-image',
+        engine: 'AI_GENERATION',
+        workflow: 'PHOTO_GENERATION',
+        prompt: 'Royal luxury sunglasses look.',
+        aspectRatio: '9:16',
+        sampleResult: AFTER_PNG
+      }
+    };
+    readyAiTplCandidate.verifiedConfigFingerprint = computeTemplateConfigFingerprint(readyAiTplCandidate);
+    readyAiTplCandidate.readinessStatus = 'READY';
+    readyAiTplCandidate.lastTestResult = 'PASSED';
+    readyAiTplCandidate.lastTestInputMode = 'real_input';
+    readyAiTplCandidate.visualAcceptanceStatus = 'APPROVED';
+    readyAiTplCandidate.lastVerifiedAt = new Date().toISOString();
+    await testDb.addTemplate(readyAiTplCandidate);
+
+    const prevAiGenId = `gen_ai_parent_${Date.now()}`;
+    await testDb.addGenerationAsync({
+      id: prevAiGenId,
+      userId: sessA.user.id,
+      templateId: readyAiTplCandidate.id,
+      templateTitle: readyAiTplCandidate.title,
+      templateType: 'photo',
+      aspectRatio: '9:16',
+      status: 'completed',
+      inputMediaUrl: savedPhoto.publicUrl,
+      inputMediaFileIds: [savedPhoto.fileId],
+      resultMediaUrl: savedPhoto.publicUrl,
+      creditCost: 30,
+      engine: 'AI_GENERATION',
+      model: 'gemini-2.5-flash-image',
+      workflow: 'PHOTO_GENERATION',
+      createdAt: new Date().toISOString(),
+      isAiGenerated: true
+    });
+
+    const { hydrateFxCache, resetFxCacheForTest } = await import('../src/services/pricing/pricingService.ts');
+    const fxNowMs = Date.now();
+    hydrateFxCache({
+      rate: 85,
+      source: 'test_fixture',
+      fetchedAt: new Date(fxNowMs).toISOString(),
+      expiresAt: new Date(fxNowMs + 60 * 60 * 1000).toISOString()
+    });
+
+    const prevGeminiKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    let iterFailResStatus = 0;
+    let iterFailJson: any = {};
+    const balBeforeFailIter = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+    try {
+      const iterFailRes = await fetch(`${baseUrl}/api/generations/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessA.token}` },
+        body: JSON.stringify({
+          templateId: readyAiTplCandidate.id,
+          previousGenerationId: prevAiGenId,
+          editMode: 'iterative_edit',
+          customPrompt: 'Remove sunglasses'
+        })
+      });
+      iterFailResStatus = iterFailRes.status;
+      iterFailJson = await iterFailRes.json();
+    } finally {
+      resetFxCacheForTest();
+      if (prevGeminiKey !== undefined) {
+        process.env.GEMINI_API_KEY = prevGeminiKey;
+      }
+    }
+    const balAfterFailIter = (await testDb.getWalletAuthoritative(sessA.user.id)).balance;
+
+    assert(
+      iterSuccessRes.status === 200 &&
+        iterSuccessJson.generation?.parentGenerationId === baseIterGenId &&
+        iterSuccessJson.generation?.isIterativeEdit === true &&
+        balAfterIter === balBeforeIter - 10 &&
+        iterDupRes.status === 200 &&
+        iterDupJson.deduplicated === true &&
+        balAfterDup === balAfterIter &&
+        iterFailResStatus >= 500 &&
+        iterFailJson.refunded === true &&
+        balAfterFailIter === balBeforeFailIter,
+      `I.9 Make More Changes persists parentGenerationId=${iterSuccessJson.generation?.parentGenerationId}, quotes exact template credits (${balBeforeIter}->${balAfterIter}), deduplicates idempotencyKey, and refunds 100% on failure (${balBeforeFailIter}->${balAfterFailIter})`
+    );
+
+    // I.10 Photo & Video adapter capability boundaries + Admin Gallery inline recommendedFix diagnostics
+    const capPhotoAi = supportsIterativeChanges({ type: 'photo', engine: 'AI_GENERATION', provider: 'gemini', adapter: 'geminiAdapter', inputType: 'IMAGE_ONLY' });
+    const capSmartPers = supportsIterativeChanges({ type: 'photo', engine: 'SMART_TEMPLATE', provider: 'smart_template', adapter: 'smartCanvas', inputType: 'IMAGE_ONLY' });
+    const capSmartStatic = supportsIterativeChanges({ type: 'photo', engine: 'SMART_TEMPLATE', provider: 'smart_template', adapter: 'smartCanvas', inputType: 'NONE', requiredInputs: [] });
+    const capVideoOmni = supportsIterativeChanges({ type: 'video', engine: 'AI_GENERATION', provider: 'google_omni', adapter: 'videoProviderAdapter', inputType: 'IMAGE_ONLY' });
+    const capFaceSwap = supportsIterativeChanges({ type: 'video', engine: 'AI_GENERATION', provider: 'higgsfield', adapter: 'faceSwapAdapter', inputType: 'IMAGE_ONLY' });
+
+    const diagNeedsSetup = normalizeTemplateReadinessStatus({ id: 'diag_ns', title: 'Incomplete', type: 'photo', category: 'Trending', model: '', workflow: '' });
+    const diagPaused = normalizeTemplateReadinessStatus({ ...readyAiTplCandidate, isActive: false });
+    const diagFailed = normalizeTemplateReadinessStatus({ ...readyAiTplCandidate, readinessStatus: 'FAILED', lastTestResult: 'FAILED', lastTestError: 'GEMINI_API_KEY missing' });
+    const diagTestReq = normalizeTemplateReadinessStatus({ ...readyAiTplCandidate, readinessStatus: 'TEST_REQUIRED', lastTestResult: 'SMOKE_PASSED', lastTestInputMode: 'synthetic_smoke' });
+
+    assert(
+      capPhotoAi.supported && capPhotoAi.mode === 'image_edit' &&
+        capSmartPers.supported && capSmartPers.mode === 'smart_rerender' &&
+        !capSmartStatic.supported && capSmartStatic.mode === 'unsupported' &&
+        capVideoOmni.supported && capVideoOmni.mode === 'video_instruction_rerender' &&
+        capFaceSwap.supported && capFaceSwap.mode === 'video_instruction_rerender' &&
+        Boolean(diagNeedsSetup.recommendedFix) &&
+        Boolean(diagPaused.recommendedFix) &&
+        Boolean(diagFailed.recommendedFix?.includes('API key')) &&
+        Boolean(diagTestReq.recommendedFix?.includes('Real Test')),
+      'I.10 Iterative adapter boundaries (Photo/SmartCanvas/Video/FaceSwap vs static NONE) & Admin Gallery inline recommendedFix hints verified across all non-READY states'
     );
   } finally {
     __setServerTestDeps();

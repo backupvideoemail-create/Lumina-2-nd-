@@ -472,7 +472,9 @@ export class AIRouter {
         provider: 'gemini',
         adapter: 'geminiAdapter',
         model: selectedModel,
-        ownerUserId: params.ownerUserId
+        ownerUserId: params.ownerUserId,
+        isIterativeEdit: params.isIterativeEdit,
+        previousGenerationId: params.previousGenerationId
       });
     }
 
@@ -506,7 +508,9 @@ export class AIRouter {
       provider: rawProvider,
       adapter: 'videoProviderAdapter',
       model: selectedModel,
-      ownerUserId: params.ownerUserId
+      ownerUserId: params.ownerUserId,
+      isIterativeEdit: params.isIterativeEdit,
+      previousGenerationId: params.previousGenerationId
     });
   }
 }

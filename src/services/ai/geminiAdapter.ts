@@ -277,7 +277,7 @@ export class GeminiAdapter {
         parts.push({
           text:
             `IMAGE ${i + 1} — ${payload.role}${multiHint} (AUTHORITATIVE CUSTOMER IDENTITY — MUST STAR IN OUTPUT): ` +
-            `This is the real customer who must appear as the main starring subject in the final generated image. Preserve this exact person's face, facial structure, unobstructed eyes, eyebrows, nose, lips, jawline, natural skin tone, facial hair/beard, hair/head likeness, and gender/identity. ` +
+            `This is the real customer who must appear as the main starring subject in the final generated image. Preserve this exact person's face, facial structure, eyes, eyebrows, nose, lips, jawline, natural skin tone, facial hair/beard, hair/head likeness, and gender identity. ` +
             `If IMAGE ${i + 1} is a phone/social-app screenshot or contains status bars, circular filter icons, or a small corner PiP/inset face, IGNORE all app UI elements and small corner thumbnails and extract ONLY the main foreground person's real face.`
         });
       }
@@ -305,18 +305,23 @@ export class GeminiAdapter {
           sha256Prefix: refPayload.sha256.slice(0, 16)
         };
         const refIdx = attachedUserCount + 1;
+        const isIterative = Boolean(params.isIterativeEdit);
         parts.push({
-          text: isCoupleMode
-            ? `IMAGE ${refIdx} — TEMPLATE_AFTER_REFERENCE (TARGET COUPLE SCENE, POSE, STYLING & COMPOSITION ONLY): ` +
-              `Recreate this exact scene, background, lighting, framing, pose, attire (subject to wardrobe rules), color grade, and text/emoji overlays, ` +
-              `REPLACING the people in this reference image with Person A (IMAGE 1) and Person B (IMAGE 2). ` +
-              `Do NOT copy dark sunglasses or face-covering props onto Person A or Person B unless they wear them in their own source photos. ` +
+          text: isIterative
+            ? isCoupleMode
+              ? `IMAGE ${refIdx} — PREVIOUS_GENERATED_OUTPUT (ITERATIVE EDIT BASE): ` +
+                `Modify ONLY the explicitly requested attributes in the customer's instructions while keeping Person A (IMAGE 1) and Person B (IMAGE 2) facial identities, pose, lighting, and all unmentioned accessories/clothing/background details unchanged. Never return IMAGE ${refIdx} unchanged.`
+              : `IMAGE ${refIdx} — PREVIOUS_GENERATED_OUTPUT (ITERATIVE EDIT BASE): ` +
+                `Modify ONLY the explicitly requested attributes in the customer's instructions while keeping the customer's recognizable facial identity from IMAGE 1 (CUSTOMER_SOURCE_PHOTO), pose, framing, lighting, and all unmentioned accessories/clothing/background details unchanged. Never return IMAGE ${refIdx} unchanged.`
+            : isCoupleMode
+            ? `IMAGE ${refIdx} — TEMPLATE_AFTER_REFERENCE (TARGET COUPLE SCENE, POSE, STYLING, ACCESSORIES & COMPOSITION): ` +
+              `Recreate this exact scene, background, lighting, framing, pose, attire (subject to wardrobe rules), sunglasses/eyewear, watches, jewelry, accessories, color grade, and text/emoji overlays faithfully by default unless custom instructions explicitly ask to change them, ` +
+              `REPLACING the people in this reference image with Person A (IMAGE 1) and Person B (IMAGE 2) adapted naturally to each customer's gender and appearance. ` +
               `NEVER keep or copy the faces or identities of the sample models shown in IMAGE ${refIdx}.`
-            : `IMAGE ${refIdx} — TEMPLATE_AFTER_REFERENCE (TARGET SCENE, POSE, STYLING, TEXT & COMPOSITION ONLY): ` +
-              `Recreate this exact scene, background, dark/studio lighting, framing, pose, attire/outfit (subject to wardrobe rules), color grade, and text/emoji overlays, ` +
-              `COMPLETELY REPLACING the person/face shown in IMAGE ${refIdx} with the real customer from IMAGE 1 (CUSTOMER_SOURCE_PHOTO). ` +
-              `CRITICAL: If the sample model in IMAGE ${refIdx} is wearing dark sunglasses or face-occluding accessories, DO NOT copy those dark sunglasses over the customer's eyes — render the customer's real recognizable eyes and full face from IMAGE 1 clearly unless CUSTOMER_SOURCE_PHOTO wears sunglasses or the customer requested them. ` +
-              `NEVER keep, copy, or return the face, beard, hair, sunglasses, or identity of the reference model in IMAGE ${refIdx}.`
+            : `IMAGE ${refIdx} — TEMPLATE_AFTER_REFERENCE (TARGET SCENE, POSE, STYLING, ACCESSORIES & COMPOSITION): ` +
+              `Recreate this exact scene, background, dark/studio lighting, framing, pose, attire/outfit (subject to wardrobe rules), sunglasses/eyewear, watches, jewelry, accessories, color grade, and text/emoji overlays faithfully by default unless custom instructions explicitly ask to remove or alter them, ` +
+              `COMPLETELY REPLACING the sample person's facial identity in IMAGE ${refIdx} with the real customer from IMAGE 1 (CUSTOMER_SOURCE_PHOTO) while adapting naturally to IMAGE 1's gender and appearance. ` +
+              `NEVER keep or copy the sample model's face or return IMAGE ${refIdx} unchanged.`
         });
         parts.push({
           inlineData: {
@@ -353,17 +358,24 @@ export class GeminiAdapter {
       : '';
 
     const identityReplacementDirective = hasReferenceImage
-      ? isCoupleMode
-        ? `FINAL EXECUTION DIRECTIVE: Generate a brand new photorealistic image starring Person A (IMAGE 1) and Person B (IMAGE 2) inside the scene, pose, lighting, and styling of IMAGE ${attachedUserCount + 1} (TEMPLATE_AFTER_REFERENCE). Replace the reference models' faces completely with Person A and Person B. Keep their unobstructed real eyes and facial features clearly visible. NEVER copy the template models' faces and NEVER return TEMPLATE_AFTER_REFERENCE unchanged.`
-        : `FINAL EXECUTION DIRECTIVE: Generate a brand new photorealistic image starring the customer from IMAGE 1 (CUSTOMER_SOURCE_PHOTO) inside the scene, pose, lighting, styling, and text/typography layout of IMAGE ${attachedUserCount + 1} (TEMPLATE_AFTER_REFERENCE). Completely replace the template model's face/head with the customer's face and likeness from IMAGE 1 (adapting hair/beard/features naturally to the real customer, and keeping the customer's real eyes clearly visible rather than cloning any opaque sunglasses from TEMPLATE_AFTER_REFERENCE). NEVER copy the template person's face and NEVER return any reference image unchanged.`
+      ? params.isIterativeEdit
+        ? isCoupleMode
+          ? `FINAL EXECUTION DIRECTIVE (ITERATIVE EDIT): Apply ONLY the customer's explicitly requested changes to IMAGE ${attachedUserCount + 1} (PREVIOUS_GENERATED_OUTPUT) while keeping Person A (IMAGE 1) and Person B (IMAGE 2) recognizable identities and all unmentioned scene, pose, attire, sunglasses/accessories, and lighting details unchanged. NEVER return PREVIOUS_GENERATED_OUTPUT unchanged.`
+          : `FINAL EXECUTION DIRECTIVE (ITERATIVE EDIT): Apply ONLY the customer's explicitly requested changes to IMAGE ${attachedUserCount + 1} (PREVIOUS_GENERATED_OUTPUT) while keeping the customer's recognizable identity from IMAGE 1 (CUSTOMER_SOURCE_PHOTO) and all unmentioned scene, pose, attire, sunglasses/accessories, and lighting details unchanged. NEVER return PREVIOUS_GENERATED_OUTPUT unchanged.`
+        : isCoupleMode
+        ? `FINAL EXECUTION DIRECTIVE: Generate a brand new photorealistic image starring Person A (IMAGE 1) and Person B (IMAGE 2) inside the scene, pose, lighting, outfit, sunglasses/eyewear, watches, jewelry, and styling of IMAGE ${attachedUserCount + 1} (TEMPLATE_AFTER_REFERENCE). Preserve all template accessories, sunglasses, and styling by default unless customer instructions request changes; replace the reference models' faces completely with Person A and Person B adapted naturally to their genders and appearances. NEVER copy the template models' faces and NEVER return TEMPLATE_AFTER_REFERENCE unchanged.`
+        : `FINAL EXECUTION DIRECTIVE: Completely replace the template model's face/head with the customer from IMAGE 1 (CUSTOMER_SOURCE_PHOTO), starring them inside the scene, pose, lighting, outfit, sunglasses/eyewear, watches, jewelry, styling, and text/typography layout of IMAGE ${attachedUserCount + 1} (TEMPLATE_AFTER_REFERENCE). Preserve ALL visible template sunglasses, accessories, clothing design/colors, and styling by default unless customer instructions explicitly ask to remove or change them, while adapting naturally to IMAGE 1's real facial identity and gender presentation. NEVER copy the template person's face and NEVER return any reference image unchanged.`
       : '';
 
     let promptText: string;
     if (params.prompt && isUnifiedPrompt(params.prompt)) {
+      const refLabel = params.isIterativeEdit
+        ? 'PREVIOUS_GENERATED_OUTPUT (Editing base — keep unmentioned details unchanged)'
+        : 'TEMPLATE_AFTER_REFERENCE (Target scene, pose, attire, sunglasses/accessories, atmosphere, text/overlays, and composition — replace sample face(s) with customer identity)';
       promptText = `${params.prompt}${coupleMappingInstructions}\n\nSupplied Multimodal Inputs:\n${
         isCoupleMode
-          ? `- IMAGE 1: CUSTOMER_SOURCE_PHOTO (Person A)\n- IMAGE 2: CUSTOMER_SOURCE_PHOTO (Person B Partner)${hasReferenceImage ? `\n- IMAGE 3: TEMPLATE_AFTER_REFERENCE (Target couple scene, pose, attire, atmosphere, and composition ONLY — replace sample faces with Person A & Person B)` : ''}`
-          : `- IMAGE 1: CUSTOMER_SOURCE_PHOTO (Authoritative customer facial identity — must star in the output)${hasReferenceImage ? `\n- IMAGE 2: TEMPLATE_AFTER_REFERENCE (Target scene, pose, attire, atmosphere, text/overlays, and composition ONLY — replace sample face with IMAGE 1 customer)` : ''}`
+          ? `- IMAGE 1: CUSTOMER_SOURCE_PHOTO (Person A)\n- IMAGE 2: CUSTOMER_SOURCE_PHOTO (Person B Partner)${hasReferenceImage ? `\n- IMAGE 3: ${refLabel}` : ''}`
+          : `- IMAGE 1: CUSTOMER_SOURCE_PHOTO (Authoritative customer facial identity — must star in the output)${hasReferenceImage ? `\n- IMAGE 2: ${refLabel}` : ''}`
       }\n\n${identityReplacementDirective}\n\nAspect ratio: ${params.aspectRatio || '9:16'}.`;
     } else if (hasReferenceImage) {
       const promptSegments = [

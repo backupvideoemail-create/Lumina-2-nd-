@@ -324,6 +324,9 @@ export interface Generation {
   refundStatus?: 'none' | 'refund_pending' | 'refunded';
   refundError?: string;
   chargeStatus?: 'reserved' | 'finalized' | 'refunded' | 'admin_free';
+  parentGenerationId?: string;
+  isIterativeEdit?: boolean;
+  customPrompt?: string;
   pipelineDiagnostics?: GenerationPipelineDiagnostics;
 }
 

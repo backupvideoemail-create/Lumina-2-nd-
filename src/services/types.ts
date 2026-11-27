@@ -19,6 +19,8 @@ export interface ImageGenerationParams {
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
+  isIterativeEdit?: boolean;
+  previousGenerationId?: string;
 }
 
 export interface VideoGenerationParams {
@@ -43,6 +45,8 @@ export interface VideoGenerationParams {
   styleWorkflow?: string;
   customParameters?: Record<string, any>;
   ownerUserId?: string;
+  isIterativeEdit?: boolean;
+  previousGenerationId?: string;
 }
 
 export interface FaceSwapParams {
@@ -93,6 +97,8 @@ export interface TemplateProcessParams {
   wardrobeSource?: string;
   customParameters?: Record<string, any>;
   isEvaluationMode?: boolean;
+  isIterativeEdit?: boolean;
+  previousGenerationId?: string;
 }
 
 export interface ProviderResult {

@@ -57,6 +57,9 @@ export type PendingAction =
         wardrobeSource?: string;
         wardrobeSourceA?: string;
         wardrobeSourceB?: string;
+        previousGenerationId?: string;
+        editMode?: 'iterative_edit';
+        idempotencyKey?: string;
       };
     }
   | { type: 'buy_plan'; planId?: string }
@@ -136,6 +139,9 @@ interface AppContextType {
       wardrobeSource?: string;
       wardrobeSourceA?: string;
       wardrobeSourceB?: string;
+      previousGenerationId?: string;
+      editMode?: 'iterative_edit';
+      idempotencyKey?: string;
     }
   ) => Promise<GenerationResult>;
   deleteGeneration: (id: string) => Promise<void>;
@@ -1196,6 +1202,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       wardrobeSource?: string;
       wardrobeSourceA?: string;
       wardrobeSourceB?: string;
+      previousGenerationId?: string;
+      editMode?: 'iterative_edit';
+      idempotencyKey?: string;
     }
   ): Promise<GenerationResult> => {
     if (!user) {
@@ -1229,7 +1238,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           model: options?.model,
           wardrobeSource: options?.wardrobeSource,
           wardrobeSourceA: options?.wardrobeSourceA,
-          wardrobeSourceB: options?.wardrobeSourceB
+          wardrobeSourceB: options?.wardrobeSourceB,
+          previousGenerationId: options?.previousGenerationId,
+          editMode: options?.editMode,
+          idempotencyKey: options?.idempotencyKey
         })
       });
 

@@ -99,7 +99,8 @@ import {
   resolveTemplateInputSlots,
   requiresCustomerPhotoPersonalization,
   computeTemplateConfigFingerprint,
-  isExplicitCoupleTemplate
+  isExplicitCoupleTemplate,
+  supportsIterativeChanges
 } from './src/services/validation/templateReadiness.ts';
 import { getKolkataDateKey } from './src/services/db/database.ts';
 import type {
@@ -6136,8 +6137,10 @@ async function attemptDurableGenerationRefund(params: {
 app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (req, res) => {
   const user = (req as any).user as UserProfile;
   const isAuthorizedAdminEarly = isServerVerifiedAdmin(user);
-  const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource } = req.body;
+  const { templateId, customPrompt, resolution, durationSeconds, model, wardrobeSource, previousGenerationId, editMode } = req.body;
   const sanitizedCustomPrompt = customPrompt ? String(customPrompt).trim().slice(0, 300) : undefined;
+  const normalizedPrevGenId = typeof previousGenerationId === 'string' ? previousGenerationId.trim() : '';
+  const isIterativeEditRequested = Boolean(normalizedPrevGenId || editMode === 'iterative_edit');
   const rawIdempotencyKey = req.body?.idempotencyKey || req.headers['x-idempotency-key'];
   const idempotencyKey = typeof rawIdempotencyKey === 'string' && rawIdempotencyKey.trim()
     ? rawIdempotencyKey.trim().slice(0, 128)
@@ -6169,11 +6172,70 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     }
   }
 
+  let prevGenRecord: Generation | undefined;
+  if (isIterativeEditRequested) {
+    if (!normalizedPrevGenId) {
+      return res.status(400).json({
+        error: 'previousGenerationId is required for Make More Changes.',
+        code: 'MISSING_PREVIOUS_GENERATION_ID',
+        stage: 'validation'
+      });
+    }
+    if (!sanitizedCustomPrompt) {
+      return res.status(400).json({
+        error: 'Please enter or select at least one change before generating.',
+        code: 'MISSING_EDIT_INSTRUCTIONS',
+        stage: 'validation'
+      });
+    }
+    prevGenRecord = (await prodDb.getGenerationAuthoritative(normalizedPrevGenId)) || undefined;
+    if (!prevGenRecord) {
+      return res.status(404).json({
+        error: 'Previous generation not found. No credits were deducted.',
+        code: 'PREVIOUS_GENERATION_NOT_FOUND',
+        stage: 'validation'
+      });
+    }
+    if (prevGenRecord.userId !== user.id) {
+      return res.status(403).json({
+        error: 'You do not have permission to edit another user generation.',
+        code: 'FORBIDDEN_GENERATION_ACCESS',
+        stage: 'authorization'
+      });
+    }
+    if (prevGenRecord.status !== 'completed' || !prevGenRecord.resultMediaUrl) {
+      return res.status(400).json({
+        error: 'Only completed generations with valid output media can be modified.',
+        code: 'PREVIOUS_GENERATION_NOT_COMPLETED',
+        stage: 'validation'
+      });
+    }
+    if (templateId && prevGenRecord.templateId !== templateId) {
+      return res.status(400).json({
+        error: 'Previous generation does not match the selected template.',
+        code: 'TEMPLATE_MISMATCH',
+        stage: 'validation'
+      });
+    }
+  }
+
+  const effectiveTemplateId = templateId || prevGenRecord?.templateId;
   const template = isAuthorizedAdminEarly
-    ? prodDb.getAllTemplatesAdmin().find((t) => t.id === templateId)
-    : prodDb.getTemplates().find((t) => t.id === templateId);
+    ? prodDb.getAllTemplatesAdmin().find((t) => t.id === effectiveTemplateId)
+    : prodDb.getTemplates().find((t) => t.id === effectiveTemplateId);
   if (!template) {
     return res.status(404).json({ error: 'Template not found', code: 'TEMPLATE_NOT_FOUND', stage: 'validation' });
+  }
+
+  if (isIterativeEditRequested) {
+    const iterativeCapability = supportsIterativeChanges(template);
+    if (!iterativeCapability.supported) {
+      return res.status(400).json({
+        error: iterativeCapability.reason || 'This template does not support iterative Make More Changes.',
+        code: 'UNSUPPORTED_ITERATIVE_EDIT',
+        stage: 'validation'
+      });
+    }
   }
 
   // Server-side Template Readiness Validation BEFORE media storage or credit deduction (Preserves Legacy Active Templates + Blocks Unverified New/Edited Templates)
@@ -6431,18 +6493,34 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     });
   }
 
-  // Normalize customer inputs into structured slots
+  // Normalize customer inputs into structured slots (inheriting verified private inputs on Make More Changes)
   const rawInputMedia = req.body.inputMedia;
   const rawInputMediaUrls = req.body.inputMediaUrls;
   const rawInputMediaUrl = req.body.inputMediaUrl;
 
-  const rawStructuredInput: any[] = Array.isArray(rawInputMedia) && rawInputMedia.length > 0
+  let rawStructuredInput: any[] = Array.isArray(rawInputMedia) && rawInputMedia.length > 0
     ? rawInputMedia
     : Array.isArray(rawInputMediaUrls) && rawInputMediaUrls.length > 0
     ? rawInputMediaUrls.map((u: any, idx: number) => ({ slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`, mediaUrl: u }))
     : typeof rawInputMediaUrl === 'string' && rawInputMediaUrl.trim()
     ? rawInputMediaUrl.split('|||').map((u: string, idx: number) => ({ slotId: idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`, mediaUrl: u.trim() }))
     : [];
+
+  if (rawStructuredInput.length === 0 && isIterativeEditRequested && prevGenRecord) {
+    const prevFileIds = Array.isArray(prevGenRecord.inputMediaFileIds) ? prevGenRecord.inputMediaFileIds.filter(Boolean) : [];
+    const prevUrlList = prevGenRecord.inputMediaUrl
+      ? prevGenRecord.inputMediaUrl.split('|||').map((u) => u.trim()).filter(Boolean)
+      : [];
+    const inheritedSources = prevFileIds.length > 0
+      ? prevFileIds.map((fid) => `/api/media/${fid}`)
+      : prevUrlList;
+    const isPrevCouple = isExplicitCoupleTemplate(template);
+    rawStructuredInput = inheritedSources.map((src, idx) => ({
+      slotId: isPrevCouple ? (idx === 0 ? 'partner_1' : idx === 1 ? 'partner_2' : `slot_${idx + 1}`) : (idx === 0 ? 'user_photo' : `slot_${idx + 1}`),
+      role: isPrevCouple ? (idx === 0 ? 'person_a' : 'person_b') : undefined,
+      mediaUrl: src
+    }));
+  }
 
   if (rawStructuredInput.length === 0) {
     return res.status(400).json({ error: 'Please upload media to generate', code: 'MISSING_MEDIA', stage: 'validation' });
@@ -6589,7 +6667,37 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     let storedSizeBytes: number | undefined;
     let computedShaPrefix: string | undefined;
 
-    if (rawMediaString && (rawMediaString.startsWith('data:') || rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://'))) {
+    if (rawMediaString && rawMediaString.startsWith('/api/media/') && isIterativeEditRequested && prevGenRecord) {
+      // Reuse already-stored private customer input owned by this user on Make More Changes without duplicating storage
+      const existingFileId = extractMediaFileIdFromRef(rawMediaString);
+      if (!existingFileId) {
+        return res.status(400).json({
+          error: `Inherited media reference for input ${mIdx + 1} is invalid.`,
+          code: 'INVALID_MEDIA_PAYLOAD',
+          stage: 'validation'
+        });
+      }
+      const deliveryCheck = await mediaStorage.getAuthorizedDeliveryBundle(existingFileId, user.id, 3600);
+      if (!deliveryCheck.ok) {
+        return res.status(deliveryCheck.statusCode === 403 ? 403 : 400).json({
+          error: deliveryCheck.error || `Cannot access original customer input for input ${mIdx + 1}.`,
+          code: deliveryCheck.statusCode === 403 ? 'FORBIDDEN_MEDIA_ACCESS' : 'MISSING_INHERITED_INPUT',
+          stage: 'authorization'
+        });
+      }
+      const freshSigned = await mediaStorage.generateProviderSignedUrl(existingFileId, 3600);
+      if (!freshSigned) {
+        return res.status(500).json({
+          error: 'Failed to prepare private customer input URL for iterative editing.',
+          code: 'STORAGE_SIGNING_FAILED',
+          stage: 'storage'
+        });
+      }
+      effectiveUrl = freshSigned;
+      storedFileId = existingFileId;
+      storedMimeType = deliveryCheck.mimeType || (itemIsVideo ? 'video/mp4' : 'image/jpeg');
+      storedSizeBytes = deliveryCheck.sizeBytes || 0;
+    } else if (rawMediaString && (rawMediaString.startsWith('data:') || rawMediaString.startsWith('http://') || rawMediaString.startsWith('https://'))) {
       if (rawMediaString.includes('/api/media/') && !rawMediaString.includes('token=')) {
         const isSignedRoute = rawMediaString.includes('/api/media/signed/');
         const tokenSeg = isSignedRoute ? rawMediaString.split('/api/media/signed/')[1]?.split('?')[0]?.split('/')[0] : '';
@@ -6885,6 +6993,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
     requestedOutputDurationSeconds: requestedDuration,
     sourceVideoDurationSeconds: measuredSourceVideoDuration,
     wardrobeSource: typeof wardrobeSource === 'string' ? wardrobeSource : undefined,
+    ...(isIterativeEditRequested && prevGenRecord ? { parentGenerationId: prevGenRecord.id, isIterativeEdit: true } : {}),
+    ...(sanitizedCustomPrompt ? { customPrompt: sanitizedCustomPrompt } : {}),
     pipelineDiagnostics: initialPipelineDiagnostics,
     ...(idempotencyKey ? { idempotencyKey } : {})
   };
@@ -6931,7 +7041,21 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       template.cover !== template.sampleBefore
         ? template.cover
         : undefined;
-    const resolvedRefImage = explicitAfterRef || safeCoverFallback;
+    const baseRefImage = explicitAfterRef || safeCoverFallback;
+    let resolvedRefImage = baseRefImage;
+
+    // On iterative photo edits (Make More Changes), use the verified previous generated output as the editing base
+    // while retaining the customer's original uploaded photo(s) as facial identity anchor(s).
+    if (isIterativeEditRequested && prevGenRecord?.resultMediaUrl && template.type === 'photo') {
+      const prevVerify = await mediaStorage.verifyStoredMediaDeliverable(prevGenRecord.resultMediaUrl, user.id);
+      if (!prevVerify.verified) {
+        throw new Error(`PREVIOUS_RESULT_UNAVAILABLE: ${prevVerify.reason || 'Previous generated output could not be loaded for editing.'}`);
+      }
+      const prevSignedRef = prevVerify.fileId
+        ? await mediaStorage.generateProviderSignedUrl(prevVerify.fileId, 3600)
+        : prevGenRecord.resultMediaUrl;
+      resolvedRefImage = prevSignedRef || prevGenRecord.resultMediaUrl;
+    }
 
     if (template.type === 'photo' && template.engine !== 'SMART_TEMPLATE' && !resolvedRefImage) {
       throw new Error('Template is missing its designated AFTER / sample result reference image (cannot use face thumbnail or before asset).');
@@ -6961,7 +7085,8 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       hasDrivingVideo: Boolean(template.drivingVideoUrl || template.recipe?.drivingVideoUrl),
       wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any,
       wardrobeSourceA: req.body.wardrobeSourceA,
-      wardrobeSourceB: req.body.wardrobeSourceB
+      wardrobeSourceB: req.body.wardrobeSourceB,
+      isIterativeEdit: isIterativeEditRequested
     });
 
     const effectiveRecipe = template.recipe ? {
@@ -7063,7 +7188,9 @@ app.post('/api/generations/create', requireAuth, rateLimit(60000, 20), async (re
       resolution: requestedResolution as any,
       durationSeconds: requestedDuration,
       isCouple: isCoupleValid,
-      wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any
+      wardrobeSource: (wardrobeSource || template.defaultWardrobeSource) as any,
+      isIterativeEdit: isIterativeEditRequested,
+      previousGenerationId: prevGenRecord?.id
     });
 
     // Terminal State & Race Condition Guard: If generation already marked failed, do NOT overwrite to completed

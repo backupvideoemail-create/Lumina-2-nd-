@@ -11,14 +11,19 @@ import {
   Check,
   ShieldCheck,
   Film,
-  RefreshCw
+  RefreshCw,
+  Edit3
 } from 'lucide-react';
 import { useApp, safeParseJsonResponse } from '../context/AppContext';
-import { Generation, Template } from '../types';
+import { Generation, Template, GenerationResult } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { reportMediaPlaybackIssue } from '../services/media/mediaPlaybackManager';
 import { getStoredSessionToken } from '../utils/authSession';
 import { useAuthorizedMedia, downloadAuthorizedMedia } from '../utils/authorizedMediaResolver';
+import {
+  supportsIterativeChanges,
+  getBilingualCustomizationChips
+} from '../services/validation/templateReadiness';
 
 interface GenerationViewerContentProps {
   gen: Generation;
@@ -28,6 +33,28 @@ interface GenerationViewerContentProps {
   setReportModalGenId: (id: string | null) => void;
   refreshUserData: () => Promise<void>;
   refreshGenerations: () => Promise<void>;
+  createGeneration: (
+    templateId: string,
+    inputMediaUrl: string,
+    customPrompt?: string,
+    mediaDetails?: {
+      inputMediaUrls?: string[];
+      inputMedia?: Array<{ slotId: string; role?: string; type: string; media: string }>;
+    },
+    options?: {
+      resolution?: string;
+      durationSeconds?: number;
+      model?: string;
+      wardrobeSource?: string;
+      wardrobeSourceA?: string;
+      wardrobeSourceB?: string;
+      previousGenerationId?: string;
+      editMode?: 'iterative_edit';
+      idempotencyKey?: string;
+    }
+  ) => Promise<GenerationResult>;
+  walletBalance?: number;
+  setInsufficientCreditsModal: (val: { open: boolean; requiredCredits: number; availableCredits: number } | null) => void;
 }
 
 const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
@@ -37,13 +64,22 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
   setSelectedTemplate,
   setReportModalGenId,
   refreshUserData,
-  refreshGenerations
+  refreshGenerations,
+  createGeneration,
+  walletBalance,
+  setInsufficientCreditsModal
 }) => {
   const [copied, setCopied] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadSuccessName, setDownloadSuccessName] = useState<string | null>(null);
+  const [showMakeChanges, setShowMakeChanges] = useState(false);
+  const [editInstructions, setEditInstructions] = useState('');
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editErrorRefunded, setEditErrorRefunded] = useState(false);
+  const [editIdempotencyKey, setEditIdempotencyKey] = useState<string | null>(null);
 
   const isProcessing =
     gen.status === 'preparing' ||
@@ -66,6 +102,11 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
   useEffect(() => {
     setDownloadError(null);
     setDownloadSuccessName(null);
+    setShowMakeChanges(false);
+    setEditInstructions('');
+    setEditError(null);
+    setEditErrorRefunded(false);
+    setEditIdempotencyKey(null);
   }, [gen.id, gen.resultMediaUrl]);
 
   // Active polling and live elapsed seconds counter
@@ -166,6 +207,63 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
       navigator.clipboard.writeText(window.location.href);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const currentTemplate = templates.find((t) => t.id === gen.templateId);
+  const iterativeCapability = supportsIterativeChanges(currentTemplate);
+  const editCreditCost = currentTemplate?.creditCost || gen.creditCost || 30;
+
+  const handleGenerateChanges = async () => {
+    const trimmed = editInstructions.trim().slice(0, 300);
+    if (!trimmed) {
+      setEditError('Please describe or tap at least one change before generating.');
+      return;
+    }
+    if (isSubmittingEdit) return;
+    if (typeof walletBalance === 'number' && walletBalance < editCreditCost) {
+      setInsufficientCreditsModal({
+        open: true,
+        requiredCredits: editCreditCost,
+        availableCredits: walletBalance
+      });
+      return;
+    }
+
+    const activeIdemKey = editIdempotencyKey || `edit_${gen.id}_${Date.now()}`;
+    if (!editIdempotencyKey) {
+      setEditIdempotencyKey(activeIdemKey);
+    }
+
+    setIsSubmittingEdit(true);
+    setEditError(null);
+    setEditErrorRefunded(false);
+
+    const res = await createGeneration(
+      gen.templateId,
+      '',
+      trimmed,
+      undefined,
+      {
+        resolution: gen.resolution,
+        durationSeconds: gen.durationSeconds,
+        model: gen.model,
+        wardrobeSource: gen.wardrobeSource,
+        previousGenerationId: gen.id,
+        editMode: 'iterative_edit',
+        idempotencyKey: activeIdemKey
+      }
+    );
+
+    setIsSubmittingEdit(false);
+    if (res.success) {
+      setShowMakeChanges(false);
+      setEditInstructions('');
+      setEditIdempotencyKey(null);
+    } else {
+      setEditError(res.error || 'Could not apply changes. Please try again.');
+      setEditErrorRefunded(Boolean(res.refunded));
+      setEditIdempotencyKey(null);
     }
   };
 
@@ -467,6 +565,143 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
               </div>
             )}
 
+            {iterativeCapability.supported && (
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMakeChanges((prev) => !prev);
+                    setEditError(null);
+                  }}
+                  className={`w-full min-h-[46px] py-3 px-4 rounded-2xl text-sm font-semibold flex items-center justify-center gap-2 border transition-colors cursor-pointer ${
+                    showMakeChanges
+                      ? 'bg-amber-400/15 text-amber-200 border-amber-400/50'
+                      : 'bg-[#121217] hover:bg-stone-800 text-white border-white/15'
+                  }`}
+                >
+                  <Edit3 className="w-4 h-4 text-[#d4af37]" />
+                  <span>Make More Changes</span>
+                </button>
+
+                {showMakeChanges && (
+                  <div className="p-4 rounded-2xl bg-[#121018] border border-white/15 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h5 className="text-sm font-bold text-white flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          <span>Make More Changes</span>
+                        </h5>
+                        <p className="text-[11px] text-stone-400 mt-0.5">
+                          Original face identity stays locked; only your selected changes apply.
+                        </p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/30 text-[11px] font-mono tabular-nums font-bold text-amber-200 shrink-0">
+                        {editCreditCost} Credits
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Edit suggestion chips">
+                      {getBilingualCustomizationChips(currentTemplate, 'post_edit').map((chip) => {
+                        const isSelected = editInstructions.toLowerCase().includes(chip.promptDirective.toLowerCase());
+                        return (
+                          <button
+                            key={chip.id}
+                            type="button"
+                            onClick={() => {
+                              setEditIdempotencyKey(null);
+                              setEditInstructions((prev) => {
+                                const cleanPrev = prev.trim();
+                                if (isSelected) {
+                                  const escaped = chip.promptDirective.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                  return cleanPrev
+                                    .replace(new RegExp(`(?:^|[.;,]\\s*)${escaped}`, 'i'), '')
+                                    .replace(/^[.;,\s]+|[.;,\s]+$/g, '')
+                                    .slice(0, 300);
+                                }
+                                const next = cleanPrev ? `${cleanPrev}; ${chip.promptDirective}` : chip.promptDirective;
+                                return next.slice(0, 300);
+                              });
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border text-left transition-colors cursor-pointer flex flex-col justify-center ${
+                              isSelected
+                                ? 'bg-amber-400/15 border-amber-400/70 text-amber-100'
+                                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-stone-200'
+                            }`}
+                          >
+                            <span className="text-[11px] font-semibold leading-tight">{chip.labelEn}</span>
+                            <span className="text-[10px] text-stone-400 leading-tight">{chip.labelHi}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-stone-400">
+                        <label htmlFor="make-more-changes-input" className="font-semibold text-stone-300">
+                          Describe your changes
+                        </label>
+                        <span className="font-mono tabular-nums">
+                          {editInstructions.length}/300
+                        </span>
+                      </div>
+                      <textarea
+                        id="make-more-changes-input"
+                        value={editInstructions}
+                        onChange={(e) => {
+                          setEditIdempotencyKey(null);
+                          setEditInstructions(e.target.value.slice(0, 300));
+                        }}
+                        maxLength={300}
+                        rows={2}
+                        placeholder="E.g., Remove sunglasses, change shirt colour to navy blue, keep pose unchanged..."
+                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 transition-colors resize-none"
+                      />
+                    </div>
+
+                    {editError && (
+                      <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200 space-y-1">
+                        <p>{editError}</p>
+                        {editErrorRefunded && (
+                          <p className="text-[11px] text-emerald-300 font-semibold">
+                            Credits automatically refunded to your wallet.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowMakeChanges(false)}
+                        disabled={isSubmittingEdit}
+                        className="min-h-[44px] py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-stone-300 border border-white/10 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateChanges}
+                        disabled={!editInstructions.trim() || isSubmittingEdit}
+                        className="min-h-[44px] py-2.5 px-3 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {isSubmittingEdit ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Applying…</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span className="tabular-nums">Generate Changes ({editCreditCost} cr)</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="text-center pt-2">
               <button
                 onClick={handleCreateAgain}
@@ -491,7 +726,10 @@ export const GenerationViewerModal: React.FC = () => {
     setSelectedTemplate,
     setReportModalGenId,
     refreshUserData,
-    refreshGenerations
+    refreshGenerations,
+    createGeneration,
+    wallet,
+    setInsufficientCreditsModal
   } = useApp();
 
   if (!activeGeneration) return null;
@@ -505,6 +743,9 @@ export const GenerationViewerModal: React.FC = () => {
       setReportModalGenId={setReportModalGenId}
       refreshUserData={refreshUserData}
       refreshGenerations={refreshGenerations}
+      createGeneration={createGeneration}
+      walletBalance={wallet?.balance}
+      setInsufficientCreditsModal={setInsufficientCreditsModal}
     />
   );
 };
