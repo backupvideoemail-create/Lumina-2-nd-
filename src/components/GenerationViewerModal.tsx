@@ -15,13 +15,14 @@ import {
   Edit3
 } from 'lucide-react';
 import { useApp, safeParseJsonResponse } from '../context/AppContext';
-import { Generation, Template, GenerationResult } from '../types';
+import { Generation, Template, GenerationResult, FxRateStatus } from '../types';
 import { isVideoMedia } from '../utils/mediaUtils';
 import { reportMediaPlaybackIssue } from '../services/media/mediaPlaybackManager';
 import { getStoredSessionToken } from '../utils/authSession';
 import { useAuthorizedMedia, downloadAuthorizedMedia } from '../utils/authorizedMediaResolver';
 import {
   supportsIterativeChanges,
+  resolveIterativeEditQuote,
   getBilingualCustomizationChips
 } from '../services/validation/templateReadiness';
 
@@ -80,6 +81,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
   const [editError, setEditError] = useState<string | null>(null);
   const [editErrorRefunded, setEditErrorRefunded] = useState(false);
   const [editIdempotencyKey, setEditIdempotencyKey] = useState<string | null>(null);
+  const [liveFxStatus, setLiveFxStatus] = useState<FxRateStatus | null>(null);
 
   const isProcessing =
     gen.status === 'preparing' ||
@@ -108,6 +110,22 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
     setEditErrorRefunded(false);
     setEditIdempotencyKey(null);
   }, [gen.id, gen.resultMediaUrl]);
+
+  useEffect(() => {
+    if (!showMakeChanges) return;
+    let active = true;
+    fetch('/api/pricing/fx')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (active && data?.fxStatus) {
+          setLiveFxStatus(data.fxStatus);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [showMakeChanges, gen.templateId]);
 
   // Active polling and live elapsed seconds counter
   useEffect(() => {
@@ -212,12 +230,21 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
 
   const currentTemplate = templates.find((t) => t.id === gen.templateId);
   const iterativeCapability = supportsIterativeChanges(currentTemplate);
-  const editCreditCost = currentTemplate?.creditCost || gen.creditCost || 30;
+  const editQuote = resolveIterativeEditQuote({
+    template: currentTemplate,
+    previousGeneration: gen,
+    liveFxStatus
+  });
+  const editCreditCost = editQuote.valid ? editQuote.credits : null;
 
   const handleGenerateChanges = async () => {
     const trimmed = editInstructions.trim().slice(0, 300);
     if (!trimmed) {
       setEditError('Please describe or tap at least one change before generating.');
+      return;
+    }
+    if (editCreditCost === null || editCreditCost <= 0) {
+      setEditError(editQuote.reason || 'Valid credit quote is unavailable right now. Please wait or try again.');
       return;
     }
     if (isSubmittingEdit) return;
@@ -596,7 +623,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
                         </p>
                       </div>
                       <span className="px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/30 text-[11px] font-mono tabular-nums font-bold text-amber-200 shrink-0">
-                        {editCreditCost} Credits
+                        {editCreditCost !== null ? `${editCreditCost} Credits` : 'Quote unavailable'}
                       </span>
                     </div>
 
@@ -681,7 +708,7 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
                       <button
                         type="button"
                         onClick={handleGenerateChanges}
-                        disabled={!editInstructions.trim() || isSubmittingEdit}
+                        disabled={!editInstructions.trim() || isSubmittingEdit || editCreditCost === null}
                         className="min-h-[44px] py-2.5 px-3 gold-button rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                       >
                         {isSubmittingEdit ? (
@@ -692,7 +719,9 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
                         ) : (
                           <>
                             <Sparkles className="w-3.5 h-3.5" />
-                            <span className="tabular-nums">Generate Changes ({editCreditCost} cr)</span>
+                            <span className="tabular-nums">
+                              {editCreditCost !== null ? `Generate Changes (${editCreditCost} cr)` : 'Quote Unavailable'}
+                            </span>
                           </>
                         )}
                       </button>

@@ -1375,6 +1375,7 @@ async function runVerification() {
     const {
       getBilingualCustomizationChips,
       supportsIterativeChanges,
+      resolveIterativeEditQuote,
       computeTemplateConfigFingerprint
     } = await import('../src/services/validation/templateReadiness.ts');
 
@@ -1769,6 +1770,88 @@ async function runVerification() {
         Boolean(diagFailed.recommendedFix?.includes('API key')) &&
         Boolean(diagTestReq.recommendedFix?.includes('Real Test')),
       'I.10 Iterative adapter boundaries (Photo/SmartCanvas/Video/FaceSwap vs static NONE) & Admin Gallery inline recommendedFix hints verified across all non-READY states'
+    );
+
+    // I.11 Focused minor-review regression checks:
+    // (a) supportsIterativeChanges never unlocks solely from tpl.type === 'video'; requires explicit supported provider+adapter+workflow
+    // (b) GenerationViewerModal / resolveIterativeEditQuote never falls back to arbitrary '|| 30'
+    const capBareVideoType = supportsIterativeChanges({ type: 'video', engine: 'AI_GENERATION', inputType: 'IMAGE_ONLY' });
+    const capUnsupportedVidProvider = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'runway',
+      adapter: 'runwayAdapter',
+      workflow: 'IMAGE_TO_VIDEO'
+    });
+    const capHiggsObjectSwap = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'higgsfield',
+      adapter: 'faceSwapAdapter',
+      model: 'hf_mult_replace_object_flash',
+      workflow: 'OBJECT_SWAP'
+    });
+    const capOmniUnsupportedWf = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      workflow: 'LIP_SYNC'
+    });
+    const capVideoAdapterMismatch = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'gemini',
+      adapter: 'geminiAdapter',
+      workflow: 'IMAGE_TO_VIDEO'
+    });
+    const capHiggsMotionTransfer = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'higgsfield',
+      adapter: 'faceSwapAdapter',
+      model: 'hf_mult_motion_control_flash',
+      workflow: 'MOTION_TRANSFER'
+    });
+    const capGoogleVeoEdit = supportsIterativeChanges({
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'google_veo',
+      adapter: 'videoProviderAdapter',
+      workflow: 'VIDEO_EDIT'
+    });
+    const capUnsupportedPhoto = supportsIterativeChanges({
+      type: 'photo',
+      engine: 'AI_GENERATION',
+      provider: 'midjourney',
+      adapter: 'mjAdapter'
+    });
+
+    const quoteFromPrev = resolveIterativeEditQuote({
+      template: null,
+      previousGeneration: { creditCost: 17 }
+    });
+    const quoteMissingBoth = resolveIterativeEditQuote({
+      template: { id: 'tpl_no_price', type: 'photo', engine: 'AI_GENERATION', provider: 'gemini', model: 'gemini-2.5-flash-image' },
+      previousGeneration: { creditCost: 0 },
+      liveFxStatus: { isFresh: false, rate: null } as any
+    });
+    const viewerModalSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/GenerationViewerModal.tsx'), 'utf8');
+
+    assert(
+      !capBareVideoType.supported &&
+        !capUnsupportedVidProvider.supported &&
+        !capHiggsObjectSwap.supported &&
+        !capOmniUnsupportedWf.supported &&
+        !capVideoAdapterMismatch.supported &&
+        !capUnsupportedPhoto.supported &&
+        capHiggsMotionTransfer.supported && capHiggsMotionTransfer.mode === 'video_instruction_rerender' &&
+        capGoogleVeoEdit.supported && capGoogleVeoEdit.mode === 'video_instruction_rerender' &&
+        quoteFromPrev.valid && quoteFromPrev.credits === 17 && quoteFromPrev.source === 'previous_generation_cost' &&
+        !quoteMissingBoth.valid && quoteMissingBoth.credits === null && quoteMissingBoth.source === 'unavailable' &&
+        !viewerModalSrc.includes('|| 30') &&
+        viewerModalSrc.includes('resolveIterativeEditQuote'),
+      'I.11 Explicit video provider+adapter+workflow capability gates & non-invented GenerationViewerModal quote (zero || 30 fallback) verified'
     );
   } finally {
     __setServerTestDeps();

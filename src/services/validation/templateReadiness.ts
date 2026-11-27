@@ -1,6 +1,7 @@
-import type { FaceSwapScene, SemanticInputRole, Template, TemplateInputDef } from '../../types';
+import type { FaceSwapScene, FxRateStatus, Generation, SemanticInputRole, Template, TemplateInputDef } from '../../types';
 import {
   FACE_SWAP_COMPATIBLE_COMBINATIONS,
+  calculateCustomerTemplateQuote,
   getRegisteredModelEntry,
   resolveCanonicalModelId
 } from '../pricing/pricingService';
@@ -942,9 +943,30 @@ export interface IterativeChangeCapability {
   reason?: string;
 }
 
+const HIGGSFIELD_SUPPORTED_EDIT_WORKFLOWS = new Set<string>([
+  'MOTION_TRANSFER',
+  'VIDEO_FACE_REPLACEMENT'
+]);
+
+const GOOGLE_VIDEO_SUPPORTED_EDIT_WORKFLOWS = new Set<string>([
+  'VIDEO_EDIT',
+  'IMAGE_TO_VIDEO'
+]);
+
+const UNSUPPORTED_PHOTO_WORKFLOWS = new Set<string>([
+  'MOTION_TRANSFER',
+  'OBJECT_SWAP',
+  'VIDEO_FACE_REPLACEMENT',
+  'VIDEO_EDIT',
+  'IMAGE_TO_VIDEO',
+  'STATIC_UNEDITABLE',
+  'NONE'
+]);
+
 /**
- * Determines universally across Photo AI, SmartCanvas, Video AI, and FaceSwap/Motion-Transfer
- * whether the template's configured provider & adapter genuinely supports iterative "Make More Changes".
+ * Determines universally across SmartCanvas, Photo AI, Google Omni/Veo, and Higgsfield Motion Transfer
+ * whether the template's explicit configured provider + adapter + workflow genuinely supports
+ * iterative "Make More Changes". Never returns supported solely from `tpl.type === 'video'`.
  */
 export function supportsIterativeChanges(
   tpl: Partial<Template> | null | undefined
@@ -953,15 +975,35 @@ export function supportsIterativeChanges(
     return { supported: false, mode: 'unsupported', reason: 'Template metadata unavailable.' };
   }
 
-  const engine = tpl.engine || tpl.recipe?.engine || 'AI_GENERATION';
+  const engine = String(tpl.engine || tpl.recipe?.engine || 'AI_GENERATION').trim().toUpperCase();
   const provider = String(tpl.provider || tpl.recipe?.provider || '').trim().toLowerCase();
   const adapter = String(tpl.adapter || tpl.recipe?.adapter || '').trim();
+  const workflow = String(tpl.workflow || tpl.recipe?.workflow || '').trim().toUpperCase();
+  const rawModel = String(tpl.model || tpl.recipe?.model || '').trim();
+  const canonicalModel = rawModel ? resolveCanonicalModelId(rawModel) : '';
+  const regEntry = canonicalModel ? getRegisteredModelEntry(canonicalModel) : undefined;
+
   const inputType = tpl.inputType || tpl.recipe?.inputType;
   const isNonPersonalized =
     inputType === 'NONE' || (tpl as any).requiresCustomerIdentity === false;
   const hasInputs = Boolean(!isNonPersonalized && ((tpl.requiredInputs && tpl.requiredInputs.length > 0) || inputType));
 
+  // 1. SmartCanvas Templates (Personalized Photo or Video only; static NONE frames excluded)
   if (engine === 'SMART_TEMPLATE' || provider === 'smart_template' || adapter === 'smartCanvas') {
+    if (provider && provider !== 'smart_template') {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: `Mismatched SmartCanvas provider '${provider}'.`
+      };
+    }
+    if (adapter && adapter !== 'smartCanvas') {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: `Mismatched SmartCanvas adapter '${adapter}'.`
+      };
+    }
     if (isNonPersonalized || !hasInputs) {
       return {
         supported: false,
@@ -972,25 +1014,237 @@ export function supportsIterativeChanges(
     return { supported: true, mode: 'smart_rerender' };
   }
 
-  if (tpl.type === 'photo' || provider === 'gemini' || adapter === 'geminiAdapter') {
-    return { supported: true, mode: 'image_edit' };
-  }
-
+  // 2. Video AI Templates: require explicit supported provider + adapter + workflow
   if (
     tpl.type === 'video' ||
+    provider === 'higgsfield' ||
     provider === 'google_omni' ||
     provider === 'google_veo' ||
-    provider === 'higgsfield' ||
-    adapter === 'videoProviderAdapter' ||
-    adapter === 'faceSwapAdapter'
+    adapter === 'faceSwapAdapter' ||
+    adapter === 'videoProviderAdapter'
   ) {
-    return { supported: true, mode: 'video_instruction_rerender' };
+    // 2a. Higgsfield Motion Transfer (faceSwapAdapter)
+    const isHiggsfieldCandidate =
+      provider === 'higgsfield' ||
+      (!provider && (adapter === 'faceSwapAdapter' || regEntry?.provider === 'higgsfield'));
+
+    if (isHiggsfieldCandidate) {
+      if (adapter && adapter !== 'faceSwapAdapter') {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Higgsfield template uses unsupported adapter '${adapter}'.`
+        };
+      }
+      if (regEntry && (regEntry.provider !== 'higgsfield' || regEntry.adapterId !== 'faceSwapAdapter')) {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Model '${canonicalModel}' is incompatible with Higgsfield Motion Transfer editing.`
+        };
+      }
+      const effectiveWf = workflow || regEntry?.workflow || (provider === 'higgsfield' && adapter === 'faceSwapAdapter' ? 'MOTION_TRANSFER' : '');
+      if (!effectiveWf || !HIGGSFIELD_SUPPORTED_EDIT_WORKFLOWS.has(effectiveWf)) {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Higgsfield workflow '${effectiveWf || 'UNSET'}' does not support Make More Changes.`
+        };
+      }
+      return { supported: true, mode: 'video_instruction_rerender' };
+    }
+
+    // 2b. Google Omni / Veo Video (videoProviderAdapter)
+    const isGoogleVideoCandidate =
+      provider === 'google_omni' ||
+      provider === 'google_veo' ||
+      (provider === 'gemini' &&
+        (adapter === 'videoProviderAdapter' ||
+          regEntry?.adapterId === 'videoProviderAdapter' ||
+          canonicalModel.includes('omni') ||
+          canonicalModel.startsWith('veo'))) ||
+      (!provider &&
+        (adapter === 'videoProviderAdapter' || regEntry?.adapterId === 'videoProviderAdapter'));
+
+    if (isGoogleVideoCandidate) {
+      if (adapter && adapter !== 'videoProviderAdapter') {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Google video template uses unsupported adapter '${adapter}'.`
+        };
+      }
+      if (regEntry && regEntry.adapterId !== 'videoProviderAdapter') {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Model '${canonicalModel}' is incompatible with videoProviderAdapter editing.`
+        };
+      }
+      if (canonicalModel && !canonicalModel.includes('omni') && !canonicalModel.startsWith('veo')) {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Model '${canonicalModel}' is not a supported Omni/Veo video model.`
+        };
+      }
+      const effectiveWf =
+        workflow ||
+        regEntry?.workflow ||
+        ((provider === 'google_omni' || provider === 'google_veo') && adapter === 'videoProviderAdapter'
+          ? 'IMAGE_TO_VIDEO'
+          : '');
+      if (!effectiveWf || !GOOGLE_VIDEO_SUPPORTED_EDIT_WORKFLOWS.has(effectiveWf)) {
+        return {
+          supported: false,
+          mode: 'unsupported',
+          reason: `Google video workflow '${effectiveWf || 'UNSET'}' does not support Make More Changes.`
+        };
+      }
+      return { supported: true, mode: 'video_instruction_rerender' };
+    }
+
+    return {
+      supported: false,
+      mode: 'unsupported',
+      reason: 'Video template lacks an explicitly supported provider, adapter, and workflow for Make More Changes.'
+    };
+  }
+
+  // 3. Photo AI Templates (Gemini Image Editing via geminiAdapter)
+  if (tpl.type === 'photo') {
+    const resolvedProvider = provider || regEntry?.provider || (adapter === 'geminiAdapter' ? 'gemini' : '');
+    const resolvedAdapter = adapter || regEntry?.adapterId || (resolvedProvider === 'gemini' ? 'geminiAdapter' : '');
+
+    if (resolvedProvider !== 'gemini' || resolvedAdapter !== 'geminiAdapter') {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: `Photo template provider '${resolvedProvider || 'unset'}' / adapter '${resolvedAdapter || 'unset'}' does not support Make More Changes.`
+      };
+    }
+    if (regEntry && (regEntry.provider !== 'gemini' || regEntry.adapterId !== 'geminiAdapter')) {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: `Model '${canonicalModel}' is incompatible with Gemini photo editing.`
+      };
+    }
+    if (workflow && UNSUPPORTED_PHOTO_WORKFLOWS.has(workflow)) {
+      return {
+        supported: false,
+        mode: 'unsupported',
+        reason: `Workflow '${workflow}' does not support Gemini photo editing.`
+      };
+    }
+    return { supported: true, mode: 'image_edit' };
   }
 
   return {
     supported: false,
     mode: 'unsupported',
     reason: 'Configured adapter does not support iterative post-result changes.'
+  };
+}
+
+export interface IterativeEditQuoteResult {
+  valid: boolean;
+  credits: number | null;
+  source: 'authoritative_template_quote' | 'template_credit_cost' | 'previous_generation_cost' | 'unavailable';
+  reason?: string;
+}
+
+/**
+ * Resolves the authoritative credit cost for Make More Changes without inventing an arbitrary fallback.
+ * Checks authoritative template quote first, then valid configured template creditCost or previous generation creditCost.
+ */
+export function resolveIterativeEditQuote(params: {
+  template?: Partial<Template> | null;
+  previousGeneration?: Partial<Generation> | null;
+  liveFxStatus?: FxRateStatus | null;
+}): IterativeEditQuoteResult {
+  const tpl = params.template;
+  const prev = params.previousGeneration;
+
+  if (tpl) {
+    const isSmart = Boolean(
+      (tpl as any).isSmartTemplate ||
+        (tpl as any).smartMode ||
+        (tpl as any).source === 'smart' ||
+        tpl.engine === 'SMART_TEMPLATE'
+    );
+    const modelId = resolveCanonicalModelId(tpl.model || prev?.model) || tpl.model || prev?.model || '';
+    const modelEntry = modelId ? getRegisteredModelEntry(modelId) : undefined;
+    const rawRes = (prev?.resolution || tpl.resolutionLabel || '').toLowerCase();
+    const validRes =
+      rawRes === '480p' || rawRes === '720p' || rawRes === '1080p'
+        ? (rawRes as '480p' | '720p' | '1080p')
+        : modelEntry?.appDefaultResolution;
+    const durationSec = prev?.durationSeconds || tpl.durationSeconds || modelEntry?.appDefaultDurationSeconds;
+
+    const quote = calculateCustomerTemplateQuote({
+      modelId,
+      type: tpl.type || prev?.templateType || 'photo',
+      resolution: validRes,
+      durationSeconds: durationSec,
+      sourceVideoDurationSeconds:
+        modelEntry?.provider === 'higgsfield' || modelId.startsWith('hf_')
+          ? Math.min(15, durationSec || 4)
+          : undefined,
+      engine: tpl.engine,
+      creditCost: tpl.creditCost,
+      providerCostUsd: tpl.providerCostUsd,
+      fxRateOverride: params.liveFxStatus?.isFresh && params.liveFxStatus.rate ? params.liveFxStatus.rate : undefined
+    });
+
+    if (quote.status === 'EVALUATION_ONLY' || quote.status === 'UNSUPPORTED') {
+      return {
+        valid: false,
+        credits: null,
+        source: 'unavailable',
+        reason: quote.reason || 'This template configuration does not have an active customer edit quote.'
+      };
+    }
+
+    if (quote.status === 'QUOTED' && Number.isFinite(quote.credits) && quote.credits > 0) {
+      return {
+        valid: true,
+        credits: quote.credits,
+        source: 'authoritative_template_quote'
+      };
+    }
+
+    if (!isSmart && params.liveFxStatus !== undefined && params.liveFxStatus !== null && !params.liveFxStatus.isFresh) {
+      return {
+        valid: false,
+        credits: null,
+        source: 'unavailable',
+        reason: 'Live pricing quote is refreshing. Please wait a moment before submitting.'
+      };
+    }
+
+    if (typeof tpl.creditCost === 'number' && Number.isFinite(tpl.creditCost) && tpl.creditCost > 0) {
+      return {
+        valid: true,
+        credits: tpl.creditCost,
+        source: 'template_credit_cost'
+      };
+    }
+  }
+
+  if (typeof prev?.creditCost === 'number' && Number.isFinite(prev.creditCost) && prev.creditCost > 0) {
+    return {
+      valid: true,
+      credits: prev.creditCost,
+      source: 'previous_generation_cost'
+    };
+  }
+
+  return {
+    valid: false,
+    credits: null,
+    source: 'unavailable',
+    reason: 'Authoritative credit quote is unavailable for this generation. Edit cannot proceed until pricing loads.'
   };
 }
 
