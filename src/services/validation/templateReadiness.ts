@@ -1256,14 +1256,260 @@ export interface BilingualCustomizationChip {
 }
 
 /**
- * Generates universal, template-aware bilingual (English + Hindi) customization chips
+ * Identifies whether a template routes through SmartCanvas SVG/FFmpeg frame rendering
+ * (where customPrompt is rendered as frame caption/text rather than AI visual inpainting).
+ */
+export function isSmartCanvasCustomization(tpl: Partial<Template> | null | undefined): boolean {
+  if (!tpl) return false;
+  const engine = String(tpl.engine || tpl.recipe?.engine || '').trim().toUpperCase();
+  const provider = String(tpl.provider || tpl.recipe?.provider || '').trim().toLowerCase();
+  const adapter = String(tpl.adapter || tpl.recipe?.adapter || '').trim();
+  const model = String(tpl.model || tpl.recipe?.model || '').trim().toLowerCase();
+  return Boolean(
+    engine === 'SMART_TEMPLATE' ||
+      provider === 'smart_template' ||
+      adapter === 'smartCanvas' ||
+      model === 'smart_canvas' ||
+      model === 'smart_canvas_ffmpeg' ||
+      (tpl as any).isSmartTemplate === true ||
+      (tpl as any).smartMode === true ||
+      (tpl as any).source === 'smart'
+  );
+}
+
+const SMART_CANVAS_CAPTION_CHIPS_BY_WORKFLOW: Record<string, BilingualCustomizationChip[]> = {
+  'retro-polaroid-warm': [
+    {
+      id: 'smart_polaroid_analog',
+      labelEn: 'Analog Memories',
+      labelHi: 'एनालॉग यादें',
+      promptDirective: 'ANALOG MEMORIES · 35MM'
+    },
+    {
+      id: 'smart_polaroid_golden',
+      labelEn: 'Golden Days',
+      labelHi: 'सुनहरे पल',
+      promptDirective: 'GOLDEN DAYS · KODAK FRAME'
+    },
+    {
+      id: 'smart_polaroid_weekend',
+      labelEn: 'Weekend Escape',
+      labelHi: 'वीकेंड सफर',
+      promptDirective: 'WEEKEND ESCAPE · FOREVER'
+    },
+    {
+      id: 'smart_polaroid_love',
+      labelEn: 'With Love & Light',
+      labelHi: 'प्यार और रोशनी के साथ',
+      promptDirective: 'MADE WITH LOVE · 2026'
+    }
+  ],
+  'story-clean-minimal': [
+    {
+      id: 'smart_story_quiet',
+      labelEn: 'Quiet Mornings',
+      labelHi: 'शांत सुबह',
+      promptDirective: 'Quiet mornings, timeless frame.'
+    },
+    {
+      id: 'smart_story_elegance',
+      labelEn: 'Pure Elegance',
+      labelHi: 'सादा सौंदर्य',
+      promptDirective: 'Pure elegance in every moment.'
+    },
+    {
+      id: 'smart_story_gratitude',
+      labelEn: 'Grateful Heart',
+      labelHi: 'आभारी मन',
+      promptDirective: 'Grateful heart, peaceful mind.'
+    },
+    {
+      id: 'smart_story_less_more',
+      labelEn: 'Less is More',
+      labelHi: 'कम में भी खास',
+      promptDirective: 'Less noise, more beauty.'
+    }
+  ],
+  'dark-academia-mood': [
+    {
+      id: 'smart_academia_chronicle',
+      labelEn: 'Timeless Chronicle',
+      labelHi: 'अमर कहानी',
+      promptDirective: 'EX LIBRIS · TIMELESS CHRONICLE'
+    },
+    {
+      id: 'smart_academia_wisdom',
+      labelEn: 'Chapter of Wisdom',
+      labelHi: 'ज्ञान का अध्याय',
+      promptDirective: 'CHAPTER IV · QUIET WISDOM'
+    },
+    {
+      id: 'smart_academia_archive',
+      labelEn: 'Classic Archive',
+      labelHi: 'क्लासिक संग्रह',
+      promptDirective: 'ARCHIVE OF GOLDEN THOUGHTS'
+    },
+    {
+      id: 'smart_academia_autumn',
+      labelEn: 'Autumn Reflections',
+      labelHi: 'शरद यादें',
+      promptDirective: 'AUTUMN INK · TIMELESS SOUL'
+    }
+  ],
+  'bali-jungle-glow': [
+    {
+      id: 'smart_bali_golden',
+      labelEn: 'Tropical Golden Hour',
+      labelHi: 'सुनहरा उष्णकटिबंधीय पल',
+      promptDirective: 'UBUD GOLDEN HOUR · SANCTUARY'
+    },
+    {
+      id: 'smart_bali_calm',
+      labelEn: 'Island Serenity',
+      labelHi: 'द्वीप की शांति',
+      promptDirective: 'ISLAND CALM · SUNLIT BREEZE'
+    },
+    {
+      id: 'smart_bali_escape',
+      labelEn: 'Nature Escape',
+      labelHi: 'प्रकृति का सुकून',
+      promptDirective: 'TROPICAL ESCAPE · PURE JOY'
+    },
+    {
+      id: 'smart_bali_palm',
+      labelEn: 'Palm Sunset Glow',
+      labelHi: 'ताड़ और सूर्यास्त की चमक',
+      promptDirective: 'PALM HORIZON · GOLDEN GLOW'
+    }
+  ],
+  'film-strip-carousel': [
+    {
+      id: 'smart_film_contact',
+      labelEn: '35mm Contact Roll',
+      labelHi: '35mm कॉन्टैक्ट रोल',
+      promptDirective: '35MM CONTACT ROLL · STUDIO'
+    },
+    {
+      id: 'smart_film_cinema',
+      labelEn: 'Cinema Frames',
+      labelHi: 'सिनेमा फ्रेम्स',
+      promptDirective: 'CINEMA FRAMES · ARCHIVE'
+    },
+    {
+      id: 'smart_film_reel',
+      labelEn: 'Moments on Reel',
+      labelHi: 'रील की यादें',
+      promptDirective: 'MOMENTS CAPTURED ON REEL'
+    },
+    {
+      id: 'smart_film_director',
+      labelEn: 'Director Cut',
+      labelHi: 'डायरेक्टर कट',
+      promptDirective: 'DIRECTOR CUT · CLASSIC FILM'
+    }
+  ],
+  'good-morning-frame': [
+    {
+      id: 'smart_gm_radiant',
+      labelEn: 'Radiant Morning',
+      labelHi: 'शुभ प्रभात संदेश',
+      promptDirective: 'Good Morning · Have a Radiant Day'
+    },
+    {
+      id: 'smart_gm_blessed',
+      labelEn: 'Blessed & Fresh',
+      labelHi: 'ताज़गी और आशीर्वाद',
+      promptDirective: 'Suprabhat · Peace & Joy Always'
+    },
+    {
+      id: 'smart_gm_sunshine',
+      labelEn: 'New Day Sunshine',
+      labelHi: 'नए दिन की धूप',
+      promptDirective: 'Fresh Morning · Bright Beginnings'
+    },
+    {
+      id: 'smart_gm_wishes',
+      labelEn: 'Warm Wishes',
+      labelHi: 'हार्दिक शुभकामनाएं',
+      promptDirective: 'Sending Warm Wishes Today'
+    }
+  ],
+  'synthwave-grid-animation': [
+    {
+      id: 'smart_synth_horizon',
+      labelEn: 'Neon Horizon',
+      labelHi: 'नियॉन क्षितिज',
+      promptDirective: 'NEON HORIZON · NIGHT DRIVE'
+    },
+    {
+      id: 'smart_synth_retro',
+      labelEn: 'Retro 1984 Vibe',
+      labelHi: 'रेट्रो 1984 वाइब',
+      promptDirective: 'SYNTHWAVE 1984 · ELECTRIC'
+    },
+    {
+      id: 'smart_synth_dreams',
+      labelEn: 'Cyber Dreams',
+      labelHi: 'साइबर ड्रीम्स',
+      promptDirective: 'CYBER DREAMS · FUTURE GLOW'
+    },
+    {
+      id: 'smart_synth_pulse',
+      labelEn: 'Midnight Pulse',
+      labelHi: 'मिडनाइट पल्स',
+      promptDirective: 'MIDNIGHT PULSE · V2 EDITION'
+    }
+  ]
+};
+
+SMART_CANVAS_CAPTION_CHIPS_BY_WORKFLOW['cyber-synthwave-horizon'] =
+  SMART_CANVAS_CAPTION_CHIPS_BY_WORKFLOW['synthwave-grid-animation'];
+
+const SMART_CANVAS_CAPTION_FALLBACK_CHIPS: BilingualCustomizationChip[] = [
+  {
+    id: 'smart_caption_studio',
+    labelEn: 'Timeless Studio Note',
+    labelHi: 'स्टूडियो कैप्शन',
+    promptDirective: 'TIMELESS STUDIO MEMORIES'
+  },
+  {
+    id: 'smart_caption_moments',
+    labelEn: 'Special Moments',
+    labelHi: 'खास पल',
+    promptDirective: 'SPECIAL MOMENTS · 2026'
+  },
+  {
+    id: 'smart_caption_joy',
+    labelEn: 'Warm Wishes',
+    labelHi: 'शुभकामनाएं',
+    promptDirective: 'MADE WITH JOY & STYLE'
+  },
+  {
+    id: 'smart_caption_celebrate',
+    labelEn: 'Golden Celebration',
+    labelHi: 'सुनहरा जश्न',
+    promptDirective: 'GOLDEN MOMENTS FOREVER'
+  }
+];
+
+/**
+ * Generates universal, engine/adapter-aware bilingual (English + Hindi) customization chips
  * for both pre-generation ("Customize Your Result") and post-result ("Make More Changes").
+ * - SmartCanvas returns ONLY workflow-matched literal caption/text chips (with a safe caption-only
+ *   fallback for unknown/future SmartCanvas workflows) and never exposes unsupported visual-edit chips.
+ * - Gemini Photo & supported Video adapters preserve their existing visual/instruction customization chips.
  * Zero chips are auto-selected by default so pure template fidelity holds unless chosen.
  */
 export function getBilingualCustomizationChips(
   tpl: Partial<Template> | null | undefined,
   context: 'pre_gen' | 'post_edit' = 'pre_gen'
 ): BilingualCustomizationChip[] {
+  if (isSmartCanvasCustomization(tpl)) {
+    const smartWf = String(tpl?.workflow || tpl?.recipe?.workflow || '').trim().toLowerCase();
+    const matched = SMART_CANVAS_CAPTION_CHIPS_BY_WORKFLOW[smartWf];
+    return matched ? [...matched] : [...SMART_CANVAS_CAPTION_FALLBACK_CHIPS];
+  }
+
   const category = String(tpl?.category || '').toLowerCase();
   const desc = `${tpl?.title || ''} ${tpl?.description || ''} ${tpl?.workflow || ''}`.toLowerCase();
   const isCouple = isExplicitCoupleTemplate(tpl);

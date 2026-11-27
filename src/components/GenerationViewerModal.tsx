@@ -23,7 +23,8 @@ import { useAuthorizedMedia, downloadAuthorizedMedia } from '../utils/authorized
 import {
   supportsIterativeChanges,
   resolveIterativeEditQuote,
-  getBilingualCustomizationChips
+  getBilingualCustomizationChips,
+  isSmartCanvasCustomization
 } from '../services/validation/templateReadiness';
 
 interface GenerationViewerContentProps {
@@ -592,98 +593,107 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
               </div>
             )}
 
-            {iterativeCapability.supported && (
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMakeChanges((prev) => !prev);
-                    setEditError(null);
-                  }}
-                  className={`w-full min-h-[46px] py-3 px-4 rounded-2xl text-sm font-semibold flex items-center justify-center gap-2 border transition-colors cursor-pointer ${
-                    showMakeChanges
-                      ? 'bg-amber-400/15 text-amber-200 border-amber-400/50'
-                      : 'bg-[#121217] hover:bg-stone-800 text-white border-white/15'
-                  }`}
-                >
-                  <Edit3 className="w-4 h-4 text-[#d4af37]" />
-                  <span>Make More Changes</span>
-                </button>
+            {iterativeCapability.supported && (() => {
+              const isSmartCanvasCustom = isSmartCanvasCustomization(currentTemplate);
+              return (
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMakeChanges((prev) => !prev);
+                      setEditError(null);
+                    }}
+                    className={`w-full min-h-[46px] py-3 px-4 rounded-2xl text-sm font-semibold flex items-center justify-center gap-2 border transition-colors cursor-pointer ${
+                      showMakeChanges
+                        ? 'bg-amber-400/15 text-amber-200 border-amber-400/50'
+                        : 'bg-[#121217] hover:bg-stone-800 text-white border-white/15'
+                    }`}
+                  >
+                    <Edit3 className="w-4 h-4 text-[#d4af37]" />
+                    <span>
+                      {isSmartCanvasCustom ? 'Make More Changes · Edit Caption' : 'Make More Changes'}
+                    </span>
+                  </button>
 
-                {showMakeChanges && (
-                  <div className="p-4 rounded-2xl bg-[#121018] border border-white/15 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <h5 className="text-sm font-bold text-white flex items-center gap-1.5">
-                          <Sparkles className="w-4 h-4 text-amber-400" />
-                          <span>Make More Changes</span>
-                        </h5>
-                        <p className="text-[11px] text-stone-400 mt-0.5">
-                          Original face identity stays locked; only your selected changes apply.
-                        </p>
-                      </div>
-                      <span className="px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/30 text-[11px] font-mono tabular-nums font-bold text-amber-200 shrink-0">
-                        {editCreditCost !== null ? `${editCreditCost} Credits` : 'Quote unavailable'}
-                      </span>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Edit suggestion chips">
-                      {getBilingualCustomizationChips(currentTemplate, 'post_edit').map((chip) => {
-                        const isSelected = editInstructions.toLowerCase().includes(chip.promptDirective.toLowerCase());
-                        return (
-                          <button
-                            key={chip.id}
-                            type="button"
-                            onClick={() => {
-                              setEditIdempotencyKey(null);
-                              setEditInstructions((prev) => {
-                                const cleanPrev = prev.trim();
-                                if (isSelected) {
-                                  const escaped = chip.promptDirective.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                                  return cleanPrev
-                                    .replace(new RegExp(`(?:^|[.;,]\\s*)${escaped}`, 'i'), '')
-                                    .replace(/^[.;,\s]+|[.;,\s]+$/g, '')
-                                    .slice(0, 300);
-                                }
-                                const next = cleanPrev ? `${cleanPrev}; ${chip.promptDirective}` : chip.promptDirective;
-                                return next.slice(0, 300);
-                              });
-                            }}
-                            className={`min-h-[40px] px-2.5 py-1.5 rounded-xl border text-left transition-colors cursor-pointer flex flex-col justify-center ${
-                              isSelected
-                                ? 'bg-amber-400/15 border-amber-400/70 text-amber-100'
-                                : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-stone-200'
-                            }`}
-                          >
-                            <span className="text-[11px] font-semibold leading-tight">{chip.labelEn}</span>
-                            <span className="text-[10px] text-stone-400 leading-tight">{chip.labelHi}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[11px] text-stone-400">
-                        <label htmlFor="make-more-changes-input" className="font-semibold text-stone-300">
-                          Describe your changes
-                        </label>
-                        <span className="font-mono tabular-nums">
-                          {editInstructions.length}/300
+                  {showMakeChanges && (
+                    <div className="p-4 rounded-2xl bg-[#121018] border border-white/15 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <h5 className="text-sm font-bold text-white flex items-center gap-1.5">
+                            <Sparkles className="w-4 h-4 text-amber-400" />
+                            <span>
+                              {isSmartCanvasCustom ? 'Edit Frame Caption & Text' : 'Make More Changes'}
+                            </span>
+                          </h5>
+                          <p className="text-[11px] text-stone-400 mt-0.5">
+                            {isSmartCanvasCustom
+                              ? 'Updates the frame caption text only; your uploaded photo stays unchanged.'
+                              : 'Original face identity stays locked; only your selected changes apply.'}
+                          </p>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-amber-400/15 border border-amber-400/30 text-[11px] font-mono tabular-nums font-bold text-amber-200 shrink-0">
+                          {editCreditCost !== null ? `${editCreditCost} Credits` : 'Quote unavailable'}
                         </span>
                       </div>
-                      <textarea
-                        id="make-more-changes-input"
-                        value={editInstructions}
-                        onChange={(e) => {
-                          setEditIdempotencyKey(null);
-                          setEditInstructions(e.target.value.slice(0, 300));
-                        }}
-                        maxLength={300}
-                        rows={2}
-                        placeholder="E.g., Remove sunglasses, change shirt colour to navy blue, keep pose unchanged..."
-                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 transition-colors resize-none"
-                      />
-                    </div>
+
+                      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Edit suggestion chips">
+                        {getBilingualCustomizationChips(currentTemplate, 'post_edit').map((chip) => {
+                          const isSelected = editInstructions.toLowerCase().includes(chip.promptDirective.toLowerCase());
+                          return (
+                            <button
+                              key={chip.id}
+                              type="button"
+                              onClick={() => {
+                                setEditIdempotencyKey(null);
+                                setEditInstructions((prev) => {
+                                  const cleanPrev = prev.trim();
+                                  if (cleanPrev.toLowerCase().includes(chip.promptDirective.toLowerCase())) {
+                                    return prev;
+                                  }
+                                  const separator = isSmartCanvasCustom ? ' · ' : '; ';
+                                  const next = cleanPrev ? `${cleanPrev}${separator}${chip.promptDirective}` : chip.promptDirective;
+                                  return next.slice(0, 300);
+                                });
+                              }}
+                              className={`min-h-[44px] px-2.5 py-1.5 rounded-xl border text-left transition-colors cursor-pointer flex flex-col justify-center ${
+                                isSelected
+                                  ? 'bg-amber-400/15 border-amber-400/70 text-amber-100'
+                                  : 'bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-stone-200'
+                              }`}
+                            >
+                              <span className="text-[11px] font-semibold leading-tight">{chip.labelEn}</span>
+                              <span className="text-[10px] text-stone-400 leading-tight">{chip.labelHi}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-stone-400">
+                          <label htmlFor="make-more-changes-input" className="font-semibold text-stone-300">
+                            {isSmartCanvasCustom ? 'Enter new frame caption' : 'Describe your changes'}
+                          </label>
+                          <span className="font-mono tabular-nums">
+                            {editInstructions.length}/300
+                          </span>
+                        </div>
+                        <textarea
+                          id="make-more-changes-input"
+                          value={editInstructions}
+                          onChange={(e) => {
+                            setEditIdempotencyKey(null);
+                            setEditInstructions(e.target.value.slice(0, 300));
+                          }}
+                          maxLength={300}
+                          rows={2}
+                          placeholder={
+                            isSmartCanvasCustom
+                              ? 'E.g., Happy Anniversary · Sunset memories · Wishing you joy...'
+                              : 'E.g., Remove sunglasses, change shirt colour to navy blue, keep pose unchanged...'
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/15 text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-400 transition-colors resize-none"
+                        />
+                      </div>
 
                     {editError && (
                       <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200 space-y-1">
@@ -729,7 +739,8 @@ const GenerationViewerContent: React.FC<GenerationViewerContentProps> = ({
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
 
             <div className="text-center pt-2">
               <button

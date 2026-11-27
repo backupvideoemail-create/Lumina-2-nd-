@@ -1374,6 +1374,7 @@ async function runVerification() {
     } = await import('../src/config/globalMasterPrompt.ts');
     const {
       getBilingualCustomizationChips,
+      isSmartCanvasCustomization,
       supportsIterativeChanges,
       resolveIterativeEditQuote,
       computeTemplateConfigFingerprint
@@ -1852,6 +1853,183 @@ async function runVerification() {
         !viewerModalSrc.includes('|| 30') &&
         viewerModalSrc.includes('resolveIterativeEditQuote'),
       'I.11 Explicit video provider+adapter+workflow capability gates & non-invented GenerationViewerModal quote (zero || 30 fallback) verified'
+    );
+
+    // I.12 SmartCanvas customization capability mapping + unknown-workflow safe fallback + caption-only modal copy + append-only chips
+    const forbiddenSmartChipIds = new Set([
+      'keep_unchanged',
+      'remove_sunglasses',
+      'add_sunglasses',
+      'outfit_color',
+      'jewelry_watch',
+      'add_person',
+      'lighting_bg',
+      'soft_smile',
+      'smooth_motion'
+    ]);
+    const smartWorkflowsToTest = [
+      'retro-polaroid-warm',
+      'story-clean-minimal',
+      'dark-academia-mood',
+      'bali-jungle-glow',
+      'film-strip-carousel',
+      'good-morning-frame',
+      'synthwave-grid-animation',
+      'cyber-synthwave-horizon',
+      '',
+      'future-editorial-2027',
+      'unknown-future-smartcanvas-workflow'
+    ];
+    let allSmartWorkflowsSafe = true;
+    for (const wf of smartWorkflowsToTest) {
+      const smartTpl: Partial<Template> = {
+        id: `tpl_smart_${wf || 'legacy'}`,
+        title: `Smart ${wf || 'legacy'}`,
+        category: 'Royal Swag',
+        description: 'Dark sunglasses swagger look',
+        type: wf.includes('synthwave') ? 'video' : 'photo',
+        engine: 'SMART_TEMPLATE',
+        provider: 'smart_template',
+        adapter: 'smartCanvas',
+        model: wf.includes('synthwave') ? 'smart_canvas_ffmpeg' : 'smart_canvas',
+        workflow: wf
+      };
+      if (!isSmartCanvasCustomization(smartTpl)) {
+        allSmartWorkflowsSafe = false;
+      }
+      for (const ctx of ['pre_gen', 'post_edit'] as const) {
+        const smartChips = getBilingualCustomizationChips(smartTpl, ctx);
+        if (smartChips.length < 3) allSmartWorkflowsSafe = false;
+        for (const c of smartChips) {
+          if (
+            forbiddenSmartChipIds.has(c.id) ||
+            !c.labelEn.trim() ||
+            !c.labelHi.trim() ||
+            !c.promptDirective.trim() ||
+            c.promptDirective.length > 40 ||
+            /sunglass|outfit colour|jewelry|another person|background/i.test(c.promptDirective)
+          ) {
+            allSmartWorkflowsSafe = false;
+          }
+        }
+      }
+    }
+
+    // Also verify flag-detected SmartCanvas templates (e.g. source='smart' with unknown future workflow)
+    const futureFlagSmartTpl: Partial<Template> = {
+      id: 'tpl_smart_future_flag',
+      title: 'Future Hologram Frame',
+      type: 'photo',
+      category: 'Fashion',
+      workflow: 'future-hologram-2028',
+      isSmartTemplate: true
+    } as any;
+    const futureFlagChips = getBilingualCustomizationChips(futureFlagSmartTpl, 'post_edit');
+    const futureFlagSafe =
+      isSmartCanvasCustomization(futureFlagSmartTpl) &&
+      futureFlagChips.length >= 3 &&
+      futureFlagChips.every((c) => !forbiddenSmartChipIds.has(c.id));
+
+    // Real SmartCanvas caption render with selected bilingual chip directive
+    const gmChips = getBilingualCustomizationChips(
+      {
+        id: 'tpl_gm_smart',
+        title: 'Good Morning Frame',
+        type: 'photo',
+        category: 'Festival',
+        engine: 'SMART_TEMPLATE',
+        provider: 'smart_template',
+        adapter: 'smartCanvas',
+        workflow: 'good-morning-frame'
+      },
+      'pre_gen'
+    );
+    const gmSmartRender = await smartCanvasAdapter.processSmartTemplate({
+      templateTitle: 'Good Morning Frame',
+      templateType: 'photo',
+      workflow: 'good-morning-frame',
+      model: 'smart_canvas',
+      aspectRatio: '9:16',
+      inputMediaUrls: [`data:image/png;base64,${real1x1PngBuf.toString('base64')}`],
+      customPrompt: gmChips[0].promptDirective,
+      ownerUserId: sessA.user.id
+    });
+    let gmRenderBytes = 0;
+    if (gmSmartRender.resultUrl) {
+      const gmFileId = extractMediaFileIdFromRef(gmSmartRender.resultUrl);
+      const gmFilePath = gmFileId ? mediaStorage.getFilePath(gmFileId) : '';
+      if (gmFilePath && fs.existsSync(gmFilePath)) {
+        gmRenderBytes = fs.statSync(gmFilePath).size;
+        savedFilesToCleanup.push(gmFilePath);
+      }
+    }
+
+    // Preserve Gemini Photo visual chips & supported Video AI chips unchanged
+    const geminiPhotoTpl: Partial<Template> = {
+      id: 'tpl_gemini_swag',
+      title: 'Full Swag AI',
+      category: 'Royal Swag',
+      type: 'photo',
+      engine: 'AI_GENERATION',
+      provider: 'gemini',
+      adapter: 'geminiAdapter',
+      model: 'gemini-2.5-flash-image',
+      workflow: 'PHOTO_GENERATION'
+    };
+    const geminiChips = getBilingualCustomizationChips(geminiPhotoTpl, 'pre_gen');
+
+    const higgsMotionTpl: Partial<Template> = {
+      id: 'tpl_hf_motion',
+      title: 'Royal Motion Video',
+      category: 'Cinematic',
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'higgsfield',
+      adapter: 'faceSwapAdapter',
+      model: 'hf_mult_motion_control_flash',
+      workflow: 'MOTION_TRANSFER',
+      inputType: 'IMAGE_ONLY'
+    };
+    const higgsVideoChips = getBilingualCustomizationChips(higgsMotionTpl, 'post_edit');
+
+    const googleOmniTpl: Partial<Template> = {
+      id: 'tpl_omni_vid',
+      title: 'Omni Glow Video',
+      category: 'Trending',
+      type: 'video',
+      engine: 'AI_GENERATION',
+      provider: 'google_omni',
+      adapter: 'videoProviderAdapter',
+      workflow: 'IMAGE_TO_VIDEO',
+      inputType: 'IMAGE_ONLY'
+    };
+    const omniVideoChips = getBilingualCustomizationChips(googleOmniTpl, 'post_edit');
+
+    const detailModalSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/components/TemplateDetailModal.tsx'), 'utf8');
+
+    assert(
+      allSmartWorkflowsSafe &&
+        futureFlagSafe &&
+        gmSmartRender.success === true &&
+        gmRenderBytes > 100 &&
+        !isSmartCanvasCustomization(geminiPhotoTpl) &&
+        geminiChips.some((c) => c.id === 'remove_sunglasses') &&
+        geminiChips.some((c) => c.id === 'outfit_color') &&
+        !isSmartCanvasCustomization(higgsMotionTpl) &&
+        supportsIterativeChanges(higgsMotionTpl).supported &&
+        higgsVideoChips.some((c) => c.id === 'keep_unchanged') &&
+        higgsVideoChips.some((c) => c.id === 'smooth_motion') &&
+        !isSmartCanvasCustomization(googleOmniTpl) &&
+        supportsIterativeChanges(googleOmniTpl).supported &&
+        omniVideoChips.some((c) => c.id === 'keep_unchanged') &&
+        detailModalSrc.includes('isSmartCanvasCustomization') &&
+        detailModalSrc.includes('Customize Frame Caption (Optional)') &&
+        !detailModalSrc.includes('replace(new RegExp(`(?:^|[.;,]') &&
+        viewerModalSrc.includes('isSmartCanvasCustomization') &&
+        viewerModalSrc.includes('Edit Frame Caption & Text') &&
+        viewerModalSrc.includes('Make More Changes · Edit Caption') &&
+        !viewerModalSrc.includes('replace(new RegExp(`(?:^|[.;,]'),
+      'I.12 SmartCanvas workflow-matched caption chips, unknown-workflow safe fallback, append-only chips, caption-only modal copy & Gemini/Video preservation verified'
     );
   } finally {
     __setServerTestDeps();
